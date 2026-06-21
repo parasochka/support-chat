@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NowPlix Support Chat — Test Page</title>
+  <link rel="stylesheet" href="/widget.css" />
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial,
+        sans-serif;
+      margin: 0;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 48px 24px; }
+    h1 { font-size: 28px; margin-bottom: 8px; }
+    p { color: #94a3b8; line-height: 1.6; }
+    code { background: #1e293b; padding: 2px 6px; border-radius: 4px; }
+    .card {
+      background: #1e293b;
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin-top: 24px;
+    }
+    ul { color: #cbd5e1; line-height: 1.8; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>NikaBet Support Chat — Test Page</h1>
+    <p>
+      This page embeds the floating support widget (bottom-right). Click the
+      bubble to start a session, pick a topic, and chat. Every interaction is
+      logged to Postgres.
+    </p>
+
+    <div class="card">
+      <strong>How to tune</strong>
+      <ul>
+        <li>Edit the <code>CONFIG</code> block at the top of <code>/widget.js</code>
+          to set <code>API_BASE</code>, <code>RECAPTCHA_SITE_KEY</code>, and the
+          sample <code>USER_CONTEXT</code>.</li>
+        <li>Set backend behaviour via environment variables (see README).</li>
+        <li>Escalation buttons point at <code>CONTACT_FORM_URL</code>.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <strong>Try</strong>
+      <ul>
+        <li>Pick <em>Deposits</em> and ask about a failed payment.</li>
+        <li>Ask in Spanish or Russian — answers follow your language.</li>
+        <li>Type “I want to talk to an operator” to force escalation.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Widget auto-mounts on load. To override config, import { mount } instead. -->
+  <script type="module" src="/widget.js"></script>
+</body>
+</html>
