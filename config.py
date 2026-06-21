@@ -144,6 +144,13 @@ PUBLIC_BASE_URL: str | None = _env_opt("PUBLIC_BASE_URL")
 # --- Request body cap -------------------------------------------------------
 BODY_MAX_BYTES: int = _env_int("BODY_MAX_BYTES", 65536)
 
+# --- Injection / jailbreak hard block ---------------------------------------
+# By default the injection scan only LOGS (the system prompt + Layer-3 guardrails
+# are the real defence). Set INJECTION_HARD_BLOCK=1 to additionally reject a
+# message that matches a known jailbreak pattern with HTTP 400 before it ever
+# reaches the model — defence in depth at the cost of rare false positives.
+INJECTION_HARD_BLOCK: bool = _env("INJECTION_HARD_BLOCK", "0") not in ("0", "false", "False", "")
+
 # --- Proxy / client IP ------------------------------------------------------
 # Number of trusted reverse proxies in front of the app (Railway edge = 1).
 # The real client IP is taken this many hops from the RIGHT of X-Forwarded-For,
