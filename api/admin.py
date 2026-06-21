@@ -15,8 +15,10 @@ from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
+import config
 import db
 import kb_import
+import language
 import metrics
 import prompt_store
 import prompts
@@ -24,6 +26,24 @@ import settings as settings_mod
 from api.admin_auth import require_admin
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
+
+
+# ---------------------------------------------------------------------------
+# static metadata (supported languages, defaults) for the admin SPA
+# ---------------------------------------------------------------------------
+@router.get("/meta")
+async def meta() -> JSONResponse:
+    """Static config the admin UI needs to build pickers (e.g. language dropdowns).
+
+    Keeps the SPA in sync with the env-configured `SUPPORTED_LANGUAGES` instead
+    of hard-coding the list in JS.
+    """
+    langs = [{"code": c, "name": language.LANG_NAMES.get(c, c.upper())}
+             for c in config.SUPPORTED_LANGUAGES]
+    return JSONResponse(content={
+        "languages": langs,
+        "default_language": config.DEFAULT_LANGUAGE,
+    })
 
 
 # ---------------------------------------------------------------------------
