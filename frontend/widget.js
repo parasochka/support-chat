@@ -21,14 +21,68 @@ export const CONFIG = {
   },
   // Optional explicit answer language ("en","es","ru","tr","pt") or null to auto-detect.
   LANG: null,
-  LOCALE: (typeof navigator !== "undefined" && navigator.language) || null,
+  // Browser language — used to localise the UI and as the default answer
+  // language. navigator.languages[0] is the user's top preference; fall back to
+  // navigator.language. The player can still write in any language and the AI
+  // mirrors it; this only seeds the default.
+  LOCALE:
+    (typeof navigator !== "undefined" &&
+      ((navigator.languages && navigator.languages[0]) || navigator.language)) ||
+    null,
 };
+
+// UI string translations. The chat *answers* follow the player's language
+// (handled server-side); these only cover the widget chrome so a Russian
+// browser doesn't see an English shell.
+const I18N = {
+  en: { support: "Support", topics: "What can we help you with?", other: "Other",
+        greeting: "Hi! How can I help you today?", placeholder: "Type your message…",
+        send: "Send", launcher: "Open support chat",
+        startError: "Could not start chat. Please try again later.",
+        sendError: "Something went wrong. Please try again." },
+  ru: { support: "Поддержка", topics: "Чем мы можем помочь?", other: "Другое",
+        greeting: "Здравствуйте! Чем можем помочь?", placeholder: "Введите сообщение…",
+        send: "Отправить", launcher: "Открыть чат поддержки",
+        startError: "Не удалось начать чат. Попробуйте позже.",
+        sendError: "Что-то пошло не так. Попробуйте ещё раз." },
+  es: { support: "Soporte", topics: "¿En qué podemos ayudarte?", other: "Otro",
+        greeting: "¡Hola! ¿En qué podemos ayudarte hoy?", placeholder: "Escribe tu mensaje…",
+        send: "Enviar", launcher: "Abrir chat de soporte",
+        startError: "No se pudo iniciar el chat. Inténtalo más tarde.",
+        sendError: "Algo salió mal. Inténtalo de nuevo." },
+  tr: { support: "Destek", topics: "Size nasıl yardımcı olabiliriz?", other: "Diğer",
+        greeting: "Merhaba! Bugün size nasıl yardımcı olabiliriz?",
+        placeholder: "Mesajınızı yazın…", send: "Gönder", launcher: "Destek sohbetini aç",
+        startError: "Sohbet başlatılamadı. Lütfen daha sonra tekrar deneyin.",
+        sendError: "Bir şeyler ters gitti. Lütfen tekrar deneyin." },
+  pt: { support: "Suporte", topics: "Como podemos ajudar?", other: "Outro",
+        greeting: "Olá! Como podemos ajudar hoje?", placeholder: "Digite sua mensagem…",
+        send: "Enviar", launcher: "Abrir chat de suporte",
+        startError: "Não foi possível iniciar o chat. Tente novamente mais tarde.",
+        sendError: "Algo deu errado. Tente novamente." },
+};
+
+function baseLang(code) {
+  if (!code) return null;
+  const base = String(code).replace("_", "-").split("-")[0].toLowerCase();
+  return I18N[base] ? base : null;
+}
+
+// Best initial guess before the backend confirms: explicit LANG, else browser.
+function initialLang() {
+  return baseLang(CONFIG.LANG) || baseLang(CONFIG.LOCALE) || "en";
+}
+
+function t(key) {
+  const dict = I18N[state.lang] || I18N.en;
+  return dict[key] || I18N.en[key] || key;
+}
 
 const state = {
   sessionId: null,
   token: null,
   topics: [],
-  lang: "en",
+  lang: initialLang(),
   topicChosen: false,
   open: false,
 };
@@ -93,7 +147,10 @@ async function createSession() {
   state.sessionId = data.session_id;
   state.token = data.token;
   state.topics = data.topics || [];
-  state.lang = data.lang || "en";
+  // Backend resolves the default language (browser locale wins over the server
+  // default); refresh the UI chrome to match it.
+  state.lang = baseLang(data.lang) || state.lang;
+  applyStaticLabels();
 }
 
 async function selectTopic(slug) {
@@ -131,14 +188,14 @@ function buildUI() {
   const root = el("div", "npchat-root");
 
   const launcher = el("button", "npchat-launcher");
-  launcher.setAttribute("aria-label", "Open support chat");
+  launcher.setAttribute("aria-label", t("launcher"));
   launcher.innerHTML = "&#128172;";
   launcher.addEventListener("click", togglePanel);
 
   const panel = el("div", "npchat-panel npchat-hidden");
 
   const header = el("div", "npchat-header");
-  header.appendChild(el("span", "npchat-title", "Support"));
+  header.appendChild(el("span", "npchat-title", t("support")));
   const closeBtn = el("button", "npchat-close", "✕");
   closeBtn.addEventListener("click", togglePanel);
   header.appendChild(closeBtn);
@@ -150,11 +207,11 @@ function buildUI() {
   const inputRow = el("div", "npchat-inputrow npchat-hidden");
   const input = el("input", "npchat-input");
   input.type = "text";
-  input.placeholder = "Type your message…";
+  input.placeholder = t("placeholder");
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") onSend();
   });
-  const sendBtn = el("button", "npchat-send", "Send");
+  const sendBtn = el("button", "npchat-send", t("send"));
   sendBtn.addEventListener("click", onSend);
   inputRow.appendChild(input);
   inputRow.appendChild(sendBtn);
@@ -173,16 +230,26 @@ function buildUI() {
   els = { root, launcher, panel, body, topics, messages, inputRow, input, sendBtn };
 }
 
+// Re-apply chrome strings after the resolved language is known (post-session).
+function applyStaticLabels() {
+  if (!els.root) return;
+  els.launcher.setAttribute("aria-label", t("launcher"));
+  const title = els.panel.querySelector(".npchat-title");
+  if (title) title.textContent = t("support");
+  els.input.placeholder = t("placeholder");
+  els.sendBtn.textContent = t("send");
+}
+
 function renderTopics() {
   els.topics.innerHTML = "";
-  const heading = el("div", "npchat-topics-h", "What can we help you with?");
+  const heading = el("div", "npchat-topics-h", t("topics"));
   els.topics.appendChild(heading);
-  for (const t of state.topics) {
-    const b = el("button", "npchat-topic", t.title);
-    b.addEventListener("click", () => onTopic(t.slug));
+  for (const topic of state.topics) {
+    const b = el("button", "npchat-topic", topic.title);
+    b.addEventListener("click", () => onTopic(topic.slug));
     els.topics.appendChild(b);
   }
-  const other = el("button", "npchat-topic npchat-topic-other", "Other");
+  const other = el("button", "npchat-topic npchat-topic-other", t("other"));
   other.addEventListener("click", () => onTopic("other"));
   els.topics.appendChild(other);
 }
@@ -223,7 +290,7 @@ async function togglePanel() {
       renderTopics();
     } catch (e) {
       els.topics.innerHTML = "";
-      addMessageToTopics("Could not start chat. Please try again later.");
+      addMessageToTopics(t("startError"));
     }
   }
 }
@@ -239,7 +306,7 @@ async function onTopic(slug) {
   els.topics.classList.add("npchat-hidden");
   els.messages.classList.remove("npchat-hidden");
   els.inputRow.classList.remove("npchat-hidden");
-  addMessage("assistant", "Hi! How can I help you today?");
+  addMessage("assistant", t("greeting"));
   els.input.focus();
 }
 
@@ -256,7 +323,7 @@ async function onSend() {
       addEscalation(data.escalation);
     }
   } catch (e) {
-    typing.textContent = "Something went wrong. Please try again.";
+    typing.textContent = t("sendError");
   }
 }
 

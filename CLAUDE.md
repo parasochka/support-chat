@@ -53,7 +53,10 @@ when invoking modules outside pytest.
   in the system message. This is what keeps the cached prefix stable.
 
 New rules go into the KB or Layer 3 — **never** into `SYSTEM_CORE`. The source prompt and
-KB are Russian; only the answer language varies (the model is told "answer in {LANG}").
+KB are Russian; only the answer language varies. The Layer-3 directive tells the model to
+**mirror the player's own message language**, using the resolved language (browser locale →
+session → default) only as the fallback when the message language is unclear — so a
+Russian question always gets a Russian answer.
 
 ### Request flow
 `api/chat.py` (thin HTTP handlers + gate ordering) → `chat_service.handle_message`
@@ -93,9 +96,13 @@ but they do not span multiple instances. reCaptcha is verified at session create
 gracefully (logged) when `RECAPTCHA_SECRET` is unset.
 
 ### Language resolution (`language.py`)
-Deterministic priority, never asks the user: explicit `lang` → `locale` (e.g. `es-MX`→`es`)
-→ persisted `session_lang` → `AUTO` sentinel (model mirrors the user's language; the
-detected language is persisted on the session after the first turn) → `DEFAULT_LANGUAGE`.
+Resolves the *fallback default* answer language, never asks the user. Deterministic
+priority: explicit `lang` → `locale` (e.g. `es-MX`→`es`; this is where the browser's
+`navigator.language` lands) → persisted `session_lang` → `AUTO` (→ `DEFAULT_LANGUAGE`).
+The resolved code is **not** a hard lock: the Layer-3 directive always tells the model to
+answer in the player's own message language and only falls back to this code when that
+language can't be determined. The session language is **never** speculatively overwritten
+with the default — doing so used to lock sessions to English and is the bug this fixes.
 
 ### Escalation (`escalation.py`)
 Phase 1 returns a contact-button payload only (no form, no live agent). `decide()` triggers
