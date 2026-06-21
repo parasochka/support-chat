@@ -13,11 +13,14 @@ export const CONFIG = {
   // reCaptcha v3 site key. Leave "" to skip captcha (dev).
   RECAPTCHA_SITE_KEY: "6LfNeistAAAAADIKPj_VP-AcInrFei0FLqabNK8X",
   // Sample user_context for the test build. In production the host page supplies this.
+  // `language` is the account/profile language; it seeds the default answer
+  // language below the browser locale (manual switch > browser > profile).
   USER_CONTEXT: {
     id: "demo-12345",
     full_name: "Test Player",
     email: "test.player@example.com",
     activation_status: "active",
+    language: null,
   },
   // Optional explicit answer language ("en","es","ru","tr","pt") or null to auto-detect.
   LANG: null,

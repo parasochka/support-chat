@@ -1,4 +1,4 @@
-"""Language resolution precedence: param > locale > session/auto > default."""
+"""Language resolution precedence: param > locale > profile > session/auto > default."""
 from __future__ import annotations
 
 import pytest
@@ -34,6 +34,37 @@ def test_unsupported_locale_falls_to_auto():
 
 def test_session_lang_used_before_auto():
     assert language.resolve(lang=None, locale=None, session_lang="ru") == "ru"
+
+
+def test_locale_beats_profile():
+    # Browser locale outranks the account/profile language.
+    assert language.resolve(locale="es-MX", profile_lang="ru") == "es"
+
+
+def test_profile_used_when_no_locale():
+    # No manual lang, no (supported) browser locale -> fall to profile language.
+    assert language.resolve(lang=None, locale=None, profile_lang="ru") == "ru"
+    assert language.resolve(lang=None, locale="de-DE", profile_lang="tr") == "tr"
+
+
+def test_profile_accepts_locale_form():
+    assert language.resolve(profile_lang="pt-BR") == "pt"
+
+
+def test_profile_beats_session():
+    assert language.resolve(profile_lang="es", session_lang="ru") == "es"
+
+
+def test_unsupported_profile_falls_through_to_session():
+    assert language.resolve(profile_lang="de", session_lang="ru") == "ru"
+
+
+def test_profile_lang_from_context():
+    assert language.profile_lang_from_context({"language": "ru-RU"}) == "ru-RU"
+    assert language.profile_lang_from_context({"lang": "es"}) == "es"
+    assert language.profile_lang_from_context({"id": "x"}) is None
+    assert language.profile_lang_from_context(None) is None
+    assert language.profile_lang_from_context({"language": 7}) is None
 
 
 def test_nothing_resolves_to_auto():
