@@ -45,6 +45,9 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         topic_slug = topic["slug"] if topic else None
 
     # --- language resolution -------------------------------------------------
+    # When the player picked a language by hand (header switcher), it is a hard
+    # override: answer strictly in it, regardless of the message language.
+    force_lang = bool(session.get("lang_locked"))
     resolved = language.resolve(
         lang=None, locale=None, session_lang=session.get("lang")
     )
@@ -61,6 +64,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         history=history,
         user_text=user_text,
         resolved_lang=resolved,
+        force_lang=force_lang,
     )
 
     # --- call model (two-key failover) --------------------------------------

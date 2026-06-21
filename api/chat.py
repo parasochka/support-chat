@@ -44,6 +44,11 @@ class TopicSelect(BaseModel):
     topic_slug: str
 
 
+class LangSelect(BaseModel):
+    session_id: str
+    lang: str
+
+
 class MessageSend(BaseModel):
     session_id: str
     text: str
@@ -116,6 +121,8 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
             "token": token,
             "topics": topics,
             "lang": session_lang or config.DEFAULT_LANGUAGE,
+            # The set of languages the widget switcher should offer.
+            "languages": config.SUPPORTED_LANGUAGES,
         },
     )
 
@@ -136,6 +143,34 @@ async def select_topic(body: TopicSelect,
 
     await db.set_session_topic(body.session_id, topic["id"])
     return JSONResponse(status_code=200, content={"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# POST /api/chat/lang  -- manual language switch (last-resort override)
+# ---------------------------------------------------------------------------
+@router.post("/lang")
+async def select_language(body: LangSelect,
+                          authorization: Optional[str] = Header(default=None)) -> JSONResponse:
+    """Player picked a language by hand in the widget header.
+
+    Locks the session to that language: it drives both the answer language
+    (hard override of auto-mirroring) and the UI. Returns the topic catalogue
+    re-localized so the picker matches immediately.
+    """
+    session, err = await _auth_session(authorization, body.session_id)
+    if err:
+        return err
+
+    lang = (body.lang or "").strip().lower()
+    if lang not in config.SUPPORTED_LANGUAGES:
+        return _err(400, "bad_lang", f"Unsupported language: {body.lang}")
+
+    await db.set_session_lang(body.session_id, lang, locked=True)
+    topics = await kb.catalogue(lang=lang)
+    return JSONResponse(
+        status_code=200,
+        content={"ok": True, "lang": lang, "topics": topics},
+    )
 
 
 # ---------------------------------------------------------------------------

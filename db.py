@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   consumer      TEXT NOT NULL DEFAULT 'web',
   player_id     TEXT,
   lang          TEXT,
+  lang_locked   BOOLEAN NOT NULL DEFAULT FALSE,
   topic_id      INT REFERENCES kb_topics(id),
   user_context  JSONB NOT NULL DEFAULT '{}',
   status        TEXT NOT NULL DEFAULT 'open',
@@ -143,8 +144,10 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
     baseline — but the seam is here so the rule from the brief is honoured.)
     """
     alters: list[str] = [
-        # Example for future use:
-        # "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS foo TEXT",
+        # Manual language switcher: a true value means the player picked the
+        # answer/UI language by hand, which hard-overrides auto-mirroring.
+        "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
+        "lang_locked BOOLEAN NOT NULL DEFAULT FALSE",
     ]
     for stmt in alters:
         await conn.execute(stmt)
@@ -264,8 +267,8 @@ async def create_session(consumer: str, player_id: Optional[str],
 
 async def get_session(session_id: str) -> Optional[dict[str, Any]]:
     row = await _pool.fetchrow(
-        "SELECT id, consumer, player_id, lang, topic_id, user_context, status, "
-        "escalated, message_count, created_at, updated_at "
+        "SELECT id, consumer, player_id, lang, lang_locked, topic_id, user_context, "
+        "status, escalated, message_count, created_at, updated_at "
         "FROM chat_sessions WHERE id = $1",
         session_id,
     )
@@ -286,10 +289,13 @@ async def set_session_topic(session_id: str, topic_id: int) -> None:
     )
 
 
-async def set_session_lang(session_id: str, lang: str) -> None:
+async def set_session_lang(session_id: str, lang: str, locked: bool = False) -> None:
+    """Persist the session's answer/UI language. `locked=True` records that the
+    player chose it by hand, which hard-overrides auto language mirroring."""
     await _pool.execute(
-        "UPDATE chat_sessions SET lang = $1, updated_at = now() WHERE id = $2",
-        lang, session_id,
+        "UPDATE chat_sessions SET lang = $1, lang_locked = $2, updated_at = now() "
+        "WHERE id = $3",
+        lang, locked, session_id,
     )
 
 

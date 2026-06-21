@@ -125,8 +125,10 @@ The Dockerfile CMD reads `$PORT` (Railway injects it); no `startCommand` overrid
 
 ```
 POST /api/chat/session       { consumer?, player_id?, user_context?, lang?, locale?, recaptcha_token? }
-                          ->  { session_id, token, topics:[{slug,title}], lang }
+                          ->  { session_id, token, topics:[{slug,title}], lang, languages:[...] }
 POST /api/chat/topic         (Bearer)  { session_id, topic_slug } -> { ok:true }
+POST /api/chat/lang          (Bearer)  { session_id, lang } -> { ok:true, lang, topics:[{slug,title}] }
+                                       manual language switch; locks the answer + UI language
 POST /api/chat/message       (Bearer)  { session_id, text }
                           ->  { reply, lang, escalation:{active,message?,button?}, message_count }
 GET  /api/chat/session/{id}  (Bearer)  resume: history + state

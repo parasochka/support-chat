@@ -62,6 +62,11 @@ const I18N = {
         sendError: "Algo deu errado. Tente novamente." },
 };
 
+// Native names for the header language switcher (shown in their own language).
+const LANG_LABELS = {
+  en: "English", es: "Español", ru: "Русский", tr: "Türkçe", pt: "Português",
+};
+
 function baseLang(code) {
   if (!code) return null;
   const base = String(code).replace("_", "-").split("-")[0].toLowerCase();
@@ -110,7 +115,12 @@ const state = {
   sessionId: null,
   token: null,
   topics: [],
+  // Languages the switcher offers; seeded from I18N, refined by the backend's
+  // SUPPORTED_LANGUAGES after the session is created.
+  languages: Object.keys(I18N),
   lang: initialLang(),
+  // True once the player picks a language by hand — disables auto-mirroring.
+  langLocked: false,
   topicChosen: false,
   open: false,
   greetingEl: null,
@@ -118,12 +128,19 @@ const state = {
 
 // Switch the whole widget chrome to mirror the language the player is writing
 // in. Called as the player types and on send, so the shell follows them the way
-// the AI answers do. No-op unless a confident detection differs from the
-// current chrome language.
+// the AI answers do. No-op once the player has locked a language by hand, or
+// unless a confident detection differs from the current chrome language.
 function maybeSwitchLang(text) {
+  if (state.langLocked) return;
   const guess = detectLang(text);
   if (!guess || guess === state.lang) return;
-  state.lang = guess;
+  applyLang(guess);
+}
+
+// Apply a language to the whole chrome (header title, switcher value, topics
+// heading, greeting, placeholder, send button) without touching the backend.
+function applyLang(code) {
+  state.lang = code;
   applyStaticLabels();
   if (state.greetingEl) state.greetingEl.textContent = t("greeting");
   if (els.topics && !els.topics.classList.contains("npchat-hidden")) {
@@ -191,9 +208,14 @@ async function createSession() {
   state.sessionId = data.session_id;
   state.token = data.token;
   state.topics = data.topics || [];
+  // Only offer languages the backend supports *and* the widget can render.
+  if (Array.isArray(data.languages) && data.languages.length) {
+    state.languages = data.languages.filter((c) => I18N[c]);
+  }
   // Backend resolves the default language (browser locale wins over the server
   // default); refresh the UI chrome to match it.
   state.lang = baseLang(data.lang) || state.lang;
+  renderLangSwitcher();
   applyStaticLabels();
 }
 
@@ -203,6 +225,23 @@ async function selectTopic(slug) {
     body: { session_id: state.sessionId, topic_slug: slug },
   });
   state.topicChosen = true;
+}
+
+// Player picked a language by hand: lock it server-side (drives the answer
+// language too) and re-localize the whole widget, including topic titles.
+async function selectLanguage(code) {
+  state.langLocked = true;
+  applyLang(code);
+  const { ok, data } = await api("/api/chat/lang", {
+    auth: true,
+    body: { session_id: state.sessionId, lang: code },
+  });
+  if (ok && Array.isArray(data.topics)) {
+    state.topics = data.topics;
+    if (els.topics && !els.topics.classList.contains("npchat-hidden")) {
+      renderTopics();
+    }
+  }
 }
 
 async function sendMessage(text) {
@@ -240,9 +279,17 @@ function buildUI() {
 
   const header = el("div", "npchat-header");
   header.appendChild(el("span", "npchat-title", t("support")));
+
+  const headerRight = el("div", "npchat-header-right");
+  // Last-resort manual language switcher: drives both UI and answer language.
+  const langSel = el("select", "npchat-langsel");
+  langSel.setAttribute("aria-label", "Language");
+  langSel.addEventListener("change", (ev) => selectLanguage(ev.target.value));
+  headerRight.appendChild(langSel);
   const closeBtn = el("button", "npchat-close", "✕");
   closeBtn.addEventListener("click", togglePanel);
-  header.appendChild(closeBtn);
+  headerRight.appendChild(closeBtn);
+  header.appendChild(headerRight);
 
   const body = el("div", "npchat-body");
   const topics = el("div", "npchat-topics");
@@ -273,7 +320,25 @@ function buildUI() {
   root.appendChild(launcher);
   document.body.appendChild(root);
 
-  els = { root, launcher, panel, body, topics, messages, inputRow, input, sendBtn };
+  els = { root, launcher, panel, body, topics, messages, inputRow, input, sendBtn,
+          langSel };
+  renderLangSwitcher();
+}
+
+// (Re)build the language switcher options from the supported set and reflect
+// the current chrome language as the selected value.
+function renderLangSwitcher() {
+  if (!els.langSel) return;
+  const langs = (state.languages && state.languages.length
+    ? state.languages
+    : Object.keys(I18N)).filter((c) => I18N[c]);
+  els.langSel.innerHTML = "";
+  for (const code of langs) {
+    const opt = el("option", null, LANG_LABELS[code] || code.toUpperCase());
+    opt.value = code;
+    els.langSel.appendChild(opt);
+  }
+  if (langs.includes(state.lang)) els.langSel.value = state.lang;
 }
 
 // Re-apply chrome strings after the resolved language is known (post-session).
@@ -284,6 +349,10 @@ function applyStaticLabels() {
   if (title) title.textContent = t("support");
   els.input.placeholder = t("placeholder");
   els.sendBtn.textContent = t("send");
+  if (els.langSel && els.langSel.value !== state.lang) {
+    const hasOpt = Array.from(els.langSel.options).some((o) => o.value === state.lang);
+    if (hasOpt) els.langSel.value = state.lang;
+  }
 }
 
 function renderTopics() {
