@@ -11,7 +11,7 @@ export const CONFIG = {
   // Base URL of this service. "" = same origin as the page that loads the widget.
   API_BASE: "",
   // reCaptcha v3 site key. Leave "" to skip captcha (dev).
-  RECAPTCHA_SITE_KEY: "",
+  RECAPTCHA_SITE_KEY: "6LfNeistAAAAADIKPj_VP-AcInrFei0FLqabNK8X",
   // Sample user_context for the test build. In production the host page supplies this.
   USER_CONTEXT: {
     id: "demo-12345",
