@@ -53,6 +53,24 @@
   justify-content: space-between;
 }
 .npchat-title { font-weight: 600; }
+.npchat-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.npchat-langsel {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+  max-width: 110px;
+}
+/* The native dropdown list renders on a white background, so dark options. */
+.npchat-langsel option { color: #111; }
 .npchat-close {
   background: transparent;
   border: none;

@@ -87,3 +87,21 @@ def test_layer3_directive_tells_model_to_mirror_player_language():
     assert "English" in directive
     # It must NOT hard-force the default language regardless of the message.
     assert "отвечай строго на языке — English" not in directive
+
+
+def test_force_lang_hard_overrides_mirroring():
+    """The manual header switcher locks the answer language: the directive must
+
+    tell the model to answer strictly in the chosen language regardless of the
+    message language, and the cached system prefix must stay byte-stable.
+    """
+    session = {"user_context": {}}
+    core_before = prompts.get_system_core()
+    msgs = prompts.build_messages(session, kb_block=None, history=[],
+                                  user_text="Привет",
+                                  resolved_lang="tr", force_lang=True)
+    directive = msgs[-1]["content"]
+    assert "строго на языке — Turkish" in directive
+    assert "независимо от" in directive  # regardless of the message language
+    # Forcing the language must not touch the byte-stable Layer-1 core.
+    assert msgs[0]["content"] == core_before
