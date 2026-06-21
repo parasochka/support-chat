@@ -652,8 +652,9 @@ async function viewSettings(main) {
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
     await ensureMeta();
-    const data = await api("/settings");
     holder.innerHTML = "";
+    await systemPromptBox(holder);
+    const data = await api("/settings");
     for (const key of data.keys) {
       if (key === "language") { languageSettingsBox(holder, data.resolved.language || {}); continue; }
       const box = el("div", "npadmin-chart");
@@ -677,6 +678,61 @@ async function viewSettings(main) {
       holder.appendChild(box);
     }
   } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
+}
+
+// Structured Layer-1 system-prompt editor. The core is split into named
+// sections (tone of voice + each rule block); Layer 2 (KB) is edited in the
+// Knowledge base tab, Layer 3 (player data) is supplied per request and not
+// editable here. Saving composes the sections and publishes the core live as
+// the new default version (one deliberate prefix-cache reset).
+async function systemPromptBox(holder) {
+  const box = el("div", "npadmin-chart");
+  box.appendChild(el("div", "npadmin-meta", "System prompt — Layer 1 (core)"));
+  box.appendChild(el("div", "npadmin-help",
+    "The 3-layer prompt: Layer 1 is this core (tone of voice + the rule blocks "
+    + "below); Layer 2 is the per-topic knowledge base (edited in the Knowledge "
+    + "base tab); Layer 3 is the player's data, supplied per request and not "
+    + "editable here. Saving applies the new core live to new sessions."));
+  let data;
+  try {
+    data = await api("/system-prompt");
+  } catch (e) { box.appendChild(errBox(e)); holder.appendChild(box); return; }
+
+  if (data.live_version) {
+    box.appendChild(el("div", "npadmin-meta",
+      `Live default version: ${data.live_version.name} (#${data.live_version.id})`));
+  }
+
+  const fields = {};
+  for (const m of data.meta) {
+    const lab = el("label", "npadmin-field");
+    lab.appendChild(el("span", null, m.label));
+    const ta = el("textarea", "npadmin-input");
+    ta.value = data.sections[m.key] || "";
+    ta.style.minHeight = "120px"; ta.style.width = "100%";
+    fields[m.key] = ta;
+    lab.appendChild(ta);
+    box.appendChild(lab);
+  }
+
+  const err = el("div", "npadmin-err");
+  const save = el("button", "npadmin-btn", "Save & apply system prompt");
+  save.addEventListener("click", async () => {
+    err.textContent = ""; err.style.color = "";
+    const sections = {};
+    for (const [k, ta] of Object.entries(fields)) {
+      if (!ta.value.trim()) { err.textContent = "All sections must be non-empty"; return; }
+      sections[k] = ta.value;
+    }
+    if (!confirm("Publishing the system prompt changes the cached prompt prefix and "
+      + "temporarily raises cost until the cache re-warms. Apply now?")) return;
+    try {
+      await api("/system-prompt", { method: "PUT", body: { sections } });
+      err.style.color = "var(--good)"; err.textContent = "Saved & applied live";
+    } catch (e) { err.textContent = e.message; }
+  });
+  box.append(save, err);
+  holder.appendChild(box);
 }
 
 // Dedicated language-settings editor: a dropdown for the default answer language

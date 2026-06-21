@@ -348,3 +348,60 @@ async def put_setting(key: str, body: SettingWrite, admin=Depends(require_admin)
     await db.log_admin_event(None, "setting_updated", {"key": key})
     return JSONResponse(content={"key": key, "value": validated,
                                  "resolved": settings_mod.resolved_all()})
+
+
+# ---------------------------------------------------------------------------
+# system prompt (Layer-1 core) — structured, edit-and-apply-live
+#
+# The core is broken into named sections (tone of voice + each rule block) so the
+# owner can retune the prompt from Settings. Saving composes the sections into
+# the core and publishes it live as the new default prompt version — reusing the
+# version machinery keeps attribution, the audit trail, and the byte-stable cache
+# boundary intact (a publish is one deliberate, warned-about cache reset).
+# ---------------------------------------------------------------------------
+class SystemPromptWrite(BaseModel):
+    sections: dict[str, str]
+
+
+@router.get("/system-prompt")
+async def get_system_prompt() -> JSONResponse:
+    sections = settings_mod.system_prompt()
+    live = await db.get_default_prompt_version()
+    return JSONResponse(content={
+        "sections": sections,
+        "meta": prompts.section_meta(),
+        "composed": prompts.compose_core(sections),
+        "live_version": ({"id": live["id"], "name": live["name"]}
+                         if live else None),
+    })
+
+
+@router.put("/system-prompt")
+async def put_system_prompt(body: SystemPromptWrite,
+                            admin=Depends(require_admin)) -> JSONResponse:
+    keys = set(prompts.SECTION_KEYS)
+    cleaned: dict[str, str] = {}
+    for key, val in (body.sections or {}).items():
+        if key not in keys:
+            raise HTTPException(status_code=400, detail=f"unknown section: {key!r}")
+        if not isinstance(val, str) or not val.strip():
+            raise HTTPException(status_code=400,
+                                detail=f"section {key!r} must be a non-empty string")
+        cleaned[key] = val.strip()
+
+    # Persist the structured sections (the editor's source of truth)…
+    await db.set_setting("system_prompt", {"sections": cleaned},
+                         updated_by=admin.get("role"))
+    await settings_mod.reload()
+    # …then publish the composed core live as the new default version.
+    core = prompts.compose_core(settings_mod.system_prompt())
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    vid = await db.create_prompt_version(name=f"settings-{stamp}", body=core,
+                                         status="draft")
+    await db.publish_prompt_version(vid)
+    prompt_store.invalidate()  # deliberate, one-time cache reset
+    await db.log_admin_event(None, "system_prompt_updated",
+                             {"version_id": vid, "sections": list(cleaned)})
+    return JSONResponse(content={"ok": True, "version_id": vid,
+                                 "sections": settings_mod.system_prompt(),
+                                 "composed": core})
