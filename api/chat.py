@@ -9,6 +9,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import uuid
 from typing import Any, Optional
 
 from fastapi import APIRouter, Header, Request
@@ -23,6 +24,8 @@ import db
 import escalation
 import kb
 import language
+import prompt_store
+import settings
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -34,6 +37,10 @@ class SessionCreate(BaseModel):
     consumer: Optional[str] = "web"
     player_id: Optional[str] = None
     user_context: dict[str, Any] = Field(default_factory=dict)
+    # Signed handshake blob (HMAC) from the host backend. When the service is
+    # configured with WIDGET_HANDSHAKE_SECRET this is the ONLY trusted source of
+    # user_context; unsigned context is ignored.
+    signed_context: Optional[str] = None
     lang: Optional[str] = None
     locale: Optional[str] = None
     recaptcha_token: Optional[str] = None
@@ -121,19 +128,48 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
                                  {"reason": captcha.get("reason"), "score": captcha.get("score")})
         return _err(403, "recaptcha_failed", "reCaptcha verification failed.")
 
+    # --- resolve trusted user_context (signed handshake §9) -----------------
+    # Precedence of trust:
+    #   1. signed_context present -> verify HMAC + expiry; trust that payload only.
+    #   2. WIDGET_HANDSHAKE_SECRET configured but no signature -> production mode:
+    #      do NOT trust browser-supplied context; zero it (anonymous session OK).
+    #   3. No secret configured -> dev/test: accept raw user_context (Phase 1).
+    # The injection sanitizer (prompts.sanitize_user_context) runs regardless.
+    user_context: dict[str, Any] = {}
+    if body.signed_context:
+        try:
+            payload = auth.verify_handshake(body.signed_context)
+        except auth.TokenError as exc:
+            await db.log_admin_event(None, "handshake_rejected", {"reason": str(exc)})
+            return _err(401, "bad_handshake", str(exc))
+        user_context = {k: v for k, v in payload.items() if k not in ("iat", "exp")}
+    elif config.WIDGET_HANDSHAKE_SECRET:
+        if body.user_context:
+            await db.log_admin_event(None, "unsigned_context_ignored",
+                                     {"ip": ip})
+        user_context = {}
+    else:
+        user_context = body.user_context or {}
+
     # Default answer language: manual `lang` -> browser `locale` -> account
     # `profile_lang` (from the handshake) -> default. The persisted result is
     # the per-session fallback; later turns mirror the player's own message.
-    profile_lang = language.profile_lang_from_context(body.user_context)
+    profile_lang = language.profile_lang_from_context(user_context)
     resolved = language.resolve(lang=body.lang, locale=body.locale,
                                 profile_lang=profile_lang)
     session_lang = None if resolved == language.AUTO else resolved
 
+    # Assign the prompt version for this session (A/B split or live default).
+    new_id = str(uuid.uuid4())
+    prompt_version_id = await prompt_store.resolve_for_new_session(new_id)
+
     session_id = await db.create_session(
         consumer=body.consumer or "web",
-        player_id=body.player_id,
+        player_id=body.player_id or (user_context.get("id") if user_context else None),
         lang=session_lang,
-        user_context=body.user_context or {},
+        user_context=user_context,
+        prompt_version_id=prompt_version_id,
+        session_id=new_id,
     )
     token = auth.issue_session_token(session_id)
     topics = await kb.catalogue(lang=session_lang or config.DEFAULT_LANGUAGE)
@@ -235,18 +271,21 @@ async def send_message(req: Request, body: MessageSend,
                                  {"sample": body.text[:120]})
 
     # 5. message cap reached -> force escalation response (no model call)
-    if session.get("message_count", 0) >= config.MAX_MESSAGES_PER_SESSION:
+    if session.get("message_count", 0) >= settings.escalation()["max_messages_per_session"]:
         ans_lang = session.get("lang") or config.DEFAULT_LANGUAGE
         if not session.get("escalated", False):
             await db.mark_escalated(body.session_id)
             await db.log_admin_event(body.session_id, "escalation",
                                      {"reason": "message_cap"})
+            esc_payload = await escalation.open_ticket(session, "cap_reached", ans_lang)
+        else:
+            esc_payload = escalation.build_payload(ans_lang)
         return JSONResponse(
             status_code=200,
             content={
-                "reply": escalation.build_payload(ans_lang)["message"],
+                "reply": esc_payload["message"],
                 "lang": ans_lang,
-                "escalation": escalation.build_payload(ans_lang),
+                "escalation": esc_payload,
                 "message_count": session.get("message_count", 0),
             },
         )
@@ -309,8 +348,11 @@ async def escalate(body: EscalateReq,
     if not session.get("escalated", False):
         await db.mark_escalated(body.session_id)
         await db.log_admin_event(body.session_id, "escalation", {"reason": "explicit"})
+        esc_payload = await escalation.open_ticket(session, "user_request", ans_lang)
+    else:
+        esc_payload = escalation.build_payload(ans_lang)
 
     return JSONResponse(
         status_code=200,
-        content={"escalation": escalation.build_payload(ans_lang)},
+        content={"escalation": esc_payload},
     )

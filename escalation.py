@@ -49,11 +49,12 @@ def user_requests_human(text: str) -> bool:
     return any(k in lowered for k in _HUMAN_KEYWORDS)
 
 
-def is_high_risk(text: str) -> bool:
+def is_high_risk(text: str, keywords: Optional[tuple] = None) -> bool:
     if not text:
         return False
     lowered = text.lower()
-    return any(k in lowered for k in _HIGHRISK_KEYWORDS)
+    kws = keywords if keywords is not None else _HIGHRISK_KEYWORDS
+    return any(k in lowered for k in kws)
 
 
 def decide(
@@ -64,17 +65,27 @@ def decide(
     topic_slug: Optional[str],
     already_escalated: bool = False,
 ) -> EscalationDecision:
-    """Combine all escalation triggers into a single decision."""
+    """Combine all escalation triggers into a single decision.
+
+    Thresholds/keywords come from the resolved runtime settings (app_settings >
+    env > default), so the owner can tune them live without a redeploy.
+    """
+    import settings  # lazy import to avoid a settings<->escalation cycle
+    cfg = settings.escalation()
+    max_messages = cfg["max_messages_per_session"]
+    unresolved_turns = cfg["unresolved_turns_before_escalate"]
+    high_risk_keywords = tuple(cfg["high_risk_keywords"])
+
     if already_escalated:
         return EscalationDecision(True, "already_escalated")
-    if is_high_risk(user_text):
+    if is_high_risk(user_text, high_risk_keywords):
         return EscalationDecision(True, "high_risk")
     if user_requests_human(user_text):
         return EscalationDecision(True, "user_requested_human")
-    if message_count >= config.MAX_MESSAGES_PER_SESSION:
+    if message_count >= max_messages:
         return EscalationDecision(True, "message_cap")
     if model_signalled:
-        if topic_slug == "other" and message_count < OTHER_MAX_TURNS:
+        if topic_slug == "other" and message_count < unresolved_turns:
             # 'other' gets a couple of turns before we hand off, unless the
             # model itself gave up — which it just did, so escalate.
             return EscalationDecision(True, "model_signalled_other")
@@ -115,3 +126,59 @@ def build_payload(lang: str) -> dict:
 
 def inactive_payload() -> dict:
     return {"active": False}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — ticket snapshot + Telegram notification (button always retained)
+# ---------------------------------------------------------------------------
+def _transcript_snapshot(history: list[dict], limit: int = 20) -> list[dict]:
+    convo = [m for m in history if m.get("role") in ("user", "assistant")]
+    return [{"role": m["role"], "content": m.get("content", "")}
+            for m in convo[-limit:]]
+
+
+async def open_ticket(session: dict, reason: str, lang: str) -> dict:
+    """Snapshot the conversation into an escalation_tickets row and notify the
+    agent chat via Telegram (if configured). ALWAYS returns the contact-button
+    payload so the user has a usable path even when delivery fails.
+
+    Imports are local so escalation.decide() stays a pure, DB-free function.
+    """
+    import db
+    from notifiers import telegram
+
+    session_id = session["id"]
+    topic_slug = None
+    topic_id = session.get("topic_id")
+    if topic_id is not None:
+        topic = await db.get_topic_by_id(topic_id)
+        topic_slug = topic["slug"] if topic else None
+
+    history = await db.get_history(session_id, limit=20)
+    payload = {
+        "session_id": session_id,
+        "reason": reason,
+        "topic": topic_slug,
+        "lang": lang,
+        "player_id": session.get("player_id"),
+        "user_context": session.get("user_context", {}),
+        "transcript": _transcript_snapshot(history),
+    }
+
+    use_telegram = telegram.is_configured()
+    channel = "telegram" if use_telegram else "button"
+    ticket_id = await db.create_escalation_ticket(
+        session_id=session_id, reason=reason, channel=channel,
+        delivered=False, payload=payload,
+    )
+
+    if use_telegram:
+        delivered = await telegram.send_escalation(payload)
+        if delivered:
+            await db.mark_ticket_delivered(ticket_id)
+        else:
+            await db.log_admin_event(
+                session_id, "telegram_notify_failed", {"ticket_id": ticket_id}
+            )
+
+    return build_payload(lang)
