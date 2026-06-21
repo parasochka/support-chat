@@ -213,3 +213,59 @@
   opacity: 0 !important;
   pointer-events: none !important;
 }
+
+/* ---------------------------------------------------------------------------
+   Mobile / small viewports — the floating panel becomes a full-screen sheet.
+   On a phone the desktop fixed-size card (340×500) plus its max-*/resize math
+   leaves the input row and header controls off-screen and hard to test; a
+   full-bleed sheet is the natural mobile chat layout.
+   --------------------------------------------------------------------------- */
+@media (max-width: 600px), (max-height: 480px) {
+  .npchat-root {
+    right: 0;
+    bottom: 0;
+  }
+
+  /* Keep the launcher clear of notches / the home indicator. */
+  .npchat-launcher {
+    position: fixed;
+    right: max(16px, env(safe-area-inset-right));
+    bottom: max(16px, env(safe-area-inset-bottom));
+  }
+
+  /* Fill the screen. 100dvh tracks the *visible* viewport, so the on-screen
+     keyboard shrinks the sheet instead of pushing the input row out of view
+     (100vh is the fallback for browsers without dynamic viewport units). */
+  .npchat-panel {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    max-width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    max-height: none;
+    border-radius: 0;
+  }
+
+  /* No need for the launcher while the full-screen panel is open. */
+  .npchat-panel:not(.npchat-hidden) ~ .npchat-launcher {
+    display: none;
+  }
+
+  /* Safe-area padding so the header and input clear notches / indicators. */
+  .npchat-header {
+    padding-top: max(12px, env(safe-area-inset-top));
+  }
+  .npchat-inputrow {
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+
+  /* 16px stops iOS Safari from auto-zooming the page when the field focuses. */
+  .npchat-input {
+    font-size: 16px;
+  }
+
+  .npchat-msg {
+    max-width: 88%;
+  }
+}

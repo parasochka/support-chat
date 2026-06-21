@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover"
+  />
   <title>NowPlix Support Chat — Test Page</title>
   <link rel="stylesheet" href="/widget.css" />
   <style>
@@ -33,6 +36,15 @@
       font-size: 13px;
       line-height: 1.6;
       color: #cbd5e1;
+    }
+    code { word-break: break-word; }
+
+    /* Phones: tighten the page chrome so the focus is on the widget itself. */
+    @media (max-width: 600px) {
+      .wrap { padding: 24px 16px; }
+      h1 { font-size: 22px; }
+      .doc { padding: 14px 16px; border-radius: 8px; }
+      .doc pre { font-size: 12px; }
     }
   </style>
 </head>
