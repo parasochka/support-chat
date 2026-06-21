@@ -7,4 +7,10 @@ __pycache__/
 .venv/
 venv/
 tests/
+# Keep .md out of the image EXCEPT the docs the app renders at runtime:
+# main.py reads CLAUDE.md on every request to render the root test page, and
+# README.md is its byte-identical mirror. Excluding them left the <pre> block
+# empty in production (CLAUDE.md was never in the image).
 *.md
+!CLAUDE.md
+!README.md
