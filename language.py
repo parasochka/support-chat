@@ -7,11 +7,14 @@ one-word message). So a Russian-browser visitor who types Russian gets Russian,
 and the same visitor typing Spanish gets Spanish.
 
 Priority (for the fallback default):
-  1. explicit `lang` param (if supported)
+  1. explicit `lang` param (if supported) — e.g. the player's manual header
+     switch, which is the deliberate top override
   2. `locale` param mapped to a base code (e.g. es-MX -> es), if supported —
      this is where the browser language (navigator.language) lands
-  3. persisted `session_lang` from a prior turn
-  4. AUTO -> fall back to DEFAULT_LANGUAGE
+  3. `profile_lang` — the account/profile language carried in the front-end
+     handshake (`user_context`), mapped the same way as `locale`
+  4. persisted `session_lang` from a prior turn
+  5. AUTO -> fall back to DEFAULT_LANGUAGE
 
 The source prompt + KB stay Russian; only the answer language varies.
 """
@@ -50,12 +53,15 @@ def locale_to_lang(locale: Optional[str]) -> Optional[str]:
 
 
 def resolve(lang: Optional[str] = None, locale: Optional[str] = None,
+            profile_lang: Optional[str] = None,
             session_lang: Optional[str] = None) -> str:
     """Resolve the answer language code, or AUTO if it must be auto-detected.
 
-    `session_lang` (already persisted from a prior turn) takes effect only via
-    being passed as `lang` by the caller; this function keeps the pure priority
-    chain so it is easy to unit-test.
+    Priority: manual `lang` -> browser `locale` -> `profile_lang` (account
+    language from the handshake) -> persisted `session_lang` -> AUTO. Both
+    `locale` and `profile_lang` accept either a base code ('ru') or a locale
+    ('ru-RU'). This function keeps the pure priority chain so it is easy to
+    unit-test.
     """
     chosen = _supported(lang)
     if chosen:
@@ -65,11 +71,28 @@ def resolve(lang: Optional[str] = None, locale: Optional[str] = None,
     if chosen:
         return chosen
 
+    chosen = locale_to_lang(profile_lang)
+    if chosen:
+        return chosen
+
     if _supported(session_lang):
         return session_lang  # type: ignore[return-value]
 
     # Nothing explicit and no persisted session language -> auto-detect.
     return AUTO
+
+
+def profile_lang_from_context(user_context: Optional[dict]) -> Optional[str]:
+    """Pull the account/profile language out of the front-end `user_context`.
+
+    Accepts a base code ('ru') or a locale ('ru-RU') under either `language` or
+    `lang`. Returns the raw string (resolve() maps it to a supported code) or
+    None. This field is only used to seed the default answer language; it is
+    not surfaced to the model.
+    """
+    ctx = user_context or {}
+    val = ctx.get("language") or ctx.get("lang")
+    return val if isinstance(val, str) else None
 
 
 def fallback_language_name(resolved: str) -> str:
