@@ -122,6 +122,15 @@ a soft one-tap "switch topic" prompt that calls `POST /api/chat/topic` and **aut
 player's original question against the new KB. The topic list is dynamic data → Layer 3 only; it must
 never enter `SYSTEM_CORE` (a test asserts the cached prefix stays byte-stable).
 
+**Switch boundary (anti-ping-pong):** `set_session_topic` snapshots the current max `chat_messages.id`
+into `chat_sessions.context_reset_id`, and prompt-building history (`db.get_history(..., after_id=...)`
+in `chat_service`) only feeds the model turns newer than that boundary. Without it, switching topics
+re-sent the *whole* prior transcript; the model saw the old topic's conversation (now re-listed as a
+suggestable topic) and kept suggesting switching back — an endless loop. After a switch the first turn
+carries only the triggering message, so the new topic is the only thing in context. The **full**
+transcript is untouched — resume (`GET /session/{id}`) and the escalation ticket snapshot both call
+`get_history` without `after_id`, so the player and admins still see everything.
+
 ### Two layers of injection defense
 1. `prompts._sanitize_field` zeroes any `user_context` field containing injection markers
    (only `id, full_name, email, activation_status` are surfaced to the model).

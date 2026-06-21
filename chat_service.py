@@ -76,7 +76,13 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     title_lang = resolved if resolved != language.AUTO else config.DEFAULT_LANGUAGE
     suggestable = await kb.suggestable_topics(exclude_topic_id=topic_id, lang=title_lang)
     kb_block = await kb.kb_block_for_topic(topic_id, lang=title_lang)
-    history = await db.get_history(session_id, limit=20)
+    # Only feed the model turns from the current topic context. After a topic
+    # switch `context_reset_id` marks the boundary, so the previous topic's
+    # transcript can't re-trigger a [[TOPIC:...]] suggestion back to it (the
+    # switch loop). 0 (default) means the whole transcript.
+    history = await db.get_history(
+        session_id, limit=20, after_id=session.get("context_reset_id", 0) or 0
+    )
     # Load the live core for THIS session's prompt version (A/B attribution).
     core = await prompt_store.core_for_version(session.get("prompt_version_id"))
     messages = prompts.build_messages(
