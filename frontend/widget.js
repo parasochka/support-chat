@@ -146,6 +146,8 @@ const state = {
   langLocked: false,
   topicChosen: false,
   open: false,
+  // True while the mobile full-screen sheet is active (geometry driven by JS).
+  fullscreen: false,
   greetingEl: null,
 };
 
@@ -328,6 +330,17 @@ function buildUI() {
   });
   // Mirror the player's language in the chrome as they type their message.
   input.addEventListener("input", (ev) => maybeSwitchLang(ev.target.value));
+  // The on-screen keyboard animates in over ~300ms and some browsers fire the
+  // VisualViewport resize late (or not at all) on focus — re-pin the sheet a
+  // few times so the input row never ends up hidden behind the keyboard.
+  input.addEventListener("focus", () => {
+    if (!state.fullscreen) return;
+    [0, 150, 350, 600].forEach((d) => setTimeout(syncFullscreenGeometry, d));
+  });
+  input.addEventListener("blur", () => {
+    if (!state.fullscreen) return;
+    [0, 150, 350].forEach((d) => setTimeout(syncFullscreenGeometry, d));
+  });
   const sendBtn = el("button", "npchat-send", t("send"));
   sendBtn.addEventListener("click", onSend);
   inputRow.appendChild(input);
@@ -347,6 +360,23 @@ function buildUI() {
   els = { root, launcher, panel, body, topics, messages, inputRow, input, sendBtn,
           langSel };
   renderLangSwitcher();
+
+  // Keep the open panel in the right mode if the viewport class changes
+  // (rotate, window resize, responsive devtools): enter the full-screen sheet
+  // when we cross into mobile, leave it when we cross back to desktop.
+  const reclassify = () => {
+    if (!state.open) return;
+    const mobile = isMobileViewport();
+    if (mobile && !state.fullscreen) {
+      enterFullscreen();
+      setBodyScrollLock(true);
+    } else if (!mobile && state.fullscreen) {
+      exitFullscreen();
+      setBodyScrollLock(false);
+    }
+  };
+  window.addEventListener("resize", reclassify);
+  window.addEventListener("orientationchange", reclassify);
 }
 
 // (Re)build the language switcher options from the supported set and reflect
@@ -453,22 +483,114 @@ async function switchTopicAndResend(slug, originalText, wrap, btn) {
 }
 
 // ---------------------------------------------------------------------------
+// Mobile full-screen sheet — VisualViewport-driven geometry
+// ---------------------------------------------------------------------------
+// Why not pure CSS? Two host-page-independent failures kept recurring:
+//   1. "Opens only on part of the screen": a CSS media query keyed on
+//      `max-width: 600px` matches the *CSS* pixel width, which the host page's
+//      viewport meta tag controls — get it wrong and the query never fires, so
+//      the panel keeps its 340×500 desktop size. Measuring the real viewport in
+//      JS sidesteps the host page entirely.
+//   2. "Input pushes half the widget off-screen": with `position: fixed` the
+//      element is sized to the *layout* viewport. When the on-screen keyboard
+//      opens, the layout viewport doesn't change but the *visual* viewport
+//      shrinks and scrolls — so a fixed full-height sheet keeps its full height
+//      and its bottom (the input row) ends up hidden behind the keyboard.
+//
+// The fix: pin the panel to `window.visualViewport` and set its exact
+// top/left/width/height inline, re-syncing on every viewport resize/scroll. The
+// sheet then always covers exactly the visible area, keyboard open or not.
+
+// Treat as "mobile" using the real measured viewport, not a CSS media query, so
+// an odd host-page viewport meta can't defeat the detection.
+function isMobileViewport() {
+  if (typeof window === "undefined") return false;
+  const vv = window.visualViewport;
+  const w = (vv && vv.width) || window.innerWidth || 0;
+  const h = (vv && vv.height) || window.innerHeight || 0;
+  return w <= 600 || h <= 480;
+}
+
+// Size & position the open sheet to exactly the currently-visible viewport.
+function syncFullscreenGeometry() {
+  if (!state.open || !state.fullscreen || !els.panel) return;
+  const vv = window.visualViewport;
+  const s = els.panel.style;
+  s.position = "fixed";
+  if (vv) {
+    // offsetLeft/offsetTop track how far the visual viewport has been panned
+    // (e.g. when the keyboard scrolls the page); pinning to them keeps the
+    // sheet glued to the visible area instead of drifting off-screen.
+    s.left = vv.offsetLeft + "px";
+    s.top = vv.offsetTop + "px";
+    s.width = vv.width + "px";
+    s.height = vv.height + "px";
+  } else {
+    // No VisualViewport API: fall back to the layout viewport.
+    s.left = "0px";
+    s.top = "0px";
+    s.width = window.innerWidth + "px";
+    s.height = window.innerHeight + "px";
+  }
+  s.right = "auto";
+  s.bottom = "auto";
+  s.maxWidth = "none";
+  s.maxHeight = "none";
+}
+
+function enterFullscreen() {
+  state.fullscreen = true;
+  els.panel.classList.add("npchat-fullscreen");
+  els.root.classList.add("npchat-fullscreen-open");
+  const vv = window.visualViewport;
+  if (vv) {
+    vv.addEventListener("resize", syncFullscreenGeometry);
+    vv.addEventListener("scroll", syncFullscreenGeometry);
+  }
+  window.addEventListener("resize", syncFullscreenGeometry);
+  window.addEventListener("orientationchange", syncFullscreenGeometry);
+  syncFullscreenGeometry();
+}
+
+function exitFullscreen() {
+  state.fullscreen = false;
+  const vv = window.visualViewport;
+  if (vv) {
+    vv.removeEventListener("resize", syncFullscreenGeometry);
+    vv.removeEventListener("scroll", syncFullscreenGeometry);
+  }
+  window.removeEventListener("resize", syncFullscreenGeometry);
+  window.removeEventListener("orientationchange", syncFullscreenGeometry);
+  if (els.panel) {
+    els.panel.classList.remove("npchat-fullscreen");
+    // Drop the inline geometry so the desktop CSS rules take over again.
+    const s = els.panel.style;
+    s.position = s.left = s.top = s.right = s.bottom = "";
+    s.width = s.height = s.maxWidth = s.maxHeight = "";
+  }
+  if (els.root) els.root.classList.remove("npchat-fullscreen-open");
+}
+
+// ---------------------------------------------------------------------------
 // flow handlers
 // ---------------------------------------------------------------------------
-// On phones the open panel is a full-screen sheet (see widget.css media query).
+// On phones the open panel is a full-screen sheet (see enterFullscreen above).
 // Lock the host page's scroll behind it so the sheet truly owns the screen and
 // the page underneath can't scroll through. No-op on desktop / large viewports.
 function setBodyScrollLock(locked) {
-  if (typeof window === "undefined" || !window.matchMedia) return;
-  const isMobile = window.matchMedia(
-    "(max-width: 600px), (max-height: 480px)"
-  ).matches;
-  document.documentElement.style.overflow = locked && isMobile ? "hidden" : "";
+  document.documentElement.style.overflow =
+    locked && state.fullscreen ? "hidden" : "";
+  document.body.style.overflow = locked && state.fullscreen ? "hidden" : "";
 }
 
 async function togglePanel() {
   state.open = !state.open;
   els.panel.classList.toggle("npchat-hidden", !state.open);
+  if (state.open && isMobileViewport()) {
+    enterFullscreen();
+  } else if (!state.open) {
+    exitFullscreen();
+  }
   setBodyScrollLock(state.open);
   if (state.open && !state.sessionId) {
     try {
