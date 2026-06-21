@@ -23,6 +23,9 @@ class ChatReply:
     lang: str
     escalation: dict
     message_count: int
+    # {slug, title} when the model judged the question belongs to another topic
+    # whose KB isn't loaded, so the front-end can offer a one-tap switch. Else None.
+    suggested_topic: Optional[dict] = None
 
 
 async def _on_failover(session_id: Optional[str], reason: str) -> None:
@@ -56,6 +59,12 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     # (handled in api layer too; safe to re-scan is avoided — api owns it)
 
     # --- build prompt --------------------------------------------------------
+    # The other support topics (current one + 'other' excluded) are offered to
+    # the model in Layer 3 so it can route a mismatched question via [[TOPIC:slug]].
+    # Localize their titles with the resolved default (the UI re-localizes if the
+    # player switches anyway); fall back to the service default for AUTO.
+    title_lang = resolved if resolved != language.AUTO else config.DEFAULT_LANGUAGE
+    suggestable = await kb.suggestable_topics(exclude_topic_id=topic_id, lang=title_lang)
     kb_block = await kb.kb_block_for_topic(topic_id)
     history = await db.get_history(session_id, limit=20)
     messages = prompts.build_messages(
@@ -65,6 +74,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         user_text=user_text,
         resolved_lang=resolved,
         force_lang=force_lang,
+        available_topics=suggestable,
     )
 
     # --- call model (two-key failover) --------------------------------------
@@ -86,11 +96,22 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         )
         raw_text = ""
 
-    # --- strip escalation sentinel ------------------------------------------
+    # --- strip control sentinels (escalation + topic suggestion) ------------
     model_signalled = False
+    suggested_slug: Optional[str] = None
     clean_text = raw_text
     if raw_text:
         clean_text, model_signalled = prompts.strip_escalation_tag(raw_text)
+        clean_text, suggested_slug = prompts.strip_topic_suggestion(clean_text)
+
+    # Resolve a suggested slug to a real, switchable topic (must be one we just
+    # offered: valid, not the current topic, not the hidden 'other'). Anything
+    # else the model invents is dropped silently.
+    suggested_topic: Optional[dict] = None
+    if suggested_slug:
+        suggested_topic = next(
+            (t for t in suggestable if t["slug"] == suggested_slug), None
+        )
 
     # --- pick a language for payloads (escalation button etc.) --------------
     # The model mirrors the player's actual message language regardless of this;
@@ -157,4 +178,5 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         lang=answer_lang,
         escalation=esc_payload,
         message_count=new_count,
+        suggested_topic=suggested_topic,
     )

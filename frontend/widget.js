@@ -42,27 +42,37 @@ const I18N = {
         greeting: "Hi! How can I help you today?", placeholder: "Type your message…",
         send: "Send", launcher: "Open support chat",
         startError: "Could not start chat. Please try again later.",
-        sendError: "Something went wrong. Please try again." },
+        sendError: "Something went wrong. Please try again.",
+        suggest: "It looks like your question is about “{topic}”.",
+        switchTopic: "Switch to “{topic}”" },
   ru: { support: "Поддержка", topics: "Чем мы можем помочь?", other: "Другое",
         greeting: "Здравствуйте! Чем можем помочь?", placeholder: "Введите сообщение…",
         send: "Отправить", launcher: "Открыть чат поддержки",
         startError: "Не удалось начать чат. Попробуйте позже.",
-        sendError: "Что-то пошло не так. Попробуйте ещё раз." },
+        sendError: "Что-то пошло не так. Попробуйте ещё раз.",
+        suggest: "Похоже, ваш вопрос относится к теме «{topic}».",
+        switchTopic: "Перейти в «{topic}»" },
   es: { support: "Soporte", topics: "¿En qué podemos ayudarte?", other: "Otro",
         greeting: "¡Hola! ¿En qué podemos ayudarte hoy?", placeholder: "Escribe tu mensaje…",
         send: "Enviar", launcher: "Abrir chat de soporte",
         startError: "No se pudo iniciar el chat. Inténtalo más tarde.",
-        sendError: "Algo salió mal. Inténtalo de nuevo." },
+        sendError: "Algo salió mal. Inténtalo de nuevo.",
+        suggest: "Parece que tu pregunta es sobre «{topic}».",
+        switchTopic: "Cambiar a «{topic}»" },
   tr: { support: "Destek", topics: "Size nasıl yardımcı olabiliriz?", other: "Diğer",
         greeting: "Merhaba! Bugün size nasıl yardımcı olabiliriz?",
         placeholder: "Mesajınızı yazın…", send: "Gönder", launcher: "Destek sohbetini aç",
         startError: "Sohbet başlatılamadı. Lütfen daha sonra tekrar deneyin.",
-        sendError: "Bir şeyler ters gitti. Lütfen tekrar deneyin." },
+        sendError: "Bir şeyler ters gitti. Lütfen tekrar deneyin.",
+        suggest: "Sorunuz “{topic}” konusuyla ilgili görünüyor.",
+        switchTopic: "“{topic}” konusuna geç" },
   pt: { support: "Suporte", topics: "Como podemos ajudar?", other: "Outro",
         greeting: "Olá! Como podemos ajudar hoje?", placeholder: "Digite sua mensagem…",
         send: "Enviar", launcher: "Abrir chat de suporte",
         startError: "Não foi possível iniciar o chat. Tente novamente mais tarde.",
-        sendError: "Algo deu errado. Tente novamente." },
+        sendError: "Algo deu errado. Tente novamente.",
+        suggest: "Parece que sua pergunta é sobre “{topic}”.",
+        switchTopic: "Mudar para “{topic}”" },
 };
 
 // Native names for the header language switcher (shown in their own language).
@@ -112,6 +122,11 @@ function detectLang(text) {
 function t(key) {
   const dict = I18N[state.lang] || I18N.en;
   return dict[key] || I18N.en[key] || key;
+}
+
+// t() with a {topic} placeholder filled in (topic-switch suggestion copy).
+function tTopic(key, topic) {
+  return t(key).replace("{topic}", topic);
 }
 
 const state = {
@@ -396,6 +411,41 @@ function addEscalation(esc) {
   els.messages.scrollTop = els.messages.scrollHeight;
 }
 
+// Render a soft "looks like another topic — switch?" prompt with a one-tap
+// button. Tapping switches the session topic, then auto-resends the player's
+// original question against the new topic's KB so they don't retype it.
+function addTopicSuggestion(suggested, originalText) {
+  if (!suggested || !suggested.slug) return;
+  const title = suggested.title || suggested.slug;
+  const wrap = el("div", "npchat-suggest");
+  wrap.appendChild(el("div", "npchat-suggest-msg", tTopic("suggest", title)));
+  const btn = el("button", "npchat-suggest-btn", tTopic("switchTopic", title));
+  btn.addEventListener("click", () => switchTopicAndResend(suggested.slug, originalText, wrap, btn));
+  wrap.appendChild(btn);
+  els.messages.appendChild(wrap);
+  els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+async function switchTopicAndResend(slug, originalText, wrap, btn) {
+  btn.disabled = true;
+  try {
+    await selectTopic(slug);
+  } catch (_) { /* non-fatal: still attempt the resend */ }
+  // Collapse the suggestion so it can't be tapped twice.
+  wrap.classList.add("npchat-suggest-done");
+  // The player's question is already in the transcript — just show a fresh
+  // assistant turn answered with the new topic's knowledge base.
+  const typing = addMessage("assistant", "…");
+  try {
+    const data = await sendMessage(originalText);
+    typing.textContent = data.reply || "";
+    if (data.escalation && data.escalation.active) addEscalation(data.escalation);
+    if (data.suggested_topic) addTopicSuggestion(data.suggested_topic, originalText);
+  } catch (e) {
+    typing.textContent = t("sendError");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // flow handlers
 // ---------------------------------------------------------------------------
@@ -442,6 +492,9 @@ async function onSend() {
     typing.textContent = data.reply || "";
     if (data.escalation && data.escalation.active) {
       addEscalation(data.escalation);
+    }
+    if (data.suggested_topic) {
+      addTopicSuggestion(data.suggested_topic, text);
     }
   } catch (e) {
     typing.textContent = t("sendError");

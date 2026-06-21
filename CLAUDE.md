@@ -110,6 +110,17 @@ on: high-risk keywords (fraud/legal), explicit human requests, message cap, or t
 `[[ESCALATE]]` sentinel. On escalation, `chat_sessions.status='escalated'` and an
 `admin_events('escalation')` row is written. The button URL is `CONTACT_FORM_URL`.
 
+### Topic routing (`[[TOPIC:slug]]` sentinel)
+Only the selected topic's KB is loaded (Layer 2), so a question that belongs to a *different*
+topic can't be answered well. To bridge this, Layer 3 lists the other topics (`kb.suggestable_topics`,
+current topic + hidden `other` excluded) and instructs the model to prepend `[[TOPIC:slug]]` on its
+own first line when the question plainly belongs to one of them. `chat_service` strips the tag
+(`prompts.strip_topic_suggestion`, mirrors the `[[ESCALATE]]` strip), validates the slug against the
+offered list, and returns `suggested_topic:{slug,title}` in the `/message` response. The widget shows
+a soft one-tap "switch topic" prompt that calls `POST /api/chat/topic` and **auto-resends** the
+player's original question against the new KB. The topic list is dynamic data → Layer 3 only; it must
+never enter `SYSTEM_CORE` (a test asserts the cached prefix stays byte-stable).
+
 ### Two layers of injection defense
 1. `prompts._sanitize_field` zeroes any `user_context` field containing injection markers
    (only `id, full_name, email, activation_status` are surfaced to the model).
