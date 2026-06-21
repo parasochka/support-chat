@@ -7,6 +7,9 @@ const state = {
   view: "overview",
   from: isoDaysAgo(30),
   to: isoToday(),
+  // Supported languages (loaded once from /admin/meta) for the dropdowns.
+  languages: null,
+  defaultLang: "ru",
 };
 
 function isoToday() { return new Date().toISOString().slice(0, 10); }
@@ -34,6 +37,38 @@ async function api(path, { method = "GET", body = null, raw = false, form = null
 }
 
 function q() { return `?from=${state.from}&to=${state.to}`; }
+
+// Load the supported-language list once (for the language dropdowns). Falls
+// back to a sane default set if the meta call fails so the UI still works.
+async function ensureMeta() {
+  if (state.languages) return;
+  try {
+    const m = await api("/meta");
+    state.languages = m.languages || [];
+    if (m.default_language) state.defaultLang = m.default_language;
+  } catch (_) {
+    state.languages = [
+      { code: "en", name: "English" }, { code: "es", name: "Spanish" },
+      { code: "ru", name: "Russian" }, { code: "tr", name: "Turkish" },
+      { code: "pt", name: "Portuguese" },
+    ];
+  }
+}
+
+// Build a <select> of supported languages, defaulting to `selected` (or the
+// service default). Replaces the old free-text language inputs.
+function langSelect(selected) {
+  const sel = el("select", "npadmin-input");
+  sel.style.width = "auto";
+  const want = (selected || state.defaultLang || "ru").toLowerCase();
+  for (const l of (state.languages || [])) {
+    const o = el("option", null, `${l.name} (${l.code})`);
+    o.value = l.code;
+    if (l.code === want) o.selected = true;
+    sel.appendChild(o);
+  }
+  return sel;
+}
 
 // ---------------------------------------------------------------------------
 // auth
@@ -368,8 +403,12 @@ async function viewUnresolved(main) {
 // ---------------------------------------------------------------------------
 async function viewKB(main) {
   main.appendChild(el("h1", "npadmin-h", "Knowledge base"));
+  main.appendChild(el("div", "npadmin-help",
+    "These are the live knowledge-base entries injected per topic into the prompt. "
+    + "The default Russian KB ships seeded — view, edit or extend it below."));
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
+    await ensureMeta();
     const data = await api("/kb/topics");
     holder.innerHTML = "";
 
@@ -379,7 +418,7 @@ async function viewKB(main) {
     const file = el("input", "npadmin-input"); file.type = "file"; file.style.width = "auto";
     const fmt = el("select", "npadmin-input"); fmt.style.width = "auto";
     for (const f of ["json", "csv", "markdown"]) { const o = el("option", null, f); o.value = f; fmt.appendChild(o); }
-    const lang = el("input", "npadmin-input"); lang.value = "ru"; lang.style.width = "60px";
+    const lang = langSelect("ru");
     const up = el("button", "npadmin-btn", "Import");
     const impErr = el("span", "npadmin-meta");
     up.addEventListener("click", async () => {
@@ -403,7 +442,7 @@ async function viewKB(main) {
       const editor = el("div", "npadmin-row");
       const ta = el("textarea", "npadmin-input");
       ta.placeholder = "New entry content…";
-      const langSel = el("input", "npadmin-input"); langSel.value = "ru"; langSel.style.width = "60px";
+      const langSel = langSelect("ru");
       const save = el("button", "npadmin-btn", "Add entry");
       save.addEventListener("click", async () => {
         if (!ta.value.trim()) return;
@@ -417,19 +456,49 @@ async function viewKB(main) {
       editor.append(left, right);
       holder.appendChild(editor);
 
-      // list existing entries with delete
+      // list existing entries with inline edit + delete
       const entries = await api(`/kb/entries?topic_id=${topic.id}`);
-      const t = table(["Lang", "Ver", "Content", ""]);
+      const t = table(["Lang", "Ver", "Content", "Actions"]);
       for (const e of entries.entries) {
-        const tr = addRow(t, [e.lang, e.version, e.content.slice(0, 120), "delete"]);
-        tr.lastChild.style.cursor = "pointer";
-        tr.lastChild.addEventListener("click", async () => {
+        const actions = el("td");
+        const editBtn = el("button", "npadmin-btn ghost", "Edit");
+        const delBtn = el("button", "npadmin-btn ghost", "Delete");
+        editBtn.addEventListener("click", () => openKBEntryEditor(main, e));
+        delBtn.addEventListener("click", async () => {
+          if (!confirm("Delete this KB entry?")) return;
           await api(`/kb/entries/${e.id}`, { method: "DELETE" }); viewKB(main);
         });
+        actions.append(editBtn, delBtn);
+        const tr = rowEls(t, [e.lang, e.version, e.content.slice(0, 120)]);
+        tr.appendChild(actions);
       }
       holder.appendChild(t);
     }
   } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
+}
+
+// Full-screen-ish inline editor for a single KB entry. Editing creates a new
+// version row server-side (PUT /kb/entries/{id}); the old version is superseded.
+function openKBEntryEditor(main, entry) {
+  main.innerHTML = "";
+  const back = el("button", "npadmin-btn ghost", "← Back to KB");
+  back.addEventListener("click", () => routeView(main));
+  main.appendChild(back);
+  main.appendChild(el("h1", "npadmin-h", `Edit KB entry #${entry.id} (${entry.lang})`));
+  const ta = el("textarea", "npadmin-input");
+  ta.value = entry.content;
+  ta.style.minHeight = "320px"; ta.style.width = "100%";
+  const err = el("div", "npadmin-err");
+  const save = el("button", "npadmin-btn", "Save (new version)");
+  save.addEventListener("click", async () => {
+    err.textContent = "";
+    if (!ta.value.trim()) { err.textContent = "Content cannot be empty"; return; }
+    try {
+      await api(`/kb/entries/${entry.id}`, { method: "PUT", body: { content: ta.value } });
+      routeView(main);
+    } catch (e) { err.textContent = e.message; }
+  });
+  main.append(ta, save, err);
 }
 
 // ---------------------------------------------------------------------------
@@ -437,14 +506,34 @@ async function viewKB(main) {
 // ---------------------------------------------------------------------------
 async function viewPrompt(main) {
   main.appendChild(el("h1", "npadmin-h", "System prompt"));
+  main.appendChild(el("div", "npadmin-help",
+    "The base system prompt (Russian) is shipped seeded as the live default. "
+    + "Published versions are immutable — to change the live prompt, edit it into "
+    + "a new draft and publish that draft."));
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
     const data = await api("/prompts");
     holder.innerHTML = "";
 
-    // new draft
+    // live default (base) prompt — shown so the owner can see/edit what is active
+    const live = data.versions.find((v) => v.is_default);
+    if (live) {
+      const cur = el("div", "npadmin-chart");
+      cur.appendChild(el("div", "npadmin-meta",
+        `Live default prompt — ${live.name} (#${live.id})`));
+      const view = el("textarea", "npadmin-input");
+      view.value = live.body || ""; view.readOnly = true;
+      view.style.minHeight = "220px"; view.style.width = "100%";
+      cur.appendChild(view);
+      const edit = el("button", "npadmin-btn", "Edit as new draft");
+      edit.addEventListener("click", () => openPromptEditor(main, live, true));
+      cur.appendChild(edit);
+      holder.appendChild(cur);
+    }
+
+    // new draft (from scratch)
     const draft = el("div", "npadmin-chart");
-    draft.appendChild(el("div", "npadmin-meta", "Create draft"));
+    draft.appendChild(el("div", "npadmin-meta", "Create draft from scratch"));
     const name = el("input", "npadmin-input"); name.placeholder = "Version name";
     const bodyTa = el("textarea", "npadmin-input"); bodyTa.placeholder = "Core prompt body (Russian)…";
     const create = el("button", "npadmin-btn", "Create draft");
@@ -459,6 +548,9 @@ async function viewPrompt(main) {
     const t = table(["ID", "Name", "Status", "Default", "A/B weight", "Actions"]);
     for (const v of data.versions) {
       const actions = el("td");
+      const view = el("button", "npadmin-btn ghost", v.status === "draft" ? "View / Edit" : "View");
+      view.addEventListener("click", () => openPromptEditor(main, v, false));
+      actions.appendChild(view);
       if (v.status !== "published") {
         const pub = el("button", "npadmin-btn", "Publish");
         pub.addEventListener("click", async () => {
@@ -508,6 +600,48 @@ async function viewPrompt(main) {
   } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
 }
 
+// Editor for a single prompt version's body.
+//  - `asDraft` true (or a published/default version): saving creates a NEW draft
+//    copy, since published versions are immutable. The owner then publishes it.
+//  - a draft version: saving edits it in place (PUT /prompts/{id}).
+function openPromptEditor(main, version, asDraft) {
+  const newDraft = asDraft || version.status !== "draft";
+  main.innerHTML = "";
+  const back = el("button", "npadmin-btn ghost", "← Back to prompts");
+  back.addEventListener("click", () => routeView(main));
+  main.appendChild(back);
+  main.appendChild(el("h1", "npadmin-h",
+    newDraft ? `Edit "${version.name}" as new draft` : `Edit draft "${version.name}"`));
+
+  const nameLab = el("label", "npadmin-field");
+  nameLab.appendChild(el("span", null, "Version name"));
+  const name = el("input", "npadmin-input");
+  name.value = newDraft ? `${version.name}-edit` : version.name;
+  nameLab.appendChild(name);
+  main.appendChild(nameLab);
+
+  const ta = el("textarea", "npadmin-input");
+  ta.value = version.body || "";
+  ta.style.minHeight = "360px"; ta.style.width = "100%";
+  const err = el("div", "npadmin-err");
+  const save = el("button", "npadmin-btn",
+    newDraft ? "Save as new draft" : "Save draft");
+  save.addEventListener("click", async () => {
+    err.textContent = "";
+    if (!ta.value.trim()) { err.textContent = "Prompt body cannot be empty"; return; }
+    try {
+      if (newDraft) {
+        await api("/prompts", { method: "POST", body: { name: name.value, body: ta.value } });
+      } else {
+        await api(`/prompts/${version.id}`, { method: "PUT",
+          body: { name: name.value, body: ta.value } });
+      }
+      routeView(main);
+    } catch (e) { err.textContent = e.message; }
+  });
+  main.append(ta, save, err);
+}
+
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
@@ -517,9 +651,11 @@ async function viewSettings(main) {
     "Precedence: these overrides win over env defaults. Saved values apply immediately."));
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
+    await ensureMeta();
     const data = await api("/settings");
     holder.innerHTML = "";
     for (const key of data.keys) {
+      if (key === "language") { languageSettingsBox(holder, data.resolved.language || {}); continue; }
       const box = el("div", "npadmin-chart");
       box.appendChild(el("div", "npadmin-meta", key));
       const ta = el("textarea", "npadmin-input");
@@ -541,6 +677,50 @@ async function viewSettings(main) {
       holder.appendChild(box);
     }
   } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
+}
+
+// Dedicated language-settings editor: a dropdown for the default answer language
+// and checkboxes for the supported set — no hand-typed language codes.
+function languageSettingsBox(holder, current) {
+  const box = el("div", "npadmin-chart");
+  box.appendChild(el("div", "npadmin-meta", "language"));
+
+  const defLab = el("label", "npadmin-field");
+  defLab.appendChild(el("span", null, "Default answer language"));
+  const defSel = langSelect(current.default || state.defaultLang);
+  defLab.appendChild(defSel);
+  box.appendChild(defLab);
+
+  box.appendChild(el("div", "npadmin-meta", "Supported languages"));
+  const supported = new Set(current.supported || []);
+  const checks = {};
+  const checkRow = el("div", "npadmin-toolbar");
+  for (const l of (state.languages || [])) {
+    const lab = el("label", "npadmin-field");
+    lab.style.flexDirection = "row"; lab.style.alignItems = "center";
+    const cb = document.createElement("input"); cb.type = "checkbox";
+    cb.checked = supported.has(l.code); checks[l.code] = cb;
+    lab.append(cb, el("span", null, `${l.name} (${l.code})`));
+    checkRow.appendChild(lab);
+  }
+  box.appendChild(checkRow);
+
+  const err = el("div", "npadmin-err");
+  const save = el("button", "npadmin-btn", "Save language");
+  save.addEventListener("click", async () => {
+    err.textContent = "";
+    const sup = Object.entries(checks).filter(([, cb]) => cb.checked).map(([c]) => c);
+    if (!sup.length) { err.textContent = "Select at least one supported language"; return; }
+    if (!sup.includes(defSel.value)) { err.textContent = "Default must be a supported language"; return; }
+    if (!confirm("Update 'language' settings now?")) return;
+    try {
+      await api("/settings/language", { method: "PUT",
+        body: { value: { default: defSel.value, supported: sup } } });
+      err.style.color = "var(--good)"; err.textContent = "Saved";
+    } catch (e) { err.textContent = e.message; }
+  });
+  box.append(save, err);
+  holder.appendChild(box);
 }
 
 // ---------------------------------------------------------------------------
