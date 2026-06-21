@@ -130,7 +130,10 @@ POST /api/chat/topic         (Bearer)  { session_id, topic_slug } -> { ok:true }
 POST /api/chat/lang          (Bearer)  { session_id, lang } -> { ok:true, lang, topics:[{slug,title}] }
                                        manual language switch; locks the answer + UI language
 POST /api/chat/message       (Bearer)  { session_id, text }
-                          ->  { reply, lang, escalation:{active,message?,button?}, message_count }
+                          ->  { reply, lang, escalation:{active,message?,button?}, message_count,
+                                suggested_topic:{slug,title}|null }
+                                suggested_topic is set when the model judged the question belongs to
+                                another topic whose KB isn't loaded; the widget offers a 1-tap switch
 GET  /api/chat/session/{id}  (Bearer)  resume: history + state
 POST /api/chat/escalate      (Bearer)  { session_id } -> { escalation:{...} }
 GET  /healthz                liveness; checks DB connectivity

@@ -11,12 +11,18 @@ INVARIANT: SYSTEM_CORE is byte-identical between requests. A test asserts this.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 import language
 
 # Machine-readable sentinel the model prepends (own line) when it cannot help.
 ESCALATE_TAG = "[[ESCALATE]]"
+
+# Machine-readable sentinel the model prepends (own line) when the player's
+# question clearly belongs to a DIFFERENT support topic than the one currently
+# loaded — so the front-end can offer a one-tap topic switch. Captures the slug.
+_TOPIC_TAG_RE = re.compile(r"\[\[TOPIC:([a-z0-9_\-]+)\]\]", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # LAYER 1 — SYSTEM_CORE  (BYTE-STABLE, Russian). DO NOT add per-request data.
@@ -135,11 +141,42 @@ def _language_directive(resolved_lang: str, force_lang: bool) -> str:
     )
 
 
+def _topic_routing_directive(available_topics: list[dict[str, Any]]) -> list[str]:
+    """Layer-3 block listing the OTHER support topics + the routing instruction.
+
+    Only the current topic's KB is loaded (Layer 2). When the player's question
+    plainly belongs to one of the topics below — for which the model therefore
+    lacks the knowledge base — it prepends `[[TOPIC:slug]]` on its own first line
+    so the front-end can offer a one-tap switch. This lives in Layer 3 (dynamic):
+    the topic catalogue changes per request, so it must NEVER touch SYSTEM_CORE.
+    """
+    if not available_topics:
+        return []
+    topic_lines = "\n".join(
+        f"- {t['slug']} — {t['title']}" for t in available_topics if t.get("slug")
+    )
+    return [
+        "=== ДРУГИЕ ТЕМЫ ПОДДЕРЖКИ ===",
+        "Сейчас у тебя загружена база знаний только по текущей теме. Если вопрос "
+        "игрока явно относится к одной из тем ниже (и поэтому у тебя нет нужной "
+        "базы знаний, чтобы ответить точно) — поставь самой первой отдельной "
+        "строкой тег [[TOPIC:slug]] с подходящим slug, а затем коротко и "
+        "доброжелательно скажи игроку, что его вопрос, похоже, относится к этой "
+        "теме, и предложи переключиться на неё. Делай это только при явном "
+        "совпадении; если сомневаешься — отвечай как обычно или эскалируй по "
+        "правилам. Тег предназначен для системы; пиши его ровно так.",
+        "Список тем (slug — название):",
+        topic_lines,
+        "",
+    ]
+
+
 def build_dynamic_prompt(
     user_context: dict[str, Any],
     resolved_lang: str,
     user_text: str,
     force_lang: bool = False,
+    available_topics: Optional[list[dict[str, Any]]] = None,
 ) -> str:
     """Assemble the Layer-3 block placed in the final user message."""
     ctx = sanitize_user_context(user_context)
@@ -151,6 +188,7 @@ def build_dynamic_prompt(
         "",
         _language_directive(resolved_lang, force_lang),
         "",
+        *_topic_routing_directive(available_topics or []),
         "=== СООБЩЕНИЕ ИГРОКА ===",
         user_text,
     ]
@@ -165,6 +203,7 @@ def build_messages(
     resolved_lang: str,
     history_window: int = 10,
     force_lang: bool = False,
+    available_topics: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, str]]:
     """Return the OpenAI `messages` array.
 
@@ -191,6 +230,7 @@ def build_messages(
                 resolved_lang=resolved_lang,
                 user_text=user_text,
                 force_lang=force_lang,
+                available_topics=available_topics,
             ),
         }
     )
@@ -212,3 +252,25 @@ def strip_escalation_tag(text: str) -> tuple[str, bool]:
             continue
         cleaned.append(line)
     return "\n".join(cleaned).strip(), escalated
+
+
+def strip_topic_suggestion(text: str) -> tuple[str, Optional[str]]:
+    """Detect + strip a `[[TOPIC:slug]]` tag. Returns (clean_text, slug|None).
+
+    Mirrors strip_escalation_tag: the tag is removed from the visible reply and
+    the captured slug (lower-cased) is handed back so chat_service can validate
+    it and surface a topic-switch suggestion to the front-end.
+    """
+    slug: Optional[str] = None
+    cleaned: list[str] = []
+    for line in text.splitlines():
+        m = _TOPIC_TAG_RE.search(line)
+        if m:
+            if slug is None:
+                slug = m.group(1).strip().lower()
+            remainder = _TOPIC_TAG_RE.sub("", line).strip()
+            if remainder:
+                cleaned.append(remainder)
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned).strip(), slug

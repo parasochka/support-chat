@@ -40,5 +40,23 @@ async def kb_block_for_topic(topic_id: Optional[int]) -> Optional[str]:
     return await db.get_kb_content(topic_id, lang="ru")
 
 
+async def suggestable_topics(
+    exclude_topic_id: Optional[int] = None, lang: str = "en"
+) -> list[dict[str, str]]:
+    """Topics the model may route the player to: [{slug, title}].
+
+    The visible catalogue minus the current topic (and 'other', already hidden
+    by db.list_topics). Used to build the Layer-3 routing list and to resolve a
+    suggested slug back to a localized title for the front-end payload.
+    """
+    topics = await db.list_topics(include_hidden=False)
+    out: list[dict[str, str]] = []
+    for t in topics:
+        if exclude_topic_id is not None and t["id"] == exclude_topic_id:
+            continue
+        out.append({"slug": t["slug"], "title": _pick_title(t["title"], lang)})
+    return out
+
+
 def is_other(slug: str) -> bool:
     return slug == OTHER_SLUG

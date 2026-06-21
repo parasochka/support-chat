@@ -154,6 +154,30 @@
 }
 .npchat-esc-note { color: #92400e; font-size: 12px; }
 
+.npchat-suggest {
+  align-self: stretch;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid #c7d2fe;
+  border-radius: 10px;
+  background: #eef2ff;
+}
+.npchat-suggest-msg { margin-bottom: 8px; color: #3730a3; }
+.npchat-suggest-btn {
+  display: inline-block;
+  padding: 8px 14px;
+  background: #4f46e5;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.npchat-suggest-btn:hover { background: #4338ca; }
+.npchat-suggest-btn:disabled { background: #a5b4fc; cursor: default; }
+.npchat-suggest-done { opacity: 0.6; }
+.npchat-suggest-done .npchat-suggest-btn { display: none; }
+
 .npchat-inputrow {
   display: flex;
   border-top: 1px solid #e6e8eb;

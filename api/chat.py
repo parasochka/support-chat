@@ -236,6 +236,8 @@ async def send_message(req: Request, body: MessageSend,
             "lang": result.lang,
             "escalation": result.escalation,
             "message_count": result.message_count,
+            # {slug, title} when the model routed the question to another topic.
+            "suggested_topic": result.suggested_topic,
         },
     )
 
