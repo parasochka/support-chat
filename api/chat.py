@@ -62,9 +62,20 @@ class EscalateReq(BaseModel):
 # helpers
 # ---------------------------------------------------------------------------
 def _client_ip(request: Request) -> str:
+    """Resolve the real client IP without trusting attacker-controlled input.
+
+    `X-Forwarded-For` is appended left-to-right (client, proxy1, proxy2, …), so
+    the left-most entry is fully client-supplied and trivially spoofable. We take
+    the value `TRUSTED_PROXY_COUNT` hops from the RIGHT — the address our own
+    edge actually observed — so a forged left-hand IP cannot rotate around the
+    rate limiter.
+    """
     fwd = request.headers.get("x-forwarded-for")
     if fwd:
-        return fwd.split(",")[0].strip()
+        parts = [p.strip() for p in fwd.split(",") if p.strip()]
+        if parts:
+            idx = min(max(config.TRUSTED_PROXY_COUNT, 1), len(parts))
+            return parts[-idx]
     return request.client.host if request.client else "unknown"
 
 
@@ -92,6 +103,14 @@ async def _auth_session(authorization: Optional[str], session_id: str
 @router.post("/session")
 async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
     ip = _client_ip(req)
+
+    # IP rate-limit session creation too (separate budget from /message) so a
+    # bot can't mint unlimited sessions/tokens/DB rows when reCaptcha is unset.
+    try:
+        antispam.check_rate_limit(f"session:{ip}")
+    except antispam.AntiSpamError as exc:
+        await db.log_admin_event(None, "rate_limited", {"ip": ip, "scope": "session"})
+        return _err(exc.status, exc.code, exc.detail)
 
     # reCaptcha (skips gracefully in dev; logs the skip)
     captcha = await antispam.verify_recaptcha(body.recaptcha_token, ip)

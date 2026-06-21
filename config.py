@@ -117,6 +117,12 @@ OWNER_TOKEN: str | None = _env_opt("OWNER_TOKEN")
 # --- Request body cap -------------------------------------------------------
 BODY_MAX_BYTES: int = _env_int("BODY_MAX_BYTES", 65536)
 
+# --- Proxy / client IP ------------------------------------------------------
+# Number of trusted reverse proxies in front of the app (Railway edge = 1).
+# The real client IP is taken this many hops from the RIGHT of X-Forwarded-For,
+# so a client-supplied (spoofed) left-hand value cannot defeat the rate limiter.
+TRUSTED_PROXY_COUNT: int = _env_int("TRUSTED_PROXY_COUNT", 1)
+
 # --- CORS -------------------------------------------------------------------
 # Comma-separated list of allowed origins; "*" allows all (dev only).
 CORS_ALLOW_ORIGINS: list[str] = [

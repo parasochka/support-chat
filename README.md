@@ -120,6 +120,7 @@ The Dockerfile CMD reads `$PORT` (Railway injects it); no `startCommand` overrid
 | `OWNER_TOKEN` | — | Bearer to gate owner-only/debug endpoints. |
 | `BODY_MAX_BYTES` | `65536` | Request body cap (64 KB). |
 | `CORS_ALLOW_ORIGINS` | `*` | Comma-separated allowed origins. |
+| `TRUSTED_PROXY_COUNT` | `1` | Reverse proxies in front of the app; the client IP is read this many hops from the right of `X-Forwarded-For` so a spoofed left value can't defeat rate limiting. |
 
 ## API contract
 

@@ -89,9 +89,23 @@ def check_rate_limit(ip: str) -> None:
 # ---------------------------------------------------------------------------
 # 5. Per-session cooldown
 # ---------------------------------------------------------------------------
+# Above this many tracked sessions we prune stale cooldown entries so the
+# in-memory dict cannot grow without bound under churn (one session per visitor).
+_COOLDOWN_PRUNE_THRESHOLD = 10_000
+
+
+def _prune_cooldowns(now: float) -> None:
+    cutoff = config.MESSAGE_COOLDOWN_SEC
+    stale = [sid for sid, ts in _last_message_at.items() if now - ts > cutoff]
+    for sid in stale:
+        _last_message_at.pop(sid, None)
+
+
 def check_cooldown(session_id: str) -> None:
     """Raise AntiSpamError(429) if messages arrive faster than the cooldown."""
     now = time.monotonic()
+    if len(_last_message_at) > _COOLDOWN_PRUNE_THRESHOLD:
+        _prune_cooldowns(now)
     last = _last_message_at.get(session_id)
     if last is not None and now - last < config.MESSAGE_COOLDOWN_SEC:
         raise AntiSpamError(429, "cooldown",
@@ -119,17 +133,32 @@ _INJECTION_PATTERNS = (
     "ignore previous",
     "ignore all previous",
     "ignore the above",
+    "ignore your instructions",
     "игнорируй предыдущие",
     "игнорируй все",
+    "игнорируй инструкции",
+    "забудь инструкции",
+    "забудь все предыдущие",
     "you are now",
     "ты теперь",
+    "act as",
+    "pretend to be",
+    "представь, что ты",
     "system prompt",
     "системный промпт",
+    "system:",
     "reveal your",
+    "покажи свой промпт",
+    "раскрой систем",
     "purgetool",
     "developer mode",
+    "режим разработчика",
     "jailbreak",
+    "dan mode",
     "disregard your instructions",
+    "override your",
+    "new instructions",
+    "новые инструкции",
 )
 
 
