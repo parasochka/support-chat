@@ -144,31 +144,49 @@ def _language_directive(resolved_lang: str, force_lang: bool) -> str:
     )
 
 
-def _topic_routing_directive(available_topics: list[dict[str, Any]]) -> list[str]:
+def _topic_routing_directive(
+    available_topics: list[dict[str, Any]],
+    current_topic: Optional[dict[str, Any]] = None,
+) -> list[str]:
     """Layer-3 block listing the OTHER support topics + the routing instruction.
 
-    Only the current topic's KB is loaded (Layer 2). When the player's question
-    plainly belongs to one of the topics below — for which the model therefore
-    lacks the knowledge base — it prepends `[[TOPIC:slug]]` on its own first line
-    so the front-end can offer a one-tap switch. This lives in Layer 3 (dynamic):
-    the topic catalogue changes per request, so it must NEVER touch SYSTEM_CORE.
+    Only the current topic's KB is loaded (Layer 2). A switch is offered ONLY when
+    the question clearly does not belong to the current topic and unambiguously
+    belongs to one of the topics below; the model then prepends `[[TOPIC:slug]]`
+    on its own first line so the front-end can offer a one-tap switch.
+
+    The current topic is named explicitly so the model anchors on it and answers
+    in-topic questions from the loaded KB instead of bouncing the player to a
+    different branch on a mere keyword overlap (e.g. both deposits and withdrawals
+    mention crypto networks). This lives in Layer 3 (dynamic): the topic catalogue
+    and the current topic change per request, so they must NEVER touch SYSTEM_CORE.
     """
     if not available_topics:
         return []
     topic_lines = "\n".join(
         f"- {t['slug']} — {t['title']}" for t in available_topics if t.get("slug")
     )
+    current_line = ""
+    if current_topic and current_topic.get("title"):
+        current_line = (
+            "Текущая тема (её база знаний у тебя загружена): "
+            f"{current_topic.get('slug')} — {current_topic['title']}.\n"
+        )
     return [
-        "=== ДРУГИЕ ТЕМЫ ПОДДЕРЖКИ ===",
-        "Сейчас у тебя загружена база знаний только по текущей теме. Если вопрос "
-        "игрока явно относится к одной из тем ниже (и поэтому у тебя нет нужной "
-        "базы знаний, чтобы ответить точно) — поставь самой первой отдельной "
-        "строкой тег [[TOPIC:slug]] с подходящим slug, а затем коротко и "
-        "доброжелательно скажи игроку, что его вопрос, похоже, относится к этой "
-        "теме, и предложи переключиться на неё. Делай это только при явном "
-        "совпадении; если сомневаешься — отвечай как обычно или эскалируй по "
-        "правилам. Тег предназначен для системы; пиши его ровно так.",
-        "Список тем (slug — название):",
+        "=== МАРШРУТИЗАЦИЯ ПО ТЕМАМ ===",
+        current_line
+        + "СНАЧАЛА реши, относится ли вопрос игрока к текущей теме. Если относится "
+        "(даже если в загруженной базе знаний нет точного ответа или есть только "
+        "общая информация) — отвечай по текущей базе знаний или эскалируй по "
+        "правилам. В этом случае НЕ предлагай сменить тему.",
+        "Предлагай переключение ТОЛЬКО если вопрос явно НЕ относится к текущей теме "
+        "и однозначно относится к одной из других тем ниже. Тогда поставь самой "
+        "первой отдельной строкой тег [[TOPIC:slug]] с подходящим slug, а затем "
+        "коротко и доброжелательно предложи переключиться на эту тему. Совпадения "
+        "по отдельным словам недостаточно: ориентируйся на суть вопроса. Если "
+        "сомневаешься — отвечай по текущей теме или эскалируй, НЕ переключай. Тег "
+        "предназначен для системы; пиши его ровно так.",
+        "Другие темы (slug — название):",
         topic_lines,
         "",
     ]
@@ -198,6 +216,7 @@ def build_dynamic_prompt(
     user_text: str,
     force_lang: bool = False,
     available_topics: Optional[list[dict[str, Any]]] = None,
+    current_topic: Optional[dict[str, Any]] = None,
 ) -> str:
     """Assemble the Layer-3 block placed in the final user message."""
     ctx = sanitize_user_context(user_context)
@@ -209,7 +228,7 @@ def build_dynamic_prompt(
         "",
         _language_directive(resolved_lang, force_lang),
         "",
-        *_topic_routing_directive(available_topics or []),
+        *_topic_routing_directive(available_topics or [], current_topic),
         "=== СООБЩЕНИЕ ИГРОКА ===",
         user_text,
         "",
@@ -227,6 +246,7 @@ def build_messages(
     history_window: int = 10,
     force_lang: bool = False,
     available_topics: Optional[list[dict[str, Any]]] = None,
+    current_topic: Optional[dict[str, Any]] = None,
     core: Optional[str] = None,
 ) -> list[dict[str, str]]:
     """Return the OpenAI `messages` array.
@@ -256,6 +276,7 @@ def build_messages(
                 user_text=user_text,
                 force_lang=force_lang,
                 available_topics=available_topics,
+                current_topic=current_topic,
             ),
         }
     )

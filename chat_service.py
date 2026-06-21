@@ -44,6 +44,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     session_id = session["id"]
     topic_id = session.get("topic_id")
     topic_slug = None
+    topic = None
     if topic_id is not None:
         topic = await db.get_topic_by_id(topic_id)
         topic_slug = topic["slug"] if topic else None
@@ -75,6 +76,15 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     # player switches anyway); fall back to the service default for AUTO.
     title_lang = resolved if resolved != language.AUTO else config.DEFAULT_LANGUAGE
     suggestable = await kb.suggestable_topics(exclude_topic_id=topic_id, lang=title_lang)
+    # Name the CURRENT topic so the model answers in-topic questions from the
+    # loaded KB instead of bouncing the player to another branch on keyword
+    # overlap (e.g. both deposits and withdrawals mention crypto networks).
+    current_topic = None
+    if topic_slug:
+        current_topic = {
+            "slug": topic_slug,
+            "title": kb.localize_title(topic.get("title"), title_lang) if topic else topic_slug,
+        }
     kb_block = await kb.kb_block_for_topic(topic_id, lang=title_lang)
     # Only feed the model turns from the current topic context. After a topic
     # switch `context_reset_id` marks the boundary, so the previous topic's
@@ -93,6 +103,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         resolved_lang=resolved,
         force_lang=force_lang,
         available_topics=suggestable,
+        current_topic=current_topic,
         core=core,
     )
 
