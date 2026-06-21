@@ -5,13 +5,14 @@ page on Railway and tune the bot end-to-end.
 """
 from __future__ import annotations
 
+import html
 import logging
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 import config
@@ -31,6 +32,27 @@ logging.basicConfig(
 log = logging.getLogger(config.SERVICE_NAME)
 
 _FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
+_PROJECT_DIR = os.path.dirname(__file__)
+_TEST_PAGE = os.path.join(_FRONTEND_DIR, "test.html")
+_CLAUDE_MD = os.path.join(_PROJECT_DIR, "CLAUDE.md")
+_CLAUDE_MD_MARKER = "<!--CLAUDE_MD_CONTENT-->"
+
+
+def _render_test_page() -> str:
+    """Inject the live CLAUDE.md contents into the test page template.
+
+    CLAUDE.md is the single source of truth and is kept identical to README.md;
+    it is read on every request so the root page always reflects the current
+    file. The contents are HTML-escaped before landing inside the <pre> block.
+    """
+    with open(_TEST_PAGE, encoding="utf-8") as f:
+        template = f.read()
+    try:
+        with open(_CLAUDE_MD, encoding="utf-8") as f:
+            doc = f.read()
+    except OSError:
+        doc = ""
+    return template.replace(_CLAUDE_MD_MARKER, html.escape(doc))
 
 
 @asynccontextmanager
@@ -85,9 +107,9 @@ app.include_router(admin_api.router)        # /admin/* data + management (guarde
 
 
 # --- static frontend --------------------------------------------------------
-@app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(os.path.join(_FRONTEND_DIR, "test.html"))
+@app.get("/", response_class=HTMLResponse)
+async def index() -> HTMLResponse:
+    return HTMLResponse(_render_test_page())
 
 
 if os.path.isdir(_FRONTEND_DIR):
@@ -122,6 +144,6 @@ async def widget_css() -> FileResponse:
                         media_type="text/css")
 
 
-@app.get("/test.html")
-async def test_html() -> FileResponse:
-    return FileResponse(os.path.join(_FRONTEND_DIR, "test.html"))
+@app.get("/test.html", response_class=HTMLResponse)
+async def test_html() -> HTMLResponse:
+    return HTMLResponse(_render_test_page())
