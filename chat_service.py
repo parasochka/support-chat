@@ -14,6 +14,7 @@ import escalation
 import kb
 import language
 import openai_client
+import prompt_store
 import prompts
 
 
@@ -51,6 +52,15 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     # When the player picked a language by hand (header switcher), it is a hard
     # override: answer strictly in it, regardless of the message language.
     force_lang = bool(session.get("lang_locked"))
+
+    # §12: make the detected language sticky. Persist ONLY a confidently
+    # detected code (never the bare default), so later turns don't drift but the
+    # Phase 1 default-locking bug is not reintroduced. Manual locks win.
+    detected = language.detect(user_text)
+    if detected and not force_lang and session.get("lang") != detected:
+        await db.set_session_lang(session_id, detected, locked=False)
+        session["lang"] = detected
+
     resolved = language.resolve(
         lang=None, locale=None, session_lang=session.get("lang")
     )
@@ -65,8 +75,10 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     # player switches anyway); fall back to the service default for AUTO.
     title_lang = resolved if resolved != language.AUTO else config.DEFAULT_LANGUAGE
     suggestable = await kb.suggestable_topics(exclude_topic_id=topic_id, lang=title_lang)
-    kb_block = await kb.kb_block_for_topic(topic_id)
+    kb_block = await kb.kb_block_for_topic(topic_id, lang=title_lang)
     history = await db.get_history(session_id, limit=20)
+    # Load the live core for THIS session's prompt version (A/B attribution).
+    core = await prompt_store.core_for_version(session.get("prompt_version_id"))
     messages = prompts.build_messages(
         session=session,
         kb_block=kb_block,
@@ -75,6 +87,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         resolved_lang=resolved,
         force_lang=force_lang,
         available_topics=suggestable,
+        core=core,
     )
 
     # --- call model (two-key failover) --------------------------------------
@@ -171,7 +184,14 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
             await db.log_admin_event(
                 session_id, "escalation", {"reason": decision.reason}
             )
-        esc_payload = escalation.build_payload(answer_lang)
+            # New escalation: snapshot a ticket + notify Telegram (button always
+            # returned, even if delivery fails). Already-escalated sessions skip
+            # this to avoid duplicate tickets.
+            esc_payload = await escalation.open_ticket(
+                session, decision.reason or "model_unresolved", answer_lang
+            )
+        else:
+            esc_payload = escalation.build_payload(answer_lang)
 
     return ChatReply(
         reply=clean_text,

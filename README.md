@@ -122,11 +122,31 @@ The Dockerfile CMD reads `$PORT` (Railway injects it); no `startCommand` overrid
 | `CORS_ALLOW_ORIGINS` | `*` | Comma-separated allowed origins. |
 | `TRUSTED_PROXY_COUNT` | `1` | Reverse proxies in front of the app; the client IP is read this many hops from the right of `X-Forwarded-For` so a spoofed left value can't defeat rate limiting. |
 
+### Phase 2 (admin dashboard, tuning, escalation, handshake)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `ADMIN_PASSWORD` | — | **Required to enable the dashboard.** If unset, `/admin` data API + login return 503. |
+| `ADMIN_JWT_SECRET` | `SESSION_JWT_SECRET` | HS256 secret for admin tokens (set a *distinct* value in production). |
+| `ADMIN_TOKEN_TTL_MIN` | `480` | Admin session length (minutes). |
+| `TELEGRAM_BOT_TOKEN` | — | Bot API token for the escalation notifier. Unset ⇒ button-only escalation. |
+| `TELEGRAM_AGENT_CHAT_ID` | — | Chat/group id that receives escalation tickets. |
+| `WIDGET_HANDSHAKE_SECRET` | — | HMAC secret for signed `user_context` from host sites. Set ⇒ unsigned browser context is ignored. |
+| `WIDGET_HANDSHAKE_MAX_AGE_SEC` | `300` | Max age (seconds) of a signed handshake (anti-replay window). |
+| `PUBLIC_BASE_URL` | — | Used for deep links in Telegram tickets (`/admin#/session/{id}`). |
+
+Runtime tunables (`escalation`, `forbidden_topics`, `language`, `antispam`) are
+also editable live from the dashboard **Settings** tab and stored in the
+`app_settings` table. Precedence is `app_settings` (DB) → env → hardcoded default,
+and edits are hot (no redeploy).
+
 ## API contract
 
 ```
-POST /api/chat/session       { consumer?, player_id?, user_context?, lang?, locale?, recaptcha_token? }
+POST /api/chat/session       { consumer?, player_id?, user_context?, signed_context?, lang?, locale?, recaptcha_token? }
                           ->  { session_id, token, topics:[{slug,title}], lang, languages:[...] }
+                                signed_context (HMAC blob) is the only trusted user_context source when
+                                WIDGET_HANDSHAKE_SECRET is set; otherwise raw user_context is dev-only
 POST /api/chat/topic         (Bearer)  { session_id, topic_slug } -> { ok:true }
 POST /api/chat/lang          (Bearer)  { session_id, lang } -> { ok:true, lang, topics:[{slug,title}] }
                                        manual language switch; locks the answer + UI language
@@ -138,6 +158,28 @@ POST /api/chat/message       (Bearer)  { session_id, text }
 GET  /api/chat/session/{id}  (Bearer)  resume: history + state
 POST /api/chat/escalate      (Bearer)  { session_id } -> { escalation:{...} }
 GET  /healthz                liveness; checks DB connectivity
+```
+
+### Admin API (Phase 2, all `/admin/*` data routes require an admin Bearer)
+
+```
+POST /admin/login                       { password } -> { token, ttl_min, role }
+GET  /admin/overview?from&to            KPIs (rates, cost, cache-hit, counters)
+GET  /admin/timeseries?metric&bucket    sessions | cost | escalation_rate over time
+GET  /admin/by-topic | /admin/by-language
+GET  /admin/sessions?from&to&topic&lang&status&escalated&q&page   paginated list
+GET  /admin/session/{id}                full transcript + user_context + logs + cost
+GET  /admin/unresolved?format=json|csv  escalated sessions grouped by topic (KB growth)
+GET  /admin/ab/results                  per prompt_version outcome metrics
+GET/POST/PUT /admin/prompts ...         version list / create draft / edit draft
+POST /admin/prompts/{id}/publish        make default (deliberate cache reset; UI warns)
+POST /admin/prompts/ab                  { weights:[{id,weight}] } set A/B split
+POST /admin/prompts/{id}/archive
+GET/POST /admin/kb/topics               topic CRUD (with entry counts)
+GET/POST/PUT/DELETE /admin/kb/entries   versioned entry CRUD (soft-delete)
+POST /admin/kb/import                   multipart JSON | CSV | Markdown bulk import
+GET  /admin/settings | PUT /admin/settings/{key}   hot-reloaded runtime tuning
+GET  /admin                             dashboard SPA (login -> admin JWT)
 ```
 
 Gate order inside `POST /api/chat/message`: verify token (401) -> IP rate-limit
@@ -157,8 +199,22 @@ escalation) -> build prompt, call model, persist turn atomically, return.
 8. Never request card numbers / CVV / passwords / seed phrases; never invent facts.
 9. The `_PRICING` table is marked "verify before trusting"; prices may be stale.
 
-## Phase 2 (not built; clean seams left)
+## Phase 2 (built)
 
-Admin dashboard UI, the contact/escalation form itself, real front-end
-integration, live-agent chat. KB content here is **placeholder** — every
-player-facing number is a `{{PLACEHOLDER}}` token for the owner to replace.
+Implemented on the same stack (no new infra): admin dashboard SPA under `/admin`
+(vanilla ES modules, `npadmin-` prefix, hand-rolled SVG charts — no CDN chart
+lib), single-owner admin auth with a future-proof `role` claim, hot-reloaded
+`app_settings` tuning, system-prompt versioning + deterministic weighted A/B
+(attributed via `chat_sessions.prompt_version_id`), KB CRUD + JSON/CSV/Markdown
+bulk import, a one-way Telegram escalation notifier with `escalation_tickets`
+(contact button always retained), a signed (HMAC) front-end handshake, and the
+unresolved-query view (topic-grouped, CSV export).
+
+§16 decisions chosen: unresolved analysis = topic-grouped (no embeddings);
+contact form = host-site button only; admin auth = single owner. Charting =
+hand-rolled inline SVG (no external dependency).
+
+Still out of scope (clean seams left): two-way live-agent chat, multi-admin RBAC,
+external helpdesk integration, and embeddings-based unresolved clustering. KB
+content remains **placeholder** — every player-facing number is a
+`{{PLACEHOLDER}}` token for the owner to replace via the dashboard.

@@ -22,6 +22,11 @@ export const CONFIG = {
     activation_status: "active",
     language: null,
   },
+  // Signed handshake blob from the host backend (HMAC over user_context+exp).
+  // When the service has WIDGET_HANDSHAKE_SECRET set, this is the ONLY trusted
+  // source of user_context; the raw USER_CONTEXT above is ignored server-side.
+  // Leave null for anonymous/dev sessions.
+  SIGNED_CONTEXT: null,
   // Optional explicit answer language ("en","es","ru","tr","pt") or null to auto-detect.
   LANG: null,
   // Browser language — used to localise the UI and as the default answer
@@ -217,6 +222,7 @@ async function createSession() {
       consumer: "web-test",
       player_id: CONFIG.USER_CONTEXT.id || null,
       user_context: CONFIG.USER_CONTEXT,
+      signed_context: CONFIG.SIGNED_CONTEXT,
       lang: CONFIG.LANG,
       locale: CONFIG.LOCALE,
       recaptcha_token: token,

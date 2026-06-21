@@ -95,6 +95,43 @@ def profile_lang_from_context(user_context: Optional[dict]) -> Optional[str]:
     return val if isinstance(val, str) else None
 
 
+import re as _re
+
+# Distinctive-character signals per language (mirrors the widget's detector).
+# Conservative on purpose: only a clear signal returns a code, else None, so a
+# short/neutral message never drifts the session to the wrong language.
+_LATIN_SIGNALS = {
+    "es": _re.compile(r"[ñ¿¡]"),
+    "pt": _re.compile(r"[ãõ]"),
+    "tr": _re.compile(r"[şğıİ]"),
+}
+_CYRILLIC = _re.compile(r"[а-яё]")
+
+
+def detect(text: Optional[str]) -> Optional[str]:
+    """Best-effort detection of the language the player is *writing* in.
+
+    Returns a supported base code only on a confident signal, else None. Used to
+    make the session language sticky (§12) without locking it to the default —
+    we persist only a *detected* code, never the bare service default.
+    """
+    if not text:
+        return None
+    s = text.lower()
+    if _supported("ru") and _CYRILLIC.search(s):
+        return "ru"
+    best = None
+    best_score = 0
+    for code, pat in _LATIN_SIGNALS.items():
+        if not _supported(code):
+            continue
+        score = len(pat.findall(s))
+        if score > best_score:
+            best_score = score
+            best = code
+    return best
+
+
 def fallback_language_name(resolved: str) -> str:
     """Human name of the language to answer in *only when the player's own
 

@@ -13,6 +13,7 @@ from typing import Optional
 import httpx
 
 import config
+import settings
 
 # --- in-memory state --------------------------------------------------------
 _ip_hits: dict[str, deque[float]] = defaultdict(deque)
@@ -76,11 +77,12 @@ async def verify_recaptcha(token: Optional[str], remote_ip: Optional[str] = None
 def check_rate_limit(ip: str) -> None:
     """Raise AntiSpamError(429) if the IP exceeded the window allowance."""
     now = time.monotonic()
-    window = config.RATE_LIMIT_WINDOW_SEC
+    cfg = settings.antispam()
+    window = cfg["window_sec"]
     hits = _ip_hits[ip]
     while hits and now - hits[0] > window:
         hits.popleft()
-    if len(hits) >= config.RATE_LIMIT_MAX_PER_IP:
+    if len(hits) >= cfg["rate_limit_max_per_ip"]:
         raise AntiSpamError(429, "rate_limited",
                             "Too many requests from this IP; slow down.")
     hits.append(now)
@@ -94,8 +96,7 @@ def check_rate_limit(ip: str) -> None:
 _COOLDOWN_PRUNE_THRESHOLD = 10_000
 
 
-def _prune_cooldowns(now: float) -> None:
-    cutoff = config.MESSAGE_COOLDOWN_SEC
+def _prune_cooldowns(now: float, cutoff: float) -> None:
     stale = [sid for sid, ts in _last_message_at.items() if now - ts > cutoff]
     for sid in stale:
         _last_message_at.pop(sid, None)
@@ -104,10 +105,11 @@ def _prune_cooldowns(now: float) -> None:
 def check_cooldown(session_id: str) -> None:
     """Raise AntiSpamError(429) if messages arrive faster than the cooldown."""
     now = time.monotonic()
+    cooldown = settings.antispam()["cooldown_sec"]
     if len(_last_message_at) > _COOLDOWN_PRUNE_THRESHOLD:
-        _prune_cooldowns(now)
+        _prune_cooldowns(now, cooldown)
     last = _last_message_at.get(session_id)
-    if last is not None and now - last < config.MESSAGE_COOLDOWN_SEC:
+    if last is not None and now - last < cooldown:
         raise AntiSpamError(429, "cooldown",
                             "You're sending messages too quickly; please wait a moment.")
     _last_message_at[session_id] = now
@@ -119,9 +121,10 @@ def check_cooldown(session_id: str) -> None:
 def check_input_length(text: str) -> None:
     if text is None:
         raise AntiSpamError(400, "empty", "Message text is required.")
-    if len(text) > config.MAX_INPUT_CHARS:
+    max_chars = settings.antispam()["max_input_chars"]
+    if len(text) > max_chars:
         raise AntiSpamError(400, "too_long",
-                            f"Message exceeds {config.MAX_INPUT_CHARS} characters.")
+                            f"Message exceeds {max_chars} characters.")
     if text.strip() == "":
         raise AntiSpamError(400, "empty", "Message text is required.")
 

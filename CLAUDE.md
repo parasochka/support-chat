@@ -7,9 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A standalone FastAPI microservice serving an AI customer-support chat for **NikaBet**
 (casino + sportsbook on the NowPlix B2B platform). It is API-isolated: other modules
 talk to it over HTTP/JSON by `session_id` (UUID), and the contract is consumer-agnostic
-so multiple front-ends can plug in. **Phase 1 is fully implemented**; Phase 2 (admin
-dashboard, tuning, Telegram escalation, prompt versioning) is specified but **not yet
-built** — see "Phase 2 roadmap" below.
+so multiple front-ends can plug in. **Phase 1 and Phase 2 are both implemented** — the
+admin dashboard, hot-reloaded tuning, system-prompt versioning + A/B, KB CRUD/import,
+Telegram escalation, and the signed front-end handshake are all built (see "Phase 2"
+below).
 
 The two source briefs (`CLAUDE_CODE_PROMPT_support_chat*.md`) are the authoritative spec.
 When extending the service, treat them as the contract and keep the invariants below.
@@ -142,17 +143,42 @@ never enter `SYSTEM_CORE` (a test asserts the cached prefix stays byte-stable).
    player-facing facts — KB uses `{{PLACEHOLDER}}` tokens the owner replaces.
 9. `_PRICING` is "verify before trusting"; cost is derived, not ground truth.
 
-## Phase 2 roadmap (specified, NOT yet implemented)
+## Phase 2 (implemented)
 
-`CLAUDE_CODE_PROMPT_support_chat_phase2.md` extends — does not rebuild — Phase 1 on the same
-stack. Planned additions: admin dashboard SPA under `/admin`, admin JWT auth (separate
-`ADMIN_JWT_SECRET`), an `app_settings` table for hot-reloaded runtime tuning (precedence:
-DB → env → default), system-prompt versioning + A/B (`prompt_versions`, `chat_sessions.
-prompt_version_id`), KB CRUD + bulk import, Telegram escalation notifier + `escalation_tickets`,
-a signed (HMAC) front-end handshake to replace the hardcoded `user_context`, and an
-unresolved-query view. When building it, reuse all Phase 1 tables/helpers/conventions and
-keep every invariant above (especially: editing the prompt creates a *draft*; publishing is
-a deliberate one-time cache reset).
+Built on the same stack, extending — not rebuilding — Phase 1. Map of what lives where:
+
+- **Admin auth** (`api/admin_auth.py`, `auth.py`): `POST /admin/login` (constant-time
+  password compare against `ADMIN_PASSWORD`, rate-limited, failures → `admin_login_failed`)
+  issues an admin JWT signed with `ADMIN_JWT_SECRET` and carrying a `role` claim. The
+  `require_admin` dependency guards every `/admin/*` data route.
+- **Settings** (`settings.py`, `app_settings` table): hot-reloaded runtime tuning with
+  precedence `app_settings` (DB) → env → default. A sync in-process cache (populated at
+  startup, reloaded on write) is read by `antispam`/`escalation`/api; writes validate hard
+  and log `setting_updated`. Groups: `escalation`, `forbidden_topics`, `language`, `antispam`.
+- **Dashboard data API** (`api/admin.py` + `db.py` aggregation + `metrics.py` derived
+  rates): overview/timeseries/by-topic/by-language/sessions/session/unresolved/ab-results.
+  `resolution_rate` is a documented PROXY (counts "not escalated", incl. abandoned →
+  `sessions_open` tracked separately).
+- **Prompt versioning + A/B** (`prompt_store.py`, `prompt_versions` table,
+  `chat_sessions.prompt_version_id`): the live core loads from the DB (cached per version
+  → still byte-stable within a version, prefix cache unchanged). Editing makes a *draft*;
+  publishing swaps `is_default` (deliberate one-time cache reset; `prompt_store.invalidate()`).
+  Assignment at session create is a deterministic weighted hash of the session id.
+- **KB CRUD + import** (`kb_import.py`, `db.*` helpers): versioned entries (edit = new
+  version row, delete = soft `active=false`); JSON/CSV/Markdown bulk import.
+- **Escalation Phase 2** (`escalation.open_ticket`, `notifiers/telegram.py`,
+  `escalation_tickets` table): snapshots the transcript + context into a ticket, notifies
+  Telegram if configured, and ALWAYS returns the Phase 1 contact button (user never
+  stranded; delivery failure → `telegram_notify_failed`).
+- **Signed handshake** (`auth.sign_handshake`/`verify_handshake`, `api/chat.create_session`):
+  with `WIDGET_HANDSHAKE_SECRET` set, only a valid signed blob is trusted for
+  `user_context`; raw browser context is ignored. No secret ⇒ Phase 1 dev behaviour. The
+  injection sanitizer runs in every mode.
+- **Admin SPA** (`frontend/admin/`, `npadmin-` prefix, hand-rolled inline SVG charts, no
+  build step, no CDN): served at `/admin`, assets under `/admin-static`.
+
+§16 decisions: unresolved analysis = topic-grouped (no embeddings); contact form =
+host-site button only; admin auth = single owner (token shaped for future multi-admin).
 
 ## Conventions
 

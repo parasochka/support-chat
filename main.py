@@ -16,9 +16,13 @@ from fastapi.staticfiles import StaticFiles
 
 import config
 import db
+import settings
+from api import admin as admin_api
+from api import admin_auth as admin_auth_api
 from api import chat as chat_api
 from api import health as health_api
 from seed import kb_seed
+from seed import prompt_seed
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,6 +38,8 @@ async def lifespan(app: FastAPI):
     log.info("Starting %s: init_db + seed", config.SERVICE_NAME)
     await db.init_db()
     await kb_seed.run()
+    await prompt_seed.run()       # migrate Phase 1 core into prompt_versions (once)
+    await settings.reload()       # populate the hot settings cache from app_settings
     log.info("Startup complete")
     try:
         yield
@@ -74,6 +80,8 @@ async def body_size_cap(request: Request, call_next):
 # --- routers ----------------------------------------------------------------
 app.include_router(health_api.router)
 app.include_router(chat_api.router)
+app.include_router(admin_auth_api.router)   # /admin/login + require_admin
+app.include_router(admin_api.router)        # /admin/* data + management (guarded)
 
 
 # --- static frontend --------------------------------------------------------
@@ -84,6 +92,22 @@ async def index() -> FileResponse:
 
 if os.path.isdir(_FRONTEND_DIR):
     app.mount("/static", StaticFiles(directory=_FRONTEND_DIR), name="static")
+
+# --- admin dashboard SPA ----------------------------------------------------
+# The data API lives under /admin/* (guarded). The SPA HTML is served at /admin
+# and /admin/, and its ES-module assets under /admin-static (a distinct prefix
+# so it never shadows the /admin/* JSON routes).
+_ADMIN_DIR = os.path.join(_FRONTEND_DIR, "admin")
+
+
+@app.get("/admin")
+@app.get("/admin/")
+async def admin_index() -> FileResponse:
+    return FileResponse(os.path.join(_ADMIN_DIR, "index.html"))
+
+
+if os.path.isdir(_ADMIN_DIR):
+    app.mount("/admin-static", StaticFiles(directory=_ADMIN_DIR), name="admin-static")
 
 
 @app.get("/widget.js")

@@ -1,0 +1,84 @@
+/* NowPlix admin dashboard — vanilla, no build step. All classes npadmin-. */
+:root {
+  --bg: #0f1320; --panel: #1a2032; --panel2: #232c44; --line: #2e3a57;
+  --text: #e7ecf5; --muted: #9aa7c2; --accent: #4f8cff; --good: #36c08a;
+  --warn: #e8b349; --bad: #e0596b;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+a { color: var(--accent); }
+.npadmin-loading { padding: 40px; color: var(--muted); }
+
+/* layout */
+.npadmin-app { display: grid; grid-template-columns: 200px 1fr; min-height: 100vh; }
+.npadmin-side { background: var(--panel); border-right: 1px solid var(--line);
+  padding: 16px 0; }
+.npadmin-brand { font-weight: 700; padding: 0 18px 16px; font-size: 16px; }
+.npadmin-nav button { display: block; width: 100%; text-align: left; background: none;
+  border: none; color: var(--muted); padding: 10px 18px; cursor: pointer; font-size: 14px; }
+.npadmin-nav button:hover { background: var(--panel2); color: var(--text); }
+.npadmin-nav button.active { background: var(--panel2); color: var(--text);
+  border-left: 3px solid var(--accent); }
+.npadmin-main { padding: 22px 26px; overflow: auto; }
+.npadmin-logout { margin: 16px 18px 0; }
+
+/* login */
+.npadmin-login { max-width: 340px; margin: 12vh auto; background: var(--panel);
+  padding: 28px; border-radius: 12px; border: 1px solid var(--line); }
+.npadmin-login h1 { font-size: 18px; margin: 0 0 16px; }
+input, select, textarea, button { font: inherit; }
+.npadmin-input { width: 100%; padding: 9px 11px; background: var(--panel2);
+  border: 1px solid var(--line); border-radius: 8px; color: var(--text); }
+textarea.npadmin-input { min-height: 220px; font-family: ui-monospace, Menlo, monospace; }
+.npadmin-btn { background: var(--accent); color: #fff; border: none; padding: 9px 16px;
+  border-radius: 8px; cursor: pointer; }
+.npadmin-btn:hover { filter: brightness(1.08); }
+.npadmin-btn.ghost { background: var(--panel2); color: var(--text);
+  border: 1px solid var(--line); }
+.npadmin-btn.danger { background: var(--bad); }
+.npadmin-err { color: var(--bad); margin-top: 10px; min-height: 18px; }
+
+/* header / toolbar */
+.npadmin-h { font-size: 20px; margin: 0 0 16px; }
+.npadmin-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 18px;
+  flex-wrap: wrap; }
+
+/* KPI cards */
+.npadmin-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px,1fr));
+  gap: 12px; margin-bottom: 22px; }
+.npadmin-card { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px 16px; }
+.npadmin-card .v { font-size: 24px; font-weight: 700; }
+.npadmin-card .l { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.npadmin-proxy { color: var(--warn); font-size: 11px; }
+
+/* tables */
+table.npadmin-table { width: 100%; border-collapse: collapse; }
+.npadmin-table th, .npadmin-table td { text-align: left; padding: 8px 10px;
+  border-bottom: 1px solid var(--line); }
+.npadmin-table th { color: var(--muted); font-weight: 600; font-size: 12px;
+  text-transform: uppercase; letter-spacing: .04em; }
+.npadmin-table tr.click { cursor: pointer; }
+.npadmin-table tr.click:hover { background: var(--panel2); }
+.npadmin-pill { padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+.npadmin-pill.escalated { background: rgba(224,89,107,.18); color: var(--bad); }
+.npadmin-pill.open { background: rgba(54,192,138,.16); color: var(--good); }
+
+/* charts */
+.npadmin-chart { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px; margin-bottom: 18px; }
+.npadmin-chart svg { width: 100%; height: 160px; display: block; }
+
+/* transcript */
+.npadmin-msg { margin: 8px 0; padding: 10px 12px; border-radius: 10px; max-width: 80%; }
+.npadmin-msg.user { background: var(--panel2); }
+.npadmin-msg.assistant { background: var(--panel); border: 1px solid var(--line); }
+.npadmin-meta { color: var(--muted); font-size: 12px; }
+.npadmin-warnbox { background: rgba(232,179,73,.12); border: 1px solid var(--warn);
+  color: var(--warn); padding: 10px 12px; border-radius: 8px; margin: 10px 0; }
+.npadmin-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+.npadmin-col { flex: 1; min-width: 280px; }
+.npadmin-help { color: var(--muted); font-size: 12px; margin: 4px 0 10px; }
+label.npadmin-field { display: block; margin: 10px 0; }
+label.npadmin-field span { display: block; color: var(--muted); margin-bottom: 4px; }

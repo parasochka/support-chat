@@ -57,19 +57,22 @@ def get_system_core() -> str:
     return SYSTEM_CORE
 
 
-def build_system_message(kb_block: Optional[str]) -> str:
-    """Compose the system message: byte-stable core + (optional) Layer-2 KB block.
+def build_system_message(kb_block: Optional[str], core: Optional[str] = None) -> str:
+    """Compose the system message: core + (optional) Layer-2 KB block.
 
-    The core is always the identical prefix; the KB block is appended after a
-    stable separator so the cacheable prefix never shifts.
+    `core` is the live system-prompt body for the session's published version
+    (Phase 2). Within a version it is byte-stable, so the cacheable prefix never
+    shifts; it changes only on a deliberate publish. Defaults to the Phase 1
+    byte-stable SYSTEM_CORE constant when no version body is supplied.
     """
+    base = core if core is not None else SYSTEM_CORE
     if kb_block:
         return (
-            SYSTEM_CORE
+            base
             + "\n\n=== БАЗА ЗНАНИЙ (выбранная тема) ===\n"
             + kb_block.strip()
         )
-    return SYSTEM_CORE
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -224,15 +227,17 @@ def build_messages(
     history_window: int = 10,
     force_lang: bool = False,
     available_topics: Optional[list[dict[str, Any]]] = None,
+    core: Optional[str] = None,
 ) -> list[dict[str, str]]:
     """Return the OpenAI `messages` array.
 
-    - system: Layer 1 core (+ Layer 2 KB block)
+    - system: Layer 1 core (+ Layer 2 KB block); `core` is the session's live
+      prompt-version body (defaults to the Phase 1 SYSTEM_CORE constant)
     - prior history: trimmed to the last `history_window` turns
     - final user message: Layer 3 dynamic block (context + lang directive + turn)
     """
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": build_system_message(kb_block)}
+        {"role": "system", "content": build_system_message(kb_block, core)}
     ]
 
     # Trim history to a sane window (turns, oldest-first). Drop any system rows.
