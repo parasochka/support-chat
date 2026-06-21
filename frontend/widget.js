@@ -73,6 +73,34 @@ function initialLang() {
   return baseLang(CONFIG.LANG) || baseLang(CONFIG.LOCALE) || "en";
 }
 
+// Lightweight client-side guess of the language the *player is actually writing
+// in*, so the widget chrome can mirror it the way the AI answers already do.
+// We only need to choose among the supported chrome set; the answer language is
+// still decided server-side. Conservative on purpose: it returns a code only on
+// a clear signal, otherwise null (keep the current chrome) — a short or neutral
+// message must not flip the shell to the wrong language.
+function detectLang(text) {
+  if (!text) return null;
+  const s = String(text).toLowerCase();
+  // Cyrillic is an unambiguous, strong signal for Russian.
+  if (I18N.ru && /[а-яё]/.test(s)) return "ru";
+  // Latin languages: score only their *distinctive* characters to avoid the
+  // cross-contamination of shared accents (á, é, ü, ç …).
+  const signals = { es: /[ñ¿¡]/g, pt: /[ãõ]/g, tr: /[şğıİ]/g };
+  let best = null;
+  let bestScore = 0;
+  for (const code of Object.keys(signals)) {
+    if (!I18N[code]) continue;
+    const m = s.match(signals[code]);
+    const score = m ? m.length : 0;
+    if (score > bestScore) {
+      bestScore = score;
+      best = code;
+    }
+  }
+  return best;
+}
+
 function t(key) {
   const dict = I18N[state.lang] || I18N.en;
   return dict[key] || I18N.en[key] || key;
@@ -85,7 +113,23 @@ const state = {
   lang: initialLang(),
   topicChosen: false,
   open: false,
+  greetingEl: null,
 };
+
+// Switch the whole widget chrome to mirror the language the player is writing
+// in. Called as the player types and on send, so the shell follows them the way
+// the AI answers do. No-op unless a confident detection differs from the
+// current chrome language.
+function maybeSwitchLang(text) {
+  const guess = detectLang(text);
+  if (!guess || guess === state.lang) return;
+  state.lang = guess;
+  applyStaticLabels();
+  if (state.greetingEl) state.greetingEl.textContent = t("greeting");
+  if (els.topics && !els.topics.classList.contains("npchat-hidden")) {
+    renderTopics();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // reCaptcha helper (no-op when no site key configured)
@@ -211,6 +255,8 @@ function buildUI() {
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") onSend();
   });
+  // Mirror the player's language in the chrome as they type their message.
+  input.addEventListener("input", (ev) => maybeSwitchLang(ev.target.value));
   const sendBtn = el("button", "npchat-send", t("send"));
   sendBtn.addEventListener("click", onSend);
   inputRow.appendChild(input);
@@ -306,13 +352,16 @@ async function onTopic(slug) {
   els.topics.classList.add("npchat-hidden");
   els.messages.classList.remove("npchat-hidden");
   els.inputRow.classList.remove("npchat-hidden");
-  addMessage("assistant", t("greeting"));
+  state.greetingEl = addMessage("assistant", t("greeting"));
   els.input.focus();
 }
 
 async function onSend() {
   const text = els.input.value.trim();
   if (!text) return;
+  // Final chance to align the chrome with the player's language before the
+  // turn is committed (covers paste/autofill that skipped the input handler).
+  maybeSwitchLang(text);
   els.input.value = "";
   addMessage("user", text);
   const typing = addMessage("assistant", "…");
