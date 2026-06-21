@@ -265,10 +265,15 @@ async def send_message(req: Request, body: MessageSend,
     except antispam.AntiSpamError as exc:
         return _err(exc.status, exc.code, exc.detail)
 
-    # 8. injection scan (log, don't reject)
+    # 8. injection scan: always audit; optionally hard-block (config-gated).
     if antispam.scan_injection(body.text):
         await db.log_admin_event(body.session_id, "injection_blocked",
-                                 {"sample": body.text[:120]})
+                                 {"sample": body.text[:120],
+                                  "blocked": config.INJECTION_HARD_BLOCK})
+        if config.INJECTION_HARD_BLOCK:
+            return _err(400, "rejected",
+                        "Your message looks like an attempt to manipulate the "
+                        "assistant. Please ask a product-support question.")
 
     # 5. message cap reached -> force escalation response (no model call)
     if session.get("message_count", 0) >= settings.escalation()["max_messages_per_session"]:
