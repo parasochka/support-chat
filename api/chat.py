@@ -121,7 +121,12 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
                                  {"reason": captcha.get("reason"), "score": captcha.get("score")})
         return _err(403, "recaptcha_failed", "reCaptcha verification failed.")
 
-    resolved = language.resolve(lang=body.lang, locale=body.locale)
+    # Default answer language: manual `lang` -> browser `locale` -> account
+    # `profile_lang` (from the handshake) -> default. The persisted result is
+    # the per-session fallback; later turns mirror the player's own message.
+    profile_lang = language.profile_lang_from_context(body.user_context)
+    resolved = language.resolve(lang=body.lang, locale=body.locale,
+                                profile_lang=profile_lang)
     session_lang = None if resolved == language.AUTO else resolved
 
     session_id = await db.create_session(
