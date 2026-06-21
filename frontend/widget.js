@@ -455,9 +455,21 @@ async function switchTopicAndResend(slug, originalText, wrap, btn) {
 // ---------------------------------------------------------------------------
 // flow handlers
 // ---------------------------------------------------------------------------
+// On phones the open panel is a full-screen sheet (see widget.css media query).
+// Lock the host page's scroll behind it so the sheet truly owns the screen and
+// the page underneath can't scroll through. No-op on desktop / large viewports.
+function setBodyScrollLock(locked) {
+  if (typeof window === "undefined" || !window.matchMedia) return;
+  const isMobile = window.matchMedia(
+    "(max-width: 600px), (max-height: 480px)"
+  ).matches;
+  document.documentElement.style.overflow = locked && isMobile ? "hidden" : "";
+}
+
 async function togglePanel() {
   state.open = !state.open;
   els.panel.classList.toggle("npchat-hidden", !state.open);
+  setBodyScrollLock(state.open);
   if (state.open && !state.sessionId) {
     try {
       await createSession();
