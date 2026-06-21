@@ -1,0 +1,11 @@
+# Railway deploy config — build from the Dockerfile, use its CMD as start command.
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# No startCommand override: the Dockerfile CMD reads $PORT and launches uvicorn.
+healthcheckPath = "/healthz"
+healthcheckTimeout = 120
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5
