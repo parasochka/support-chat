@@ -54,6 +54,37 @@ def test_available_topics_listed_in_layer3_user_message():
     assert "[[TOPIC:slug]]" in last_user  # the routing instruction
 
 
+def test_current_topic_named_in_layer3():
+    """The loaded topic is stated so the model answers in-topic questions from the
+    current KB instead of bouncing the player to another branch (the bug where a
+    deposit-network question was routed to Withdrawals)."""
+    session = {"user_context": {}}
+    msgs = prompts.build_messages(
+        session, kb_block="KB", history=[],
+        user_text="какие сети для пополнения депозита есть?",
+        resolved_lang="ru", available_topics=_TOPICS,
+        current_topic={"slug": "deposits", "title": "Депозиты"},
+    )
+    last_user = msgs[-1]["content"]
+    assert "deposits — Депозиты" in last_user
+    # Conservative instruction: only switch when clearly NOT the current topic.
+    assert "ТОЛЬКО" in last_user
+    # The current-topic line must stay in Layer 3, never in the cached prefix.
+    assert "deposits — Депозиты" not in msgs[0]["content"]
+
+
+def test_no_current_topic_line_when_absent():
+    """Picker's first turn / callers without a topic: no current-topic line, and
+    the routing list still renders."""
+    session = {"user_context": {}}
+    last_user = prompts.build_messages(
+        session, kb_block="KB", history=[], user_text="q",
+        resolved_lang="en", available_topics=_TOPICS,
+    )[-1]["content"]
+    assert "Текущая тема" not in last_user
+    assert "withdrawals — Withdrawals" in last_user
+
+
 def test_topic_catalogue_stays_out_of_system_core():
     """The dynamic topic list must never leak into the byte-stable prefix."""
     session = {"user_context": {}}

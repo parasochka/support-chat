@@ -29,6 +29,11 @@ def _pick_title(title: dict[str, str], lang: str) -> str:
     return title.get(lang) or title.get("en") or next(iter(title.values()), "")
 
 
+def localize_title(title: Any, lang: str = "en") -> str:
+    """Public wrapper over `_pick_title` for callers outside this module."""
+    return _pick_title(title, lang)
+
+
 async def topic_by_slug(slug: str) -> Optional[dict[str, Any]]:
     return await db.get_topic_by_slug(slug)
 
