@@ -67,4 +67,23 @@ def test_dynamic_data_lives_in_user_message_not_system():
     last_user = msgs[-1]["content"]
     assert "SECRET-ID" in last_user
     assert "my question" in last_user
-    assert "Spanish" in last_user  # language directive in Layer 3
+    assert "Spanish" in last_user  # fallback language name in Layer 3
+
+
+def test_layer3_directive_tells_model_to_mirror_player_language():
+    """Regression: the answer must follow the player's own language, not be
+
+    strict-locked to the resolved/browser default. A Russian question must be
+    able to get a Russian answer even when the session default is English.
+    """
+    session = {"user_context": {}}
+    msgs = prompts.build_messages(session, kb_block=None, history=[],
+                                  user_text="Привет, помогите с депозитом",
+                                  resolved_lang="en")
+    directive = msgs[-1]["content"]
+    # Mentions determining/answering in the player's message language…
+    assert "язык" in directive.lower()
+    # …and only falls back to the resolved default ("English") when unclear.
+    assert "English" in directive
+    # It must NOT hard-force the default language regardless of the message.
+    assert "отвечай строго на языке — English" not in directive

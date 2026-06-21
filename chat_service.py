@@ -88,14 +88,15 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     if raw_text:
         clean_text, model_signalled = prompts.strip_escalation_tag(raw_text)
 
-    # --- persist detected language (auto-detect path) -----------------------
-    answer_lang = resolved
-    if resolved == language.AUTO:
-        # We don't reliably know the detected language; keep DEFAULT for payload
-        # selection but persist nothing speculative beyond first-turn default.
-        answer_lang = session.get("lang") or config.DEFAULT_LANGUAGE
-        if not session.get("lang"):
-            await db.set_session_lang(session_id, answer_lang)
+    # --- pick a language for payloads (escalation button etc.) --------------
+    # The model mirrors the player's actual message language regardless of this;
+    # `answer_lang` is only the fallback used for escalation/contact copy and as
+    # the recorded metadata. We deliberately do NOT persist a speculative
+    # default here — locking the session to DEFAULT would stop later turns from
+    # mirroring the player (the bug where a Russian question got an English reply).
+    answer_lang = session.get("lang") or config.DEFAULT_LANGUAGE
+    if resolved != language.AUTO:
+        answer_lang = resolved
 
     # --- cost accounting -----------------------------------------------------
     cost = openai_client.compute_cost(

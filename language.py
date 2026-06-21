@@ -1,12 +1,17 @@
 """Language resolution — deterministic priority, never asks the user.
 
-Priority:
+This resolves the *default* answer language. The model is always told to
+mirror the language the player actually writes in; the resolved code below is
+only the fallback used when the player's language can't be determined (e.g. a
+one-word message). So a Russian-browser visitor who types Russian gets Russian,
+and the same visitor typing Spanish gets Spanish.
+
+Priority (for the fallback default):
   1. explicit `lang` param (if supported)
-  2. `locale` param mapped to a base code (e.g. es-MX -> es), if supported
-  3. model auto-detect (signalled by returning AUTO; the Layer-3 directive then
-     tells the model to answer in the user's language; the session persists the
-     detected language after the first turn)
-  4. DEFAULT_LANGUAGE
+  2. `locale` param mapped to a base code (e.g. es-MX -> es), if supported —
+     this is where the browser language (navigator.language) lands
+  3. persisted `session_lang` from a prior turn
+  4. AUTO -> fall back to DEFAULT_LANGUAGE
 
 The source prompt + KB stay Russian; only the answer language varies.
 """
@@ -19,7 +24,7 @@ import config
 # Sentinel meaning "let the model answer in the language of the user's message".
 AUTO = "auto"
 
-# Human-readable names used in the Layer-3 directive ("Answer strictly in {LANG}.").
+# Human-readable names used in the Layer-3 fallback-language directive.
 LANG_NAMES = {
     "en": "English",
     "es": "Spanish",
@@ -67,11 +72,12 @@ def resolve(lang: Optional[str] = None, locale: Optional[str] = None,
     return AUTO
 
 
-def directive_language_name(resolved: str) -> str:
-    """The concrete LANG string injected into the Layer-3 directive.
+def fallback_language_name(resolved: str) -> str:
+    """Human name of the language to answer in *only when the player's own
 
-    For AUTO we instruct the model to mirror the user's language.
+    language can't be determined* (e.g. a one-word or symbol-only message).
+    The model is always told to mirror the player's language first; this is the
+    safety net. For AUTO it is the service default.
     """
-    if resolved == AUTO:
-        return "the same language as the user's message"
-    return LANG_NAMES.get(resolved, config.DEFAULT_LANGUAGE)
+    code = config.DEFAULT_LANGUAGE if resolved == AUTO else resolved
+    return LANG_NAMES.get(code, LANG_NAMES.get(config.DEFAULT_LANGUAGE, "English"))

@@ -40,9 +40,12 @@ def test_nothing_resolves_to_auto():
     assert language.resolve() == language.AUTO
 
 
-def test_directive_name_for_concrete_and_auto():
-    assert language.directive_language_name("es") == "Spanish"
-    assert "user's message" in language.directive_language_name(language.AUTO)
+def test_fallback_name_for_concrete_and_auto():
+    # The fallback language is only used when the player's own language is
+    # unclear; the model otherwise mirrors the player's message.
+    assert language.fallback_language_name("es") == "Spanish"
+    # AUTO -> service default (DEFAULT_LANGUAGE = en in this fixture).
+    assert language.fallback_language_name(language.AUTO) == "English"
 
 
 def test_locale_to_lang_helper():
