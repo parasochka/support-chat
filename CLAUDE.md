@@ -181,6 +181,17 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   → still byte-stable within a version, prefix cache unchanged). Editing makes a *draft*;
   publishing swaps `is_default` (deliberate one-time cache reset; `prompt_store.invalidate()`).
   Assignment at session create is a deterministic weighted hash of the session id.
+- **Structured system-prompt editor** (`prompts.SYSTEM_PROMPT_SECTIONS`/`compose_core`,
+  `settings.system_prompt`, `api.admin` `GET/PUT /admin/system-prompt`, Settings tab in the
+  SPA): Layer 1 is split into named, individually-editable sections — tone of voice (intro),
+  absolute rules, escalation rules, injection defense, language, style — so the owner tunes
+  the core from **Settings** without hand-editing one blob. Composing the shipped defaults
+  reproduces `SYSTEM_CORE` byte-for-byte (a test asserts this), so the cached prefix is
+  untouched until a section is deliberately edited. The sections are stored in
+  `app_settings['system_prompt']` (the editor's source of truth); **saving composes the core
+  and publishes it live** as a new default `prompt_versions` row (apply-live = one deliberate
+  cache reset), reusing the version machinery so A/B attribution + audit stay intact. Layer 2
+  (KB) stays in the Knowledge-base tab; Layer 3 (player data) is per-request and not editable.
 - **KB CRUD + import** (`kb_import.py`, `db.*` helpers): versioned entries (edit = new
   version row, delete = soft `active=false`); JSON/CSV/Markdown bulk import.
 - **Escalation Phase 2** (`escalation.open_ticket`, `notifiers/telegram.py`,

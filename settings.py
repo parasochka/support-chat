@@ -17,6 +17,7 @@ from typing import Any
 import config
 import db
 import escalation as _escalation
+import prompts
 
 # Raw DB values keyed by setting group (e.g. 'antispam' -> {...}). Empty until
 # reload(); an empty cache means every getter falls back to env defaults.
@@ -81,6 +82,22 @@ def forbidden_topics() -> dict[str, Any]:
         "topics": db_v.get("topics", []),
         "refusal": db_v.get("refusal", ""),
     }
+
+
+def system_prompt() -> dict[str, str]:
+    """Resolved Layer-1 core sections: stored overrides merged over the shipped
+    defaults. The runtime core itself is served from the published prompt
+    version; this is the editor's source of truth, so it always round-trips a
+    full set of section keys.
+    """
+    db_v = _group("system_prompt")
+    stored = db_v.get("sections")
+    out = prompts.default_sections()
+    if isinstance(stored, dict):
+        for key, body in stored.items():
+            if key in out and isinstance(body, str) and body.strip():
+                out[key] = body
+    return out
 
 
 def resolved_all() -> dict[str, Any]:
