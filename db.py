@@ -81,6 +81,11 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   status        TEXT NOT NULL DEFAULT 'open',
   escalated     BOOLEAN NOT NULL DEFAULT FALSE,
   message_count INT NOT NULL DEFAULT 0,
+  -- Prompt-history boundary: only chat_messages with id > this value are fed
+  -- into the model prompt. Bumped on every topic switch so the previous
+  -- topic's transcript can't keep re-triggering a [[TOPIC:...]] suggestion
+  -- back to it (the topic-switch loop). The full transcript is still stored.
+  context_reset_id BIGINT NOT NULL DEFAULT 0,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -187,6 +192,10 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         # Phase 2: which prompt_versions row this session ran on (A/B attribution).
         "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
         "prompt_version_id INT",
+        # Prompt-history boundary bumped on each topic switch (loop fix); only
+        # messages newer than this id are sent to the model.
+        "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
+        "context_reset_id BIGINT NOT NULL DEFAULT 0",
     ]
     for stmt in alters:
         await conn.execute(stmt)
@@ -311,7 +320,8 @@ async def create_session(consumer: str, player_id: Optional[str],
 async def get_session(session_id: str) -> Optional[dict[str, Any]]:
     row = await _pool.fetchrow(
         "SELECT id, consumer, player_id, lang, lang_locked, topic_id, user_context, "
-        "status, escalated, message_count, prompt_version_id, created_at, updated_at "
+        "status, escalated, message_count, prompt_version_id, context_reset_id, "
+        "created_at, updated_at "
         "FROM chat_sessions WHERE id = $1",
         session_id,
     )
@@ -326,10 +336,29 @@ async def get_session(session_id: str) -> Optional[dict[str, Any]]:
 
 
 async def set_session_topic(session_id: str, topic_id: int) -> None:
-    await _pool.execute(
-        "UPDATE chat_sessions SET topic_id = $1, updated_at = now() WHERE id = $2",
-        topic_id, session_id,
-    )
+    """Point the session at a topic and reset the prompt-history boundary to the
+    latest message.
+
+    Switching topics loads a different KB and a topic-routing directive that, on
+    a *new* topic, lists the topic the player just came from. If the previous
+    topic's transcript were still fed into the prompt, the model would keep
+    seeing that conversation and re-suggest switching back — an endless ping-pong.
+    By snapshotting the current max message id as the boundary, the first turn
+    after a switch carries ONLY the triggering message, and later turns carry
+    only messages from the new topic onward. The full transcript is untouched
+    (resume/admin views still show everything); only prompt building honours it.
+    """
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
+            boundary = await conn.fetchval(
+                "SELECT COALESCE(MAX(id), 0) FROM chat_messages WHERE session_id = $1",
+                session_id,
+            )
+            await conn.execute(
+                "UPDATE chat_sessions SET topic_id = $1, context_reset_id = $2, "
+                "updated_at = now() WHERE id = $3",
+                topic_id, boundary, session_id,
+            )
 
 
 async def set_session_lang(session_id: str, lang: str, locked: bool = False) -> None:
@@ -350,14 +379,21 @@ async def mark_escalated(session_id: str) -> None:
     )
 
 
-async def get_history(session_id: str, limit: int = 50) -> list[dict[str, Any]]:
-    """Return messages oldest-first (last `limit` turns)."""
+async def get_history(session_id: str, limit: int = 50,
+                      after_id: int = 0) -> list[dict[str, Any]]:
+    """Return messages oldest-first (last `limit` turns).
+
+    `after_id` restricts to messages newer than that id — used for prompt
+    building so that turns from before a topic switch (the session's
+    `context_reset_id`) are excluded. Default 0 returns the whole transcript
+    (resume/admin views).
+    """
     rows = await _pool.fetch(
         "SELECT role, content, lang, created_at FROM ("
         "  SELECT role, content, lang, created_at, id FROM chat_messages "
-        "  WHERE session_id = $1 ORDER BY id DESC LIMIT $2"
+        "  WHERE session_id = $1 AND id > $2 ORDER BY id DESC LIMIT $3"
         ") sub ORDER BY id ASC",
-        session_id, limit,
+        session_id, after_id, limit,
     )
     return [dict(r) for r in rows]
 
