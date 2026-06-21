@@ -215,28 +215,66 @@
 }
 
 /* ---------------------------------------------------------------------------
-   Mobile / small viewports — the floating panel becomes a full-screen sheet.
+   Mobile / small viewports — the open panel becomes a full-screen sheet.
    On a phone the desktop fixed-size card (340×500) plus its max-*/resize math
-   leaves the input row and header controls off-screen and hard to test; a
-   full-bleed sheet is the natural mobile chat layout.
-   --------------------------------------------------------------------------- */
-@media (max-width: 600px), (max-height: 480px) {
-  .npchat-root {
-    right: 0;
-    bottom: 0;
-  }
+   leaves the input row and header controls off-screen; a full-bleed sheet is
+   the natural mobile chat layout.
 
-  /* Keep the launcher clear of notches / the home indicator. */
+   The sheet is driven by the `.npchat-fullscreen` class, toggled from JS the
+   moment the panel opens on a small/touch viewport (see widget.js). Relying on
+   a CSS media query alone was fragile: if the host page ships an odd viewport
+   meta tag the `max-width` query never matched and the panel kept its desktop
+   size ("opens only on part of the screen"). The JS path measures the *real*
+   viewport, so it can't be fooled by the host page's CSS pixel width.
+
+   The panel's exact geometry (top/left/width/height) is then set inline from
+   the VisualViewport API, so it always tracks the *visible* area — when the
+   on-screen keyboard opens, the visual viewport shrinks and the sheet shrinks
+   with it instead of the input row sliding off-screen. The rules below cover
+   everything that is geometry-independent (chrome, safe areas, no rounding).
+   --------------------------------------------------------------------------- */
+.npchat-panel.npchat-fullscreen {
+  /* `position` + the box geometry are set inline from JS (VisualViewport).
+     These are the static, non-geometry bits of the full-screen look. */
+  max-width: none;
+  max-height: none;
+  border-radius: 0;
+}
+
+/* Hide the launcher while the full-screen sheet owns the screen. */
+.npchat-root.npchat-fullscreen-open .npchat-launcher {
+  display: none;
+}
+
+/* Safe-area padding so the header and input clear notches / home indicators. */
+.npchat-panel.npchat-fullscreen .npchat-header {
+  padding-top: max(12px, env(safe-area-inset-top));
+}
+.npchat-panel.npchat-fullscreen .npchat-inputrow {
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+}
+
+/* 16px stops iOS Safari from auto-zooming the page when the field focuses
+   (an auto-zoom would itself shift the fixed sheet off-screen). */
+.npchat-panel.npchat-fullscreen .npchat-input {
+  font-size: 16px;
+}
+
+.npchat-panel.npchat-fullscreen .npchat-msg {
+  max-width: 88%;
+}
+
+/* No-JS / progressive-enhancement fallback. If JS hasn't run yet (or the
+   VisualViewport API is missing) a small viewport still gets a usable
+   full-bleed sheet via the dynamic-viewport unit. JS, when present, overrides
+   this with precise inline geometry. */
+@media (max-width: 600px), (max-height: 480px) {
   .npchat-launcher {
     position: fixed;
     right: max(16px, env(safe-area-inset-right));
     bottom: max(16px, env(safe-area-inset-bottom));
   }
-
-  /* Fill the screen. 100dvh tracks the *visible* viewport, so the on-screen
-     keyboard shrinks the sheet instead of pushing the input row out of view
-     (100vh is the fallback for browsers without dynamic viewport units). */
-  .npchat-panel {
+  .npchat-panel:not(.npchat-fullscreen) {
     position: fixed;
     inset: 0;
     width: 100%;
@@ -245,27 +283,5 @@
     height: 100dvh;
     max-height: none;
     border-radius: 0;
-  }
-
-  /* No need for the launcher while the full-screen panel is open. */
-  .npchat-panel:not(.npchat-hidden) ~ .npchat-launcher {
-    display: none;
-  }
-
-  /* Safe-area padding so the header and input clear notches / indicators. */
-  .npchat-header {
-    padding-top: max(12px, env(safe-area-inset-top));
-  }
-  .npchat-inputrow {
-    padding-bottom: max(8px, env(safe-area-inset-bottom));
-  }
-
-  /* 16px stops iOS Safari from auto-zooming the page when the field focuses. */
-  .npchat-input {
-    font-size: 16px;
-  }
-
-  .npchat-msg {
-    max-width: 88%;
   }
 }
