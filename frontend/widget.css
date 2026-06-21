@@ -164,3 +164,10 @@
 .npchat-send:hover { background: #1d4ed8; }
 
 .npchat-error { color: #b91c1c; padding: 8px 0; }
+
+/* Hide the floating reCAPTCHA v3 badge. */
+.grecaptcha-badge {
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
