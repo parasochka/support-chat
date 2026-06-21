@@ -189,3 +189,9 @@ host-site button only; admin auth = single owner (token shaped for future multi-
   CMD reads `$PORT`, no `startCommand` override. Health check is `/healthz`.
 - Develop on branch `claude/pensive-tesla-opotpt`; do not push to other branches.
 - Env var reference lives in `README.md` (§ "Environment variables").
+- **`CLAUDE.md` is the single source of truth for docs; `README.md` is a generated
+  mirror of it** (kept byte-identical) and the root test page (`main.py` `/`) renders
+  `CLAUDE.md` live on every request. Never edit `README.md` by hand — edit `CLAUDE.md`,
+  and the sync happens automatically via the `.githooks/pre-commit` hook (enable once
+  per clone: `git config core.hooksPath .githooks`). A `docs-sync` GitHub Action fails
+  the build if the two ever drift; `sh scripts/sync_readme.sh` re-syncs manually.
