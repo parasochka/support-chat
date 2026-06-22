@@ -55,9 +55,10 @@ when invoking modules outside pytest.
 
 New rules go into the KB or Layer 3 — **never** into `SYSTEM_CORE`. The source prompt and
 KB are Russian; only the answer language varies. The Layer-3 directive tells the model to
-**answer strictly in the session language**, which is the browser language resolved once at
-session create (see "Language resolution" below) — the whole session, chrome and answers,
-speaks that one language.
+**answer in the language of the player's current message** (falling back to the session's
+base language when it's too short/ambiguous) — so the answers follow the player if they
+switch language mid-chat, while the widget chrome stays fixed to the browser language (see
+"Language resolution" below).
 
 **Personalization** also lives in Layer 3 (never `SYSTEM_CORE`): when the sanitized
 `user_context` carries a `full_name`, `prompts._personalization_directive` adds a line giving
@@ -123,24 +124,42 @@ the message cap. Both knobs (`low_content_block` master switch, `min_meaningful_
 in the hot-reloaded `antispam` settings group.
 
 ### Language resolution (`language.py`)
-**One source of truth: the browser language.** Both the widget chrome and the AI answers
-use a single language for the whole session, derived from the browser locale and never
-changed mid-session. There is no per-message mirroring, no account/handshake language input,
-and no manual switcher. Deterministic priority: `locale` (e.g. `es-MX`→`es`; this is where
-the browser's `navigator.language` lands) → persisted `session_lang` (the locale resolved at
-session create) → `AUTO` (→ `DEFAULT_LANGUAGE`). `create_session` resolves the code from the
-locale and stores it on `chat_sessions.lang`; every turn answers strictly in it (the Layer-3
-directive says so), and `chat_service` reads it back as `session_lang` each turn — no
-detection, no stickiness updates, no locks.
+**The widget chrome is fixed to the browser language; the AI answers FOLLOW the player.**
+The chrome (buttons, labels, the first canned message) is always the browser language and
+never changes. The *conversation*, however, switches to whatever supported language the
+player actually writes in: open in Russian but start typing English and the answers move to
+English — the interface stays put.
+
+The browser locale is still the **starting** answer language. Deterministic priority for the
+session's base/UI code: `locale` (e.g. `es-MX`→`es`; this is where the browser's
+`navigator.language` lands) → persisted `session_lang` (the locale resolved at session
+create) → `AUTO` (→ `DEFAULT_LANGUAGE`). `create_session` resolves it and stores it on
+`chat_sessions.lang` (the browser/UI language — never overwritten by the drift below).
+
+**Answer-language drift (`chat_service` + the Layer-3 directive).** Each turn the base/fallback
+language is the session's sticky `conv_lang` (the language the player last switched to) if set,
+else `chat_sessions.lang`. The Layer-3 `_language_directive` tells the model to answer in the
+language of the player's **current** message when it is one of the `supported` codes, and to
+fall back to the base only when the message is too short / numeric / emoji-only or written in an
+unsupported language. The model reports the language it answered in via a `[[LANG:xx]]` sentinel
+on its first line; `chat_service` strips it (`prompts.strip_language_tag`, mirroring the
+`[[ESCALATE]]` / `[[TOPIC:slug]]` strips), validates the code against `supported`, uses it as the
+turn's `answer_lang` (escalation/contact copy + metadata), and — when it differs from the stored
+value — persists it to `chat_sessions.conv_lang` so later turns stick to it (including the
+model-free message-cap and low-content paths, which read `conv_lang` → `lang`) until the player
+switches again. Stickiness also rides the prompt history: the model sees the prior turns, so an
+ambiguous follow-up stays in the language the conversation drifted to. No separate detection
+call — detection is the model's, at no extra cost.
 
 The **widget chrome** language is resolved **once, synchronously, before the panel is ever
 painted** (`widget.js` `resolveLang`): browser `locale` → English. Resolving it on the client
 (the locale is available immediately) kills the old "opens in English, then jumps to Russian a
 few seconds later" flicker, where the chrome only learned the real language from the slow
-`/session` round-trip. Because the backend resolves the *same* code from the same locale, the
-chrome and answers always agree from turn one. Async responses (`/topics`, `/session`)
-therefore **follow** `state.lang` and never redefine it. The set of supported languages still
-comes from the hot-reloaded `language` settings group (`default` + `supported`).
+`/session` round-trip. The chrome reads only its own client-resolved `state.lang` and **ignores**
+the per-message `lang` the answers drift to, so the conversation can switch language without the
+interface flickering. Async responses (`/topics`, `/session`) therefore **follow** `state.lang`
+and never redefine it. The set of supported languages still comes from the hot-reloaded
+`language` settings group (`default` + `supported`).
 
 > The `chat_sessions.lang_locked` column is dead (kept only to avoid a schema migration);
 > it is no longer read or written by the chat flow.

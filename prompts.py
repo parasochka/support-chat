@@ -24,6 +24,14 @@ ESCALATE_TAG = "[[ESCALATE]]"
 # loaded — so the front-end can offer a one-tap topic switch. Captures the slug.
 _TOPIC_TAG_RE = re.compile(r"\[\[TOPIC:([a-z0-9_\-]+)\]\]", re.IGNORECASE)
 
+# Machine-readable sentinel the model prepends (own first line) reporting the
+# language it answered in. The conversation language FOLLOWS the player: the
+# directive tells the model to reply in the language of the player's current
+# message, and this tag lets chat_service learn which language that was so it can
+# stick (persist) it and localize side-payloads (escalation copy). Captures a
+# 2-letter code. Mirrors the [[ESCALATE]] / [[TOPIC:slug]] strip pattern.
+_LANG_TAG_RE = re.compile(r"\[\[LANG:([a-z]{2})\]\]", re.IGNORECASE)
+
 # ---------------------------------------------------------------------------
 # LAYER 1 — SYSTEM_CORE  (BYTE-STABLE, Russian). DO NOT add per-request data.
 # ---------------------------------------------------------------------------
@@ -230,14 +238,36 @@ def sanitize_user_context(user_context: dict[str, Any]) -> dict[str, str]:
 # LAYER 3 — dynamic prompt (lives in the USER message, never the system message)
 # ---------------------------------------------------------------------------
 def _language_directive(resolved_lang: str) -> str:
-    """The Layer-3 'Язык ответа' line.
+    """The Layer-3 'Язык ответа' block.
 
-    The whole session answers in one language — the browser's language, resolved
-    at session create. Tell the model to answer strictly in it, regardless of
-    the language the player happens to type in.
+    The conversation language FOLLOWS the player: answer in the language the
+    player wrote their CURRENT message in (restricted to the supported set), so
+    if they switch mid-chat (e.g. the browser opened in Russian but they start
+    writing in English) the answers switch with them. The widget chrome is
+    unaffected — it keeps the browser language resolved client-side.
+
+    `resolved_lang` is the BASE/fallback language (the session's sticky
+    conversation language, else the browser language): used when the player's
+    message is too short / numeric / emoji-only to tell, or written in an
+    unsupported language. The model also emits a `[[LANG:xx]]` tag on its first
+    line reporting the language it answered in, so chat_service can persist the
+    drift and localize side-payloads.
     """
-    name = language.language_name(resolved_lang)
-    return f"Язык ответа: отвечай строго на языке — {name}."
+    base = language.language_name(resolved_lang)
+    supported = ", ".join(
+        language.LANG_NAMES.get(c, c) for c in language.supported_codes()
+    )
+    return (
+        "Язык ответа: определи язык, на котором написано ТЕКУЩЕЕ сообщение "
+        f"игрока, и отвечай именно на этом языке, если он из списка: {supported}. "
+        "Если язык сообщения не из списка либо его нельзя уверенно определить "
+        "(слишком короткое сообщение, только цифры, символы или эмодзи) — "
+        f"отвечай на языке: {base}. "
+        "В самой первой строке ответа отдельной строкой выведи машинный тег "
+        "[[LANG:код]] с двухбуквенным кодом языка, на котором ты отвечаешь "
+        "(например, [[LANG:en]]). Тег предназначен для системы; пиши его ровно "
+        "так."
+    )
 
 
 def _personalization_directive(full_name: str) -> Optional[str]:
@@ -418,6 +448,29 @@ def strip_escalation_tag(text: str) -> tuple[str, bool]:
             continue
         cleaned.append(line)
     return "\n".join(cleaned).strip(), escalated
+
+
+def strip_language_tag(text: str) -> tuple[str, Optional[str]]:
+    """Detect + strip a `[[LANG:xx]]` tag. Returns (clean_text, code|None).
+
+    Mirrors strip_escalation_tag / strip_topic_suggestion: the tag is removed
+    from the visible reply and the captured 2-letter code (lower-cased) is handed
+    back so chat_service can validate it against the supported set, persist the
+    conversation-language drift, and localize the escalation/contact payload.
+    """
+    code: Optional[str] = None
+    cleaned: list[str] = []
+    for line in text.splitlines():
+        m = _LANG_TAG_RE.search(line)
+        if m:
+            if code is None:
+                code = m.group(1).strip().lower()
+            remainder = _LANG_TAG_RE.sub("", line).strip()
+            if remainder:
+                cleaned.append(remainder)
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned).strip(), code
 
 
 def strip_topic_suggestion(text: str) -> tuple[str, Optional[str]]:

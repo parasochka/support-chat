@@ -70,11 +70,10 @@ def test_dynamic_data_lives_in_user_message_not_system():
     assert "Spanish" in last_user  # fallback language name in Layer 3
 
 
-def test_layer3_directive_answers_in_resolved_language():
-    """The session answers in one language — the browser-resolved code — so the
-
-    Layer-3 directive tells the model to answer strictly in it, and the cached
-    system prefix stays byte-stable.
+def test_layer3_directive_follows_player_language():
+    """The conversation language follows the player: the Layer-3 directive tells
+    the model to answer in the language of the CURRENT message, falling back to
+    the base/sticky language. The cached system prefix stays byte-stable.
     """
     session = {"user_context": {}}
     core_before = prompts.get_system_core()
@@ -82,9 +81,25 @@ def test_layer3_directive_answers_in_resolved_language():
                                   user_text="Привет, помогите с депозитом",
                                   resolved_lang="tr")
     directive = msgs[-1]["content"]
-    assert "отвечай строго на языке — Turkish" in directive
+    # Follows the current message language…
+    assert "ТЕКУЩЕЕ сообщение" in directive
+    # …falls back to the base language (Turkish here) when ambiguous…
+    assert "отвечай на языке: Turkish" in directive
+    # …and asks the model to report its answer language via the [[LANG:xx]] tag.
+    assert "[[LANG:" in directive
     # The directive lives in Layer 3 only; the cached core must be untouched.
     assert msgs[0]["content"] == core_before
+
+
+def test_strip_language_tag():
+    clean, code = prompts.strip_language_tag("[[LANG:en]]\nHello, how can I help?")
+    assert code == "en"
+    assert "[[LANG" not in clean
+    assert clean == "Hello, how can I help?"
+    # No tag -> code is None, text unchanged.
+    clean2, code2 = prompts.strip_language_tag("Just a plain reply")
+    assert code2 is None
+    assert clean2 == "Just a plain reply"
 
 
 def test_layer3_guardrails_present_and_after_message():
