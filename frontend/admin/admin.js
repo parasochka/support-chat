@@ -825,6 +825,8 @@ async function viewTest(main) {
     const textFields = [
       ["id", "Player id"], ["full_name", "Full name (used to greet by name)"],
       ["email", "Email"], ["activation_status", "Activation status"],
+      ["country", "Country"], ["balance", "Balance"],
+      ["vip_level", "VIP level"], ["registration_date", "Registration date"],
     ];
     for (const [key, label] of textFields) {
       const lab = el("label", "npadmin-field");
@@ -868,6 +870,8 @@ async function viewTest(main) {
         enabled: en.checked,
         id: fields.id.value, full_name: fields.full_name.value,
         email: fields.email.value, activation_status: fields.activation_status.value,
+        country: fields.country.value, balance: fields.balance.value,
+        vip_level: fields.vip_level.value, registration_date: fields.registration_date.value,
         profile_language: plSel.value, force_lang: flSel.value,
       };
       try {

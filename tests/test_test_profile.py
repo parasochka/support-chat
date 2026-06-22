@@ -23,9 +23,9 @@ def test_defaults_when_cache_empty():
     p = settings.test_profile()
     assert p["enabled"] is True
     assert p["full_name"] == "Test Player"
+    assert p["vip_level"] == "Silver"
     # Always a full set of keys so the editor round-trips cleanly.
-    assert set(p) == {"enabled", "id", "full_name", "email",
-                      "activation_status", "profile_language", "force_lang"}
+    assert set(p) == set(settings._DEFAULT_TEST_PROFILE)
 
 
 def test_db_override_merges_over_defaults():
@@ -74,6 +74,16 @@ def test_personalization_uses_first_name_when_present():
     assert "Персонализация" in out
     assert "Anna" in out            # first name surfaced
     assert "Smith" not in out.split("Персонализация", 1)[1].split("\n")[0]
+
+
+def test_extra_account_fields_reach_layer3():
+    out = prompts.build_dynamic_prompt(
+        user_context={"full_name": "Anna", "country": "Germany",
+                      "balance": "1500.00 EUR", "vip_level": "Silver",
+                      "registration_date": "2024-01-15"},
+        resolved_lang="en", user_text="hi")
+    for token in ("Germany", "1500.00 EUR", "Silver", "2024-01-15"):
+        assert token in out
 
 
 def test_no_personalization_without_name():

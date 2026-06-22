@@ -161,6 +161,10 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
                 "full_name": tp.get("full_name") or None,
                 "email": tp.get("email") or None,
                 "activation_status": tp.get("activation_status") or None,
+                "country": tp.get("country") or None,
+                "balance": tp.get("balance") or None,
+                "vip_level": tp.get("vip_level") or None,
+                "registration_date": tp.get("registration_date") or None,
             }
             if tp.get("profile_language"):
                 user_context["language"] = tp["profile_language"]

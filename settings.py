@@ -43,14 +43,22 @@ _DEFAULT_TEST_PROFILE: dict[str, Any] = {
     "full_name": "Test Player",
     "email": "test.player@example.com",
     "activation_status": "active",
+    "country": "Germany",
+    "balance": "1500.00 EUR",
+    "vip_level": "Silver",
+    "registration_date": "2024-01-15",
     "profile_language": "",
     "force_lang": "",
 }
 
 # String fields that round-trip the player context (mirrors prompts._CONTEXT_FIELDS
-# plus the account-language seed). Validated as plain strings.
+# plus the account-language seed). Validated as plain strings. To surface a new
+# field to the model, add it here AND to prompts._CONTEXT_FIELDS AND to the
+# user_context built in api/chat.create_session AND to the admin Test-sandbox form.
 _TEST_PROFILE_STR_FIELDS = (
-    "id", "full_name", "email", "activation_status", "profile_language",
+    "id", "full_name", "email", "activation_status",
+    "country", "balance", "vip_level", "registration_date",
+    "profile_language",
 )
 
 

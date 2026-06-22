@@ -212,8 +212,13 @@ def _sanitize_field(value: Any) -> str:
     return text
 
 
-# Only these base fields are surfaced to the model in Phase 1.
-_CONTEXT_FIELDS = ("id", "full_name", "email", "activation_status")
+# Only these whitelisted fields are surfaced to the model (Layer 3). Anything
+# else in user_context is dropped — a new field reaches the model ONLY by being
+# added here (keep this list intentional; it is the info-leak boundary).
+_CONTEXT_FIELDS = (
+    "id", "full_name", "email", "activation_status",
+    "country", "balance", "vip_level", "registration_date",
+)
 
 
 def sanitize_user_context(user_context: dict[str, Any]) -> dict[str, str]:
