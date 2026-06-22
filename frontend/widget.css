@@ -93,7 +93,9 @@
   color: #111;
 }
 .npchat-topic {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
   text-align: left;
   margin: 6px 0;
@@ -103,10 +105,33 @@
   background: #fff;
   cursor: pointer;
   color: #111;
-  transition: border-color 0.12s ease, background 0.12s ease;
+  transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
 }
 .npchat-topic:hover { border-color: #2563eb; background: #f0f5ff; }
-.npchat-topic-other { color: #555; font-style: italic; }
+.npchat-topic-emoji {
+  flex: 0 0 auto;
+  font-size: 18px;
+  line-height: 1;
+  width: 22px;
+  text-align: center;
+}
+.npchat-topic-label { flex: 1 1 auto; }
+
+/* "Other" is the always-available catch-all — keep it visibly highlighted with
+   a purple outline + soft glow so the player always sees they can ask anything
+   via the AI, no matter which topics are listed above. */
+.npchat-topic-other {
+  border: 2px solid #7c3aed;
+  background: #faf5ff;
+  color: #5b21b6;
+  font-weight: 600;
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.12);
+}
+.npchat-topic-other:hover {
+  border-color: #6d28d9;
+  background: #f3e8ff;
+  box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.18);
+}
 
 .npchat-messages {
   display: flex;
