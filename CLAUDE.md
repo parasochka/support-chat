@@ -299,6 +299,16 @@ host-site button only; admin auth = single owner (token shaped for future multi-
 - Stdlib-only JWT (`auth.py`) — HS256 via `hmac`/`hashlib`/`base64`, no PyJWT.
 - Front-end is vanilla ES modules with **no build step**; widget classes are prefixed
   `npchat-` to avoid host-page collisions. Phase 2 admin SPA should use `npadmin-`.
+- **Assistant replies render a small, safe Markdown subset** (`widget.js`
+  `renderMarkdown`): the model formats answers with light Markdown on its own
+  (`**bold**`, numbered/bulleted lists, `code`, links), so rendering them as plain text
+  leaked the literal markers to the screen. The renderer HTML-escapes the model text
+  **first**, then re-introduces only a whitelist — `**bold**`/`__bold__`, `*italic*`/
+  `_italic_`, `` `code` ``, `[label](url)` (http(s)/mailto only, `rel="noopener"`), ATX
+  headings, and `<ul>`/`<ol>` lists — so no raw HTML from the model ever survives. Code
+  spans and links are stashed behind private-use sentinels before the bold/italic passes
+  so a URL's underscores can't be re-chewed. Only assistant turns go through it
+  (`setMsgBody`); **user input is always rendered literally** via `textContent`.
 - Deploy is Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the
   CMD reads `$PORT`, no `startCommand` override. Health check is `/healthz`.
 - Develop on branch `claude/pensive-tesla-opotpt`; do not push to other branches.

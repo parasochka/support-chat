@@ -437,8 +437,117 @@ function topicButton(slug, title, extraCls) {
   return b;
 }
 
+// ---------------------------------------------------------------------------
+// Minimal, SAFE Markdown rendering for assistant replies
+// ---------------------------------------------------------------------------
+// The model formats answers with light Markdown on its own — **bold**, numbered
+// and bulleted lists, the odd `code` span or link. Rendered as plain text those
+// markers leak to the screen (the player sees literal "**Бонус**" with the
+// asterisks). This renders a small whitelisted subset to HTML so the formatting
+// shows the way the model meant it, and no stray markup reaches the user.
+//
+// Security: the result is injected as innerHTML, so the model's text is fully
+// HTML-escaped FIRST and only a fixed set of inline/block markup is then
+// re-introduced from trusted patterns — no raw HTML from the model survives.
+// Links are restricted to http(s)/mailto and forced to open with rel="noopener".
+// Only assistant turns go through here; user input is always rendered literally.
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// Inline spans on already-escaped text. `code` spans and links are pulled out
+// to placeholders FIRST so their literal contents (e.g. a URL's underscores, or
+// the generated target="_blank") can't be re-chewed by the bold/italic rules;
+// bold runs before italic so the single-asterisk rule never eats a `**` pair;
+// then the protected tokens are restored.
+function renderInline(text) {
+  const tokens = [];
+  // Stash code spans / links behind private-use sentinels so their literal
+  // contents (a URL's underscores, the generated target="_blank") can't be
+  // re-chewed by the bold/italic rules below; restored at the very end. The
+  // \uE000/\uE001 sentinels can't occur in the already-escaped input text.
+  const stash = (html) => "\uE000" + (tokens.push(html) - 1) + "\uE001";
+  return text
+    .replace(/`([^`]+)`/g, (_m, c) => stash(`<code>${c}</code>`))
+    .replace(
+      /\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,
+      (_m, label, url) =>
+        stash(`<a href="${url}" target="_blank" rel="noopener">${label}</a>`),
+    )
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*(?!\s)([^*\n]+?)\*/g, "$1<em>$2</em>")
+    .replace(/(^|[^\w_])_(?!\s)([^_\n]+?)_/g, "$1<em>$2</em>")
+    .replace(/\uE000(\d+)\uE001/g, (_m, i) => tokens[Number(i)]);
+}
+
+// Block structure: groups consecutive list items into <ul>/<ol>, turns ATX
+// headings and blank-line-separated runs into paragraphs, and keeps single line
+// breaks inside a paragraph as <br>. Returns HTML with no significant inter-tag
+// whitespace (assistant bubbles drop pre-wrap so this markup drives the layout).
+function renderMarkdown(md) {
+  const lines = escapeHtml(md == null ? "" : md).split(/\r?\n/);
+  const out = [];
+  let list = null;
+  let para = [];
+  const flushList = () => {
+    if (!list) return;
+    out.push(
+      `<${list.type}>` +
+        list.items.map((it) => `<li>${renderInline(it)}</li>`).join("") +
+        `</${list.type}>`,
+    );
+    list = null;
+  };
+  const flushPara = () => {
+    if (!para.length) return;
+    out.push(`<p>${para.map(renderInline).join("<br>")}</p>`);
+    para = [];
+  };
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    const heading = line.match(/^\s*#{1,6}\s+(.*)$/);
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    const ul = line.match(/^\s*[-*•]\s+(.*)$/);
+    if (heading) {
+      flushList();
+      flushPara();
+      out.push(`<p><strong>${renderInline(heading[1])}</strong></p>`);
+    } else if (ol) {
+      flushPara();
+      if (!list || list.type !== "ol") { flushList(); list = { type: "ol", items: [] }; }
+      list.items.push(ol[1]);
+    } else if (ul) {
+      flushPara();
+      if (!list || list.type !== "ul") { flushList(); list = { type: "ul", items: [] }; }
+      list.items.push(ul[1]);
+    } else if (!line.trim()) {
+      flushList();
+      flushPara();
+    } else {
+      flushList();
+      para.push(line);
+    }
+  }
+  flushList();
+  flushPara();
+  return out.join("");
+}
+
+// Fill a message bubble: assistant turns get the rendered Markdown subset, every
+// other role stays literal text (user input is never treated as markup).
+function setMsgBody(elm, role, text) {
+  if (role === "assistant") elm.innerHTML = renderMarkdown(text);
+  else elm.textContent = text == null ? "" : text;
+}
+
 function addMessage(role, text) {
-  const m = el("div", `npchat-msg npchat-msg-${role}`, text);
+  const m = el("div", `npchat-msg npchat-msg-${role}`);
+  setMsgBody(m, role, text);
   els.messages.appendChild(m);
   els.messages.scrollTop = els.messages.scrollHeight;
   return m;
@@ -488,7 +597,7 @@ async function switchTopicAndResend(slug, originalText, wrap, btn) {
   const typing = addMessage("assistant", "…");
   try {
     const data = await sendMessage(originalText);
-    typing.textContent = data.reply || "";
+    setMsgBody(typing, "assistant", data.reply || "");
     if (data.escalation && data.escalation.active) addEscalation(data.escalation);
     if (data.suggested_topic) addTopicSuggestion(data.suggested_topic, originalText);
   } catch (e) {
@@ -673,7 +782,7 @@ async function onSend() {
   const typing = addMessage("assistant", "…");
   try {
     const data = await sendMessage(text);
-    typing.textContent = data.reply || "";
+    setMsgBody(typing, "assistant", data.reply || "");
     if (data.escalation && data.escalation.active) {
       addEscalation(data.escalation);
     }

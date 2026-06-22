@@ -167,6 +167,27 @@
   color: #111;
   border: 1px solid #e6e8eb;
   border-bottom-left-radius: 2px;
+  /* Assistant replies are rendered from a small Markdown subset to real HTML
+     (see renderMarkdown in widget.js), so the generated <p>/<ul>/<br> markup
+     drives the layout — drop the pre-wrap that user (plain-text) bubbles use. */
+  white-space: normal;
+}
+
+/* Rendered Markdown inside an assistant bubble — kept compact so a formatted
+   answer doesn't balloon the bubble with default browser margins. */
+.npchat-msg-assistant p { margin: 0 0 8px; }
+.npchat-msg-assistant p:last-child { margin-bottom: 0; }
+.npchat-msg-assistant ul,
+.npchat-msg-assistant ol { margin: 4px 0; padding-left: 20px; }
+.npchat-msg-assistant li { margin: 2px 0; }
+.npchat-msg-assistant strong { font-weight: 600; }
+.npchat-msg-assistant a { color: #2563eb; text-decoration: underline; }
+.npchat-msg-assistant code {
+  background: #f0f1f3;
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
 }
 
 .npchat-escalation {
