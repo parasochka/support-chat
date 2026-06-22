@@ -116,6 +116,7 @@ function renderLogin() {
 const VIEWS = [
   ["overview", "Overview"], ["sessions", "Sessions"], ["unresolved", "Unresolved"],
   ["kb", "Knowledge base"], ["prompt", "Prompt"], ["settings", "Settings"],
+  ["test", "Test sandbox"],
 ];
 
 function renderApp() {
@@ -159,7 +160,7 @@ function routeView(main) {
   main.innerHTML = "";
   const map = {
     overview: viewOverview, sessions: viewSessions, unresolved: viewUnresolved,
-    kb: viewKB, prompt: viewPrompt, settings: viewSettings,
+    kb: viewKB, prompt: viewPrompt, settings: viewSettings, test: viewTest,
   };
   (map[state.view] || viewOverview)(main);
 }
@@ -777,6 +778,117 @@ function languageSettingsBox(holder, current) {
   });
   box.append(save, err);
   holder.appendChild(box);
+}
+
+// ---------------------------------------------------------------------------
+// Test sandbox — the stand-in player profile for the test widget (test page /)
+//
+// In production the host site supplies user_context over a signed handshake;
+// in test/dev this stored profile stands in for it. It feeds Layer 3 of the
+// prompt (so the model can greet the player by name) and can pin the answer/UI
+// language for the whole session — handy when the browser locale doesn't match
+// the language you want to test.
+// ---------------------------------------------------------------------------
+async function viewTest(main) {
+  main.appendChild(el("h1", "npadmin-h", "Test sandbox"));
+  main.appendChild(el("div", "npadmin-help",
+    "The player profile used by the test widget (test page at /). In production "
+    + "the host site supplies this over a signed handshake; here it stands in for "
+    + "it. These fields feed Layer 3 of the prompt (the model can address the "
+    + "player by name) and can pin the answer/UI language for the whole session."));
+  const holder = el("div", null, "Loading…"); main.appendChild(holder);
+  try {
+    const data = await api("/test-profile");
+    holder.innerHTML = "";
+    const p = data.profile || {};
+    const langs = data.languages || [];
+
+    if (!data.active) {
+      holder.appendChild(el("div", "npadmin-warnbox",
+        "A handshake secret (WIDGET_HANDSHAKE_SECRET) is configured, so the host "
+        + "site is authoritative and this test profile is ignored at session create."));
+    }
+
+    const box = el("div", "npadmin-chart");
+
+    // enabled toggle
+    const enLab = el("label", "npadmin-field");
+    enLab.style.flexDirection = "row"; enLab.style.alignItems = "center";
+    const en = document.createElement("input");
+    en.type = "checkbox"; en.checked = p.enabled !== false;
+    enLab.append(en, el("span", null,
+      " Enabled (off ⇒ fall back to the widget's built-in context)"));
+    box.appendChild(enLab);
+
+    // plain text fields (the four the model actually sees in Layer 3)
+    const fields = {};
+    const textFields = [
+      ["id", "Player id"], ["full_name", "Full name (used to greet by name)"],
+      ["email", "Email"], ["activation_status", "Activation status"],
+      ["country", "Country"], ["balance", "Balance"],
+      ["vip_level", "VIP level"], ["registration_date", "Registration date"],
+    ];
+    for (const [key, label] of textFields) {
+      const lab = el("label", "npadmin-field");
+      lab.appendChild(el("span", null, label));
+      const inp = el("input", "npadmin-input");
+      inp.value = p[key] || "";
+      fields[key] = inp; lab.appendChild(inp);
+      box.appendChild(lab);
+    }
+
+    // language selects with an extra empty option (Auto / none)
+    function optLangSelect(selected, emptyLabel) {
+      const sel = el("select", "npadmin-input"); sel.style.width = "auto";
+      const o0 = el("option", null, emptyLabel); o0.value = ""; sel.appendChild(o0);
+      for (const l of langs) {
+        const o = el("option", null, `${l.name} (${l.code})`); o.value = l.code;
+        if (l.code === (selected || "")) o.selected = true;
+        sel.appendChild(o);
+      }
+      sel.value = selected || "";
+      return sel;
+    }
+
+    const plLab = el("label", "npadmin-field");
+    plLab.appendChild(el("span", null,
+      "Account language — seeds the default, BELOW the browser locale"));
+    const plSel = optLangSelect(p.profile_language, "— none —");
+    plLab.appendChild(plSel); box.appendChild(plLab);
+
+    const flLab = el("label", "npadmin-field");
+    flLab.appendChild(el("span", null,
+      "Force language — pins the whole session's answer + UI language"));
+    const flSel = optLangSelect(p.force_lang, "Auto (browser / profile)");
+    flLab.appendChild(flSel); box.appendChild(flLab);
+
+    const err = el("div", "npadmin-err");
+    const save = el("button", "npadmin-btn", "Save test profile");
+    save.addEventListener("click", async () => {
+      err.textContent = ""; err.style.color = "";
+      const value = {
+        enabled: en.checked,
+        id: fields.id.value, full_name: fields.full_name.value,
+        email: fields.email.value, activation_status: fields.activation_status.value,
+        country: fields.country.value, balance: fields.balance.value,
+        vip_level: fields.vip_level.value, registration_date: fields.registration_date.value,
+        profile_language: plSel.value, force_lang: flSel.value,
+      };
+      try {
+        await api("/test-profile", { method: "PUT", body: { value } });
+        err.style.color = "var(--good)";
+        err.textContent = "Saved — applies to the next chat session (reopen the widget)";
+      } catch (e) { err.textContent = e.message; }
+    });
+
+    const open = el("a", "npadmin-btn ghost", "Open test page ↗");
+    open.href = "/"; open.target = "_blank"; open.style.marginLeft = "8px";
+
+    const actions = el("div", "npadmin-toolbar");
+    actions.append(save, open);
+    box.append(actions, err);
+    holder.appendChild(box);
+  } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
 }
 
 // ---------------------------------------------------------------------------

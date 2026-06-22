@@ -54,10 +54,12 @@ def test_length_capped():
 
 
 def test_only_known_fields_returned():
-    ctx = {"id": "1", "secret_admin_flag": "true", "balance": "9999"}
+    ctx = {"id": "1", "secret_admin_flag": "true", "password": "9999"}
     out = prompts.sanitize_user_context(ctx)
-    assert set(out.keys()) == {"id", "full_name", "email", "activation_status"}
+    # The output is exactly the whitelist — unknown keys never surface.
+    assert set(out.keys()) == set(prompts._CONTEXT_FIELDS)
     assert "secret_admin_flag" not in out
+    assert "password" not in out
 
 
 def test_strip_escalation_tag():

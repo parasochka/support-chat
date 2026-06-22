@@ -351,6 +351,43 @@ async def put_setting(key: str, body: SettingWrite, admin=Depends(require_admin)
 
 
 # ---------------------------------------------------------------------------
+# test/dev sandbox profile
+#
+# In production the host site supplies the player's user_context over a signed
+# handshake; in test/dev (no WIDGET_HANDSHAKE_SECRET) there is no host, so this
+# stored profile stands in for it. It drives the Layer-3 player data the model
+# sees and (optionally) pins the session language. Applied in api/chat.create_session.
+# ---------------------------------------------------------------------------
+class TestProfileWrite(BaseModel):
+    value: Any = Field(...)
+
+
+@router.get("/test-profile")
+async def get_test_profile() -> JSONResponse:
+    return JSONResponse(content={
+        "profile": settings_mod.test_profile(),
+        "languages": [{"code": c, "name": language.LANG_NAMES.get(c, c.upper())}
+                      for c in config.SUPPORTED_LANGUAGES],
+        # When a handshake secret is set the host site is authoritative and this
+        # profile is ignored at session create — surface that so the UI can warn.
+        "active": not bool(config.WIDGET_HANDSHAKE_SECRET),
+    })
+
+
+@router.put("/test-profile")
+async def put_test_profile(body: TestProfileWrite,
+                           admin=Depends(require_admin)) -> JSONResponse:
+    try:
+        validated = settings_mod.validate_test_profile(body.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.set_setting("test_profile", validated, updated_by=admin.get("role"))
+    await settings_mod.reload()  # hot: applies to the next session created
+    await db.log_admin_event(None, "test_profile_updated", {})
+    return JSONResponse(content={"profile": settings_mod.test_profile()})
+
+
+# ---------------------------------------------------------------------------
 # system prompt (Layer-1 core) — structured, edit-and-apply-live
 #
 # The core is broken into named sections (tone of voice + each rule block) so the
