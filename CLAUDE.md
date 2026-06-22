@@ -62,11 +62,19 @@ switch language mid-chat, while the widget chrome stays fixed to the browser lan
 
 **Personalization** also lives in Layer 3 (never `SYSTEM_CORE`): when the sanitized
 `user_context` carries a `full_name`, `prompts._personalization_directive` adds a line giving
-the model the player's **first name** and telling it to address them by name naturally (not on
-every line). No name ⇒ the line is omitted and the prompt is unchanged. The whitelisted context
+the model the player's **first name** and telling it to use the name sparingly (not on every
+line). No name ⇒ the line is omitted and the prompt is unchanged. The whitelisted context
 fields the model ever sees are `prompts._CONTEXT_FIELDS` (`id, full_name, email,
 activation_status, country, balance, vip_level, registration_date`) — anything else in
 `user_context` is dropped, so adding a model-visible field is a deliberate edit to that list.
+
+**Greeting hygiene** is a separate always-present Layer-3 line (`prompts._GREETING_DIRECTIVE`,
+included with or without a name): models otherwise open *every* reply with "Привет, <имя>!" /
+"Здравствуйте!", which reads robotic in a running chat. Since the conversation history is in the
+prompt, the model can tell whether the chat has already started; the directive tells it to greet
+exactly once — in the first reply — and otherwise skip the greeting (and the leading name) and go
+straight to the answer. The *when* to greet lives here; `_personalization_directive` only supplies
+the name and the "use it sparingly" rule.
 
 ### Request flow
 `api/chat.py` (thin HTTP handlers + gate ordering) → `chat_service.handle_message`
