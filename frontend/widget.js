@@ -157,6 +157,13 @@ const state = {
   sessionId: null,
   token: null,
   topics: [],
+  // True once the lightweight catalogue (GET /topics) has been fetched, so the
+  // panel can paint the category buttons before the session exists.
+  topicsLoaded: false,
+  // In-flight promise for the (slow) reCaptcha + session create, started in the
+  // background on open so it never blocks the first paint. ensureSession() awaits
+  // it lazily before any action that actually needs a token.
+  sessionPromise: null,
   // Languages the switcher offers; seeded from I18N, refined by the backend's
   // SUPPORTED_LANGUAGES after the session is created.
   languages: Object.keys(I18N),
@@ -236,6 +243,38 @@ async function api(path, { method = "POST", body = null, auth = false } = {}) {
   return { ok: res.ok, status: res.status, data };
 }
 
+// Fetch just the topic catalogue — no session, token, or reCaptcha — so the
+// panel can paint the category buttons instantly on open. Cheap + cacheable;
+// safe to call speculatively on mount. The eventual session may resolve a
+// different default language (e.g. a forced test profile), in which case
+// createSession() re-renders the topics with the corrected titles.
+async function fetchTopics() {
+  const qs = new URLSearchParams();
+  if (CONFIG.LANG) qs.set("lang", CONFIG.LANG);
+  if (CONFIG.LOCALE) qs.set("locale", CONFIG.LOCALE);
+  const { ok, data } = await api(`/api/chat/topics?${qs.toString()}`,
+                                 { method: "GET" });
+  if (!ok) throw new Error("topics fetch failed");
+  state.topics = data.topics || [];
+  state.topicsLoaded = true;
+  if (Array.isArray(data.languages) && data.languages.length) {
+    state.languages = data.languages.filter((c) => I18N[c]);
+  }
+  state.lang = baseLang(data.lang) || state.lang;
+  renderLangSwitcher();
+  applyStaticLabels();
+}
+
+// Kick off (once) and await the background session create. Anything that needs
+// a valid token — picking a topic, sending, switching language — funnels through
+// here so it transparently waits for the in-flight session instead of starting
+// its own. Errors propagate so callers can surface a "couldn't start" message.
+function ensureSession() {
+  if (state.sessionId) return Promise.resolve();
+  if (!state.sessionPromise) state.sessionPromise = createSession();
+  return state.sessionPromise;
+}
+
 async function createSession() {
   const token = await recaptchaToken("chat_session");
   const { ok, data } = await api("/api/chat/session", {
@@ -253,6 +292,7 @@ async function createSession() {
   state.sessionId = data.session_id;
   state.token = data.token;
   state.topics = data.topics || [];
+  state.topicsLoaded = true;
   // Only offer languages the backend supports *and* the widget can render.
   if (Array.isArray(data.languages) && data.languages.length) {
     state.languages = data.languages.filter((c) => I18N[c]);
@@ -262,6 +302,12 @@ async function createSession() {
   state.lang = baseLang(data.lang) || state.lang;
   renderLangSwitcher();
   applyStaticLabels();
+  // The session may resolve a different default language than the speculative
+  // /topics prefetch did (e.g. a forced test-profile language), so re-paint the
+  // picker with the corrected titles if it's currently on screen.
+  if (els.topics && !els.topics.classList.contains("npchat-hidden")) {
+    renderTopics();
+  }
 }
 
 async function selectTopic(slug) {
@@ -277,6 +323,11 @@ async function selectTopic(slug) {
 async function selectLanguage(code) {
   state.langLocked = true;
   applyLang(code);
+  // Locking the language server-side needs the token; the player may switch
+  // before the background session create has finished, so wait for it here.
+  try {
+    await ensureSession();
+  } catch (_) { return; /* chrome already switched; backend lock will retry */ }
   const { ok, data } = await api("/api/chat/lang", {
     auth: true,
     body: { session_id: state.sessionId, lang: code },
@@ -396,6 +447,11 @@ function buildUI() {
   };
   window.addEventListener("resize", reclassify);
   window.addEventListener("orientationchange", reclassify);
+
+  // Speculatively warm the topic catalogue so the very first open paints the
+  // category buttons instantly. It's a cheap, cacheable, session-free GET and
+  // touches no reCaptcha or DB, so doing it on mount is cheap insurance.
+  fetchTopics().catch(() => { /* the open handler retries if this missed */ });
 }
 
 // (Re)build the language switcher options from the supported set and reflect
@@ -621,14 +677,20 @@ async function togglePanel() {
     exitFullscreen();
   }
   setBodyScrollLock(state.open);
-  if (state.open && !state.sessionId) {
+  if (state.open && !state.topicChosen) {
+    // Paint the category buttons as fast as we can. If the speculative mount
+    // prefetch already landed, this is instant; otherwise fetch them now —
+    // either way it does NOT wait on reCaptcha or the session create.
     try {
-      await createSession();
+      if (!state.topicsLoaded) await fetchTopics();
       renderTopics();
     } catch (e) {
       els.topics.innerHTML = "";
       addMessageToTopics(t("startError"));
     }
+    // Warm up the (slower) reCaptcha + session create in the background so it's
+    // ready by the time the player reads the list and taps a topic.
+    ensureSession().catch(() => { /* surfaced when an action needs the token */ });
   }
 }
 
@@ -637,9 +699,20 @@ function addMessageToTopics(text) {
 }
 
 async function onTopic(slug) {
+  // The session (token) may still be warming up in the background — wait for it
+  // here, the one place its absence would actually break the next request. A
+  // failed session create is fatal (no token = no chat), so surface it.
+  try {
+    await ensureSession();
+  } catch (e) {
+    els.topics.innerHTML = "";
+    addMessageToTopics(t("startError"));
+    return;
+  }
   try {
     await selectTopic(slug);
   } catch (_) { /* non-fatal: still allow chatting */ }
+  state.topicChosen = true;
   els.topics.classList.add("npchat-hidden");
   els.messages.classList.remove("npchat-hidden");
   els.inputRow.classList.remove("npchat-hidden");

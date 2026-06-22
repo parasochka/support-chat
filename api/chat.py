@@ -2,6 +2,7 @@
 
 Endpoints:
   POST /api/chat/session       create session, issue token, return topic catalogue
+  GET  /api/chat/topics        session-free topic catalogue (instant first paint)
   POST /api/chat/topic         select a topic (loads KB into session context)
   POST /api/chat/message       one chat turn (gated, persisted atomically)
   GET  /api/chat/session/{id}  resume: history + state (token required)
@@ -207,6 +208,40 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
             "languages": config.SUPPORTED_LANGUAGES,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/chat/topics  -- session-free catalogue for an instant first paint
+# ---------------------------------------------------------------------------
+@router.get("/topics")
+async def list_catalogue(lang: Optional[str] = None,
+                         locale: Optional[str] = None) -> JSONResponse:
+    """Return the topic picker without a session, token, reCaptcha, or DB write.
+
+    The category buttons are static, language-derivable data, yet in POST
+    /session they were trapped behind the (slow) reCaptcha script load + session
+    create, so the widget showed an empty panel for seconds on open. Splitting
+    the catalogue into its own cacheable GET lets the widget paint the buttons
+    immediately while reCaptcha + session creation run in the background. The
+    language resolves the same way create_session does (manual `lang` -> browser
+    `locale` -> default); when the eventual session resolves a different default
+    (e.g. a forced test-profile language) the widget re-renders from /session.
+    """
+    resolved = language.resolve(lang=lang, locale=locale)
+    answer_lang = config.DEFAULT_LANGUAGE if resolved == language.AUTO else resolved
+    topics = await kb.catalogue(lang=answer_lang)
+    resp = JSONResponse(
+        status_code=200,
+        content={
+            "topics": topics,
+            "lang": answer_lang,
+            "languages": config.SUPPORTED_LANGUAGES,
+        },
+    )
+    # The catalogue changes only on a KB edit; a short browser cache makes
+    # re-opens (and quick navigations) instant without going stale for long.
+    resp.headers["Cache-Control"] = "public, max-age=60"
+    return resp
 
 
 # ---------------------------------------------------------------------------
