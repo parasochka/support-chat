@@ -53,6 +53,29 @@
   justify-content: space-between;
 }
 .npchat-title { font-weight: 600; }
+.npchat-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.npchat-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  margin: -2px 0;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.npchat-back:hover { background: rgba(255, 255, 255, 0.18); }
 .npchat-header-right {
   display: flex;
   align-items: center;
