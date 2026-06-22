@@ -53,6 +53,24 @@ def _env_float(name: str, default: float) -> float:
         raise ConfigError(f"Environment variable {name!r} must be a float, got {raw!r}")
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    """Parse a boolean env var. Truthy: 1/true/yes/on; falsy: 0/false/no/off
+    (case-insensitive). Empty/unset -> default. Avoids the brittle
+    `x not in ("0","false",...)` checks that silently treated "FALSE"/"no"/"off"
+    as true."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    val = raw.strip().lower()
+    if val in ("1", "true", "yes", "on"):
+        return True
+    if val in ("0", "false", "no", "off"):
+        return False
+    raise ConfigError(
+        f"Environment variable {name!r} must be a boolean (1/0/true/false/yes/no/on/off), got {raw!r}"
+    )
+
+
 def _normalize_db_url(url: str) -> str:
     # asyncpg wants postgresql://, but many providers hand out postgres://
     if url.startswith("postgres://"):
@@ -102,7 +120,7 @@ MESSAGE_COOLDOWN_SEC: int = _env_int("MESSAGE_COOLDOWN_SEC", 2)
 # idle user typing one char at a time in a loop can't keep burning OpenAI tokens.
 # LOW_CONTENT_BLOCK is the master switch; MIN_MEANINGFUL_CHARS is how many
 # letters/digits a message must carry to be worth answering.
-LOW_CONTENT_BLOCK: bool = _env("LOW_CONTENT_BLOCK", "1") not in ("0", "false", "False", "")
+LOW_CONTENT_BLOCK: bool = _env_bool("LOW_CONTENT_BLOCK", True)
 MIN_MEANINGFUL_CHARS: int = _env_int("MIN_MEANINGFUL_CHARS", 2)
 
 # --- reCaptcha --------------------------------------------------------------
@@ -130,6 +148,9 @@ OWNER_TOKEN: str | None = _env_opt("OWNER_TOKEN")
 # distinct secret in production.
 ADMIN_PASSWORD: str | None = _env_opt("ADMIN_PASSWORD")
 ADMIN_JWT_SECRET: str = _env_opt("ADMIN_JWT_SECRET") or SESSION_JWT_SECRET
+# True when ADMIN_JWT_SECRET is not set on its own and silently reuses
+# SESSION_JWT_SECRET — fine for dev, flagged at startup in production.
+ADMIN_JWT_SECRET_IS_FALLBACK: bool = _env_opt("ADMIN_JWT_SECRET") is None
 ADMIN_TOKEN_TTL_MIN: int = _env_int("ADMIN_TOKEN_TTL_MIN", 480)
 
 # --- Telegram escalation notifier (Phase 2) ---------------------------------
@@ -154,11 +175,13 @@ PUBLIC_BASE_URL: str | None = _env_opt("PUBLIC_BASE_URL")
 BODY_MAX_BYTES: int = _env_int("BODY_MAX_BYTES", 65536)
 
 # --- Injection / jailbreak hard block ---------------------------------------
-# By default the injection scan only LOGS (the system prompt + Layer-3 guardrails
-# are the real defence). Set INJECTION_HARD_BLOCK=1 to additionally reject a
-# message that matches a known jailbreak pattern with HTTP 400 before it ever
-# reaches the model — defence in depth at the cost of rare false positives.
-INJECTION_HARD_BLOCK: bool = _env("INJECTION_HARD_BLOCK", "0") not in ("0", "false", "False", "")
+# When ON, a message matching a known jailbreak pattern is rejected with HTTP 400
+# BEFORE it ever reaches the model — defence in depth on top of the system prompt
+# + Layer-3 guardrails, and it stops the attempt from burning OpenAI tokens.
+# Enabled by default; the matcher is conservative (normalized known triggers), so
+# false positives are rare. Toggle live from the admin panel (antispam group) or
+# override here with INJECTION_HARD_BLOCK=0.
+INJECTION_HARD_BLOCK: bool = _env_bool("INJECTION_HARD_BLOCK", True)
 
 # --- Proxy / client IP ------------------------------------------------------
 # Number of trusted reverse proxies in front of the app (Railway edge = 1).

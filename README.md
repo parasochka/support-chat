@@ -154,7 +154,8 @@ OpenAI-side prefix cache). API keys themselves stay secrets in env.
 ### Anti-spam gate order (`antispam.py`, enforced in `api/chat.py`)
 `POST /api/chat/message` checks in this exact order: verify session token (401) → IP
 rate-limit (429 + log) → cooldown (429) → input length (400) → **low-content guard** →
-injection scan (log only, does not reject) → message-cap fast path (forces an escalation
+injection scan (always audits; **hard-blocks with 400 by default**, settings-gated via
+`injection_hard_block`) → message-cap fast path (forces an escalation
 response with no model call) → build/call/persist. Rate-limit and cooldown use **in-memory
 dicts** — fine for Phase 1 but they do not span multiple instances. reCaptcha is verified at
 session create and skips gracefully (logged) when `RECAPTCHA_SECRET` is unset.
@@ -284,8 +285,23 @@ return neither, so the widget simply shows no bubbles/finish button there.
 ### Two layers of injection defense
 1. `prompts._sanitize_field` zeroes any `user_context` field containing injection markers
    (only `id, full_name, email, activation_status` are surfaced to the model).
-2. `antispam.scan_injection` scans the user message and **logs** `injection_blocked` but
-   does not reject — `SYSTEM_CORE` already hardens against it.
+2. `antispam.scan_injection` scans the user message (normalized first, so spacing /
+   zero-width / Unicode-confusable obfuscation can't hide a known trigger) and **logs**
+   `injection_blocked`. With `injection_hard_block` (now **on by default**, tunable in the
+   `antispam` settings group) it also **rejects** the turn with HTTP 400 before the model
+   call, so a jailbreak attempt burns no tokens; `SYSTEM_CORE` + the Layer-3 guardrails
+   remain the substantive defence.
+
+### Off-topic / forbidden-topics guardrail (`forbidden_topics` setting)
+A Layer-3 line (`prompts._forbidden_topics_directive`) injects the owner-configured
+`forbidden_topics` list + custom refusal wording into the user message, so the model
+refuses off-topic and unsafe asks (programming, essays, politics, medical/legal/financial
+advice, competitors, "guaranteed-win"/cheat schemes, general knowledge, etc.) on top of the
+always-on `_GUARDRAILS` topic restriction. It ships with a **non-empty default set** (so
+off-topic blocking works out of the box and the admin panel isn't empty) and is editable in
+the `forbidden_topics` settings group; an explicit empty list disables it. The refusal is a
+template the model localizes to the player's language. Lives in Layer 3 only, so
+`SYSTEM_CORE` stays byte-stable (a test asserts it).
 
 ## Invariants (these break silently — do not violate)
 
@@ -314,7 +330,9 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   precedence `app_settings` (DB) → env → default. A sync in-process cache (populated at
   startup, reloaded on write) is read by `antispam`/`escalation`/`openai_client`/`language`/
   `auth`/api; writes validate hard and log `setting_updated`. Groups: `escalation`
-  (incl. `max_messages_per_session`), `forbidden_topics`, `language` (default + supported
+  (incl. `max_messages_per_session`), `forbidden_topics` (off-topic/unsafe-request list +
+  custom refusal, enforced in Layer 3 — see that section; ships with non-empty defaults),
+  `language` (default + supported
   set — every language read goes through `language.default_code()`/`supported_codes()`),
   `antispam` (rate limit/window/cooldown/input cap **plus** `recaptcha_min_score`,
   `injection_hard_block`, and the low-content guard `low_content_block` /
@@ -325,7 +343,8 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   Telegram/handshake/reCaptcha secrets) — plus the network-perimeter deploy vars
   (`CORS_ALLOW_ORIGINS`, `TRUSTED_PROXY_COUNT`) — stay in Railway env. On startup
   `seed/settings_seed.run()` snapshots the current env-resolved values for the `antispam`,
-  `model`, `general`, `language` and `escalation` (max-messages) groups into `app_settings`
+  `model`, `general`, `language`, `escalation` (max-messages) and `forbidden_topics`
+  (shipped defaults) groups into `app_settings`
   once (missing fields only; never clobbers an existing override) so the matching env vars
   can be deleted from Railway with no behaviour change.
 - **Dashboard data API** (`api/admin.py` + `db.py` aggregation + `metrics.py` derived

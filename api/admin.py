@@ -26,6 +26,9 @@ import prompts
 import settings as settings_mod
 from api.admin_auth import require_admin
 
+# Router-level dependency guards every route. Some handlers ALSO declare
+# `admin=Depends(require_admin)` to read the resolved role from the token; FastAPI
+# caches the dependency per request, so it is verified once despite the repeat.
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
 

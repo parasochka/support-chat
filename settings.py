@@ -31,6 +31,31 @@ _cache: dict[str, Any] = {}
 SETTING_KEYS = ("escalation", "forbidden_topics", "language", "antispam",
                 "model", "general")
 
+# Shipped defaults for the off-topic / unsafe-request guardrail. Kept non-empty
+# so the bot refuses obvious off-topic and unsafe asks out of the box (the model
+# is a casino/sportsbook support agent, not a general assistant). The owner edits
+# both the list and the refusal wording in the admin panel; the refusal is a
+# template the model localizes to the player's language. SYSTEM_CORE is untouched
+# — this rides in Layer 3 (see prompts._forbidden_topics_directive).
+_DEFAULT_FORBIDDEN_TOPICS: dict[str, Any] = {
+    "topics": [
+        "программирование, написание или отладка кода",
+        "написание эссе, сочинений, текстов и домашних заданий",
+        "политика, религия, новости и общественные споры",
+        "медицинские, юридические и налоговые консультации",
+        "инвестиции, трейдинг и криптовалюты вне платёжных методов NikaBet",
+        "«беспроигрышные» схемы, читы и обход правил или ограничений казино",
+        "конкуренты и сторонние букмекеры/казино",
+        "общие энциклопедические вопросы, математика и развлечения вне поддержки",
+    ],
+    "refusal": (
+        "Извините, я — помощник поддержки NikaBet и могу помочь только с "
+        "вопросами по нашему сервису: депозиты и выводы, аккаунт и верификация, "
+        "бонусы, ставки и игры, технические вопросы. Задайте, пожалуйста, вопрос "
+        "по теме поддержки."
+    ),
+}
+
 # Test/dev sandbox profile. In a real deployment the host site supplies the
 # player's `user_context` over the signed handshake; in test/dev (no
 # WIDGET_HANDSHAKE_SECRET) there is no host, so this stored profile stands in for
@@ -142,10 +167,18 @@ def language() -> dict[str, Any]:
 
 
 def forbidden_topics() -> dict[str, Any]:
+    """Resolved forbidden-topics guardrail: stored override, else shipped defaults.
+
+    The list + refusal wording are injected into the Layer-3 prompt
+    (`prompts._forbidden_topics_directive`) so the model refuses off-topic / unsafe
+    requests in addition to the always-on `_GUARDRAILS` topic restriction. Ships
+    with a non-empty default set so off-topic blocking works out of the box; the
+    owner tunes both in the admin panel (the `forbidden_topics` settings group).
+    """
     db_v = _group("forbidden_topics")
     return {
-        "topics": db_v.get("topics", []),
-        "refusal": db_v.get("refusal", ""),
+        "topics": db_v.get("topics", list(_DEFAULT_FORBIDDEN_TOPICS["topics"])),
+        "refusal": db_v.get("refusal", _DEFAULT_FORBIDDEN_TOPICS["refusal"]),
     }
 
 
