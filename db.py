@@ -196,6 +196,13 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         # messages newer than this id are sent to the model.
         "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
         "context_reset_id BIGINT NOT NULL DEFAULT 0",
+        # Sticky CONVERSATION language: the language the answers have drifted to
+        # because the player started writing in it (separate from `lang`, which
+        # stays the browser/UI language so the widget chrome is untouched). NULL
+        # until the player writes in a different supported language; then every
+        # later turn answers in it until they switch again.
+        "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
+        "conv_lang TEXT",
     ]
     for stmt in alters:
         await conn.execute(stmt)
@@ -319,9 +326,9 @@ async def create_session(consumer: str, player_id: Optional[str],
 
 async def get_session(session_id: str) -> Optional[dict[str, Any]]:
     row = await _pool.fetchrow(
-        "SELECT id, consumer, player_id, lang, lang_locked, topic_id, user_context, "
-        "status, escalated, message_count, prompt_version_id, context_reset_id, "
-        "created_at, updated_at "
+        "SELECT id, consumer, player_id, lang, lang_locked, conv_lang, topic_id, "
+        "user_context, status, escalated, message_count, prompt_version_id, "
+        "context_reset_id, created_at, updated_at "
         "FROM chat_sessions WHERE id = $1",
         session_id,
     )
@@ -368,6 +375,16 @@ async def set_session_lang(session_id: str, lang: str, locked: bool = False) -> 
         "UPDATE chat_sessions SET lang = $1, lang_locked = $2, updated_at = now() "
         "WHERE id = $3",
         lang, locked, session_id,
+    )
+
+
+async def set_conv_lang(session_id: str, conv_lang: str) -> None:
+    """Persist the sticky CONVERSATION language (the language the player started
+    writing in). Independent of `lang` (the browser/UI language), so the widget
+    chrome is untouched while the answers follow the player from this turn on."""
+    await _pool.execute(
+        "UPDATE chat_sessions SET conv_lang = $1, updated_at = now() WHERE id = $2",
+        conv_lang, session_id,
     )
 
 

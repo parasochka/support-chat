@@ -50,9 +50,19 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         topic_slug = topic["slug"] if topic else None
 
     # --- language resolution -------------------------------------------------
-    # One language for the whole session: the browser language resolved at
-    # session create and persisted as `session.lang`. Every turn answers in it.
-    resolved = language.resolve(session_lang=session.get("lang"))
+    # The conversation language FOLLOWS the player. The BASE/fallback is the
+    # session's sticky `conv_lang` (the language the player previously switched
+    # to), else the browser language resolved at create (`session.lang`). The
+    # model is told to answer in the language of the player's CURRENT message and
+    # to fall back to this base when the message is too short/ambiguous; it
+    # reports the language it used via a [[LANG:xx]] tag we strip below. The
+    # widget chrome is untouched (it keeps the browser language client-side).
+    base_lang = (
+        session.get("conv_lang")
+        or session.get("lang")
+        or language.default_code()
+    )
+    resolved = base_lang
 
     # --- audit: injection scan on the user message ---------------------------
     # (handled in api layer too; safe to re-scan is avoided — api owns it)
@@ -113,13 +123,18 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         )
         raw_text = ""
 
-    # --- strip control sentinels (escalation + topic suggestion) ------------
+    # --- strip control sentinels (escalation + topic + answer language) -----
     model_signalled = False
     suggested_slug: Optional[str] = None
+    detected_lang: Optional[str] = None
     clean_text = raw_text
     if raw_text:
         clean_text, model_signalled = prompts.strip_escalation_tag(raw_text)
         clean_text, suggested_slug = prompts.strip_topic_suggestion(clean_text)
+        clean_text, detected_lang = prompts.strip_language_tag(clean_text)
+    # Only trust a [[LANG:xx]] code the model can actually answer in.
+    if detected_lang and detected_lang not in language.supported_codes():
+        detected_lang = None
 
     # Resolve a suggested slug to a real, switchable topic (must be one we just
     # offered: valid, not the current topic, not the hidden 'other'). Anything
@@ -131,11 +146,14 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         )
 
     # --- pick a language for payloads (escalation button etc.) --------------
-    # The session's single answer language (browser-derived), also used for the
-    # escalation/contact copy and recorded as the turn metadata.
-    answer_lang = session.get("lang") or language.default_code()
-    if resolved != language.AUTO:
-        answer_lang = resolved
+    # The language the model actually answered in (from the [[LANG:xx]] tag),
+    # else the base/fallback. Used for the escalation/contact copy and recorded
+    # as the turn metadata. If the player drifted to a new supported language,
+    # persist it as the session's sticky conversation language so later turns
+    # (incl. the model-free cap / low-content paths) stay in it until they switch.
+    answer_lang = detected_lang or base_lang
+    if detected_lang and detected_lang != session.get("conv_lang"):
+        await db.set_conv_lang(session_id, detected_lang)
 
     # --- cost accounting -----------------------------------------------------
     cost = openai_client.compute_cost(
@@ -161,7 +179,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     new_count = await db.persist_turn(
         session_id=session_id,
         user_text=user_text,
-        user_lang=resolved if resolved != language.AUTO else None,
+        user_lang=detected_lang,
         assistant_text=clean_text,
         assistant_lang=answer_lang,
         ai_meta={

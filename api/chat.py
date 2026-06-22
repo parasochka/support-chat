@@ -289,7 +289,8 @@ async def send_message(req: Request, body: MessageSend,
     try:
         antispam.check_low_content(body.text)
     except antispam.AntiSpamError:
-        ans_lang = session.get("lang") or language.default_code()
+        ans_lang = (session.get("conv_lang") or session.get("lang")
+                    or language.default_code())
         await db.log_admin_event(body.session_id, "low_content_blocked",
                                  {"sample": body.text[:120]})
         return JSONResponse(
@@ -315,7 +316,8 @@ async def send_message(req: Request, body: MessageSend,
 
     # 5. message cap reached -> force escalation response (no model call)
     if session.get("message_count", 0) >= settings.escalation()["max_messages_per_session"]:
-        ans_lang = session.get("lang") or language.default_code()
+        ans_lang = (session.get("conv_lang") or session.get("lang")
+                    or language.default_code())
         if not session.get("escalated", False):
             await db.mark_escalated(body.session_id)
             await db.log_admin_event(body.session_id, "escalation",
@@ -387,7 +389,8 @@ async def escalate(body: EscalateReq,
     if err:
         return err
 
-    ans_lang = session.get("lang") or language.default_code()
+    ans_lang = (session.get("conv_lang") or session.get("lang")
+                or language.default_code())
     if not session.get("escalated", False):
         await db.mark_escalated(body.session_id)
         await db.log_admin_event(body.session_id, "escalation", {"reason": "explicit"})

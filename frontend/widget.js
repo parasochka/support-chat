@@ -104,11 +104,11 @@ function baseLang(code) {
   return I18N[base] ? base : null;
 }
 
-// The widget language, decided ONCE and synchronously at load — before the
+// The widget's STARTING language, decided synchronously at load — before the
 // panel is ever painted — from the browser language, falling back to English.
-// It never changes for the life of the session: the same language the backend
-// resolves from the locale, so chrome and answers always agree and there is no
-// post-/session flicker.
+// This is the same language the backend resolves from the locale, so chrome and
+// answers agree from turn one with no post-/session flicker. It can later follow
+// the conversation if the player switches language mid-chat (see maybeSwitchLang).
 function resolveLang() {
   return baseLang(CONFIG.LOCALE) || "en";
 }
@@ -134,7 +134,8 @@ const state = {
   // background on open so it never blocks the first paint. ensureSession() awaits
   // it lazily before any action that actually needs a token.
   sessionPromise: null,
-  // The single widget/answer language, resolved once from the browser locale.
+  // The widget chrome language. Starts at the browser locale and may later
+  // follow the conversation if the player switches language (maybeSwitchLang).
   lang: resolveLang(),
   topicChosen: false,
   open: false,
@@ -231,8 +232,9 @@ async function createSession() {
   state.token = data.token;
   state.topics = data.topics || [];
   state.topicsLoaded = true;
-  // The widget language was resolved up front from the browser and never flips,
-  // so this (slow) response only needs to (re)paint the topic list.
+  // The chrome language was resolved up front from the browser; this (slow)
+  // response only needs to (re)paint the topic list. It can still follow a later
+  // conversation-language switch (maybeSwitchLang), just not from /session.
   applyStaticLabels();
   if (els.topics && !els.topics.classList.contains("npchat-hidden")) {
     renderTopics();
@@ -255,6 +257,9 @@ async function sendMessage(text) {
   if (!ok) {
     return { reply: data.detail || `Error (${status})`, escalation: { active: false } };
   }
+  // The conversation language can drift when the player starts writing in
+  // another supported language; follow it in the chrome too (see maybeSwitchLang).
+  maybeSwitchLang(data);
   return data;
 }
 
@@ -352,7 +357,8 @@ function buildUI() {
   fetchTopics().catch(() => { /* the open handler retries if this missed */ });
 }
 
-// Re-apply chrome strings (idempotent; the language never changes after load).
+// Re-apply chrome strings. Idempotent, and re-run whenever the language changes
+// (initial paint is the browser language; later it may follow the conversation).
 function applyStaticLabels() {
   if (!els.root) return;
   els.launcher.setAttribute("aria-label", t("launcher"));
@@ -360,6 +366,30 @@ function applyStaticLabels() {
   if (title) title.textContent = t("support");
   els.input.placeholder = t("placeholder");
   els.sendBtn.textContent = t("send");
+}
+
+// Follow a conversation-language drift in the CHROME. The chrome opens in the
+// browser language, but if the player starts writing in another supported
+// language the answers switch server-side (response `lang`); mirror that here so
+// the whole widget — shell + answers — moves together. A no-op when the language
+// is unchanged or unsupported, so normal same-language turns cost nothing.
+function maybeSwitchLang(data) {
+  const next = data && baseLang(data.lang);
+  if (!next || next === state.lang) return;
+  state.lang = next;
+  applyStaticLabels();
+  // Re-localize the canned greeting — the only chrome-language bubble in the
+  // transcript (real answers are already in the new language).
+  if (state.greetingEl) state.greetingEl.textContent = t("greeting");
+  // Refresh topic titles in the new language (cheap cached GET) and re-render
+  // the picker if it's currently visible.
+  fetchTopics()
+    .then(() => {
+      if (els.topics && !els.topics.classList.contains("npchat-hidden")) {
+        renderTopics();
+      }
+    })
+    .catch(() => { /* non-fatal: titles refresh on next open */ });
 }
 
 function renderTopics() {
