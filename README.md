@@ -200,6 +200,22 @@ a soft one-tap "switch topic" prompt that calls `POST /api/chat/topic` and **aut
 player's original question against the new KB. The topic list is dynamic data → Layer 3 only; it must
 never enter `SYSTEM_CORE` (a test asserts the cached prefix stays byte-stable).
 
+**Two routing regimes (`prompts._topic_routing_directive`).** The directive's instruction flips on
+whether the current topic is the hidden catch-all `other` (`prompts.OTHER_TOPIC_SLUG`, mirrors
+`kb.OTHER_SLUG`):
+- **A specialized topic is current** — the model is *anchored* on it: it answers in-topic questions
+  from the loaded KB (or escalates) and switches **only** on a genuine mismatch. The decision keys on
+  the player's **intent**, not isolated keyword overlap — so "how do I withdraw?" asked under Deposits
+  routes to Withdrawals, while a shared term (crypto networks, verification, limits) that also fits the
+  current topic does **not** trigger a switch. This keeps cross-topic tracking active without ping-pong.
+- **The catch-all `other` is current** — it has no real KB, so the directive *reverses* the default and
+  routes **actively**: almost any concrete question really belongs to a specialized topic, so if the
+  question plausibly fits one of the listed topics the model suggests the switch instead of answering
+  from the thin generic block (and is told not to invent conditions/bonuses/dates/numbers). It answers
+  in place only when nothing fits (a generic question, feedback, a one-off), and escalates complaints /
+  suspected fraud. This fixes the case where a bonus question asked under «Другое» got a made-up
+  in-place answer instead of a one-tap switch to Bonuses.
+
 **Switch boundary (anti-ping-pong):** `set_session_topic` snapshots the current max `chat_messages.id`
 into `chat_sessions.context_reset_id`, and prompt-building history (`db.get_history(..., after_id=...)`
 in `chat_service`) only feeds the model turns newer than that boundary. Without it, switching topics

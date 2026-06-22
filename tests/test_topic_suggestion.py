@@ -73,6 +73,50 @@ def test_current_topic_named_in_layer3():
     assert "deposits — Депозиты" not in msgs[0]["content"]
 
 
+def test_other_topic_routes_aggressively():
+    """In the hidden catch-all «Другое» (slug 'other') the model should ACTIVELY
+    route concrete questions to a specialized topic instead of answering from the
+    thin generic block — the screenshot bug where a KYC-bonus question got a made-
+    up in-place answer instead of a switch to Bonuses."""
+    session = {"user_context": {}}
+    last_user = prompts.build_messages(
+        session, kb_block="KB", history=[], user_text="KYC бонус есть?",
+        resolved_lang="ru", available_topics=_TOPICS,
+        current_topic={"slug": "other", "title": "Другое"},
+    )[-1]["content"]
+    # Routing instruction + the catalogue are present.
+    assert "[[TOPIC:slug]]" in last_user
+    assert "bonuses — Bonuses & promotions" in last_user
+    # The active-routing framing (generic section) replaces the conservative
+    # "stay in the current topic" anchor used for specialized topics.
+    assert "общем разделе" in last_user
+    assert "НЕ предлагай сменить тему" not in last_user
+    # Routing copy must stay in Layer 3, never in the cached prefix.
+    msgs = prompts.build_messages(
+        session, kb_block="KB", history=[], user_text="KYC бонус есть?",
+        resolved_lang="ru", available_topics=_TOPICS,
+        current_topic={"slug": "other", "title": "Другое"},
+    )
+    assert "общем разделе" not in msgs[0]["content"]
+
+
+def test_specialized_topic_routes_on_intent_not_keywords():
+    """A specialized topic anchors the model but keys the switch on the player's
+    intent, so e.g. a withdrawal question asked under Deposits is routed across —
+    the cross-topic tracking the owner asked to tighten."""
+    session = {"user_context": {}}
+    last_user = prompts.build_messages(
+        session, kb_block="KB", history=[], user_text="как вывести деньги?",
+        resolved_lang="ru", available_topics=_TOPICS,
+        current_topic={"slug": "deposits", "title": "Депозиты"},
+    )[-1]["content"]
+    # Conservative anchor retained (only switch on a genuine mismatch)...
+    assert "ТОЛЬКО" in last_user
+    # ...but now framed around the player's intent + a concrete cross-topic example.
+    assert "НАМЕРЕНИЕ" in last_user
+    assert "ВЫВЕСТИ" in last_user
+
+
 def test_no_current_topic_line_when_absent():
     """Picker's first turn / callers without a topic: no current-topic line, and
     the routing list still renders."""
