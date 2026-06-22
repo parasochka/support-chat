@@ -658,6 +658,7 @@ async function viewSettings(main) {
     const data = await api("/settings");
     for (const key of data.keys) {
       if (key === "language") { languageSettingsBox(holder, data.resolved.language || {}); continue; }
+      if (key === "model") { modelSettingsBox(holder, data.resolved.model || {}); continue; }
       const box = el("div", "npadmin-chart");
       box.appendChild(el("div", "npadmin-meta", key));
       const ta = el("textarea", "npadmin-input");
@@ -774,6 +775,73 @@ function languageSettingsBox(holder, current) {
       await api("/settings/language", { method: "PUT",
         body: { value: { default: defSel.value, supported: sup } } });
       err.style.color = "var(--good)"; err.textContent = "Saved";
+    } catch (e) { err.textContent = e.message; }
+  });
+  box.append(save, err);
+  holder.appendChild(box);
+}
+
+// Dedicated OpenAI model-tuning editor: the knobs that used to live in Railway
+// env (model name, sampling, timeouts, retries, per-key concurrency). Saved
+// values win over env and apply live — the client is rebuilt server-side so the
+// request timeout and concurrency take effect immediately too.
+function modelSettingsBox(holder, current) {
+  const box = el("div", "npadmin-chart");
+  box.appendChild(el("div", "npadmin-meta", "model — OpenAI tuning"));
+  box.appendChild(el("div", "npadmin-help",
+    "Model name + sampling/timeout/retry knobs. These override the Railway env "
+    + "vars (OPENAI_MODEL, OPENAI_TEMPERATURE, …). Changes apply to new requests "
+    + "immediately; no redeploy. Secrets (API keys) stay in Railway."));
+
+  // [field, label, type, step/extra]
+  const NUM = [
+    ["temperature", "Temperature (0–2)", "number", "0.1"],
+    ["max_output_tokens", "Max output tokens", "number", "1"],
+    ["request_timeout_sec", "Request timeout (sec)", "number", "1"],
+    ["key_switch_timeout_sec", "Key switch timeout (sec)", "number", "1"],
+    ["max_attempts", "Max attempts (retries)", "number", "1"],
+    ["max_concurrent_per_key", "Max concurrent per key", "number", "1"],
+  ];
+  const fields = {};
+
+  const nameLab = el("label", "npadmin-field");
+  nameLab.appendChild(el("span", null, "Model name"));
+  const nameInp = el("input", "npadmin-input");
+  nameInp.type = "text"; nameInp.value = current.model || "";
+  nameInp.placeholder = "gpt-4o-mini";
+  nameLab.appendChild(nameInp);
+  box.appendChild(nameLab);
+
+  for (const [key, label, type, step] of NUM) {
+    const lab = el("label", "npadmin-field");
+    lab.appendChild(el("span", null, label));
+    const inp = el("input", "npadmin-input");
+    inp.type = type; inp.step = step;
+    inp.value = current[key] != null ? current[key] : "";
+    fields[key] = inp;
+    lab.appendChild(inp);
+    box.appendChild(lab);
+  }
+
+  const err = el("div", "npadmin-err");
+  const save = el("button", "npadmin-btn", "Save model settings");
+  save.addEventListener("click", async () => {
+    err.textContent = ""; err.style.color = "";
+    const name = nameInp.value.trim();
+    if (!name) { err.textContent = "Model name is required"; return; }
+    const value = { model: name };
+    value.temperature = parseFloat(fields.temperature.value);
+    for (const [key] of NUM) {
+      if (key === "temperature") continue;
+      value[key] = parseInt(fields[key].value, 10);
+    }
+    for (const [key, label] of NUM) {
+      if (Number.isNaN(value[key])) { err.textContent = `${label}: enter a number`; return; }
+    }
+    if (!confirm("Update 'model' settings now? Applies to new requests immediately.")) return;
+    try {
+      await api("/settings/model", { method: "PUT", body: { value } });
+      err.style.color = "var(--good)"; err.textContent = "Saved — live";
     } catch (e) { err.textContent = e.message; }
   });
   box.append(save, err);

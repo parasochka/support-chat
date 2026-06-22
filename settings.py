@@ -24,7 +24,9 @@ import prompts
 _cache: dict[str, Any] = {}
 
 # The settings groups the admin may write, and which validator guards each.
-SETTING_KEYS = ("escalation", "forbidden_topics", "language", "antispam")
+# `model` carries the OpenAI tuning knobs (model name, sampling, timeouts,
+# concurrency) so they live in the admin panel instead of Railway env.
+SETTING_KEYS = ("escalation", "forbidden_topics", "language", "antispam", "model")
 
 # Test/dev sandbox profile. In a real deployment the host site supplies the
 # player's `user_context` over the signed handshake; in test/dev (no
@@ -88,6 +90,34 @@ def antispam() -> dict[str, Any]:
         "window_sec": db_v.get("window_sec", config.RATE_LIMIT_WINDOW_SEC),
         "cooldown_sec": db_v.get("cooldown_sec", config.MESSAGE_COOLDOWN_SEC),
         "max_input_chars": db_v.get("max_input_chars", config.MAX_INPUT_CHARS),
+        "recaptcha_min_score": db_v.get("recaptcha_min_score",
+                                        config.RECAPTCHA_MIN_SCORE),
+        "injection_hard_block": db_v.get("injection_hard_block",
+                                         config.INJECTION_HARD_BLOCK),
+    }
+
+
+def model() -> dict[str, Any]:
+    """Resolved OpenAI tuning knobs: app_settings override over env defaults.
+
+    Read live by `openai_client` on every call (model/temperature/max tokens/
+    switch timeout/attempts) so edits are hot. `request_timeout_sec` and
+    `max_concurrent_per_key` are bound when the client is constructed, so the
+    admin write also calls `openai_client.reset()` to rebuild it.
+    """
+    db_v = _group("model")
+    return {
+        "model": db_v.get("model", config.OPENAI_MODEL),
+        "temperature": db_v.get("temperature", config.OPENAI_TEMPERATURE),
+        "max_output_tokens": db_v.get("max_output_tokens",
+                                      config.OPENAI_MAX_OUTPUT_TOKENS),
+        "request_timeout_sec": db_v.get("request_timeout_sec",
+                                        config.OPENAI_REQUEST_TIMEOUT_SEC),
+        "key_switch_timeout_sec": db_v.get("key_switch_timeout_sec",
+                                           config.OPENAI_KEY_SWITCH_TIMEOUT_SEC),
+        "max_attempts": db_v.get("max_attempts", config.OPENAI_MAX_ATTEMPTS),
+        "max_concurrent_per_key": db_v.get("max_concurrent_per_key",
+                                           config.OPENAI_MAX_CONCURRENT_PER_KEY),
     }
 
 
@@ -156,6 +186,7 @@ def resolved_all() -> dict[str, Any]:
         "forbidden_topics": forbidden_topics(),
         "language": language(),
         "antispam": antispam(),
+        "model": model(),
     }
 
 
@@ -169,6 +200,25 @@ def _require_int(d: dict, field: str, lo: int, hi: int) -> None:
             raise ValueError(f"{field} must be an integer")
         if not (lo <= v <= hi):
             raise ValueError(f"{field} must be between {lo} and {hi}")
+
+
+def _require_float(d: dict, field: str, lo: float, hi: float) -> None:
+    if field in d:
+        v = d[field]
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError(f"{field} must be a number")
+        if not (lo <= float(v) <= hi):
+            raise ValueError(f"{field} must be between {lo} and {hi}")
+
+
+def _require_bool(d: dict, field: str) -> None:
+    if field in d and not isinstance(d[field], bool):
+        raise ValueError(f"{field} must be a boolean")
+
+
+def _require_nonempty_str(d: dict, field: str) -> None:
+    if field in d and (not isinstance(d[field], str) or not d[field].strip()):
+        raise ValueError(f"{field} must be a non-empty string")
 
 
 def _require_str_list(d: dict, field: str) -> None:
@@ -190,6 +240,16 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "window_sec", 1, 86_400)
         _require_int(value, "cooldown_sec", 0, 3_600)
         _require_int(value, "max_input_chars", 1, 100_000)
+        _require_float(value, "recaptcha_min_score", 0.0, 1.0)
+        _require_bool(value, "injection_hard_block")
+    elif key == "model":
+        _require_nonempty_str(value, "model")
+        _require_float(value, "temperature", 0.0, 2.0)
+        _require_int(value, "max_output_tokens", 1, 128_000)
+        _require_int(value, "request_timeout_sec", 1, 600)
+        _require_int(value, "key_switch_timeout_sec", 1, 600)
+        _require_int(value, "max_attempts", 1, 10)
+        _require_int(value, "max_concurrent_per_key", 1, 1_000)
     elif key == "escalation":
         _require_int(value, "max_messages_per_session", 1, 10_000)
         _require_int(value, "unresolved_turns_before_escalate", 1, 1_000)

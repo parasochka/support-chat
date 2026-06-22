@@ -287,12 +287,13 @@ async def send_message(req: Request, body: MessageSend,
     except antispam.AntiSpamError as exc:
         return _err(exc.status, exc.code, exc.detail)
 
-    # 8. injection scan: always audit; optionally hard-block (config-gated).
+    # 8. injection scan: always audit; optionally hard-block (settings-gated).
     if antispam.scan_injection(body.text):
+        hard_block = settings.antispam()["injection_hard_block"]
         await db.log_admin_event(body.session_id, "injection_blocked",
                                  {"sample": body.text[:120],
-                                  "blocked": config.INJECTION_HARD_BLOCK})
-        if config.INJECTION_HARD_BLOCK:
+                                  "blocked": hard_block})
+        if hard_block:
             return _err(400, "rejected",
                         "Your message looks like an attempt to manipulate the "
                         "assistant. Please ask a product-support question.")

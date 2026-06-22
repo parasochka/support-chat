@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import config
+import settings
 
 try:  # native dep may be stubbed in tests
     from openai import AsyncOpenAI
@@ -63,21 +64,28 @@ class _KeyClient:
     def __init__(self, name: str, api_key: str):
         self.name = name
         self.api_key = api_key
-        self._sem = asyncio.Semaphore(config.OPENAI_MAX_CONCURRENT_PER_KEY)
+        # Concurrency + client timeout are bound at construction; a change to
+        # them is picked up via openai_client.reset() (called on settings write).
+        m = settings.model()
+        self._sem = asyncio.Semaphore(int(m["max_concurrent_per_key"]))
         if AsyncOpenAI is not None:
             self.client = AsyncOpenAI(
-                api_key=api_key, timeout=config.OPENAI_REQUEST_TIMEOUT_SEC
+                api_key=api_key, timeout=m["request_timeout_sec"]
             )
         else:  # pragma: no cover - only when openai missing & not under test stub
             self.client = None
 
     async def call(self, messages: list[dict[str, str]]) -> Any:
+        # model / temperature / max tokens / per-call timeout are read live so
+        # tuning from the admin panel takes effect without a redeploy.
+        m = settings.model()
         async with self._sem:
             return await self.client.chat.completions.create(
-                model=config.OPENAI_MODEL,
+                model=m["model"],
                 messages=messages,
-                temperature=config.OPENAI_TEMPERATURE,
-                max_tokens=config.OPENAI_MAX_OUTPUT_TOKENS,
+                temperature=m["temperature"],
+                max_tokens=int(m["max_output_tokens"]),
+                timeout=m["request_timeout_sec"],
             )
 
 
@@ -124,14 +132,15 @@ def _retry_after_seconds(exc: Exception) -> Optional[float]:
 async def _call_with_backoff(kc: _KeyClient, messages: list[dict[str, str]]) -> Any:
     """One key, with exponential backoff on transient errors."""
     last_exc: Optional[Exception] = None
-    for attempt in range(config.OPENAI_MAX_ATTEMPTS):
+    max_attempts = int(settings.model()["max_attempts"])
+    for attempt in range(max_attempts):
         try:
             return await kc.call(messages)
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             if _is_hard_error(exc):
                 raise  # caller will fail over to the other key immediately
-            if not _is_transient(exc) or attempt == config.OPENAI_MAX_ATTEMPTS - 1:
+            if not _is_transient(exc) or attempt == max_attempts - 1:
                 raise
             delay = _retry_after_seconds(exc)
             if delay is None:
@@ -199,7 +208,7 @@ class OpenAIClient:
             _call_with_backoff(self.primary, messages)
         )
 
-        switch_timeout = config.OPENAI_KEY_SWITCH_TIMEOUT_SEC
+        switch_timeout = settings.model()["key_switch_timeout_sec"]
         try:
             done, _ = await asyncio.wait({primary_task}, timeout=switch_timeout)
         except Exception:  # noqa: BLE001
@@ -253,7 +262,7 @@ class OpenAIClient:
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             cached_in=cached_in,
-            model=config.OPENAI_MODEL,
+            model=settings.model()["model"],
             key_used=kc.name,
             latency_ms=latency_ms,
         )
@@ -268,3 +277,16 @@ def get_client() -> OpenAIClient:
     if _client is None:
         _client = OpenAIClient()
     return _client
+
+
+def reset() -> None:
+    """Drop the singleton so the next call rebuilds it with fresh settings.
+
+    The model name, sampling, switch timeout and attempt count are read live on
+    every call, but the per-key concurrency semaphore and the SDK client's
+    base timeout are bound at construction — so when those change in the admin
+    panel the client must be rebuilt. The admin settings handler calls this on a
+    `model` write. (No effect on the OpenAI-side prefix cache.)
+    """
+    global _client
+    _client = None

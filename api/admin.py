@@ -20,6 +20,7 @@ import db
 import kb_import
 import language
 import metrics
+import openai_client
 import prompt_store
 import prompts
 import settings as settings_mod
@@ -345,6 +346,10 @@ async def put_setting(key: str, body: SettingWrite, admin=Depends(require_admin)
         raise HTTPException(status_code=400, detail=str(exc))
     await db.set_setting(key, validated, updated_by=admin.get("role"))
     await settings_mod.reload()  # hot: invalidate + repopulate cache
+    if key == "model":
+        # request_timeout + per-key concurrency are bound at client build time;
+        # rebuild so the new values take effect (the rest is read live).
+        openai_client.reset()
     await db.log_admin_event(None, "setting_updated", {"key": key})
     return JSONResponse(content={"key": key, "value": validated,
                                  "resolved": settings_mod.resolved_all()})

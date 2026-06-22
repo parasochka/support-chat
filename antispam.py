@@ -73,7 +73,8 @@ async def verify_recaptcha(token: Optional[str], remote_ip: Optional[str] = None
     success = bool(data.get("success"))
     if not success:
         return {"ok": False, "skipped": False, "score": score, "reason": "recaptcha_failed"}
-    if score is not None and score < config.RECAPTCHA_MIN_SCORE:
+    min_score = settings.antispam()["recaptcha_min_score"]
+    if score is not None and score < min_score:
         return {"ok": False, "skipped": False, "score": score, "reason": "low_score"}
     return {"ok": True, "skipped": False, "score": score, "reason": "ok"}
 
