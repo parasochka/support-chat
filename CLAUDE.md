@@ -138,8 +138,19 @@ English. The one exception is an explicit **lock** (`chat_sessions.lang_locked`)
 header switch (`POST /api/chat/lang`) and the test-profile **force-language** pin both set it,
 which hard-overrides auto-mirroring so the *whole* session answers strictly in the chosen
 language. `create_session` sets the lock when the test profile carries a `force_lang`, and the
-`/session` (+ resume) response returns `lang_locked` so the widget freezes its chrome instead
-of mirroring the player as they type.
+`/session` (+ resume) response returns `lang_locked`.
+
+The **widget chrome** language (the shell strings, not the AI answers) is resolved **once,
+synchronously, before the panel is ever painted** (`widget.js` `resolveLang`), by the same
+priority the backend uses: explicit `LANG` → account/profile language (`USER_CONTEXT.language`,
+which the client already has) → browser `locale` → English. Resolving the account language on
+the client is deliberate — it kills the old "opens in English, then jumps to Russian a few
+seconds later" flicker, where the chrome only learned the real language from the slow `/session`
+round-trip. Async responses (`/topics`, `/session`) therefore **follow** `state.lang` and never
+redefine it; the one exception is an explicit server-side **lock** (`lang_locked`, the
+test-profile force-language pin), which the chrome adopts. There is **no** as-you-type chrome
+language switching — the chrome stays in the resolved language while the AI answers still mirror
+the player's own message per turn.
 
 ### Escalation (`escalation.py`)
 Phase 1 returns a contact-button payload only (no form, no live agent). `decide()` triggers

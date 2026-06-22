@@ -13,8 +13,10 @@ export const CONFIG = {
   // reCaptcha v3 site key. Leave "" to skip captcha (dev).
   RECAPTCHA_SITE_KEY: "6LfNeistAAAAADIKPj_VP-AcInrFei0FLqabNK8X",
   // Sample user_context for the test build. In production the host page supplies this.
-  // `language` is the account/profile language; it seeds the default answer
-  // language below the browser locale (manual switch > browser > profile).
+  // `language` is the account/profile language. It is the strongest signal for the
+  // widget chrome (after an explicit LANG), so a Russian account on an English
+  // browser opens in Russian — and it does so on the FIRST paint, before any
+  // network round-trip, so the chrome never flips after open.
   USER_CONTEXT: {
     id: "demo-12345",
     full_name: "Test Player",
@@ -110,37 +112,21 @@ function baseLang(code) {
   return I18N[base] ? base : null;
 }
 
-// Best initial guess before the backend confirms: explicit LANG, else browser.
-function initialLang() {
-  return baseLang(CONFIG.LANG) || baseLang(CONFIG.LOCALE) || "en";
-}
-
-// Lightweight client-side guess of the language the *player is actually writing
-// in*, so the widget chrome can mirror it the way the AI answers already do.
-// We only need to choose among the supported chrome set; the answer language is
-// still decided server-side. Conservative on purpose: it returns a code only on
-// a clear signal, otherwise null (keep the current chrome) — a short or neutral
-// message must not flip the shell to the wrong language.
-function detectLang(text) {
-  if (!text) return null;
-  const s = String(text).toLowerCase();
-  // Cyrillic is an unambiguous, strong signal for Russian.
-  if (I18N.ru && /[а-яё]/.test(s)) return "ru";
-  // Latin languages: score only their *distinctive* characters to avoid the
-  // cross-contamination of shared accents (á, é, ü, ç …).
-  const signals = { es: /[ñ¿¡]/g, pt: /[ãõ]/g, tr: /[şğıİ]/g };
-  let best = null;
-  let bestScore = 0;
-  for (const code of Object.keys(signals)) {
-    if (!I18N[code]) continue;
-    const m = s.match(signals[code]);
-    const score = m ? m.length : 0;
-    if (score > bestScore) {
-      bestScore = score;
-      best = code;
-    }
-  }
-  return best;
+// The widget chrome language, decided ONCE and synchronously at load — before
+// the panel is ever painted — so it never flips after open. Same priority the
+// backend uses for the answer default: explicit LANG -> account/profile language
+// (USER_CONTEXT.language) -> browser locale -> English. Resolving the account
+// language here (the client already has it) is what kills the old "opens English,
+// then jumps to Russian seconds later" flicker: the slow /session round-trip can
+// no longer be the first time that language is known.
+function resolveLang() {
+  const ctx = CONFIG.USER_CONTEXT || {};
+  return (
+    baseLang(CONFIG.LANG) ||
+    baseLang(ctx.language) ||
+    baseLang(CONFIG.LOCALE) ||
+    "en"
+  );
 }
 
 function t(key) {
@@ -167,8 +153,9 @@ const state = {
   // Languages the switcher offers; seeded from I18N, refined by the backend's
   // SUPPORTED_LANGUAGES after the session is created.
   languages: Object.keys(I18N),
-  lang: initialLang(),
-  // True once the player picks a language by hand — disables auto-mirroring.
+  lang: resolveLang(),
+  // True once the player picks a language by hand (or a test-profile force pin) —
+  // a hard, whole-session lock on both the chrome and the answer language.
   langLocked: false,
   topicChosen: false,
   open: false,
@@ -176,17 +163,6 @@ const state = {
   fullscreen: false,
   greetingEl: null,
 };
-
-// Switch the whole widget chrome to mirror the language the player is writing
-// in. Called as the player types and on send, so the shell follows them the way
-// the AI answers do. No-op once the player has locked a language by hand, or
-// unless a confident detection differs from the current chrome language.
-function maybeSwitchLang(text) {
-  if (state.langLocked) return;
-  const guess = detectLang(text);
-  if (!guess || guess === state.lang) return;
-  applyLang(guess);
-}
 
 // Apply a language to the whole chrome (header title, switcher value, topics
 // heading, greeting, placeholder, send button) without touching the backend.
@@ -245,13 +221,11 @@ async function api(path, { method = "POST", body = null, auth = false } = {}) {
 
 // Fetch just the topic catalogue — no session, token, or reCaptcha — so the
 // panel can paint the category buttons instantly on open. Cheap + cacheable;
-// safe to call speculatively on mount. The eventual session may resolve a
-// different default language (e.g. a forced test profile), in which case
-// createSession() re-renders the topics with the corrected titles.
+// safe to call speculatively on mount. We pass the already-resolved chrome
+// language so the titles come back in the right language on the first paint —
+// the catalogue must follow `state.lang`, never redefine it.
 async function fetchTopics() {
-  const qs = new URLSearchParams();
-  if (CONFIG.LANG) qs.set("lang", CONFIG.LANG);
-  if (CONFIG.LOCALE) qs.set("locale", CONFIG.LOCALE);
+  const qs = new URLSearchParams({ lang: state.lang });
   const { ok, data } = await api(`/api/chat/topics?${qs.toString()}`,
                                  { method: "GET" });
   if (!ok) throw new Error("topics fetch failed");
@@ -260,7 +234,6 @@ async function fetchTopics() {
   if (Array.isArray(data.languages) && data.languages.length) {
     state.languages = data.languages.filter((c) => I18N[c]);
   }
-  state.lang = baseLang(data.lang) || state.lang;
   renderLangSwitcher();
   applyStaticLabels();
 }
@@ -283,7 +256,10 @@ async function createSession() {
       player_id: CONFIG.USER_CONTEXT.id || null,
       user_context: CONFIG.USER_CONTEXT,
       signed_context: CONFIG.SIGNED_CONTEXT,
-      lang: CONFIG.LANG,
+      // Send the chrome language we already resolved so the answer default and
+      // the visible chrome agree from turn one (the model still mirrors the
+      // player's own message per turn; this is only the fallback default).
+      lang: state.lang,
       locale: CONFIG.LOCALE,
       recaptcha_token: token,
     },
@@ -297,17 +273,16 @@ async function createSession() {
   if (Array.isArray(data.languages) && data.languages.length) {
     state.languages = data.languages.filter((c) => I18N[c]);
   }
-  // Backend resolves the default language (account/profile language outranks the
-  // browser locale, which outranks the server default); refresh the chrome to
-  // match it. A locked language (test-profile force-language pin) disables the
-  // as-you-type auto-mirroring so the whole session stays in the pinned language.
-  state.langLocked = state.langLocked || !!data.lang_locked;
-  state.lang = baseLang(data.lang) || state.lang;
+  // The chrome language was already resolved up front and must NOT flip on this
+  // (slow) response — that flip was the old "opens English, jumps to Russian"
+  // bug. The one exception is an explicit server-side LOCK (test-profile
+  // force-language pin): a deliberate whole-session override, so honor it.
+  if (data.lang_locked && baseLang(data.lang)) {
+    state.langLocked = true;
+    applyLang(baseLang(data.lang));
+  }
   renderLangSwitcher();
   applyStaticLabels();
-  // The session may resolve a different default language than the speculative
-  // /topics prefetch did (e.g. a forced test-profile language), so re-paint the
-  // picker with the corrected titles if it's currently on screen.
   if (els.topics && !els.topics.classList.contains("npchat-hidden")) {
     renderTopics();
   }
@@ -401,8 +376,6 @@ function buildUI() {
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") onSend();
   });
-  // Mirror the player's language in the chrome as they type their message.
-  input.addEventListener("input", (ev) => maybeSwitchLang(ev.target.value));
   // The on-screen keyboard animates in over ~300ms and some browsers fire the
   // VisualViewport resize late (or not at all) on focus — re-pin the sheet a
   // few times so the input row never ends up hidden behind the keyboard.
@@ -726,9 +699,6 @@ async function onTopic(slug) {
 async function onSend() {
   const text = els.input.value.trim();
   if (!text) return;
-  // Final chance to align the chrome with the player's language before the
-  // turn is committed (covers paste/autofill that skipped the input handler).
-  maybeSwitchLang(text);
   els.input.value = "";
   addMessage("user", text);
   const typing = addMessage("assistant", "…");
