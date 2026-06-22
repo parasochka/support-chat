@@ -43,6 +43,7 @@ export const CONFIG = {
 // browser doesn't see an English shell.
 const I18N = {
   en: { support: "Support", topics: "What can we help you with?", other: "Other",
+        back: "Back to topics",
         greeting: "Hi! How can I help you today?", placeholder: "Type your message…",
         send: "Send", launcher: "Open support chat",
         startError: "Could not start chat. Please try again later.",
@@ -50,6 +51,7 @@ const I18N = {
         suggest: "It looks like your question is about “{topic}”.",
         switchTopic: "Switch to “{topic}”" },
   ru: { support: "Поддержка", topics: "Чем мы можем помочь?", other: "Другое",
+        back: "К выбору темы",
         greeting: "Здравствуйте! Чем можем помочь?", placeholder: "Введите сообщение…",
         send: "Отправить", launcher: "Открыть чат поддержки",
         startError: "Не удалось начать чат. Попробуйте позже.",
@@ -57,6 +59,7 @@ const I18N = {
         suggest: "Похоже, ваш вопрос относится к теме «{topic}».",
         switchTopic: "Перейти в «{topic}»" },
   es: { support: "Soporte", topics: "¿En qué podemos ayudarte?", other: "Otro",
+        back: "Volver a los temas",
         greeting: "¡Hola! ¿En qué podemos ayudarte hoy?", placeholder: "Escribe tu mensaje…",
         send: "Enviar", launcher: "Abrir chat de soporte",
         startError: "No se pudo iniciar el chat. Inténtalo más tarde.",
@@ -64,6 +67,7 @@ const I18N = {
         suggest: "Parece que tu pregunta es sobre «{topic}».",
         switchTopic: "Cambiar a «{topic}»" },
   tr: { support: "Destek", topics: "Size nasıl yardımcı olabiliriz?", other: "Diğer",
+        back: "Konulara dön",
         greeting: "Merhaba! Bugün size nasıl yardımcı olabiliriz?",
         placeholder: "Mesajınızı yazın…", send: "Gönder", launcher: "Destek sohbetini aç",
         startError: "Sohbet başlatılamadı. Lütfen daha sonra tekrar deneyin.",
@@ -71,6 +75,7 @@ const I18N = {
         suggest: "Sorunuz “{topic}” konusuyla ilgili görünüyor.",
         switchTopic: "“{topic}” konusuna geç" },
   pt: { support: "Suporte", topics: "Como podemos ajudar?", other: "Outro",
+        back: "Voltar aos tópicos",
         greeting: "Olá! Como podemos ajudar hoje?", placeholder: "Digite sua mensagem…",
         send: "Enviar", launcher: "Abrir chat de suporte",
         startError: "Não foi possível iniciar o chat. Tente novamente mais tarde.",
@@ -286,7 +291,21 @@ function buildUI() {
   const panel = el("div", "npchat-panel npchat-hidden");
 
   const header = el("div", "npchat-header");
-  header.appendChild(el("span", "npchat-title", t("support")));
+
+  const headerLeft = el("div", "npchat-header-left");
+  // Back arrow — only shown inside a conversation, lets the player return to the
+  // topic picker to choose a different topic. Hidden on the topic list itself.
+  const backBtn = el("button", "npchat-back npchat-hidden");
+  backBtn.setAttribute("aria-label", t("back"));
+  backBtn.innerHTML =
+    '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" ' +
+    'stroke="currentColor" stroke-width="2.2" stroke-linecap="round" ' +
+    'stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M15 18l-6-6 6-6"/></svg>';
+  backBtn.addEventListener("click", goBackToTopics);
+  headerLeft.appendChild(backBtn);
+  headerLeft.appendChild(el("span", "npchat-title", t("support")));
+  header.appendChild(headerLeft);
 
   const headerRight = el("div", "npchat-header-right");
   const closeBtn = el("button", "npchat-close", "✕");
@@ -332,7 +351,8 @@ function buildUI() {
   root.appendChild(launcher);
   document.body.appendChild(root);
 
-  els = { root, launcher, panel, body, topics, messages, inputRow, input, sendBtn };
+  els = { root, launcher, panel, body, topics, messages, inputRow, input, sendBtn,
+          back: backBtn };
 
   // Keep the open panel in the right mode if the viewport class changes
   // (rotate, window resize, responsive devtools): enter the full-screen sheet
@@ -364,6 +384,7 @@ function applyStaticLabels() {
   els.launcher.setAttribute("aria-label", t("launcher"));
   const title = els.panel.querySelector(".npchat-title");
   if (title) title.textContent = t("support");
+  if (els.back) els.back.setAttribute("aria-label", t("back"));
   els.input.placeholder = t("placeholder");
   els.sendBtn.textContent = t("send");
 }
@@ -624,8 +645,24 @@ async function onTopic(slug) {
   els.topics.classList.add("npchat-hidden");
   els.messages.classList.remove("npchat-hidden");
   els.inputRow.classList.remove("npchat-hidden");
+  els.back.classList.remove("npchat-hidden");
   state.greetingEl = addMessage("assistant", t("greeting"));
   els.input.focus();
+}
+
+// Return to the topic picker from inside a conversation so the player can pick a
+// different topic. The session/token are kept; the transcript is cleared so the
+// next topic starts on a clean slate (the backend already resets the model's
+// context on a topic switch — see set_session_topic).
+function goBackToTopics() {
+  els.back.classList.add("npchat-hidden");
+  els.inputRow.classList.add("npchat-hidden");
+  els.messages.classList.add("npchat-hidden");
+  els.messages.innerHTML = "";
+  state.greetingEl = null;
+  state.topicChosen = false;
+  els.topics.classList.remove("npchat-hidden");
+  renderTopics();
 }
 
 async function onSend() {
