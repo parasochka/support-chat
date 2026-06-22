@@ -146,6 +146,33 @@ def test_formatting_directive_in_layer3_only():
     assert msgs[0]["content"] == core_before
 
 
+def test_escalation_restraint_directive_in_layer3_only():
+    """The escalation-restraint directive must ride in the user message (Layer 3),
+    be present for any topic (incl. the catch-all 'other', which has no KB), tell
+    the model to clarify before handing off, and never leak into the cached core."""
+    core_before = prompts.get_system_core()
+
+    # Specialized topic: restraint sits alongside the KB-grounding directive.
+    msgs = prompts.build_messages(
+        {"user_context": {}}, kb_block="KB", history=[], user_text="hi",
+        resolved_lang="en",
+        current_topic={"slug": "deposits", "title": "Депозиты"})
+    last = msgs[-1]["content"]
+    assert "Эскалация — крайняя мера" in last
+    assert "[[ESCALATE]]" in last
+    assert "уточняющий вопрос" in last
+    # Stays in Layer 3 only; the cached core is untouched.
+    assert "Эскалация — крайняя мера" not in msgs[0]["content"]
+    assert msgs[0]["content"].split("=== БАЗА ЗНАНИЙ", 1)[0].rstrip("\n") == core_before
+
+    # Catch-all 'other' has no KB-grounding line, but restraint is still present.
+    msgs_other = prompts.build_messages(
+        {"user_context": {}}, kb_block=None, history=[], user_text="hi",
+        resolved_lang="en",
+        current_topic={"slug": prompts.OTHER_TOPIC_SLUG, "title": "Другое"})
+    assert "Эскалация — крайняя мера" in msgs_other[-1]["content"]
+
+
 def test_layer3_guardrails_present_and_after_message():
     """The injection/topic guardrails must ride in the user message (Layer 3),
     placed AFTER the player's text, and must NOT leak into the cached system
