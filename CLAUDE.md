@@ -76,6 +76,15 @@ exactly once — in the first reply — and otherwise skip the greeting (and the
 straight to the answer. The *when* to greet lives here; `_personalization_directive` only supplies
 the name and the "use it sparingly" rule.
 
+**Formatting hygiene** is another always-present Layer-3 line (`prompts._FORMATTING_DIRECTIVE`):
+the model reaches for Markdown on its own (`**bold**`, lists, links), and the widget now renders a
+small fixed subset of it (`widget.js` `renderMarkdown` — see "Conventions"). Left unguided the model
+also emits markup the widget can't render (tables, fenced code blocks, raw HTML), which leaks to the
+player as literal characters. This directive pins the model to exactly the rendered subset — bold,
+italic, inline `code`, links, and bulleted/numbered lists — and tells it to avoid the rest, so the
+two stay in lockstep: whatever the model emits, the widget renders. Lives in Layer 3 so `SYSTEM_CORE`
+stays byte-stable.
+
 ### Request flow
 `api/chat.py` (thin HTTP handlers + gate ordering) → `chat_service.handle_message`
 (orchestration) → `prompts.build_messages` + `openai_client.complete` → `db.persist_turn`.
