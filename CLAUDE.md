@@ -2,14 +2,6 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **MANDATORY DOCS-SYNC RULE (Claude must always follow this).** `CLAUDE.md` is the
-> single source of truth; `README.md` is a byte-identical generated mirror. **Whenever you
-> change `CLAUDE.md`, you MUST regenerate `README.md` in the SAME change** by running
-> `sh scripts/sync_readme.sh` (or copying `CLAUDE.md` over `README.md`) and staging both
-> files before committing. Never edit `README.md` by hand. The root test page (`main.py`
-> `/`) already renders `CLAUDE.md` live, and the `docs-sync` GitHub Action fails the build
-> if the two ever drift — so the human does not need to enable any git hook for this to work.
-
 ## What this is
 
 A standalone FastAPI microservice serving an AI customer-support chat for **NikaBet**
@@ -264,3 +256,11 @@ host-site button only; admin auth = single owner (token shaped for future multi-
   and the sync happens automatically via the `.githooks/pre-commit` hook (enable once
   per clone: `git config core.hooksPath .githooks`). A `docs-sync` GitHub Action fails
   the build if the two ever drift; `sh scripts/sync_readme.sh` re-syncs manually.
+
+> **MANDATORY DOCS-SYNC RULE (Claude must always follow this).** `CLAUDE.md` is the
+> single source of truth; `README.md` is a byte-identical generated mirror. **Whenever you
+> change `CLAUDE.md`, you MUST regenerate `README.md` in the SAME change** by running
+> `sh scripts/sync_readme.sh` (or copying `CLAUDE.md` over `README.md`) and staging both
+> files before committing. Never edit `README.md` by hand. The root test page (`main.py`
+> `/`) already renders `CLAUDE.md` live, and the `docs-sync` GitHub Action fails the build
+> if the two ever drift — so the human does not need to enable any git hook for this to work.
