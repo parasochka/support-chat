@@ -297,8 +297,11 @@ async function createSession() {
   if (Array.isArray(data.languages) && data.languages.length) {
     state.languages = data.languages.filter((c) => I18N[c]);
   }
-  // Backend resolves the default language (browser locale wins over the server
-  // default); refresh the UI chrome to match it.
+  // Backend resolves the default language (account/profile language outranks the
+  // browser locale, which outranks the server default); refresh the chrome to
+  // match it. A locked language (test-profile force-language pin) disables the
+  // as-you-type auto-mirroring so the whole session stays in the pinned language.
+  state.langLocked = state.langLocked || !!data.lang_locked;
   state.lang = baseLang(data.lang) || state.lang;
   renderLangSwitcher();
   applyStaticLabels();

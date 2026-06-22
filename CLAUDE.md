@@ -114,12 +114,22 @@ gracefully (logged) when `RECAPTCHA_SECRET` is unset.
 
 ### Language resolution (`language.py`)
 Resolves the *fallback default* answer language, never asks the user. Deterministic
-priority: explicit `lang` → `locale` (e.g. `es-MX`→`es`; this is where the browser's
-`navigator.language` lands) → persisted `session_lang` → `AUTO` (→ `DEFAULT_LANGUAGE`).
-The resolved code is **not** a hard lock: the Layer-3 directive always tells the model to
-answer in the player's own message language and only falls back to this code when that
-language can't be determined. The session language is **never** speculatively overwritten
-with the default — doing so used to lock sessions to English and is the bug this fixes.
+priority: explicit `lang` (manual header switch / test-profile force-language pin) →
+`profile_lang` (the account language from the handshake `user_context`) → `locale`
+(e.g. `es-MX`→`es`; this is where the browser's `navigator.language` lands) → persisted
+`session_lang` → `AUTO` (→ `DEFAULT_LANGUAGE`). The account/profile language **outranks the
+browser locale** on purpose: it is a deliberate account setting, whereas `navigator.language`
+is frequently just the OS/browser default — so a Russian account on an English browser
+defaults to Russian, not English. The resolved code is **not** a hard lock by default: the
+Layer-3 directive tells the model to answer in the player's own message language and only
+falls back to this code when that language can't be determined. The session language is
+**never** speculatively overwritten with the default — doing so used to lock sessions to
+English. The one exception is an explicit **lock** (`chat_sessions.lang_locked`): the manual
+header switch (`POST /api/chat/lang`) and the test-profile **force-language** pin both set it,
+which hard-overrides auto-mirroring so the *whole* session answers strictly in the chosen
+language. `create_session` sets the lock when the test profile carries a `force_lang`, and the
+`/session` (+ resume) response returns `lang_locked` so the widget freezes its chrome instead
+of mirroring the player as they type.
 
 ### Escalation (`escalation.py`)
 Phase 1 returns a contact-button payload only (no form, no live agent). `decide()` triggers

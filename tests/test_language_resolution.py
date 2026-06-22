@@ -15,6 +15,8 @@ def _langs(monkeypatch):
 
 def test_explicit_param_wins():
     assert language.resolve(lang="es", locale="ru-RU") == "es"
+    # A manual/forced `lang` still outranks the account/profile language.
+    assert language.resolve(lang="es", profile_lang="ru", locale="ru-RU") == "es"
 
 
 def test_unsupported_param_falls_through_to_locale():
@@ -36,9 +38,17 @@ def test_session_lang_used_before_auto():
     assert language.resolve(lang=None, locale=None, session_lang="ru") == "ru"
 
 
-def test_locale_beats_profile():
-    # Browser locale outranks the account/profile language.
-    assert language.resolve(locale="es-MX", profile_lang="ru") == "es"
+def test_profile_beats_locale():
+    # The account/profile language is a deliberate setting, so it outranks the
+    # (often incidental) browser locale when the two disagree.
+    assert language.resolve(locale="es-MX", profile_lang="ru") == "ru"
+
+
+def test_locale_used_when_no_profile():
+    # No manual lang and no account/profile language -> fall to the browser locale.
+    assert language.resolve(lang=None, locale="es-MX") == "es"
+    # An unsupported profile language falls through to the browser locale.
+    assert language.resolve(lang=None, locale="es-MX", profile_lang="de") == "es"
 
 
 def test_profile_used_when_no_locale():
