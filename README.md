@@ -98,6 +98,22 @@ when concrete ones exist; answer generically only when the question really is ge
 nothing; and ask one short **clarifying question** to steer the player toward a specific KB answer when
 the question is too vague or spans several entries. Lives in Layer 3 so `SYSTEM_CORE` stays byte-stable.
 
+**Escalation restraint** is an always-present Layer-3 line (`prompts._ESCALATION_RESTRAINT_DIRECTIVE`)
+that paces the model's hand-off. Layer 1's escalation rule tells the model to emit `[[ESCALATE]]` when
+it "cannot resolve the question or the KB has nothing" — but in practice the model reaches for the tag
+too early: it bails the moment the player's first phrasing doesn't hit an exact KB entry, or the
+question is vague, instead of working with the player to surface the answer that IS in the KB (often the
+player hasn't even articulated what they need yet). This directive makes escalation a **last resort**:
+don't escalate just because the answer wasn't found on the first try or the question is fuzzy — first
+try to help and clarify (one short question at a time) and steer the player to the concrete KB answer.
+It deliberately **preserves the immediate-escalation cases** (explicit request for a human,
+complaint/grievance, suspected fraud, legal threat) so genuine hand-offs are never delayed; everything
+else escalates only after an honest attempt to help and clarify still leaves nothing answerable in the
+KB. Applies in **every** topic, including the catch-all `other`. Pairs with `_KB_GROUNDING_DIRECTIVE`
+(try hard to find the answer → don't give up too early). Lives in Layer 3 so `SYSTEM_CORE` stays
+byte-stable; the `escalation.decide()` triggers (keyword/cap/`[[ESCALATE]]`) are unchanged — this only
+makes the model emit the sentinel more deliberately.
+
 ### Request flow
 `api/chat.py` (thin HTTP handlers + gate ordering) → `chat_service.handle_message`
 (orchestration) → `prompts.build_messages` + `openai_client.complete` → `db.persist_turn`.

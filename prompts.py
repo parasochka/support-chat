@@ -354,6 +354,35 @@ _KB_GROUNDING_DIRECTIVE = (
 )
 
 
+# Layer-3 escalation-restraint directive. The core escalation rule (Layer 1) tells
+# the model to emit [[ESCALATE]] when it "cannot resolve the question or the KB has
+# nothing" — but in practice the model reaches for the tag too early: it bails to a
+# hand-off the moment the player's first phrasing doesn't hit an exact KB entry, or
+# the question is vague, instead of working with the player to surface the answer
+# that IS in the KB. Often the player hasn't even articulated what they need yet.
+# This directive makes escalation a LAST resort: don't escalate just because the
+# answer wasn't found on the first try or the question is fuzzy — first try to help
+# and clarify (one short question at a time) and steer the player to the concrete KB
+# answer. It deliberately PRESERVES the immediate-escalation cases (explicit request
+# for a human, complaint/grievance, suspected fraud, legal threat) so genuine
+# hand-offs are not delayed. Lives in Layer 3 (the user message) so SYSTEM_CORE
+# stays byte-stable; pairs with _KB_GROUNDING_DIRECTIVE (try hard to find the answer
+# → don't give up too early).
+_ESCALATION_RESTRAINT_DIRECTIVE = (
+    "Эскалация — крайняя мера, не спеши с ней. НЕ ставь тег [[ESCALATE]] только "
+    "потому, что не нашёл ответ с первой попытки или вопрос сформулирован "
+    "расплывчато. Сначала постарайся помочь сам: уточни, что именно нужно игроку "
+    "(возможно, он и сам ещё не сформулировал запрос), и выведи его на конкретный "
+    "ответ из базы знаний — задавай по одному короткому уточняющему вопросу. "
+    "Эскалируй (ставь [[ESCALATE]]) сразу и без уточнений только когда игрок явно "
+    "просит оператора/человека, либо это жалоба, претензия, подозрение на "
+    "мошенничество или юридическая угроза. В остальных случаях эскалируй лишь "
+    "после того, как ты честно попытался помочь и уточнить, но нужного ответа в "
+    "базе знаний действительно нет и решить вопрос в чате нельзя. Если можешь "
+    "продвинуть игрока к ответу уточняющим вопросом — сделай это вместо эскалации."
+)
+
+
 # Slug of the hidden catch-all topic. Mirrors kb.OTHER_SLUG; duplicated here so
 # this pure prompt-assembly module needs no DB-touching import. The catch-all has
 # no real KB of its own, so when it is the current topic the routing directive
@@ -507,6 +536,10 @@ def build_dynamic_prompt(
     # model to route to a specialized topic instead of answering generically.
     if not (current_topic and current_topic.get("slug") == OTHER_TOPIC_SLUG):
         parts += [_KB_GROUNDING_DIRECTIVE, ""]
+    # Escalation restraint applies in EVERY topic (incl. the catch-all 'other'):
+    # don't hand off until the model has tried to clarify/guide the player to a KB
+    # answer, while still escalating human/complaint/fraud/legal cases immediately.
+    parts += [_ESCALATION_RESTRAINT_DIRECTIVE, ""]
     parts += [
         *_topic_routing_directive(available_topics or [], current_topic),
         "=== СООБЩЕНИЕ ИГРОКА ===",
