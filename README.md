@@ -104,6 +104,14 @@ exponential backoff up to `OPENAI_MAX_ATTEMPTS`. Every fallback engagement fires
 `on_failover` callback → `admin_events('key_failover')`. Cost is computed from token usage
 via `_PRICING` (marked "verify before trusting" — prices may be stale; unknown models cost 0).
 
+The tuning knobs (model name, temperature, max output tokens, request timeout, key-switch
+timeout, max attempts, per-key concurrency) are NOT read from env directly — they come from
+the hot-reloaded `model` settings group (`settings.model()`, precedence `app_settings` → env
+→ default). Model/temperature/max-tokens/switch-timeout/attempts are read **live per call**;
+`request_timeout_sec` and `max_concurrent_per_key` are bound when the client is built, so a
+`model` write also calls `openai_client.reset()` to rebuild the singleton (no effect on the
+OpenAI-side prefix cache). API keys themselves stay secrets in env.
+
 ### Anti-spam gate order (`antispam.py`, enforced in `api/chat.py`)
 `POST /api/chat/message` checks in this exact order: verify session token (401) → IP
 rate-limit (429 + log) → cooldown (429) → input length (400) → injection scan (log only,
@@ -178,8 +186,16 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   `require_admin` dependency guards every `/admin/*` data route.
 - **Settings** (`settings.py`, `app_settings` table): hot-reloaded runtime tuning with
   precedence `app_settings` (DB) → env → default. A sync in-process cache (populated at
-  startup, reloaded on write) is read by `antispam`/`escalation`/api; writes validate hard
-  and log `setting_updated`. Groups: `escalation`, `forbidden_topics`, `language`, `antispam`.
+  startup, reloaded on write) is read by `antispam`/`escalation`/`openai_client`/api; writes
+  validate hard and log `setting_updated`. Groups: `escalation`, `forbidden_topics`,
+  `language`, `antispam` (rate limit/window/cooldown/input cap **plus** `recaptcha_min_score`
+  and `injection_hard_block`), and `model` (OpenAI tuning — see the failover section). The
+  goal is that every non-secret operational knob lives in the admin panel and only true
+  secrets (API keys, JWT secrets, `DATABASE_URL`, `ADMIN_PASSWORD`, Telegram/handshake/reCaptcha
+  secrets) stay in Railway env. On startup `seed/settings_seed.run()` snapshots the current
+  env-resolved values for the `antispam` and `model` groups into `app_settings` once (missing
+  fields only; never clobbers an existing override) so the matching env vars can be deleted
+  from Railway with no behaviour change.
 - **Dashboard data API** (`api/admin.py` + `db.py` aggregation + `metrics.py` derived
   rates): overview/timeseries/by-topic/by-language/sessions/session/unresolved/ab-results.
   `resolution_rate` is a documented PROXY (counts "not escalated", incl. abandoned →
