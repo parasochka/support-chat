@@ -128,6 +128,24 @@ def test_greeting_directive_in_layer3_only():
     assert "Приветствие:" not in msgs_named[0]["content"]
 
 
+def test_formatting_directive_in_layer3_only():
+    """The Markdown-formatting directive must ride in the user message (Layer 3),
+    present for any session, and never leak into the cached system prefix (the
+    widget renders only the subset it names — see renderMarkdown in widget.js)."""
+    core_before = prompts.get_system_core()
+
+    msgs = prompts.build_messages({"user_context": {}}, kb_block=None,
+                                  history=[], user_text="hi", resolved_lang="en")
+    last = msgs[-1]["content"]
+    assert "Форматирование:" in last
+    assert "Markdown" in last
+    # Must pin the model away from markup the widget can't render.
+    assert "таблицы" in last
+    # Stays in Layer 3 only; the cached core is untouched.
+    assert "Форматирование:" not in msgs[0]["content"]
+    assert msgs[0]["content"] == core_before
+
+
 def test_layer3_guardrails_present_and_after_message():
     """The injection/topic guardrails must ride in the user message (Layer 3),
     placed AFTER the player's text, and must NOT leak into the cached system

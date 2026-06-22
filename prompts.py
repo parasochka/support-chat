@@ -308,6 +308,25 @@ _GREETING_DIRECTIVE = (
 )
 
 
+# Layer-3 formatting directive. The widget renders a SMALL, fixed Markdown subset
+# in assistant replies (bold, italic, inline code, links, bulleted/numbered lists
+# — see renderMarkdown in frontend/widget.js). The model already reaches for
+# Markdown on its own, so without guidance it emits markup the widget does NOT
+# render (tables, fenced code blocks, raw HTML), which then leaks to the player as
+# literal characters (the "**Бонус**" with visible asterisks we saw in prod). This
+# line pins the model to exactly the subset the widget renders. Lives in Layer 3
+# (the user message) so SYSTEM_CORE stays byte-stable.
+_FORMATTING_DIRECTIVE = (
+    "Форматирование: можешь использовать лёгкую разметку Markdown, чтобы ответ "
+    "читался удобнее — **жирный** для важного, *курсив*, маркированные (- пункт) "
+    "и нумерованные (1. пункт) списки, `моноширинный` для технических значений и "
+    "ссылки вида [текст](https://...). НЕ используй другие элементы: таблицы, "
+    "блоки кода в тройных кавычках (```), HTML-теги или изображения — виджет их не "
+    "отображает, и такая разметка попадёт игроку как лишние символы. Выделяй "
+    "умеренно, без перегруза."
+)
+
+
 def _topic_routing_directive(
     available_topics: list[dict[str, Any]],
     current_topic: Optional[dict[str, Any]] = None,
@@ -395,6 +414,8 @@ def build_dynamic_prompt(
         parts += [personalization, ""]
     parts += [
         _GREETING_DIRECTIVE,
+        "",
+        _FORMATTING_DIRECTIVE,
         "",
         _language_directive(resolved_lang),
         "",

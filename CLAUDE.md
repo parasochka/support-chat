@@ -76,6 +76,15 @@ exactly once — in the first reply — and otherwise skip the greeting (and the
 straight to the answer. The *when* to greet lives here; `_personalization_directive` only supplies
 the name and the "use it sparingly" rule.
 
+**Formatting hygiene** is another always-present Layer-3 line (`prompts._FORMATTING_DIRECTIVE`):
+the model reaches for Markdown on its own (`**bold**`, lists, links), and the widget now renders a
+small fixed subset of it (`widget.js` `renderMarkdown` — see "Conventions"). Left unguided the model
+also emits markup the widget can't render (tables, fenced code blocks, raw HTML), which leaks to the
+player as literal characters. This directive pins the model to exactly the rendered subset — bold,
+italic, inline `code`, links, and bulleted/numbered lists — and tells it to avoid the rest, so the
+two stay in lockstep: whatever the model emits, the widget renders. Lives in Layer 3 so `SYSTEM_CORE`
+stays byte-stable.
+
 ### Request flow
 `api/chat.py` (thin HTTP handlers + gate ordering) → `chat_service.handle_message`
 (orchestration) → `prompts.build_messages` + `openai_client.complete` → `db.persist_turn`.
@@ -299,6 +308,16 @@ host-site button only; admin auth = single owner (token shaped for future multi-
 - Stdlib-only JWT (`auth.py`) — HS256 via `hmac`/`hashlib`/`base64`, no PyJWT.
 - Front-end is vanilla ES modules with **no build step**; widget classes are prefixed
   `npchat-` to avoid host-page collisions. Phase 2 admin SPA should use `npadmin-`.
+- **Assistant replies render a small, safe Markdown subset** (`widget.js`
+  `renderMarkdown`): the model formats answers with light Markdown on its own
+  (`**bold**`, numbered/bulleted lists, `code`, links), so rendering them as plain text
+  leaked the literal markers to the screen. The renderer HTML-escapes the model text
+  **first**, then re-introduces only a whitelist — `**bold**`/`__bold__`, `*italic*`/
+  `_italic_`, `` `code` ``, `[label](url)` (http(s)/mailto only, `rel="noopener"`), ATX
+  headings, and `<ul>`/`<ol>` lists — so no raw HTML from the model ever survives. Code
+  spans and links are stashed behind private-use sentinels before the bold/italic passes
+  so a URL's underscores can't be re-chewed. Only assistant turns go through it
+  (`setMsgBody`); **user input is always rendered literally** via `textContent`.
 - Deploy is Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the
   CMD reads `$PORT`, no `startCommand` override. Health check is `/healthz`.
 - Develop on branch `claude/pensive-tesla-opotpt`; do not push to other branches.
