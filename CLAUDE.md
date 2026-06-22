@@ -268,9 +268,13 @@ with its answer — two more Layer-3 sentinels (mirroring the `[[TOPIC:slug]]` m
   next player turn (`submitText`), and the stale bubbles are cleared the moment a new turn starts.
 - **`[[RESOLVED]]`** (own line) — set once the question looks fully resolved (the player confirmed /
   thanked / said it's closed). `chat_service` (`prompts.strip_resolved_tag`) returns `resolved:true`
-  and the widget surfaces a green **"finish chat"** button below the bubbles that closes the panel —
-  gently steering the satisfied player toward ending the chat. The directive
-  (`prompts._RESOLVED_DIRECTIVE`) tells the model NOT to set it while still clarifying.
+  and the widget surfaces a green **"finish chat"** button below the bubbles. Tapping it calls
+  **`POST /api/chat/resolve`** (`db.mark_resolved` → `status='resolved'` + an `admin_events('session_resolved')`
+  row) and collapses the panel — gently steering the satisfied player toward ending the chat, and
+  dropping the session out of the open-session metric. The close never overrides an **escalated**
+  session (a pending hand-off to a human must survive the player tapping finish), and the call is
+  best-effort (the panel collapses regardless). The directive (`prompts._RESOLVED_DIRECTIVE`) tells
+  the model NOT to set the tag while still clarifying.
 
 On a hand-off both are suppressed in `chat_service` (the player is going to a human, so the
 guide-to-KB bubbles and the close nudge are out of place). Both directives live in Layer 3 only, so

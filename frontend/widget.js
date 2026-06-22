@@ -659,11 +659,17 @@ function applyTurnExtras(data, originalText) {
   renderSuggestions(data.suggestions, data.resolved);
 }
 
-// End the conversation from the resolved "finish chat" nudge: drop the bubbles,
-// leave a short closing note in the transcript, and collapse the panel so the
-// satisfied player is gently taken to a closed chat.
+// End the conversation from the resolved "finish chat" nudge: tell the backend to
+// close the session (status='resolved' + admin event), drop the bubbles, leave a
+// short closing note in the transcript, and collapse the panel so the satisfied
+// player is gently taken to a closed chat. The close call is best-effort — the
+// panel collapses regardless so the player is never stuck.
 function finishChat() {
   clearSuggestions();
+  if (state.sessionId) {
+    api("/api/chat/resolve", { auth: true, body: { session_id: state.sessionId } })
+      .catch(() => { /* non-fatal: still close the panel below */ });
+  }
   addMessage("assistant", t("finished"));
   if (state.open) togglePanel();
 }
