@@ -40,7 +40,11 @@ def _sign(signing_input: bytes) -> bytes:
 def issue_session_token(session_id: str, ttl_hours: Optional[int] = None,
                         extra: Optional[dict[str, Any]] = None) -> str:
     """Mint an HS256 JWT for the given session id."""
-    ttl = config.SESSION_TTL_HOURS if ttl_hours is None else ttl_hours
+    if ttl_hours is None:
+        import settings  # lazy: avoid an import cycle (settings is built atop db)
+        ttl = settings.general()["session_ttl_hours"]
+    else:
+        ttl = ttl_hours
     now = int(time.time())
     header = {"alg": _ALG, "typ": "JWT"}
     payload: dict[str, Any] = {

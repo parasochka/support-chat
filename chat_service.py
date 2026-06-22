@@ -8,7 +8,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-import config
 import db
 import escalation
 import kb
@@ -16,6 +15,7 @@ import language
 import openai_client
 import prompt_store
 import prompts
+import settings
 
 
 @dataclass
@@ -74,7 +74,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     # the model in Layer 3 so it can route a mismatched question via [[TOPIC:slug]].
     # Localize their titles with the resolved default (the UI re-localizes if the
     # player switches anyway); fall back to the service default for AUTO.
-    title_lang = resolved if resolved != language.AUTO else config.DEFAULT_LANGUAGE
+    title_lang = resolved if resolved != language.AUTO else language.default_code()
     suggestable = await kb.suggestable_topics(exclude_topic_id=topic_id, lang=title_lang)
     # Name the CURRENT topic so the model answers in-topic questions from the
     # loaded KB instead of bouncing the player to another branch on keyword
@@ -122,7 +122,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         ok = False
         result = openai_client.ChatResult(
             text="", lang=None, tokens_in=0, tokens_out=0, cached_in=0,
-            model=config.OPENAI_MODEL, key_used="none", latency_ms=0,
+            model=settings.model()["model"], key_used="none", latency_ms=0,
         )
         raw_text = ""
 
@@ -149,7 +149,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     # the recorded metadata. We deliberately do NOT persist a speculative
     # default here — locking the session to DEFAULT would stop later turns from
     # mirroring the player (the bug where a Russian question got an English reply).
-    answer_lang = session.get("lang") or config.DEFAULT_LANGUAGE
+    answer_lang = session.get("lang") or language.default_code()
     if resolved != language.AUTO:
         answer_lang = resolved
 

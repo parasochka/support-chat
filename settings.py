@@ -25,8 +25,11 @@ _cache: dict[str, Any] = {}
 
 # The settings groups the admin may write, and which validator guards each.
 # `model` carries the OpenAI tuning knobs (model name, sampling, timeouts,
-# concurrency) so they live in the admin panel instead of Railway env.
-SETTING_KEYS = ("escalation", "forbidden_topics", "language", "antispam", "model")
+# concurrency); `general` carries operational knobs that don't fit another group
+# (session TTL, contact-button URL, request body cap). Both live in the admin
+# panel instead of Railway env.
+SETTING_KEYS = ("escalation", "forbidden_topics", "language", "antispam",
+                "model", "general")
 
 # Test/dev sandbox profile. In a real deployment the host site supplies the
 # player's `user_context` over the signed handshake; in test/dev (no
@@ -180,6 +183,18 @@ def test_profile() -> dict[str, Any]:
     return out
 
 
+def general() -> dict[str, Any]:
+    """Resolved operational knobs that don't belong to another group:
+    session lifetime, the escalation contact-button URL, and the request body cap.
+    """
+    db_v = _group("general")
+    return {
+        "session_ttl_hours": db_v.get("session_ttl_hours", config.SESSION_TTL_HOURS),
+        "contact_form_url": db_v.get("contact_form_url", config.CONTACT_FORM_URL),
+        "body_max_bytes": db_v.get("body_max_bytes", config.BODY_MAX_BYTES),
+    }
+
+
 def resolved_all() -> dict[str, Any]:
     return {
         "escalation": escalation(),
@@ -187,6 +202,7 @@ def resolved_all() -> dict[str, Any]:
         "language": language(),
         "antispam": antispam(),
         "model": model(),
+        "general": general(),
     }
 
 
@@ -250,6 +266,13 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "key_switch_timeout_sec", 1, 600)
         _require_int(value, "max_attempts", 1, 10)
         _require_int(value, "max_concurrent_per_key", 1, 1_000)
+    elif key == "general":
+        _require_int(value, "session_ttl_hours", 1, 8_760)        # <= 1 year
+        _require_int(value, "body_max_bytes", 1_024, 104_857_600)  # 1 KiB..100 MiB
+        if "contact_form_url" in value:
+            v = value["contact_form_url"]
+            if v is not None and not isinstance(v, str):
+                raise ValueError("contact_form_url must be a string or null")
     elif key == "escalation":
         _require_int(value, "max_messages_per_session", 1, 10_000)
         _require_int(value, "unresolved_turns_before_escalate", 1, 1_000)
@@ -279,7 +302,7 @@ def validate_test_profile(value: Any) -> dict[str, Any]:
     for field in _TEST_PROFILE_STR_FIELDS:
         if field in value and not isinstance(value[field], str):
             raise ValueError(f"{field} must be a string")
-    supported = set(config.SUPPORTED_LANGUAGES)
+    supported = set(language()["supported"])
     for field in ("force_lang", "profile_language"):
         if field in value:
             code = (value[field] or "").strip().lower()

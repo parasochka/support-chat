@@ -90,11 +90,12 @@ async def body_size_cap(request: Request, call_next):
     cl = request.headers.get("content-length")
     if cl is not None:
         try:
-            if int(cl) > config.BODY_MAX_BYTES:
+            body_max = settings.general()["body_max_bytes"]
+            if int(cl) > body_max:
                 return JSONResponse(
                     status_code=413,
                     content={"error": "body_too_large",
-                             "detail": f"Body exceeds {config.BODY_MAX_BYTES} bytes."},
+                             "detail": f"Body exceeds {body_max} bytes."},
                 )
         except ValueError:
             pass

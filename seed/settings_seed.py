@@ -38,6 +38,22 @@ _GROUPS: dict[str, dict[str, Callable[[], Any]]] = {
         "max_attempts": lambda: config.OPENAI_MAX_ATTEMPTS,
         "max_concurrent_per_key": lambda: config.OPENAI_MAX_CONCURRENT_PER_KEY,
     },
+    # Operational knobs that don't fit another group.
+    "general": {
+        "session_ttl_hours": lambda: config.SESSION_TTL_HOURS,
+        "contact_form_url": lambda: config.CONTACT_FORM_URL,
+        "body_max_bytes": lambda: config.BODY_MAX_BYTES,
+    },
+    # Only the env-backed field is snapshotted here; the other escalation knobs
+    # (unresolved-turns, high-risk keywords) are in-code defaults, not env, so
+    # leaving them unset lets settings.escalation() resolve them as before.
+    "language": {
+        "default": lambda: config.DEFAULT_LANGUAGE,
+        "supported": lambda: list(config.SUPPORTED_LANGUAGES),
+    },
+    "escalation": {
+        "max_messages_per_session": lambda: config.MAX_MESSAGES_PER_SESSION,
+    },
 }
 
 
