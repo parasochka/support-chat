@@ -55,9 +55,9 @@ when invoking modules outside pytest.
 
 New rules go into the KB or Layer 3 — **never** into `SYSTEM_CORE`. The source prompt and
 KB are Russian; only the answer language varies. The Layer-3 directive tells the model to
-**mirror the player's own message language**, using the resolved language (browser locale →
-session → default) only as the fallback when the message language is unclear — so a
-Russian question always gets a Russian answer.
+**answer strictly in the session language**, which is the browser language resolved once at
+session create (see "Language resolution" below) — the whole session, chrome and answers,
+speaks that one language.
 
 **Personalization** also lives in Layer 3 (never `SYSTEM_CORE`): when the sanitized
 `user_context` carries a `full_name`, `prompts._personalization_directive` adds a line giving
@@ -123,34 +123,27 @@ the message cap. Both knobs (`low_content_block` master switch, `min_meaningful_
 in the hot-reloaded `antispam` settings group.
 
 ### Language resolution (`language.py`)
-Resolves the *fallback default* answer language, never asks the user. Deterministic
-priority: explicit `lang` (manual header switch / test-profile force-language pin) →
-`profile_lang` (the account language from the handshake `user_context`) → `locale`
-(e.g. `es-MX`→`es`; this is where the browser's `navigator.language` lands) → persisted
-`session_lang` → `AUTO` (→ `DEFAULT_LANGUAGE`). The account/profile language **outranks the
-browser locale** on purpose: it is a deliberate account setting, whereas `navigator.language`
-is frequently just the OS/browser default — so a Russian account on an English browser
-defaults to Russian, not English. The resolved code is **not** a hard lock by default: the
-Layer-3 directive tells the model to answer in the player's own message language and only
-falls back to this code when that language can't be determined. The session language is
-**never** speculatively overwritten with the default — doing so used to lock sessions to
-English. The one exception is an explicit **lock** (`chat_sessions.lang_locked`): the manual
-header switch (`POST /api/chat/lang`) and the test-profile **force-language** pin both set it,
-which hard-overrides auto-mirroring so the *whole* session answers strictly in the chosen
-language. `create_session` sets the lock when the test profile carries a `force_lang`, and the
-`/session` (+ resume) response returns `lang_locked`.
+**One source of truth: the browser language.** Both the widget chrome and the AI answers
+use a single language for the whole session, derived from the browser locale and never
+changed mid-session. There is no per-message mirroring, no account/handshake language input,
+and no manual switcher. Deterministic priority: `locale` (e.g. `es-MX`→`es`; this is where
+the browser's `navigator.language` lands) → persisted `session_lang` (the locale resolved at
+session create) → `AUTO` (→ `DEFAULT_LANGUAGE`). `create_session` resolves the code from the
+locale and stores it on `chat_sessions.lang`; every turn answers strictly in it (the Layer-3
+directive says so), and `chat_service` reads it back as `session_lang` each turn — no
+detection, no stickiness updates, no locks.
 
-The **widget chrome** language (the shell strings, not the AI answers) is resolved **once,
-synchronously, before the panel is ever painted** (`widget.js` `resolveLang`), by the same
-priority the backend uses: explicit `LANG` → account/profile language (`USER_CONTEXT.language`,
-which the client already has) → browser `locale` → English. Resolving the account language on
-the client is deliberate — it kills the old "opens in English, then jumps to Russian a few
-seconds later" flicker, where the chrome only learned the real language from the slow `/session`
-round-trip. Async responses (`/topics`, `/session`) therefore **follow** `state.lang` and never
-redefine it; the one exception is an explicit server-side **lock** (`lang_locked`, the
-test-profile force-language pin), which the chrome adopts. There is **no** as-you-type chrome
-language switching — the chrome stays in the resolved language while the AI answers still mirror
-the player's own message per turn.
+The **widget chrome** language is resolved **once, synchronously, before the panel is ever
+painted** (`widget.js` `resolveLang`): browser `locale` → English. Resolving it on the client
+(the locale is available immediately) kills the old "opens in English, then jumps to Russian a
+few seconds later" flicker, where the chrome only learned the real language from the slow
+`/session` round-trip. Because the backend resolves the *same* code from the same locale, the
+chrome and answers always agree from turn one. Async responses (`/topics`, `/session`)
+therefore **follow** `state.lang` and never redefine it. The set of supported languages still
+comes from the hot-reloaded `language` settings group (`default` + `supported`).
+
+> The `chat_sessions.lang_locked` column is dead (kept only to avoid a schema migration);
+> it is no longer read or written by the chat flow.
 
 ### Escalation (`escalation.py`)
 Phase 1 returns a contact-button payload only (no form, no live agent). `decide()` triggers
@@ -261,12 +254,11 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   site to sign a handshake, so this stored profile stands in for it at `create_session`. It
   drives the Layer-3 player data the model sees (`id, full_name, email, activation_status,
   country, balance, vip_level, registration_date` — the `prompts._CONTEXT_FIELDS` whitelist) so
-  the owner can test name personalization, plus two language knobs — `profile_language` (the
-  account-language seed, below the browser locale) and `force_lang` (a top-priority pin for the
-  whole session's answer + UI language, surviving refresh because every new session re-applies
-  it; `''` = Auto). `enabled=false` ⇒ fall back to the widget's built-in context. The profile
-  is **ignored** when a handshake secret is set (the host site is authoritative then). This is
-  the single seam for "manage the test player on test, the real site supplies it later".
+  the owner can test name personalization. There are **no** language knobs — the session
+  language always follows the browser. `enabled=false` ⇒ fall back to the widget's built-in
+  context. The profile is **ignored** when a handshake secret is set (the host site is
+  authoritative then). This is the single seam for "manage the test player on test, the real
+  site supplies it later".
 - **Admin SPA** (`frontend/admin/`, `npadmin-` prefix, hand-rolled inline SVG charts, no
   build step, no CDN): served at `/admin`, assets under `/admin-static`.
 

@@ -229,26 +229,15 @@ def sanitize_user_context(user_context: dict[str, Any]) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # LAYER 3 — dynamic prompt (lives in the USER message, never the system message)
 # ---------------------------------------------------------------------------
-def _language_directive(resolved_lang: str, force_lang: bool) -> str:
+def _language_directive(resolved_lang: str) -> str:
     """The Layer-3 'Язык ответа' line.
 
-    Default: mirror the player's own message language, falling back to the
-    resolved default only when the message language is unclear. When the player
-    has manually picked a language (the header switcher), `force_lang` makes it
-    a hard override: answer strictly in that language regardless of the message.
+    The whole session answers in one language — the browser's language, resolved
+    at session create. Tell the model to answer strictly in it, regardless of
+    the language the player happens to type in.
     """
-    name = language.fallback_language_name(resolved_lang)
-    if force_lang:
-        return (
-            f"Язык ответа: отвечай строго на языке — {name}, независимо от "
-            "языка сообщения игрока (игрок выбрал этот язык вручную)."
-        )
-    return (
-        "Язык ответа: определи язык последнего сообщения игрока и отвечай строго "
-        "на этом языке (например, на русское сообщение — по-русски, на испанское "
-        "— по-испански). Если язык сообщения определить невозможно, отвечай на "
-        f"языке — {name}."
-    )
+    name = language.language_name(resolved_lang)
+    return f"Язык ответа: отвечай строго на языке — {name}."
 
 
 def _personalization_directive(full_name: str) -> Optional[str]:
@@ -343,7 +332,6 @@ def build_dynamic_prompt(
     user_context: dict[str, Any],
     resolved_lang: str,
     user_text: str,
-    force_lang: bool = False,
     available_topics: Optional[list[dict[str, Any]]] = None,
     current_topic: Optional[dict[str, Any]] = None,
 ) -> str:
@@ -360,7 +348,7 @@ def build_dynamic_prompt(
     if personalization:
         parts += [personalization, ""]
     parts += [
-        _language_directive(resolved_lang, force_lang),
+        _language_directive(resolved_lang),
         "",
         *_topic_routing_directive(available_topics or [], current_topic),
         "=== СООБЩЕНИЕ ИГРОКА ===",
@@ -378,7 +366,6 @@ def build_messages(
     user_text: str,
     resolved_lang: str,
     history_window: int = 10,
-    force_lang: bool = False,
     available_topics: Optional[list[dict[str, Any]]] = None,
     current_topic: Optional[dict[str, Any]] = None,
     core: Optional[str] = None,
@@ -408,7 +395,6 @@ def build_messages(
                 user_context=session.get("user_context", {}),
                 resolved_lang=resolved_lang,
                 user_text=user_text,
-                force_lang=force_lang,
                 available_topics=available_topics,
                 current_topic=current_topic,
             ),

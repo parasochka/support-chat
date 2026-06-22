@@ -42,7 +42,8 @@ class SessionCreate(BaseModel):
     # configured with WIDGET_HANDSHAKE_SECRET this is the ONLY trusted source of
     # user_context; unsigned context is ignored.
     signed_context: Optional[str] = None
-    lang: Optional[str] = None
+    # Browser language (navigator.language); the single source for the session's
+    # answer + chrome language.
     locale: Optional[str] = None
     recaptcha_token: Optional[str] = None
 
@@ -50,11 +51,6 @@ class SessionCreate(BaseModel):
 class TopicSelect(BaseModel):
     session_id: str
     topic_slug: str
-
-
-class LangSelect(BaseModel):
-    session_id: str
-    lang: str
 
 
 class MessageSend(BaseModel):
@@ -138,7 +134,6 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
     #      stands in for the host site (or the raw widget context if disabled).
     # The injection sanitizer (prompts.sanitize_user_context) runs regardless.
     user_context: dict[str, Any] = {}
-    forced_lang = ""  # top-priority answer/UI language pin from the test profile
     if body.signed_context:
         try:
             payload = auth.verify_handshake(body.signed_context)
@@ -167,25 +162,13 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
                 "vip_level": tp.get("vip_level") or None,
                 "registration_date": tp.get("registration_date") or None,
             }
-            if tp.get("profile_language"):
-                user_context["language"] = tp["profile_language"]
-            forced_lang = tp.get("force_lang") or ""
         else:
             user_context = body.user_context or {}
 
-    # Default answer language: forced test pin -> manual `lang` -> account
-    # `profile_lang` -> browser `locale` -> default. The account/profile language
-    # is a deliberate setting, so it outranks the (often incidental) browser
-    # locale. The persisted result is the per-session fallback; later turns still
-    # mirror the player's own message UNLESS the language is locked below.
-    #
-    # `force_lang` (test-profile pin) is a HARD session lock — exactly like a
-    # manual header switch: the model answers strictly in it (no auto-mirroring)
-    # and the widget chrome stays put. It is also top-priority in resolve().
-    lang_locked = bool(forced_lang)
-    profile_lang = language.profile_lang_from_context(user_context)
-    resolved = language.resolve(lang=forced_lang or body.lang, locale=body.locale,
-                                profile_lang=profile_lang)
+    # The session's one language is the browser language (navigator.language),
+    # mapped to a supported code; unknown locales fall back to the service
+    # default. It drives both the answer language and the widget chrome.
+    resolved = language.resolve(locale=body.locale)
     session_lang = None if resolved == language.AUTO else resolved
 
     # Assign the prompt version for this session (A/B split or live default).
@@ -199,7 +182,6 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
         user_context=user_context,
         prompt_version_id=prompt_version_id,
         session_id=new_id,
-        lang_locked=lang_locked,
     )
     token = auth.issue_session_token(session_id)
     topics = await kb.catalogue(lang=session_lang or language.default_code())
@@ -211,10 +193,6 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
             "token": token,
             "topics": topics,
             "lang": session_lang or language.default_code(),
-            # True ⇒ the language is pinned for the whole session (test-profile
-            # force-language): the widget must not auto-switch its chrome.
-            "lang_locked": lang_locked,
-            # The set of languages the widget switcher should offer.
             "languages": language.supported_codes(),
         },
     )
@@ -233,11 +211,11 @@ async def list_catalogue(lang: Optional[str] = None,
     create, so the widget showed an empty panel for seconds on open. Splitting
     the catalogue into its own cacheable GET lets the widget paint the buttons
     immediately while reCaptcha + session creation run in the background. The
-    language resolves the same way create_session does (manual `lang` -> browser
-    `locale` -> default); when the eventual session resolves a different default
-    (e.g. a forced test-profile language) the widget re-renders from /session.
+    language is the browser language — the widget passes the code it already
+    resolved as `lang` (or the raw `locale`); both map to the same base code as
+    create_session, so the titles match the session from the first paint.
     """
-    resolved = language.resolve(lang=lang, locale=locale)
+    resolved = language.resolve(locale=lang or locale)
     answer_lang = config.DEFAULT_LANGUAGE if resolved == language.AUTO else resolved
     topics = await kb.catalogue(lang=answer_lang)
     resp = JSONResponse(
@@ -270,34 +248,6 @@ async def select_topic(body: TopicSelect,
 
     await db.set_session_topic(body.session_id, topic["id"])
     return JSONResponse(status_code=200, content={"ok": True})
-
-
-# ---------------------------------------------------------------------------
-# POST /api/chat/lang  -- manual language switch (last-resort override)
-# ---------------------------------------------------------------------------
-@router.post("/lang")
-async def select_language(body: LangSelect,
-                          authorization: Optional[str] = Header(default=None)) -> JSONResponse:
-    """Player picked a language by hand in the widget header.
-
-    Locks the session to that language: it drives both the answer language
-    (hard override of auto-mirroring) and the UI. Returns the topic catalogue
-    re-localized so the picker matches immediately.
-    """
-    session, err = await _auth_session(authorization, body.session_id)
-    if err:
-        return err
-
-    lang = (body.lang or "").strip().lower()
-    if lang not in language.supported_codes():
-        return _err(400, "bad_lang", f"Unsupported language: {body.lang}")
-
-    await db.set_session_lang(body.session_id, lang, locked=True)
-    topics = await kb.catalogue(lang=lang)
-    return JSONResponse(
-        status_code=200,
-        content={"ok": True, "lang": lang, "topics": topics},
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +371,6 @@ async def resume_session(session_id: str,
             "status": session.get("status"),
             "escalated": session.get("escalated"),
             "lang": session.get("lang"),
-            "lang_locked": session.get("lang_locked"),
             "message_count": session.get("message_count"),
             "history": visible,
         },

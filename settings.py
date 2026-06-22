@@ -35,12 +35,8 @@ SETTING_KEYS = ("escalation", "forbidden_topics", "language", "antispam",
 # player's `user_context` over the signed handshake; in test/dev (no
 # WIDGET_HANDSHAKE_SECRET) there is no host, so this stored profile stands in for
 # it. It feeds the same Layer-3 fields the model sees (id/full_name/email/
-# activation_status) plus two language knobs:
-#   - profile_language: the account language; seeds the default answer language
-#     BELOW the browser locale (same precedence as a real handshake's language).
-#   - force_lang: a hard answer/UI language for the whole session, applied with
-#     top priority (like a manual switch) so the test environment can be pinned
-#     to one language regardless of the browser — '' means "Auto" (browser/profile).
+# activation_status/...). The session language is always the browser language,
+# so there are no language knobs here.
 # `enabled` gates the whole thing: off ⇒ fall back to the widget-supplied context.
 _DEFAULT_TEST_PROFILE: dict[str, Any] = {
     "enabled": True,
@@ -52,18 +48,15 @@ _DEFAULT_TEST_PROFILE: dict[str, Any] = {
     "balance": "1500.00 EUR",
     "vip_level": "Silver",
     "registration_date": "2024-01-15",
-    "profile_language": "",
-    "force_lang": "",
 }
 
-# String fields that round-trip the player context (mirrors prompts._CONTEXT_FIELDS
-# plus the account-language seed). Validated as plain strings. To surface a new
-# field to the model, add it here AND to prompts._CONTEXT_FIELDS AND to the
-# user_context built in api/chat.create_session AND to the admin Test-sandbox form.
+# String fields that round-trip the player context (mirrors prompts._CONTEXT_FIELDS).
+# Validated as plain strings. To surface a new field to the model, add it here AND
+# to prompts._CONTEXT_FIELDS AND to the user_context built in
+# api/chat.create_session AND to the admin Test-sandbox form.
 _TEST_PROFILE_STR_FIELDS = (
     "id", "full_name", "email", "activation_status",
     "country", "balance", "vip_level", "registration_date",
-    "profile_language",
 )
 
 
@@ -298,8 +291,7 @@ def validate_test_profile(value: Any) -> dict[str, Any]:
     """Validate a test-profile write. Returns the merged value; raises ValueError.
 
     Stored separately from SETTING_KEYS (its own admin endpoint), so it never
-    appears in the generic settings editor. `force_lang`/`profile_language` must
-    be empty (Auto / none) or a supported language code.
+    appears in the generic settings editor.
     """
     if not isinstance(value, dict):
         raise ValueError("test_profile value must be a JSON object")
@@ -308,13 +300,6 @@ def validate_test_profile(value: Any) -> dict[str, Any]:
     for field in _TEST_PROFILE_STR_FIELDS:
         if field in value and not isinstance(value[field], str):
             raise ValueError(f"{field} must be a string")
-    supported = set(language()["supported"])
-    for field in ("force_lang", "profile_language"):
-        if field in value:
-            code = (value[field] or "").strip().lower()
-            if code and code not in supported:
-                raise ValueError(f"{field} must be empty or a supported language")
-            value[field] = code
     # Merge over defaults so the stored row is always a complete, clean object.
     out = dict(_DEFAULT_TEST_PROFILE)
     for key in out:

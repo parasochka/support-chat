@@ -29,10 +29,10 @@ def test_defaults_when_cache_empty():
 
 
 def test_db_override_merges_over_defaults():
-    settings._cache["test_profile"] = {"full_name": "Анна", "force_lang": "ru"}
+    settings._cache["test_profile"] = {"full_name": "Анна", "country": "Spain"}
     p = settings.test_profile()
     assert p["full_name"] == "Анна"
-    assert p["force_lang"] == "ru"
+    assert p["country"] == "Spain"
     assert p["enabled"] is True  # untouched default preserved
 
 
@@ -41,12 +41,10 @@ def test_db_override_merges_over_defaults():
 # ---------------------------------------------------------------------------
 def test_validate_good_and_normalizes():
     out = settings.validate_test_profile(
-        {"enabled": False, "full_name": "Bob", "force_lang": "RU",
-         "profile_language": ""})
+        {"enabled": False, "full_name": "Bob", "country": "Spain"})
     assert out["enabled"] is False
     assert out["full_name"] == "Bob"
-    assert out["force_lang"] == "ru"          # lower-cased
-    assert out["profile_language"] == ""      # empty allowed (Auto)
+    assert out["country"] == "Spain"
     # Missing keys are filled from defaults -> always a complete object.
     assert out["id"] == "demo-12345"
 
@@ -58,10 +56,6 @@ def test_validate_rejects_bad():
         settings.validate_test_profile({"enabled": "yes"})
     with pytest.raises(ValueError):
         settings.validate_test_profile({"full_name": 7})
-    with pytest.raises(ValueError):
-        settings.validate_test_profile({"force_lang": "de"})  # unsupported
-    with pytest.raises(ValueError):
-        settings.validate_test_profile({"profile_language": "xx"})
 
 
 # ---------------------------------------------------------------------------

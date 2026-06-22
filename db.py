@@ -305,14 +305,13 @@ def _row_to_topic(row: asyncpg.Record) -> dict[str, Any]:
 async def create_session(consumer: str, player_id: Optional[str],
                          lang: Optional[str], user_context: dict[str, Any],
                          prompt_version_id: Optional[int] = None,
-                         session_id: Optional[str] = None,
-                         lang_locked: bool = False) -> str:
+                         session_id: Optional[str] = None) -> str:
     sid = session_id or str(uuid.uuid4())
     await _pool.execute(
         "INSERT INTO chat_sessions "
-        "(id, consumer, player_id, lang, lang_locked, user_context, prompt_version_id) "
-        "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)",
-        sid, consumer, player_id, lang, lang_locked,
+        "(id, consumer, player_id, lang, user_context, prompt_version_id) "
+        "VALUES ($1, $2, $3, $4, $5::jsonb, $6)",
+        sid, consumer, player_id, lang,
         json.dumps(user_context or {}), prompt_version_id,
     )
     return sid
