@@ -85,6 +85,19 @@ italic, inline `code`, links, and bulleted/numbered lists — and tells it to av
 two stay in lockstep: whatever the model emits, the widget renders. Lives in Layer 3 so `SYSTEM_CORE`
 stays byte-stable.
 
+**KB grounding** is a Layer-3 line (`prompts._KB_GROUNDING_DIRECTIVE`) added for every **specialized**
+topic (skipped for the catch-all `other`, which has no KB and whose routing directive already steers
+the model to a specialized branch). The KB block (Layer 2) is the single source of truth, but the model
+tends to miss a matching entry when the player phrases the question differently from how the KB is
+written, then falls back to vague generic prose or invented specifics instead of the exact answer that
+IS in the KB (e.g. a player asks about a specific bonus under «Бонусы» worded unlike the KB's example
+questions, and gets generic/made-up info though the precise entry exists). The directive tells the
+model to match the question to the KB by **meaning/intent**, not literal wording; answer strictly and
+precisely from the matched entry; never substitute generic or invented conditions/numbers/dates/names
+when concrete ones exist; answer generically only when the question really is generic and the KB has
+nothing; and ask one short **clarifying question** to steer the player toward a specific KB answer when
+the question is too vague or spans several entries. Lives in Layer 3 so `SYSTEM_CORE` stays byte-stable.
+
 ### Request flow
 `api/chat.py` (thin HTTP handlers + gate ordering) → `chat_service.handle_message`
 (orchestration) → `prompts.build_messages` + `openai_client.complete` → `db.persist_turn`.

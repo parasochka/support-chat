@@ -327,6 +327,33 @@ _FORMATTING_DIRECTIVE = (
 )
 
 
+# Layer-3 KB-grounding directive. The KB block (Layer 2) is the SINGLE source of
+# truth, but the model tends to (a) miss a matching entry when the player phrases
+# the question differently from how the KB is written, and (b) fall back to vague
+# generic prose or invented specifics instead of the exact answer that IS in the
+# KB. This directive tells the model to match the player's question to the KB by
+# MEANING/intent — not by literal wording — answer strictly and precisely from the
+# matched entry, never substitute generic or invented facts when concrete ones
+# exist, and ask a short clarifying question to steer the player toward a specific
+# KB answer when the question is too vague or spans several entries. Lives in Layer
+# 3 (the user message) so SYSTEM_CORE stays byte-stable.
+_KB_GROUNDING_DIRECTIVE = (
+    "Опора на базу знаний: загруженная база знаний по текущей теме — "
+    "ЕДИНСТВЕННЫЙ источник истины. Внимательно ищи в ней ответ, даже если "
+    "формулировка игрока отличается от формулировок в базе: соотноси вопрос по "
+    "СМЫСЛУ и намерению, а не по точному совпадению слов (одно и то же может быть "
+    "названо по-разному — например, конкретный бонус, акция или процедура). Если "
+    "в базе есть подходящая информация — отвечай строго и точно по ней, ничего не "
+    "добавляя от себя. НЕ давай общих обтекаемых ответов и НЕ придумывай условия, "
+    "числа, сроки, названия бонусов или акций, когда в базе есть конкретика. "
+    "Отвечай общими словами только если вопрос действительно общего характера и "
+    "конкретного ответа в базе нет. Если вопрос сформулирован слишком расплывчато "
+    "или может относиться к нескольким пунктам базы — задай один короткий "
+    "уточняющий вопрос, чтобы вывести игрока на конкретный ответ из базы знаний, "
+    "вместо общего ответа."
+)
+
+
 # Slug of the hidden catch-all topic. Mirrors kb.OTHER_SLUG; duplicated here so
 # this pure prompt-assembly module needs no DB-touching import. The catch-all has
 # no real KB of its own, so when it is the current topic the routing directive
@@ -474,6 +501,13 @@ def build_dynamic_prompt(
         "",
         _language_directive(resolved_lang),
         "",
+    ]
+    # KB-grounding only for specialized topics: they have a real KB to ground in.
+    # The catch-all "other" has none, and its routing directive already steers the
+    # model to route to a specialized topic instead of answering generically.
+    if not (current_topic and current_topic.get("slug") == OTHER_TOPIC_SLUG):
+        parts += [_KB_GROUNDING_DIRECTIVE, ""]
+    parts += [
         *_topic_routing_directive(available_topics or [], current_topic),
         "=== СООБЩЕНИЕ ИГРОКА ===",
         user_text,
