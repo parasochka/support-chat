@@ -124,11 +124,12 @@ the message cap. Both knobs (`low_content_block` master switch, `min_meaningful_
 in the hot-reloaded `antispam` settings group.
 
 ### Language resolution (`language.py`)
-**The widget chrome is fixed to the browser language; the AI answers FOLLOW the player.**
-The chrome (buttons, labels, the first canned message) is always the browser language and
-never changes. The *conversation*, however, switches to whatever supported language the
-player actually writes in: open in Russian but start typing English and the answers move to
-English — the interface stays put.
+**The chrome STARTS at the browser language; both the answers and the chrome FOLLOW the
+player.** The widget opens in the browser language (resolved client-side, no flicker), but the
+*conversation* switches to whatever supported language the player actually writes in: open in
+Russian, start typing English, and the answers move to English — and the widget chrome
+(buttons, labels, the canned greeting, topic titles) re-localizes to match, so the whole
+widget moves together.
 
 The browser locale is still the **starting** answer language. Deterministic priority for the
 session's base/UI code: `locale` (e.g. `es-MX`→`es`; this is where the browser's
@@ -151,15 +152,16 @@ switches again. Stickiness also rides the prompt history: the model sees the pri
 ambiguous follow-up stays in the language the conversation drifted to. No separate detection
 call — detection is the model's, at no extra cost.
 
-The **widget chrome** language is resolved **once, synchronously, before the panel is ever
-painted** (`widget.js` `resolveLang`): browser `locale` → English. Resolving it on the client
-(the locale is available immediately) kills the old "opens in English, then jumps to Russian a
-few seconds later" flicker, where the chrome only learned the real language from the slow
-`/session` round-trip. The chrome reads only its own client-resolved `state.lang` and **ignores**
-the per-message `lang` the answers drift to, so the conversation can switch language without the
-interface flickering. Async responses (`/topics`, `/session`) therefore **follow** `state.lang`
-and never redefine it. The set of supported languages still comes from the hot-reloaded
-`language` settings group (`default` + `supported`).
+The **widget chrome** language is resolved **synchronously, before the panel is ever painted**
+(`widget.js` `resolveLang`): browser `locale` → English. Resolving the *starting* language on the
+client (the locale is available immediately) kills the old "opens in English, then jumps to
+Russian a few seconds later" flicker, where the chrome only learned the real language from the
+slow `/session` round-trip. After that, the chrome **follows** the conversation: each `/message`
+response carries the answer `lang`, and `widget.js` `maybeSwitchLang` re-localizes the shell
+(static labels, the greeting bubble, and a background topic-title refresh) whenever that `lang`
+drifts to another supported language. Async responses (`/topics`, `/session`) still **follow**
+`state.lang` and never redefine it. The set of supported languages still comes from the
+hot-reloaded `language` settings group (`default` + `supported`).
 
 > The `chat_sessions.lang_locked` column is dead (kept only to avoid a schema migration);
 > it is no longer read or written by the chat flow.
