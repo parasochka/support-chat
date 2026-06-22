@@ -195,6 +195,10 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         resolved = False
 
     # --- persist the turn atomically ----------------------------------------
+    # `detected_lang` is the language the model ANSWERED in (from [[LANG:xx]]).
+    # Per the language directive the model answers in the language of the player's
+    # CURRENT message, so it is a faithful proxy for the user turn's language too;
+    # None when the model emitted no tag (kept null rather than guessed).
     new_count = await db.persist_turn(
         session_id=session_id,
         user_text=user_text,

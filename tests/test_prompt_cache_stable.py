@@ -91,6 +91,50 @@ def test_layer3_directive_follows_player_language():
     assert msgs[0]["content"] == core_before
 
 
+def test_forbidden_topics_directive_in_layer3_only():
+    """The forbidden-topics guardrail rides in the user message (Layer 3): it is
+    ON by default (shipped defaults), reflects an owner override, can be disabled
+    with an explicit empty list, and never leaks into the cached system prefix."""
+    import settings
+
+    core_before = prompts.get_system_core()
+    session = {"user_context": {}}
+
+    # Default (empty cache -> shipped defaults): directive present, core untouched.
+    settings.invalidate()
+    try:
+        msgs = prompts.build_messages(session, kb_block=None, history=[],
+                                      user_text="hi", resolved_lang="en")
+        last = msgs[-1]["content"]
+        assert "Запрещённые темы" in last
+        assert "программирование" in last  # one of the shipped defaults
+        assert "Запрещённые темы" not in msgs[0]["content"]
+        assert msgs[0]["content"] == core_before
+
+        # Owner override -> the named topics + custom refusal appear in Layer 3.
+        settings._cache["forbidden_topics"] = {
+            "topics": ["крипто-трейдинг", "политика"],
+            "refusal": "Извините, я помогаю только с вопросами поддержки NikaBet.",
+        }
+        msgs = prompts.build_messages(session, kb_block="KB", history=[],
+                                      user_text="что думаешь о выборах?",
+                                      resolved_lang="ru")
+        last = msgs[-1]["content"]
+        assert "крипто-трейдинг" in last
+        assert "политика" in last
+        assert "только с вопросами поддержки NikaBet" in last
+        assert "Запрещённые темы" not in msgs[0]["content"]
+        assert msgs[0]["content"].split("=== БАЗА ЗНАНИЙ", 1)[0].rstrip("\n") == core_before
+
+        # Explicit empty list disables the directive entirely.
+        settings._cache["forbidden_topics"] = {"topics": [], "refusal": ""}
+        msgs = prompts.build_messages(session, kb_block=None, history=[],
+                                      user_text="hi", resolved_lang="en")
+        assert "Запрещённые темы" not in msgs[-1]["content"]
+    finally:
+        settings.invalidate()
+
+
 def test_strip_language_tag():
     clean, code = prompts.strip_language_tag("[[LANG:en]]\nHello, how can I help?")
     assert code == "en"

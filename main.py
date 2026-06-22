@@ -56,9 +56,29 @@ def _render_test_page() -> str:
     return template.replace(_CLAUDE_MD_MARKER, html.escape(doc))
 
 
+def _warn_insecure_config() -> None:
+    """Flag deployment foot-guns at startup (logged, never fatal).
+
+    These are safe in local/dev but risky in production, so we surface them
+    loudly instead of failing — the operator decides.
+    """
+    if config.ADMIN_PASSWORD:  # admin dashboard is enabled (prod-ish)
+        if config.ADMIN_JWT_SECRET_IS_FALLBACK:
+            log.warning(
+                "ADMIN_JWT_SECRET is not set; admin tokens are signed with "
+                "SESSION_JWT_SECRET. Set a DISTINCT ADMIN_JWT_SECRET in production."
+            )
+        if "*" in config.CORS_ALLOW_ORIGINS:
+            log.warning(
+                "CORS_ALLOW_ORIGINS is '*' (any origin). Restrict it to your "
+                "host site origins in production."
+            )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Starting %s: init_db + seed", config.SERVICE_NAME)
+    _warn_insecure_config()
     await db.init_db()
     await kb_seed.run()
     await prompt_seed.run()       # migrate Phase 1 core into prompt_versions (once)

@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 import config
 import db
+import settings as _settings
 
 # Each group maps a stored field name -> a thunk reading the current effective
 # value from config (env override, else the in-code default). Mirrors the field
@@ -55,6 +56,14 @@ _GROUPS: dict[str, dict[str, Callable[[], Any]]] = {
     },
     "escalation": {
         "max_messages_per_session": lambda: config.MAX_MESSAGES_PER_SESSION,
+    },
+    # Off-topic / unsafe-request guardrail. Not env-backed — seed the shipped
+    # defaults so the list + refusal land in the admin panel as editable values
+    # (and the guardrail is non-empty out of the box). settings.forbidden_topics()
+    # also falls back to these defaults if the row is ever absent.
+    "forbidden_topics": {
+        "topics": lambda: list(_settings._DEFAULT_FORBIDDEN_TOPICS["topics"]),
+        "refusal": lambda: _settings._DEFAULT_FORBIDDEN_TOPICS["refusal"],
     },
 }
 

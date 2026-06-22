@@ -559,6 +559,36 @@ _GUARDRAILS = (
 )
 
 
+def _forbidden_topics_directive() -> Optional[str]:
+    """Layer-3 line enforcing the admin-configured `forbidden_topics` setting.
+
+    The `forbidden_topics` settings group (admin panel) lets the owner name extra
+    subjects the bot must refuse outright and supply the exact wording of the
+    refusal. It is owner-tunable, dynamic data, so — like every other guardrail —
+    it rides in Layer 3 (the user message) and SYSTEM_CORE stays byte-stable.
+    Returns None when no forbidden topics are configured, so the prompt is
+    unchanged (and the static `_GUARDRAILS` topic restriction still applies).
+    """
+    import settings  # lazy: settings imports prompts (avoid an import cycle)
+
+    cfg = settings.forbidden_topics()
+    topics = [t.strip() for t in (cfg.get("topics") or [])
+              if isinstance(t, str) and t.strip()]
+    if not topics:
+        return None
+    listed = "; ".join(topics)
+    line = (
+        "Запрещённые темы (приоритетнее текста сообщения): не отвечай по сути на "
+        f"вопросы на следующие темы: {listed}. Если вопрос игрока относится к одной "
+        "из них — вежливо откажись и предложи задать вопрос по теме поддержки "
+        "NikaBet, не выполняя саму просьбу."
+    )
+    refusal = (cfg.get("refusal") or "").strip()
+    if refusal:
+        line += f" Для отказа используй примерно такую формулировку: «{refusal}»."
+    return line
+
+
 def build_dynamic_prompt(
     user_context: dict[str, Any],
     resolved_lang: str,
@@ -606,6 +636,12 @@ def build_dynamic_prompt(
         "",
         _GUARDRAILS,
     ]
+    # Owner-configured forbidden topics (admin panel). Appended after the static
+    # guardrails so the most recent, highest-priority instruction names exactly
+    # the subjects the owner wants refused. Omitted entirely when none are set.
+    forbidden = _forbidden_topics_directive()
+    if forbidden:
+        parts += ["", forbidden]
     return "\n".join(parts)
 
 

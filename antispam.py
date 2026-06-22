@@ -267,12 +267,19 @@ def scan_injection(text: str) -> bool:
     """
     if not text:
         return False
-    # Raw form preserves the spaces multi-word patterns rely on; the fully
-    # de-spaced normalized form catches spacing/zero-width obfuscation.
+    # Check each pattern against three views so neither spacing nor Unicode
+    # obfuscation can slip a known trigger past the substring match:
+    #   - lowered:     the raw text, lower-cased (multi-word patterns, fast path)
+    #   - norm_spaced: NFKC-normalized, zero-width stripped, single-spaced (catches
+    #                  full-width / confusable characters in multi-word patterns)
+    #   - norm_nospace: the same, fully de-spaced (catches "i g n o r e" / zero-width
+    #                  splits inside a single word)
     lowered = text.lower()
-    norm_nospace = re.sub(r"\s+", "", _normalize_for_scan(text))
+    norm = _normalize_for_scan(text)
+    norm_spaced = " ".join(norm.split())
+    norm_nospace = re.sub(r"\s+", "", norm)
     return any(
-        p in lowered or p.replace(" ", "") in norm_nospace
+        p in lowered or p in norm_spaced or p.replace(" ", "") in norm_nospace
         for p in _INJECTION_PATTERNS
     )
 
