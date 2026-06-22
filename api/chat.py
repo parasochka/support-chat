@@ -194,7 +194,7 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
         session_id=new_id,
     )
     token = auth.issue_session_token(session_id)
-    topics = await kb.catalogue(lang=session_lang or config.DEFAULT_LANGUAGE)
+    topics = await kb.catalogue(lang=session_lang or language.default_code())
 
     return JSONResponse(
         status_code=200,
@@ -202,9 +202,9 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
             "session_id": session_id,
             "token": token,
             "topics": topics,
-            "lang": session_lang or config.DEFAULT_LANGUAGE,
+            "lang": session_lang or language.default_code(),
             # The set of languages the widget switcher should offer.
-            "languages": config.SUPPORTED_LANGUAGES,
+            "languages": language.supported_codes(),
         },
     )
 
@@ -244,7 +244,7 @@ async def select_language(body: LangSelect,
         return err
 
     lang = (body.lang or "").strip().lower()
-    if lang not in config.SUPPORTED_LANGUAGES:
+    if lang not in language.supported_codes():
         return _err(400, "bad_lang", f"Unsupported language: {body.lang}")
 
     await db.set_session_lang(body.session_id, lang, locked=True)
@@ -300,7 +300,7 @@ async def send_message(req: Request, body: MessageSend,
 
     # 5. message cap reached -> force escalation response (no model call)
     if session.get("message_count", 0) >= settings.escalation()["max_messages_per_session"]:
-        ans_lang = session.get("lang") or config.DEFAULT_LANGUAGE
+        ans_lang = session.get("lang") or language.default_code()
         if not session.get("escalated", False):
             await db.mark_escalated(body.session_id)
             await db.log_admin_event(body.session_id, "escalation",
@@ -372,7 +372,7 @@ async def escalate(body: EscalateReq,
     if err:
         return err
 
-    ans_lang = session.get("lang") or config.DEFAULT_LANGUAGE
+    ans_lang = session.get("lang") or language.default_code()
     if not session.get("escalated", False):
         await db.mark_escalated(body.session_id)
         await db.log_admin_event(body.session_id, "escalation", {"reason": "explicit"})

@@ -659,6 +659,7 @@ async function viewSettings(main) {
     for (const key of data.keys) {
       if (key === "language") { languageSettingsBox(holder, data.resolved.language || {}); continue; }
       if (key === "model") { modelSettingsBox(holder, data.resolved.model || {}); continue; }
+      if (key === "general") { generalSettingsBox(holder, data.resolved.general || {}); continue; }
       const box = el("div", "npadmin-chart");
       box.appendChild(el("div", "npadmin-meta", key));
       const ta = el("textarea", "npadmin-input");
@@ -841,6 +842,60 @@ function modelSettingsBox(holder, current) {
     if (!confirm("Update 'model' settings now? Applies to new requests immediately.")) return;
     try {
       await api("/settings/model", { method: "PUT", body: { value } });
+      err.style.color = "var(--good)"; err.textContent = "Saved — live";
+    } catch (e) { err.textContent = e.message; }
+  });
+  box.append(save, err);
+  holder.appendChild(box);
+}
+
+// Dedicated "general" operational editor: session lifetime, the escalation
+// contact-button URL, and the request body cap. These used to live in Railway
+// env (SESSION_TTL_HOURS, CONTACT_FORM_URL, BODY_MAX_BYTES); now they're tuned
+// here and apply without a redeploy.
+function generalSettingsBox(holder, current) {
+  const box = el("div", "npadmin-chart");
+  box.appendChild(el("div", "npadmin-meta", "general — operational"));
+  box.appendChild(el("div", "npadmin-help",
+    "Session lifetime, the escalation contact button URL, and the max request "
+    + "body size. Overrides the matching Railway env vars; applies live."));
+
+  const urlLab = el("label", "npadmin-field");
+  urlLab.appendChild(el("span", null, "Contact form URL (escalation button)"));
+  const urlInp = el("input", "npadmin-input");
+  urlInp.type = "text"; urlInp.value = current.contact_form_url || "";
+  urlInp.placeholder = "https://nikabet.example/support";
+  urlLab.appendChild(urlInp);
+  box.appendChild(urlLab);
+
+  const NUM = [
+    ["session_ttl_hours", "Session TTL (hours)", "1"],
+    ["body_max_bytes", "Max request body (bytes)", "1024"],
+  ];
+  const fields = {};
+  for (const [key, label, step] of NUM) {
+    const lab = el("label", "npadmin-field");
+    lab.appendChild(el("span", null, label));
+    const inp = el("input", "npadmin-input");
+    inp.type = "number"; inp.step = step;
+    inp.value = current[key] != null ? current[key] : "";
+    fields[key] = inp;
+    lab.appendChild(inp);
+    box.appendChild(lab);
+  }
+
+  const err = el("div", "npadmin-err");
+  const save = el("button", "npadmin-btn", "Save general settings");
+  save.addEventListener("click", async () => {
+    err.textContent = ""; err.style.color = "";
+    const value = { contact_form_url: urlInp.value.trim() };
+    for (const [key, label] of NUM) {
+      value[key] = parseInt(fields[key].value, 10);
+      if (Number.isNaN(value[key])) { err.textContent = `${label}: enter a number`; return; }
+    }
+    if (!confirm("Update 'general' settings now?")) return;
+    try {
+      await api("/settings/general", { method: "PUT", body: { value } });
       err.style.color = "var(--good)"; err.textContent = "Saved — live";
     } catch (e) { err.textContent = e.message; }
   });

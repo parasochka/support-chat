@@ -186,16 +186,21 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   `require_admin` dependency guards every `/admin/*` data route.
 - **Settings** (`settings.py`, `app_settings` table): hot-reloaded runtime tuning with
   precedence `app_settings` (DB) → env → default. A sync in-process cache (populated at
-  startup, reloaded on write) is read by `antispam`/`escalation`/`openai_client`/api; writes
-  validate hard and log `setting_updated`. Groups: `escalation`, `forbidden_topics`,
-  `language`, `antispam` (rate limit/window/cooldown/input cap **plus** `recaptcha_min_score`
-  and `injection_hard_block`), and `model` (OpenAI tuning — see the failover section). The
-  goal is that every non-secret operational knob lives in the admin panel and only true
-  secrets (API keys, JWT secrets, `DATABASE_URL`, `ADMIN_PASSWORD`, Telegram/handshake/reCaptcha
-  secrets) stay in Railway env. On startup `seed/settings_seed.run()` snapshots the current
-  env-resolved values for the `antispam` and `model` groups into `app_settings` once (missing
-  fields only; never clobbers an existing override) so the matching env vars can be deleted
-  from Railway with no behaviour change.
+  startup, reloaded on write) is read by `antispam`/`escalation`/`openai_client`/`language`/
+  `auth`/api; writes validate hard and log `setting_updated`. Groups: `escalation`
+  (incl. `max_messages_per_session`), `forbidden_topics`, `language` (default + supported
+  set — every language read goes through `language.default_code()`/`supported_codes()`),
+  `antispam` (rate limit/window/cooldown/input cap **plus** `recaptcha_min_score` and
+  `injection_hard_block`), `model` (OpenAI tuning — see the failover section), and `general`
+  (operational knobs with no other home: `session_ttl_hours`, `contact_form_url`,
+  `body_max_bytes`). The goal is that every non-secret operational knob lives in the admin
+  panel and only true secrets (API keys, JWT secrets, `DATABASE_URL`, `ADMIN_PASSWORD`,
+  Telegram/handshake/reCaptcha secrets) — plus the network-perimeter deploy vars
+  (`CORS_ALLOW_ORIGINS`, `TRUSTED_PROXY_COUNT`) — stay in Railway env. On startup
+  `seed/settings_seed.run()` snapshots the current env-resolved values for the `antispam`,
+  `model`, `general`, `language` and `escalation` (max-messages) groups into `app_settings`
+  once (missing fields only; never clobbers an existing override) so the matching env vars
+  can be deleted from Railway with no behaviour change.
 - **Dashboard data API** (`api/admin.py` + `db.py` aggregation + `metrics.py` derived
   rates): overview/timeseries/by-topic/by-language/sessions/session/unresolved/ab-results.
   `resolution_rate` is a documented PROXY (counts "not escalated", incl. abandoned →

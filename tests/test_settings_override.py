@@ -107,3 +107,41 @@ def test_antispam_validate_new_fields():
         settings.validate_setting("antispam", {"recaptcha_min_score": 2})  # > 1.0
     with pytest.raises(ValueError):
         settings.validate_setting("antispam", {"injection_hard_block": "yes"})
+
+
+# --- general group (session TTL / contact URL / body cap) ------------------
+def test_general_env_default_when_cache_empty(monkeypatch):
+    monkeypatch.setattr(config, "SESSION_TTL_HOURS", 12)
+    monkeypatch.setattr(config, "CONTACT_FORM_URL", "https://x/support")
+    g = settings.general()
+    assert g["session_ttl_hours"] == 12
+    assert g["contact_form_url"] == "https://x/support"
+    assert g["body_max_bytes"] == config.BODY_MAX_BYTES
+
+
+def test_general_db_override_wins(monkeypatch):
+    monkeypatch.setattr(config, "SESSION_TTL_HOURS", 12)
+    settings._cache["general"] = {"session_ttl_hours": 48}
+    assert settings.general()["session_ttl_hours"] == 48
+
+
+def test_general_validate():
+    settings.validate_setting("general", {"session_ttl_hours": 24,
+                                          "body_max_bytes": 65536,
+                                          "contact_form_url": "https://x"})
+    settings.validate_setting("general", {"contact_form_url": None})  # null ok
+    with pytest.raises(ValueError):
+        settings.validate_setting("general", {"session_ttl_hours": 0})  # below min
+    with pytest.raises(ValueError):
+        settings.validate_setting("general", {"body_max_bytes": 1})     # below min
+    with pytest.raises(ValueError):
+        settings.validate_setting("general", {"contact_form_url": 123})  # not str
+
+
+def test_language_accessors_follow_settings(monkeypatch):
+    import language
+    monkeypatch.setattr(config, "DEFAULT_LANGUAGE", "ru")
+    assert language.default_code() == "ru"          # env default via settings
+    settings._cache["language"] = {"default": "es", "supported": ["es", "en"]}
+    assert language.default_code() == "es"           # DB override wins
+    assert language.supported_codes() == ["es", "en"]

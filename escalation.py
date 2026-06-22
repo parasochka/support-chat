@@ -111,15 +111,23 @@ _BUTTON_LABELS = {
 
 
 def build_payload(lang: str) -> dict:
-    """Return the escalation block for the API response."""
-    code = lang if lang in _MESSAGES else config.DEFAULT_LANGUAGE
+    """Return the escalation block for the API response.
+
+    The fallback language and the contact-button URL come from the resolved
+    runtime settings (app_settings > env > default), so the owner tunes them in
+    the admin panel without a redeploy.
+    """
+    import language  # lazy to keep this module import-light
+    import settings
+    default = language.default_code()
+    code = lang if lang in _MESSAGES else default
     code = code if code in _MESSAGES else "en"
     return {
         "active": True,
         "message": _MESSAGES[code],
         "button": {
             "label": _BUTTON_LABELS[code],
-            "url": config.CONTACT_FORM_URL or "",
+            "url": settings.general()["contact_form_url"] or "",
         },
     }
 

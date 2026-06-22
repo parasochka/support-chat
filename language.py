@@ -22,8 +22,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-import config
-
 # Sentinel meaning "let the model answer in the language of the user's message".
 AUTO = "auto"
 
@@ -37,11 +35,23 @@ LANG_NAMES = {
 }
 
 
+def default_code() -> str:
+    """The resolved default answer language (admin `language` group > env > default)."""
+    import settings  # lazy: avoid an import cycle at module load
+    return settings.language()["default"]
+
+
+def supported_codes() -> list[str]:
+    """The resolved supported-language set (admin `language` group > env > default)."""
+    import settings  # lazy
+    return settings.language()["supported"]
+
+
 def _supported(code: Optional[str]) -> Optional[str]:
     if not code:
         return None
     c = code.strip().lower()
-    return c if c in config.SUPPORTED_LANGUAGES else None
+    return c if c in supported_codes() else None
 
 
 def locale_to_lang(locale: Optional[str]) -> Optional[str]:
@@ -139,5 +149,6 @@ def fallback_language_name(resolved: str) -> str:
     The model is always told to mirror the player's language first; this is the
     safety net. For AUTO it is the service default.
     """
-    code = config.DEFAULT_LANGUAGE if resolved == AUTO else resolved
-    return LANG_NAMES.get(code, LANG_NAMES.get(config.DEFAULT_LANGUAGE, "English"))
+    default = default_code()
+    code = default if resolved == AUTO else resolved
+    return LANG_NAMES.get(code, LANG_NAMES.get(default, "English"))

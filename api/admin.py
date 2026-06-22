@@ -40,10 +40,10 @@ async def meta() -> JSONResponse:
     of hard-coding the list in JS.
     """
     langs = [{"code": c, "name": language.LANG_NAMES.get(c, c.upper())}
-             for c in config.SUPPORTED_LANGUAGES]
+             for c in language.supported_codes()]
     return JSONResponse(content={
         "languages": langs,
-        "default_language": config.DEFAULT_LANGUAGE,
+        "default_language": language.default_code(),
     })
 
 
@@ -372,7 +372,7 @@ async def get_test_profile() -> JSONResponse:
     return JSONResponse(content={
         "profile": settings_mod.test_profile(),
         "languages": [{"code": c, "name": language.LANG_NAMES.get(c, c.upper())}
-                      for c in config.SUPPORTED_LANGUAGES],
+                      for c in language.supported_codes()],
         # When a handshake secret is set the host site is authoritative and this
         # profile is ignored at session create — surface that so the UI can warn.
         "active": not bool(config.WIDGET_HANDSHAKE_SECRET),
