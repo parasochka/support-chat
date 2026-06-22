@@ -67,6 +67,12 @@ KB are Russian; only the answer language varies. The Layer-3 directive tells the
 session → default) only as the fallback when the message language is unclear — so a
 Russian question always gets a Russian answer.
 
+**Personalization** also lives in Layer 3 (never `SYSTEM_CORE`): when the sanitized
+`user_context` carries a `full_name`, `prompts._personalization_directive` adds a line giving
+the model the player's **first name** and telling it to address them by name naturally (not on
+every line). No name ⇒ the line is omitted and the prompt is unchanged. The four context
+fields the model ever sees stay `id, full_name, email, activation_status`.
+
 ### Request flow
 `api/chat.py` (thin HTTP handlers + gate ordering) → `chat_service.handle_message`
 (orchestration) → `prompts.build_messages` + `openai_client.complete` → `db.persist_turn`.
@@ -202,6 +208,17 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   with `WIDGET_HANDSHAKE_SECRET` set, only a valid signed blob is trusted for
   `user_context`; raw browser context is ignored. No secret ⇒ Phase 1 dev behaviour. The
   injection sanitizer runs in every mode.
+- **Test sandbox profile** (`settings.test_profile`/`validate_test_profile`,
+  `app_settings['test_profile']`, `api.admin` `GET/PUT /admin/test-profile`, the **Test
+  sandbox** tab in the SPA): in test/dev (**no** `WIDGET_HANDSHAKE_SECRET`) there is no host
+  site to sign a handshake, so this stored profile stands in for it at `create_session`. It
+  drives the Layer-3 player data the model sees (`id, full_name, email, activation_status`) so
+  the owner can test name personalization, plus two language knobs — `profile_language` (the
+  account-language seed, below the browser locale) and `force_lang` (a top-priority pin for the
+  whole session's answer + UI language, surviving refresh because every new session re-applies
+  it; `''` = Auto). `enabled=false` ⇒ fall back to the widget's built-in context. The profile
+  is **ignored** when a handshake secret is set (the host site is authoritative then). This is
+  the single seam for "manage the test player on test, the real site supplies it later".
 - **Admin SPA** (`frontend/admin/`, `npadmin-` prefix, hand-rolled inline SVG charts, no
   build step, no CDN): served at `/admin`, assets under `/admin-static`.
 

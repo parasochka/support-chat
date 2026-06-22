@@ -26,6 +26,33 @@ _cache: dict[str, Any] = {}
 # The settings groups the admin may write, and which validator guards each.
 SETTING_KEYS = ("escalation", "forbidden_topics", "language", "antispam")
 
+# Test/dev sandbox profile. In a real deployment the host site supplies the
+# player's `user_context` over the signed handshake; in test/dev (no
+# WIDGET_HANDSHAKE_SECRET) there is no host, so this stored profile stands in for
+# it. It feeds the same Layer-3 fields the model sees (id/full_name/email/
+# activation_status) plus two language knobs:
+#   - profile_language: the account language; seeds the default answer language
+#     BELOW the browser locale (same precedence as a real handshake's language).
+#   - force_lang: a hard answer/UI language for the whole session, applied with
+#     top priority (like a manual switch) so the test environment can be pinned
+#     to one language regardless of the browser — '' means "Auto" (browser/profile).
+# `enabled` gates the whole thing: off ⇒ fall back to the widget-supplied context.
+_DEFAULT_TEST_PROFILE: dict[str, Any] = {
+    "enabled": True,
+    "id": "demo-12345",
+    "full_name": "Test Player",
+    "email": "test.player@example.com",
+    "activation_status": "active",
+    "profile_language": "",
+    "force_lang": "",
+}
+
+# String fields that round-trip the player context (mirrors prompts._CONTEXT_FIELDS
+# plus the account-language seed). Validated as plain strings.
+_TEST_PROFILE_STR_FIELDS = (
+    "id", "full_name", "email", "activation_status", "profile_language",
+)
+
 
 async def reload() -> None:
     """(Re)load all settings from the DB into the in-process cache."""
@@ -100,6 +127,21 @@ def system_prompt() -> dict[str, str]:
     return out
 
 
+def test_profile() -> dict[str, Any]:
+    """Resolved test/dev sandbox profile: stored overrides merged over defaults.
+
+    Always returns a full set of keys so the admin editor round-trips cleanly and
+    `api/chat.create_session` can read it without `.get(...)` guards.
+    """
+    db_v = _group("test_profile")
+    out = dict(_DEFAULT_TEST_PROFILE)
+    if isinstance(db_v, dict):
+        for key in out:
+            if key in db_v:
+                out[key] = db_v[key]
+    return out
+
+
 def resolved_all() -> dict[str, Any]:
     return {
         "escalation": escalation(),
@@ -153,3 +195,32 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         if "refusal" in value and not isinstance(value["refusal"], str):
             raise ValueError("refusal must be a string")
     return value
+
+
+def validate_test_profile(value: Any) -> dict[str, Any]:
+    """Validate a test-profile write. Returns the merged value; raises ValueError.
+
+    Stored separately from SETTING_KEYS (its own admin endpoint), so it never
+    appears in the generic settings editor. `force_lang`/`profile_language` must
+    be empty (Auto / none) or a supported language code.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("test_profile value must be a JSON object")
+    if "enabled" in value and not isinstance(value["enabled"], bool):
+        raise ValueError("enabled must be a boolean")
+    for field in _TEST_PROFILE_STR_FIELDS:
+        if field in value and not isinstance(value[field], str):
+            raise ValueError(f"{field} must be a string")
+    supported = set(config.SUPPORTED_LANGUAGES)
+    for field in ("force_lang", "profile_language"):
+        if field in value:
+            code = (value[field] or "").strip().lower()
+            if code and code not in supported:
+                raise ValueError(f"{field} must be empty or a supported language")
+            value[field] = code
+    # Merge over defaults so the stored row is always a complete, clean object.
+    out = dict(_DEFAULT_TEST_PROFILE)
+    for key in out:
+        if key in value:
+            out[key] = value[key]
+    return out

@@ -133,9 +133,11 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
     #   1. signed_context present -> verify HMAC + expiry; trust that payload only.
     #   2. WIDGET_HANDSHAKE_SECRET configured but no signature -> production mode:
     #      do NOT trust browser-supplied context; zero it (anonymous session OK).
-    #   3. No secret configured -> dev/test: accept raw user_context (Phase 1).
+    #   3. No secret configured -> dev/test: the admin-configured test profile
+    #      stands in for the host site (or the raw widget context if disabled).
     # The injection sanitizer (prompts.sanitize_user_context) runs regardless.
     user_context: dict[str, Any] = {}
+    forced_lang = ""  # top-priority answer/UI language pin from the test profile
     if body.signed_context:
         try:
             payload = auth.verify_handshake(body.signed_context)
@@ -149,13 +151,29 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
                                      {"ip": ip})
         user_context = {}
     else:
-        user_context = body.user_context or {}
+        # Dev/test: no host site to sign a handshake. The admin "Test sandbox"
+        # profile (app_settings) stands in for it so the owner can drive the
+        # Layer-3 player data and pin the language for end-to-end testing.
+        tp = settings.test_profile()
+        if tp.get("enabled"):
+            user_context = {
+                "id": tp.get("id") or None,
+                "full_name": tp.get("full_name") or None,
+                "email": tp.get("email") or None,
+                "activation_status": tp.get("activation_status") or None,
+            }
+            if tp.get("profile_language"):
+                user_context["language"] = tp["profile_language"]
+            forced_lang = tp.get("force_lang") or ""
+        else:
+            user_context = body.user_context or {}
 
-    # Default answer language: manual `lang` -> browser `locale` -> account
-    # `profile_lang` (from the handshake) -> default. The persisted result is
-    # the per-session fallback; later turns mirror the player's own message.
+    # Default answer language: forced test pin -> manual `lang` -> browser
+    # `locale` -> account `profile_lang` -> default. The persisted result is the
+    # per-session fallback; later turns still mirror the player's own message
+    # (the pin sets the default, it does not hard-lock auto-mirroring).
     profile_lang = language.profile_lang_from_context(user_context)
-    resolved = language.resolve(lang=body.lang, locale=body.locale,
+    resolved = language.resolve(lang=forced_lang or body.lang, locale=body.locale,
                                 profile_lang=profile_lang)
     session_lang = None if resolved == language.AUTO else resolved
 
