@@ -97,6 +97,10 @@ def antispam() -> dict[str, Any]:
                                         config.RECAPTCHA_MIN_SCORE),
         "injection_hard_block": db_v.get("injection_hard_block",
                                          config.INJECTION_HARD_BLOCK),
+        "low_content_block": db_v.get("low_content_block",
+                                      config.LOW_CONTENT_BLOCK),
+        "min_meaningful_chars": db_v.get("min_meaningful_chars",
+                                         config.MIN_MEANINGFUL_CHARS),
     }
 
 
@@ -258,6 +262,8 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "max_input_chars", 1, 100_000)
         _require_float(value, "recaptcha_min_score", 0.0, 1.0)
         _require_bool(value, "injection_hard_block")
+        _require_bool(value, "low_content_block")
+        _require_int(value, "min_meaningful_chars", 1, 100)
     elif key == "model":
         _require_nonempty_str(value, "model")
         _require_float(value, "temperature", 0.0, 2.0)

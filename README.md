@@ -106,11 +106,21 @@ OpenAI-side prefix cache). API keys themselves stay secrets in env.
 
 ### Anti-spam gate order (`antispam.py`, enforced in `api/chat.py`)
 `POST /api/chat/message` checks in this exact order: verify session token (401) → IP
-rate-limit (429 + log) → cooldown (429) → input length (400) → injection scan (log only,
-does not reject) → message-cap fast path (forces an escalation response with no model call)
-→ build/call/persist. Rate-limit and cooldown use **in-memory dicts** — fine for Phase 1
-but they do not span multiple instances. reCaptcha is verified at session create and skips
-gracefully (logged) when `RECAPTCHA_SECRET` is unset.
+rate-limit (429 + log) → cooldown (429) → input length (400) → **low-content guard** →
+injection scan (log only, does not reject) → message-cap fast path (forces an escalation
+response with no model call) → build/call/persist. Rate-limit and cooldown use **in-memory
+dicts** — fine for Phase 1 but they do not span multiple instances. reCaptcha is verified at
+session create and skips gracefully (logged) when `RECAPTCHA_SECRET` is unset.
+
+The **low-content guard** (`antispam.check_low_content`) stops messages with nothing to
+answer — a lone character, symbol/emoji-only spam, or one character mashed over and over
+(`"a"`, `"???"`, `"aaaaaa"`) — **before** the model call, so a bot or idle user typing one
+char at a time in a loop can't keep burning OpenAI tokens. A message must carry at least
+`min_meaningful_chars` (default 2) distinct letters/digits. Unlike a hard reject, it returns
+a localized model-free nudge as a normal `200` turn (`low_content_reply`), logs
+`admin_events('low_content_blocked')`, and does **not** persist the turn or count it toward
+the message cap. Both knobs (`low_content_block` master switch, `min_meaningful_chars`) live
+in the hot-reloaded `antispam` settings group.
 
 ### Language resolution (`language.py`)
 Resolves the *fallback default* answer language, never asks the user. Deterministic
@@ -192,8 +202,9 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   `auth`/api; writes validate hard and log `setting_updated`. Groups: `escalation`
   (incl. `max_messages_per_session`), `forbidden_topics`, `language` (default + supported
   set — every language read goes through `language.default_code()`/`supported_codes()`),
-  `antispam` (rate limit/window/cooldown/input cap **plus** `recaptcha_min_score` and
-  `injection_hard_block`), `model` (OpenAI tuning — see the failover section), and `general`
+  `antispam` (rate limit/window/cooldown/input cap **plus** `recaptcha_min_score`,
+  `injection_hard_block`, and the low-content guard `low_content_block` /
+  `min_meaningful_chars`), `model` (OpenAI tuning — see the failover section), and `general`
   (operational knobs with no other home: `session_ttl_hours`, `contact_form_url`,
   `body_max_bytes`). The goal is that every non-secret operational knob lives in the admin
   panel and only true secrets (API keys, JWT secrets, `DATABASE_URL`, `ADMIN_PASSWORD`,
