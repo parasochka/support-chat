@@ -327,28 +327,77 @@ _FORMATTING_DIRECTIVE = (
 )
 
 
+# Slug of the hidden catch-all topic. Mirrors kb.OTHER_SLUG; duplicated here so
+# this pure prompt-assembly module needs no DB-touching import. The catch-all has
+# no real KB of its own, so when it is the current topic the routing directive
+# flips from the conservative "stay unless the question clearly belongs elsewhere"
+# to an active "route to a specific topic whenever the question plausibly fits
+# one" — otherwise the model answers generic-section questions itself (and tends
+# to invent facts) instead of sending the player to the branch that has the KB.
+OTHER_TOPIC_SLUG = "other"
+
+
 def _topic_routing_directive(
     available_topics: list[dict[str, Any]],
     current_topic: Optional[dict[str, Any]] = None,
 ) -> list[str]:
     """Layer-3 block listing the OTHER support topics + the routing instruction.
 
-    Only the current topic's KB is loaded (Layer 2). A switch is offered ONLY when
-    the question clearly does not belong to the current topic and unambiguously
-    belongs to one of the topics below; the model then prepends `[[TOPIC:slug]]`
-    on its own first line so the front-end can offer a one-tap switch.
+    Only the current topic's KB is loaded (Layer 2). The model prepends
+    `[[TOPIC:slug]]` on its own first line to offer a one-tap switch when the
+    player's question belongs to a different branch. Two regimes:
 
-    The current topic is named explicitly so the model anchors on it and answers
-    in-topic questions from the loaded KB instead of bouncing the player to a
-    different branch on a mere keyword overlap (e.g. both deposits and withdrawals
-    mention crypto networks). This lives in Layer 3 (dynamic): the topic catalogue
-    and the current topic change per request, so they must NEVER touch SYSTEM_CORE.
+    - **Catch-all "other" is the current topic** — it has no real KB, so almost
+      any concrete question actually belongs to a specialized topic. The directive
+      tells the model to route ACTIVELY: if the question plausibly fits any listed
+      topic, suggest the switch instead of answering from the thin generic block
+      (and instead of inventing facts). It answers in place only when nothing fits.
+    - **A specialized topic is the current topic** — the directive anchors the
+      model on it (so in-topic questions are answered from the loaded KB) but keys
+      the switch decision on the player's INTENT, not on isolated keyword overlap,
+      so e.g. "how do I withdraw?" asked under Deposits is routed to Withdrawals.
+
+    Lives in Layer 3 (dynamic): the topic catalogue and current topic change per
+    request, so they must NEVER touch the byte-stable SYSTEM_CORE.
     """
     if not available_topics:
         return []
     topic_lines = "\n".join(
         f"- {t['slug']} — {t['title']}" for t in available_topics if t.get("slug")
     )
+
+    is_other = bool(
+        current_topic and current_topic.get("slug") == OTHER_TOPIC_SLUG
+    )
+    if is_other:
+        current_line = ""
+        if current_topic and current_topic.get("title"):
+            current_line = (
+                "Текущая тема — общий раздел «"
+                f"{current_topic['title']}» (slug: {current_topic.get('slug')}), "
+                "у него нет собственной базы знаний с конкретными ответами.\n"
+            )
+        return [
+            "=== МАРШРУТИЗАЦИЯ ПО ТЕМАМ ===",
+            current_line
+            + "Игрок находится в общем разделе, поэтому почти любой конкретный "
+            "вопрос на самом деле относится к одной из специализированных тем "
+            "ниже — именно там лежит нужная база знаний. Определи по сути "
+            "(намерению игрока), к какой теме относится вопрос, и если он "
+            "подходит хотя бы к одной из тем ниже — поставь самой первой "
+            "отдельной строкой тег [[TOPIC:slug]] с её slug и доброжелательно "
+            "предложи переключиться туда. НЕ отвечай по существу из общего "
+            "раздела и НЕ придумывай условия, бонусы, сроки или числа.",
+            "Отвечай прямо в общем разделе (без тега) ТОЛЬКО если вопрос не "
+            "подходит ни к одной из тем ниже — например, это общий вопрос, отзыв "
+            "или нестандартная ситуация. При жалобе, претензии или подозрении на "
+            "мошенничество — эскалируй по правилам. Тег предназначен для системы; "
+            "пиши его ровно так.",
+            "Темы поддержки (slug — название):",
+            topic_lines,
+            "",
+        ]
+
     current_line = ""
     if current_topic and current_topic.get("title"):
         current_line = (
@@ -358,17 +407,23 @@ def _topic_routing_directive(
     return [
         "=== МАРШРУТИЗАЦИЯ ПО ТЕМАМ ===",
         current_line
-        + "СНАЧАЛА реши, относится ли вопрос игрока к текущей теме. Если относится "
-        "(даже если в загруженной базе знаний нет точного ответа или есть только "
-        "общая информация) — отвечай по текущей базе знаний или эскалируй по "
-        "правилам. В этом случае НЕ предлагай сменить тему.",
-        "Предлагай переключение ТОЛЬКО если вопрос явно НЕ относится к текущей теме "
-        "и однозначно относится к одной из других тем ниже. Тогда поставь самой "
-        "первой отдельной строкой тег [[TOPIC:slug]] с подходящим slug, а затем "
-        "коротко и доброжелательно предложи переключиться на эту тему. Совпадения "
-        "по отдельным словам недостаточно: ориентируйся на суть вопроса. Если "
-        "сомневаешься — отвечай по текущей теме или эскалируй, НЕ переключай. Тег "
-        "предназначен для системы; пиши его ровно так.",
+        + "СНАЧАЛА реши по сути вопроса (что именно игрок хочет сделать или "
+        "узнать), относится ли он к текущей теме. Если относится — отвечай по "
+        "текущей базе знаний или эскалируй по правилам, даже если точного ответа "
+        "в базе нет или есть только общая информация. В этом случае НЕ предлагай "
+        "сменить тему.",
+        "Предлагай переключение ТОЛЬКО если по сути вопрос относится к другой "
+        "теме из списка ниже, а не к текущей — даже когда в нём формально "
+        "упоминается текущая тема (например, игрок в разделе «Депозиты» "
+        "спрашивает, как ВЫВЕСТИ деньги, или в разделе «Выводы» — как внести "
+        "депозит; это разные темы). Тогда поставь самой первой отдельной строкой тег "
+        "[[TOPIC:slug]] с подходящим slug и коротко, доброжелательно предложи "
+        "переключиться. Ориентируйся на НАМЕРЕНИЕ игрока, а не на отдельные "
+        "совпавшие слова: общие термины (крипто-сети, верификация, лимиты) "
+        "встречаются сразу в нескольких темах и сами по себе не повод "
+        "переключать. Если вопрос подходит и к текущей теме — оставайся в ней. "
+        "Если сомневаешься — отвечай по текущей теме или эскалируй, НЕ переключай. "
+        "Тег предназначен для системы; пиши его ровно так.",
         "Другие темы (slug — название):",
         topic_lines,
         "",
