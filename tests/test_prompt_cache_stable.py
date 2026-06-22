@@ -102,6 +102,32 @@ def test_strip_language_tag():
     assert clean2 == "Just a plain reply"
 
 
+def test_greeting_directive_in_layer3_only():
+    """The 'greet once' directive must ride in the user message (Layer 3),
+    present whether or not the player is named, and never leak into the cached
+    system prefix."""
+    core_before = prompts.get_system_core()
+
+    # Anonymous session: directive still present (greeting hygiene is not tied
+    # to personalization).
+    msgs_anon = prompts.build_messages({"user_context": {}}, kb_block=None,
+                                       history=[], user_text="hi",
+                                       resolved_lang="en")
+    assert "Приветствие:" in msgs_anon[-1]["content"]
+    assert "только один раз" in msgs_anon[-1]["content"]
+    assert "Приветствие:" not in msgs_anon[0]["content"]
+    assert msgs_anon[0]["content"] == core_before
+
+    # Named session: directive coexists with the personalization line.
+    msgs_named = prompts.build_messages(
+        {"user_context": {"full_name": "Андрей", "id": "1"}}, kb_block=None,
+        history=[], user_text="hi", resolved_lang="ru")
+    last = msgs_named[-1]["content"]
+    assert "Персонализация" in last
+    assert "Приветствие:" in last
+    assert "Приветствие:" not in msgs_named[0]["content"]
+
+
 def test_layer3_guardrails_present_and_after_message():
     """The injection/topic guardrails must ride in the user message (Layer 3),
     placed AFTER the player's text, and must NOT leak into the cached system

@@ -275,10 +275,14 @@ def _personalization_directive(full_name: str) -> Optional[str]:
 
     Personalization lives in Layer 3 (the per-request user message), never in
     SYSTEM_CORE — the cached prefix must stay byte-stable. We pass the player's
-    first name (the leading token of full_name) so the model greets them
+    first name (the leading token of full_name) so the model can greet them
     naturally without parroting the full legal name on every line. Returns None
     when no usable name is present (anonymous session), so the prompt is
     unchanged in that case.
+
+    Note: the *when* to use the name (only at the start, not every reply) is
+    governed by `_GREETING_DIRECTIVE` below; here we only establish the name and
+    that it must not be used obtrusively.
     """
     name = (full_name or "").strip()
     if not name:
@@ -286,10 +290,22 @@ def _personalization_directive(full_name: str) -> Optional[str]:
     first = name.split()[0]
     return (
         f"Персонализация: игрока зовут {first}. Обращайся к нему по имени "
-        "естественно и уместно (например, в приветствии и иногда по ходу "
-        "разговора), но не повторяй имя в каждом сообщении и не используй его "
-        "навязчиво."
+        "уместно и ненавязчиво — изредка, а не в каждом сообщении."
     )
+
+
+# Layer-3 greeting hygiene. Models tend to open EVERY reply with
+# "Привет, <имя>!" / "Здравствуйте!", which reads robotic in a running chat.
+# The history is in the prompt, so the model can tell whether the conversation
+# has already started; this directive tells it to greet exactly once, at the
+# very beginning, and otherwise go straight to the answer. Lives in Layer 3 (the
+# user message) so SYSTEM_CORE stays byte-stable; applies with or without a name.
+_GREETING_DIRECTIVE = (
+    "Приветствие: здоровайся только один раз — в самом первом ответе в начале "
+    "разговора. Если в истории выше уже есть твои предыдущие ответы, НЕ начинай "
+    "сообщение с приветствия (Привет/Здравствуйте/Hi и т.п.) и не обращайся "
+    "снова по имени в начале — сразу переходи к сути ответа."
+)
 
 
 def _topic_routing_directive(
@@ -378,6 +394,8 @@ def build_dynamic_prompt(
     if personalization:
         parts += [personalization, ""]
     parts += [
+        _GREETING_DIRECTIVE,
+        "",
         _language_directive(resolved_lang),
         "",
         *_topic_routing_directive(available_topics or [], current_topic),
