@@ -346,6 +346,10 @@ async def send_message(req: Request, body: MessageSend,
             "message_count": result.message_count,
             # {slug, title} when the model routed the question to another topic.
             "suggested_topic": result.suggested_topic,
+            # Up to 3 guide-to-KB follow-up questions rendered as one-tap bubbles.
+            "suggestions": result.suggestions or [],
+            # True when the question looks resolved -> widget offers "finish chat".
+            "resolved": result.resolved,
         },
     )
 

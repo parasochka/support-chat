@@ -32,6 +32,24 @@ _TOPIC_TAG_RE = re.compile(r"\[\[TOPIC:([a-z0-9_\-]+)\]\]", re.IGNORECASE)
 # 2-letter code. Mirrors the [[ESCALATE]] / [[TOPIC:slug]] strip pattern.
 _LANG_TAG_RE = re.compile(r"\[\[LANG:([a-z]{2})\]\]", re.IGNORECASE)
 
+# Machine-readable sentinel the model appends (own LAST line) carrying up to a
+# few short follow-up/clarifying questions phrased from the player's point of
+# view. They steer the player toward the concrete KB entry their question is
+# closest to; the widget renders them as one-tap "bubbles" by the input field.
+# Questions are pipe-separated inside the tag; chat_service strips it and returns
+# the parsed list. Mirrors the [[TOPIC:slug]] strip pattern.
+_SUGGEST_TAG_RE = re.compile(r"\[\[SUGGEST:(.*?)\]\]", re.IGNORECASE)
+
+# Cap on how many suggested questions we surface (extra ones the model emits are
+# dropped). Three short bubbles is the widget's design target.
+_MAX_SUGGESTIONS = 3
+
+# Machine-readable sentinel the model emits (own line) once the player's question
+# looks fully resolved (they confirmed/thanked, nothing left to do). chat_service
+# strips it and flags the turn so the widget can offer a "finish chat" button —
+# nudging the satisfied player toward closing the chat. Mirrors [[ESCALATE]].
+_RESOLVED_TAG_RE = re.compile(r"\[\[RESOLVED\]\]", re.IGNORECASE)
+
 # ---------------------------------------------------------------------------
 # LAYER 1 — SYSTEM_CORE  (BYTE-STABLE, Russian). DO NOT add per-request data.
 # ---------------------------------------------------------------------------
@@ -383,6 +401,43 @@ _ESCALATION_RESTRAINT_DIRECTIVE = (
 )
 
 
+# Layer-3 suggested-questions directive. To pull the player toward the exact KB
+# entry their question is closest to, the model appends — as the VERY LAST line of
+# its reply — a [[SUGGEST:...]] tag carrying up to three short follow-up/clarifying
+# questions, phrased FROM THE PLAYER'S point of view (first person), pipe-separated.
+# The widget shows them as one-tap bubbles by the input field; tapping one sends it
+# as the next message. This is the "guide the player to a question that IS in the
+# KB" mechanism the owner asked for. Lives in Layer 3 (the user message) so
+# SYSTEM_CORE stays byte-stable; the tag is stripped before the reply is shown.
+_SUGGESTIONS_DIRECTIVE = (
+    "Наводящие вопросы: в самом конце ответа, отдельной ПОСЛЕДНЕЙ строкой, выведи "
+    "машинный тег [[SUGGEST: вопрос 1 | вопрос 2 | вопрос 3]] — это 2–3 коротких "
+    "наводящих/уточняющих вопроса ОТ ЛИЦА ИГРОКА (как будто их задаёт он сам, от "
+    "первого лица), которые помогут увести его к конкретному ответу из базы "
+    "знаний. Подбирай их по тому, к каким записям базы ближе всего вопрос игрока: "
+    "это должны быть следующие логичные вопросы, ответы на которые в базе ЕСТЬ. "
+    "Формулируй кратко (до 7 слов каждый), на том же языке, что и ответ, без "
+    "нумерации внутри тега, разделяя вопросы символом «|». Если подходящих "
+    "наводящих вопросов нет — вопрос исчерпан, идёт эскалация или это не вопрос — "
+    "НЕ выводи тег вовсе. Тег предназначен для системы; пиши его ровно так."
+)
+
+
+# Layer-3 chat-completion directive. Once the player's question is fully resolved
+# (they confirmed it's clear, thanked, or said the issue is closed) and nothing is
+# left to do, the model emits a [[RESOLVED]] line. chat_service strips it and the
+# widget surfaces a "finish chat" button, gently steering the satisfied player to
+# close the conversation. Lives in Layer 3 so SYSTEM_CORE stays byte-stable.
+_RESOLVED_DIRECTIVE = (
+    "Завершение чата: если вопрос игрока полностью решён и больше ничего не "
+    "требуется (игрок поблагодарил, подтвердил, что всё понятно, или сам сказал, "
+    "что вопрос закрыт) — выведи отдельной строкой машинный тег [[RESOLVED]]. "
+    "Система предложит игроку завершить чат. НЕ ставь этот тег, пока разговор "
+    "продолжается или ты задаёшь уточняющий вопрос. Тег предназначен для системы; "
+    "пиши его ровно так."
+)
+
+
 # Slug of the hidden catch-all topic. Mirrors kb.OTHER_SLUG; duplicated here so
 # this pure prompt-assembly module needs no DB-touching import. The catch-all has
 # no real KB of its own, so when it is the current topic the routing directive
@@ -540,6 +595,10 @@ def build_dynamic_prompt(
     # don't hand off until the model has tried to clarify/guide the player to a KB
     # answer, while still escalating human/complaint/fraud/legal cases immediately.
     parts += [_ESCALATION_RESTRAINT_DIRECTIVE, ""]
+    # Suggested follow-up questions + the resolved/close signal — both always-present
+    # Layer-3 lines (the tags are emitted only when warranted and stripped before the
+    # reply is shown). They drive the widget's question bubbles + "finish chat" button.
+    parts += [_SUGGESTIONS_DIRECTIVE, "", _RESOLVED_DIRECTIVE, ""]
     parts += [
         *_topic_routing_directive(available_topics or [], current_topic),
         "=== СООБЩЕНИЕ ИГРОКА ===",
@@ -654,3 +713,51 @@ def strip_topic_suggestion(text: str) -> tuple[str, Optional[str]]:
             continue
         cleaned.append(line)
     return "\n".join(cleaned).strip(), slug
+
+
+def strip_suggestions(text: str) -> tuple[str, list[str]]:
+    """Detect + strip a `[[SUGGEST: a | b | c]]` tag. Returns (clean_text, list).
+
+    Mirrors strip_topic_suggestion: the tag is removed from the visible reply and
+    the pipe-separated questions are parsed into a list (trimmed, blanks dropped,
+    capped at `_MAX_SUGGESTIONS`). Only the first tag is honoured; an absent tag
+    yields an empty list and the text unchanged.
+    """
+    suggestions: list[str] = []
+    captured = False
+    cleaned: list[str] = []
+    for line in text.splitlines():
+        m = _SUGGEST_TAG_RE.search(line)
+        if m:
+            if not captured:
+                captured = True
+                for part in m.group(1).split("|"):
+                    q = part.strip()
+                    if q and len(suggestions) < _MAX_SUGGESTIONS:
+                        suggestions.append(q)
+            remainder = _SUGGEST_TAG_RE.sub("", line).strip()
+            if remainder:
+                cleaned.append(remainder)
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned).strip(), suggestions
+
+
+def strip_resolved_tag(text: str) -> tuple[str, bool]:
+    """Detect + strip a `[[RESOLVED]]` line. Returns (clean_text, resolved).
+
+    Mirrors strip_escalation_tag: the tag is removed from the visible reply and
+    the boolean tells chat_service the player's question looks resolved, so the
+    widget can offer a "finish chat" button.
+    """
+    resolved = False
+    cleaned: list[str] = []
+    for line in text.splitlines():
+        if _RESOLVED_TAG_RE.search(line):
+            resolved = True
+            remainder = _RESOLVED_TAG_RE.sub("", line).strip()
+            if remainder:
+                cleaned.append(remainder)
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned).strip(), resolved
