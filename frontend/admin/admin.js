@@ -918,13 +918,12 @@ async function viewTest(main) {
     "The player profile used by the test widget (test page at /). In production "
     + "the host site supplies this over a signed handshake; here it stands in for "
     + "it. These fields feed Layer 3 of the prompt (the model can address the "
-    + "player by name) and can pin the answer/UI language for the whole session."));
+    + "player by name). The session language always follows the browser."));
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
     const data = await api("/test-profile");
     holder.innerHTML = "";
     const p = data.profile || {};
-    const langs = data.languages || [];
 
     if (!data.active) {
       holder.appendChild(el("div", "npadmin-warnbox",
@@ -960,31 +959,6 @@ async function viewTest(main) {
       box.appendChild(lab);
     }
 
-    // language selects with an extra empty option (Auto / none)
-    function optLangSelect(selected, emptyLabel) {
-      const sel = el("select", "npadmin-input"); sel.style.width = "auto";
-      const o0 = el("option", null, emptyLabel); o0.value = ""; sel.appendChild(o0);
-      for (const l of langs) {
-        const o = el("option", null, `${l.name} (${l.code})`); o.value = l.code;
-        if (l.code === (selected || "")) o.selected = true;
-        sel.appendChild(o);
-      }
-      sel.value = selected || "";
-      return sel;
-    }
-
-    const plLab = el("label", "npadmin-field");
-    plLab.appendChild(el("span", null,
-      "Account language — seeds the default, BELOW the browser locale"));
-    const plSel = optLangSelect(p.profile_language, "— none —");
-    plLab.appendChild(plSel); box.appendChild(plLab);
-
-    const flLab = el("label", "npadmin-field");
-    flLab.appendChild(el("span", null,
-      "Force language — pins the whole session's answer + UI language"));
-    const flSel = optLangSelect(p.force_lang, "Auto (browser / profile)");
-    flLab.appendChild(flSel); box.appendChild(flLab);
-
     const err = el("div", "npadmin-err");
     const save = el("button", "npadmin-btn", "Save test profile");
     save.addEventListener("click", async () => {
@@ -995,7 +969,6 @@ async function viewTest(main) {
         email: fields.email.value, activation_status: fields.activation_status.value,
         country: fields.country.value, balance: fields.balance.value,
         vip_level: fields.vip_level.value, registration_date: fields.registration_date.value,
-        profile_language: plSel.value, force_lang: flSel.value,
       };
       try {
         await api("/test-profile", { method: "PUT", body: { value } });

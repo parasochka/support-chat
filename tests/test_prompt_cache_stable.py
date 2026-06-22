@@ -70,23 +70,21 @@ def test_dynamic_data_lives_in_user_message_not_system():
     assert "Spanish" in last_user  # fallback language name in Layer 3
 
 
-def test_layer3_directive_tells_model_to_mirror_player_language():
-    """Regression: the answer must follow the player's own language, not be
+def test_layer3_directive_answers_in_resolved_language():
+    """The session answers in one language — the browser-resolved code — so the
 
-    strict-locked to the resolved/browser default. A Russian question must be
-    able to get a Russian answer even when the session default is English.
+    Layer-3 directive tells the model to answer strictly in it, and the cached
+    system prefix stays byte-stable.
     """
     session = {"user_context": {}}
+    core_before = prompts.get_system_core()
     msgs = prompts.build_messages(session, kb_block=None, history=[],
                                   user_text="Привет, помогите с депозитом",
-                                  resolved_lang="en")
+                                  resolved_lang="tr")
     directive = msgs[-1]["content"]
-    # Mentions determining/answering in the player's message language…
-    assert "язык" in directive.lower()
-    # …and only falls back to the resolved default ("English") when unclear.
-    assert "English" in directive
-    # It must NOT hard-force the default language regardless of the message.
-    assert "отвечай строго на языке — English" not in directive
+    assert "отвечай строго на языке — Turkish" in directive
+    # The directive lives in Layer 3 only; the cached core must be untouched.
+    assert msgs[0]["content"] == core_before
 
 
 def test_layer3_guardrails_present_and_after_message():
@@ -107,21 +105,3 @@ def test_layer3_guardrails_present_and_after_message():
     # …and never bleeding into the byte-stable cached system prefix.
     assert "ОГРАНИЧЕНИЯ" not in msgs[0]["content"]
     assert msgs[0]["content"].split("=== БАЗА ЗНАНИЙ", 1)[0].rstrip("\n") == core_before
-
-
-def test_force_lang_hard_overrides_mirroring():
-    """The manual header switcher locks the answer language: the directive must
-
-    tell the model to answer strictly in the chosen language regardless of the
-    message language, and the cached system prefix must stay byte-stable.
-    """
-    session = {"user_context": {}}
-    core_before = prompts.get_system_core()
-    msgs = prompts.build_messages(session, kb_block=None, history=[],
-                                  user_text="Привет",
-                                  resolved_lang="tr", force_lang=True)
-    directive = msgs[-1]["content"]
-    assert "строго на языке — Turkish" in directive
-    assert "независимо от" in directive  # regardless of the message language
-    # Forcing the language must not touch the byte-stable Layer-1 core.
-    assert msgs[0]["content"] == core_before

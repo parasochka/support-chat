@@ -50,21 +50,9 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         topic_slug = topic["slug"] if topic else None
 
     # --- language resolution -------------------------------------------------
-    # When the player picked a language by hand (header switcher), it is a hard
-    # override: answer strictly in it, regardless of the message language.
-    force_lang = bool(session.get("lang_locked"))
-
-    # §12: make the detected language sticky. Persist ONLY a confidently
-    # detected code (never the bare default), so later turns don't drift but the
-    # Phase 1 default-locking bug is not reintroduced. Manual locks win.
-    detected = language.detect(user_text)
-    if detected and not force_lang and session.get("lang") != detected:
-        await db.set_session_lang(session_id, detected, locked=False)
-        session["lang"] = detected
-
-    resolved = language.resolve(
-        lang=None, locale=None, session_lang=session.get("lang")
-    )
+    # One language for the whole session: the browser language resolved at
+    # session create and persisted as `session.lang`. Every turn answers in it.
+    resolved = language.resolve(session_lang=session.get("lang"))
 
     # --- audit: injection scan on the user message ---------------------------
     # (handled in api layer too; safe to re-scan is avoided — api owns it)
@@ -101,7 +89,6 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         history=history,
         user_text=user_text,
         resolved_lang=resolved,
-        force_lang=force_lang,
         available_topics=suggestable,
         current_topic=current_topic,
         core=core,
@@ -144,11 +131,8 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         )
 
     # --- pick a language for payloads (escalation button etc.) --------------
-    # The model mirrors the player's actual message language regardless of this;
-    # `answer_lang` is only the fallback used for escalation/contact copy and as
-    # the recorded metadata. We deliberately do NOT persist a speculative
-    # default here — locking the session to DEFAULT would stop later turns from
-    # mirroring the player (the bug where a Russian question got an English reply).
+    # The session's single answer language (browser-derived), also used for the
+    # escalation/contact copy and recorded as the turn metadata.
     answer_lang = session.get("lang") or language.default_code()
     if resolved != language.AUTO:
         answer_lang = resolved

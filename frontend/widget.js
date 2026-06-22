@@ -29,19 +29,16 @@ export const CONFIG = {
   // source of user_context; the raw USER_CONTEXT above is ignored server-side.
   // Leave null for anonymous/dev sessions.
   SIGNED_CONTEXT: null,
-  // Optional explicit answer language ("en","es","ru","tr","pt") or null to auto-detect.
-  LANG: null,
-  // Browser language — used to localise the UI and as the default answer
+  // Browser language — the single source for both the UI and the answer
   // language. navigator.languages[0] is the user's top preference; fall back to
-  // navigator.language. The player can still write in any language and the AI
-  // mirrors it; this only seeds the default.
+  // navigator.language.
   LOCALE:
     (typeof navigator !== "undefined" &&
       ((navigator.languages && navigator.languages[0]) || navigator.language)) ||
     null,
 };
 
-// UI string translations. The chat *answers* follow the player's language
+// UI string translations. The chat *answers* are in the same (browser) language
 // (handled server-side); these only cover the widget chrome so a Russian
 // browser doesn't see an English shell.
 const I18N = {
@@ -82,11 +79,6 @@ const I18N = {
         switchTopic: "Mudar para “{topic}”" },
 };
 
-// Native names for the header language switcher (shown in their own language).
-const LANG_LABELS = {
-  en: "English", es: "Español", ru: "Русский", tr: "Türkçe", pt: "Português",
-};
-
 // Per-topic emoji so each menu item reads at a glance. Keyed by the backend
 // slug (see seed/kb_seed.py); unknown slugs fall back to a neutral bubble so a
 // newly-added topic still renders something. "other" is special-cased in
@@ -112,21 +104,13 @@ function baseLang(code) {
   return I18N[base] ? base : null;
 }
 
-// The widget chrome language, decided ONCE and synchronously at load — before
-// the panel is ever painted — so it never flips after open. Same priority the
-// backend uses for the answer default: explicit LANG -> account/profile language
-// (USER_CONTEXT.language) -> browser locale -> English. Resolving the account
-// language here (the client already has it) is what kills the old "opens English,
-// then jumps to Russian seconds later" flicker: the slow /session round-trip can
-// no longer be the first time that language is known.
+// The widget language, decided ONCE and synchronously at load — before the
+// panel is ever painted — from the browser language, falling back to English.
+// It never changes for the life of the session: the same language the backend
+// resolves from the locale, so chrome and answers always agree and there is no
+// post-/session flicker.
 function resolveLang() {
-  const ctx = CONFIG.USER_CONTEXT || {};
-  return (
-    baseLang(CONFIG.LANG) ||
-    baseLang(ctx.language) ||
-    baseLang(CONFIG.LOCALE) ||
-    "en"
-  );
+  return baseLang(CONFIG.LOCALE) || "en";
 }
 
 function t(key) {
@@ -150,30 +134,14 @@ const state = {
   // background on open so it never blocks the first paint. ensureSession() awaits
   // it lazily before any action that actually needs a token.
   sessionPromise: null,
-  // Languages the switcher offers; seeded from I18N, refined by the backend's
-  // SUPPORTED_LANGUAGES after the session is created.
-  languages: Object.keys(I18N),
+  // The single widget/answer language, resolved once from the browser locale.
   lang: resolveLang(),
-  // True once the player picks a language by hand (or a test-profile force pin) —
-  // a hard, whole-session lock on both the chrome and the answer language.
-  langLocked: false,
   topicChosen: false,
   open: false,
   // True while the mobile full-screen sheet is active (geometry driven by JS).
   fullscreen: false,
   greetingEl: null,
 };
-
-// Apply a language to the whole chrome (header title, switcher value, topics
-// heading, greeting, placeholder, send button) without touching the backend.
-function applyLang(code) {
-  state.lang = code;
-  applyStaticLabels();
-  if (state.greetingEl) state.greetingEl.textContent = t("greeting");
-  if (els.topics && !els.topics.classList.contains("npchat-hidden")) {
-    renderTopics();
-  }
-}
 
 // ---------------------------------------------------------------------------
 // reCaptcha helper (no-op when no site key configured)
@@ -231,17 +199,13 @@ async function fetchTopics() {
   if (!ok) throw new Error("topics fetch failed");
   state.topics = data.topics || [];
   state.topicsLoaded = true;
-  if (Array.isArray(data.languages) && data.languages.length) {
-    state.languages = data.languages.filter((c) => I18N[c]);
-  }
-  renderLangSwitcher();
   applyStaticLabels();
 }
 
 // Kick off (once) and await the background session create. Anything that needs
-// a valid token — picking a topic, sending, switching language — funnels through
-// here so it transparently waits for the in-flight session instead of starting
-// its own. Errors propagate so callers can surface a "couldn't start" message.
+// a valid token — picking a topic, sending — funnels through here so it
+// transparently waits for the in-flight session instead of starting its own.
+// Errors propagate so callers can surface a "couldn't start" message.
 function ensureSession() {
   if (state.sessionId) return Promise.resolve();
   if (!state.sessionPromise) state.sessionPromise = createSession();
@@ -256,10 +220,8 @@ async function createSession() {
       player_id: CONFIG.USER_CONTEXT.id || null,
       user_context: CONFIG.USER_CONTEXT,
       signed_context: CONFIG.SIGNED_CONTEXT,
-      // Send the chrome language we already resolved so the answer default and
-      // the visible chrome agree from turn one (the model still mirrors the
-      // player's own message per turn; this is only the fallback default).
-      lang: state.lang,
+      // The browser language; the backend resolves the same answer/chrome
+      // language from it, so the two always agree from turn one.
       locale: CONFIG.LOCALE,
       recaptcha_token: token,
     },
@@ -269,19 +231,8 @@ async function createSession() {
   state.token = data.token;
   state.topics = data.topics || [];
   state.topicsLoaded = true;
-  // Only offer languages the backend supports *and* the widget can render.
-  if (Array.isArray(data.languages) && data.languages.length) {
-    state.languages = data.languages.filter((c) => I18N[c]);
-  }
-  // The chrome language was already resolved up front and must NOT flip on this
-  // (slow) response — that flip was the old "opens English, jumps to Russian"
-  // bug. The one exception is an explicit server-side LOCK (test-profile
-  // force-language pin): a deliberate whole-session override, so honor it.
-  if (data.lang_locked && baseLang(data.lang)) {
-    state.langLocked = true;
-    applyLang(baseLang(data.lang));
-  }
-  renderLangSwitcher();
+  // The widget language was resolved up front from the browser and never flips,
+  // so this (slow) response only needs to (re)paint the topic list.
   applyStaticLabels();
   if (els.topics && !els.topics.classList.contains("npchat-hidden")) {
     renderTopics();
@@ -294,28 +245,6 @@ async function selectTopic(slug) {
     body: { session_id: state.sessionId, topic_slug: slug },
   });
   state.topicChosen = true;
-}
-
-// Player picked a language by hand: lock it server-side (drives the answer
-// language too) and re-localize the whole widget, including topic titles.
-async function selectLanguage(code) {
-  state.langLocked = true;
-  applyLang(code);
-  // Locking the language server-side needs the token; the player may switch
-  // before the background session create has finished, so wait for it here.
-  try {
-    await ensureSession();
-  } catch (_) { return; /* chrome already switched; backend lock will retry */ }
-  const { ok, data } = await api("/api/chat/lang", {
-    auth: true,
-    body: { session_id: state.sessionId, lang: code },
-  });
-  if (ok && Array.isArray(data.topics)) {
-    state.topics = data.topics;
-    if (els.topics && !els.topics.classList.contains("npchat-hidden")) {
-      renderTopics();
-    }
-  }
 }
 
 async function sendMessage(text) {
@@ -355,11 +284,6 @@ function buildUI() {
   header.appendChild(el("span", "npchat-title", t("support")));
 
   const headerRight = el("div", "npchat-header-right");
-  // Last-resort manual language switcher: drives both UI and answer language.
-  const langSel = el("select", "npchat-langsel");
-  langSel.setAttribute("aria-label", "Language");
-  langSel.addEventListener("change", (ev) => selectLanguage(ev.target.value));
-  headerRight.appendChild(langSel);
   const closeBtn = el("button", "npchat-close", "✕");
   closeBtn.addEventListener("click", togglePanel);
   headerRight.appendChild(closeBtn);
@@ -403,9 +327,7 @@ function buildUI() {
   root.appendChild(launcher);
   document.body.appendChild(root);
 
-  els = { root, launcher, panel, body, topics, messages, inputRow, input, sendBtn,
-          langSel };
-  renderLangSwitcher();
+  els = { root, launcher, panel, body, topics, messages, inputRow, input, sendBtn };
 
   // Keep the open panel in the right mode if the viewport class changes
   // (rotate, window resize, responsive devtools): enter the full-screen sheet
@@ -430,23 +352,7 @@ function buildUI() {
   fetchTopics().catch(() => { /* the open handler retries if this missed */ });
 }
 
-// (Re)build the language switcher options from the supported set and reflect
-// the current chrome language as the selected value.
-function renderLangSwitcher() {
-  if (!els.langSel) return;
-  const langs = (state.languages && state.languages.length
-    ? state.languages
-    : Object.keys(I18N)).filter((c) => I18N[c]);
-  els.langSel.innerHTML = "";
-  for (const code of langs) {
-    const opt = el("option", null, LANG_LABELS[code] || code.toUpperCase());
-    opt.value = code;
-    els.langSel.appendChild(opt);
-  }
-  if (langs.includes(state.lang)) els.langSel.value = state.lang;
-}
-
-// Re-apply chrome strings after the resolved language is known (post-session).
+// Re-apply chrome strings (idempotent; the language never changes after load).
 function applyStaticLabels() {
   if (!els.root) return;
   els.launcher.setAttribute("aria-label", t("launcher"));
@@ -454,10 +360,6 @@ function applyStaticLabels() {
   if (title) title.textContent = t("support");
   els.input.placeholder = t("placeholder");
   els.sendBtn.textContent = t("send");
-  if (els.langSel && els.langSel.value !== state.lang) {
-    const hasOpt = Array.from(els.langSel.options).some((o) => o.value === state.lang);
-    if (hasOpt) els.langSel.value = state.lang;
-  }
 }
 
 function renderTopics() {

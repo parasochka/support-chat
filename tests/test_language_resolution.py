@@ -1,4 +1,4 @@
-"""Language resolution precedence: param > locale > profile > session/auto > default."""
+"""Language resolution precedence: browser locale > session lang > AUTO/default."""
 from __future__ import annotations
 
 import pytest
@@ -13,80 +13,38 @@ def _langs(monkeypatch):
     monkeypatch.setattr(config, "DEFAULT_LANGUAGE", "en")
 
 
-def test_explicit_param_wins():
-    assert language.resolve(lang="es", locale="ru-RU") == "es"
-    # A manual/forced `lang` still outranks the account/profile language.
-    assert language.resolve(lang="es", profile_lang="ru", locale="ru-RU") == "es"
-
-
-def test_unsupported_param_falls_through_to_locale():
-    assert language.resolve(lang="de", locale="pt-BR") == "pt"
-
-
 def test_locale_mapping():
     assert language.resolve(locale="es-MX") == "es"
     assert language.resolve(locale="pt_BR") == "pt"
     assert language.resolve(locale="tr-TR") == "tr"
+    assert language.resolve(locale="ru") == "ru"
 
 
-def test_unsupported_locale_falls_to_auto():
-    # no session lang, unsupported everything -> AUTO (model auto-detect)
-    assert language.resolve(lang=None, locale="de-DE") == language.AUTO
+def test_unsupported_locale_falls_to_session_then_auto():
+    # Unsupported locale, no session lang -> AUTO (service default downstream).
+    assert language.resolve(locale="de-DE") == language.AUTO
+    # …but a persisted session language is used before AUTO.
+    assert language.resolve(locale="de-DE", session_lang="ru") == "ru"
 
 
-def test_session_lang_used_before_auto():
-    assert language.resolve(lang=None, locale=None, session_lang="ru") == "ru"
+def test_session_lang_used_when_no_locale():
+    assert language.resolve(session_lang="ru") == "ru"
 
 
-def test_profile_beats_locale():
-    # The account/profile language is a deliberate setting, so it outranks the
-    # (often incidental) browser locale when the two disagree.
-    assert language.resolve(locale="es-MX", profile_lang="ru") == "ru"
-
-
-def test_locale_used_when_no_profile():
-    # No manual lang and no account/profile language -> fall to the browser locale.
-    assert language.resolve(lang=None, locale="es-MX") == "es"
-    # An unsupported profile language falls through to the browser locale.
-    assert language.resolve(lang=None, locale="es-MX", profile_lang="de") == "es"
-
-
-def test_profile_used_when_no_locale():
-    # No manual lang, no (supported) browser locale -> fall to profile language.
-    assert language.resolve(lang=None, locale=None, profile_lang="ru") == "ru"
-    assert language.resolve(lang=None, locale="de-DE", profile_lang="tr") == "tr"
-
-
-def test_profile_accepts_locale_form():
-    assert language.resolve(profile_lang="pt-BR") == "pt"
-
-
-def test_profile_beats_session():
-    assert language.resolve(profile_lang="es", session_lang="ru") == "es"
-
-
-def test_unsupported_profile_falls_through_to_session():
-    assert language.resolve(profile_lang="de", session_lang="ru") == "ru"
-
-
-def test_profile_lang_from_context():
-    assert language.profile_lang_from_context({"language": "ru-RU"}) == "ru-RU"
-    assert language.profile_lang_from_context({"lang": "es"}) == "es"
-    assert language.profile_lang_from_context({"id": "x"}) is None
-    assert language.profile_lang_from_context(None) is None
-    assert language.profile_lang_from_context({"language": 7}) is None
+def test_locale_beats_session():
+    # The browser locale is the single source of truth, so it outranks a stale
+    # persisted session language if the two ever disagree.
+    assert language.resolve(locale="es-MX", session_lang="ru") == "es"
 
 
 def test_nothing_resolves_to_auto():
     assert language.resolve() == language.AUTO
 
 
-def test_fallback_name_for_concrete_and_auto():
-    # The fallback language is only used when the player's own language is
-    # unclear; the model otherwise mirrors the player's message.
-    assert language.fallback_language_name("es") == "Spanish"
+def test_language_name_for_concrete_and_auto():
+    assert language.language_name("es") == "Spanish"
     # AUTO -> service default (DEFAULT_LANGUAGE = en in this fixture).
-    assert language.fallback_language_name(language.AUTO) == "English"
+    assert language.language_name(language.AUTO) == "English"
 
 
 def test_locale_to_lang_helper():
