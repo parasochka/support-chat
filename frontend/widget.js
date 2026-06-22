@@ -85,6 +85,25 @@ const LANG_LABELS = {
   en: "English", es: "Español", ru: "Русский", tr: "Türkçe", pt: "Português",
 };
 
+// Per-topic emoji so each menu item reads at a glance. Keyed by the backend
+// slug (see seed/kb_seed.py); unknown slugs fall back to a neutral bubble so a
+// newly-added topic still renders something. "other" is special-cased in
+// renderTopics() with an AI-associated icon (it's the "ask anything" catch-all).
+const TOPIC_EMOJI = {
+  deposits: "💳",
+  withdrawals: "💸",
+  account_kyc: "🪪",
+  bonuses: "🎁",
+  betting_games: "🎲",
+  technical: "🛠️",
+  other: "🤖",
+  _default: "💬",
+};
+
+function topicEmoji(slug) {
+  return TOPIC_EMOJI[slug] || TOPIC_EMOJI._default;
+}
+
 function baseLang(code) {
   if (!code) return null;
   const base = String(code).replace("_", "-").split("-")[0].toLowerCase();
@@ -414,13 +433,23 @@ function renderTopics() {
   const heading = el("div", "npchat-topics-h", t("topics"));
   els.topics.appendChild(heading);
   for (const topic of state.topics) {
-    const b = el("button", "npchat-topic", topic.title);
-    b.addEventListener("click", () => onTopic(topic.slug));
-    els.topics.appendChild(b);
+    els.topics.appendChild(topicButton(topic.slug, topic.title));
   }
-  const other = el("button", "npchat-topic npchat-topic-other", t("other"));
-  other.addEventListener("click", () => onTopic("other"));
-  els.topics.appendChild(other);
+  // "Other" is the always-available escape hatch: if the player didn't find
+  // their topic they can still ask anything here, so make it visually distinct
+  // (purple outline + AI icon) and never let it blend into the list above.
+  els.topics.appendChild(topicButton("other", t("other"), "npchat-topic-other"));
+}
+
+// Build a topic button as an emoji badge + label so the icon and text align
+// regardless of title length. `extraCls` adds modifier classes (e.g. "other").
+function topicButton(slug, title, extraCls) {
+  const cls = "npchat-topic" + (extraCls ? " " + extraCls : "");
+  const b = el("button", cls);
+  b.appendChild(el("span", "npchat-topic-emoji", topicEmoji(slug)));
+  b.appendChild(el("span", "npchat-topic-label", title));
+  b.addEventListener("click", () => onTopic(slug));
+  return b;
 }
 
 function addMessage(role, text) {
