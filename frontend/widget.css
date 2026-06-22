@@ -10,6 +10,12 @@
     Arial, sans-serif;
   font-size: 14px;
   line-height: 1.4;
+  /* Host pages frequently set `-webkit-font-smoothing: antialiased` globally,
+     which thins/pales our text (the conversation looked washed out). Pin the
+     widget to subpixel smoothing so body copy renders solid and crisp, the same
+     weight regardless of the host page. */
+  -webkit-font-smoothing: subpixel-antialiased;
+  -moz-osx-font-smoothing: auto;
 }
 
 .npchat-hidden { display: none !important; }
@@ -164,6 +170,9 @@
 .npchat-msg-assistant {
   align-self: flex-start;
   background: #fff;
+  /* One crisp near-black for the whole rendered answer — bold, lists, links and
+     code all read in the same solid color so the markup adds weight/structure,
+     never a second color. */
   color: #111;
   border: 1px solid #e6e8eb;
   border-bottom-left-radius: 2px;
@@ -181,9 +190,14 @@
 .npchat-msg-assistant ol { margin: 4px 0; padding-left: 20px; }
 .npchat-msg-assistant li { margin: 2px 0; }
 .npchat-msg-assistant strong { font-weight: 600; }
-.npchat-msg-assistant a { color: #2563eb; text-decoration: underline; }
+/* Links keep the underline as their affordance but stay the same crisp black as
+   the surrounding text — no blue accent breaking the one-color rule. */
+.npchat-msg-assistant a { color: inherit; text-decoration: underline; }
 .npchat-msg-assistant code {
+  /* Very faint tint so inline code is still distinguishable, but the glyphs stay
+     the same solid black as the rest of the answer. */
   background: #f0f1f3;
+  color: inherit;
   padding: 1px 4px;
   border-radius: 4px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -218,7 +232,7 @@
   border-radius: 10px;
   background: #eef2ff;
 }
-.npchat-suggest-msg { margin-bottom: 8px; color: #3730a3; }
+.npchat-suggest-msg { margin-bottom: 8px; color: #111; }
 .npchat-suggest-btn {
   display: inline-block;
   padding: 8px 14px;
