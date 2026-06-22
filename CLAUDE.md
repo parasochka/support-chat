@@ -254,6 +254,33 @@ carries only the triggering message, so the new topic is the only thing in conte
 transcript is untouched — resume (`GET /session/{id}`) and the escalation ticket snapshot both call
 `get_history` without `after_id`, so the player and admins still see everything.
 
+### Suggested follow-up questions + finish-chat (`[[SUGGEST:…]]` / `[[RESOLVED]]` sentinels)
+To pull the player toward the exact KB entry their question is closest to, the model emits — along
+with its answer — two more Layer-3 sentinels (mirroring the `[[TOPIC:slug]]` machinery), both
+**stripped** before the reply is shown:
+- **`[[SUGGEST: q1 | q2 | q3]]`** (own LAST line) — up to **three** short follow-up/clarifying
+  questions phrased **from the player's point of view** (first person), pipe-separated. The directive
+  (`prompts._SUGGESTIONS_DIRECTIVE`) tells the model to pick the *next logical questions whose answers
+  ARE in the KB*, so tapping one walks the player onto a concrete KB answer. `chat_service`
+  (`prompts.strip_suggestions`) parses them into a list (trimmed, blanks dropped, capped at
+  `prompts._MAX_SUGGESTIONS` = 3) and returns `suggestions:[…]` in the `/message` response. The widget
+  renders them as one-tap **bubbles by the input field** (one per line); tapping one sends it as the
+  next player turn (`submitText`), and the stale bubbles are cleared the moment a new turn starts.
+- **`[[RESOLVED]]`** (own line) — set once the question looks fully resolved (the player confirmed /
+  thanked / said it's closed). `chat_service` (`prompts.strip_resolved_tag`) returns `resolved:true`
+  and the widget surfaces a green **"finish chat"** button below the bubbles. Tapping it calls
+  **`POST /api/chat/resolve`** (`db.mark_resolved` → `status='resolved'` + an `admin_events('session_resolved')`
+  row) and collapses the panel — gently steering the satisfied player toward ending the chat, and
+  dropping the session out of the open-session metric. The close never overrides an **escalated**
+  session (a pending hand-off to a human must survive the player tapping finish), and the call is
+  best-effort (the panel collapses regardless). The directive (`prompts._RESOLVED_DIRECTIVE`) tells
+  the model NOT to set the tag while still clarifying.
+
+On a hand-off both are suppressed in `chat_service` (the player is going to a human, so the
+guide-to-KB bubbles and the close nudge are out of place). Both directives live in Layer 3 only, so
+`SYSTEM_CORE` stays byte-stable (a test asserts it). The model-free paths (message-cap, low-content)
+return neither, so the widget simply shows no bubbles/finish button there.
+
 ### Two layers of injection defense
 1. `prompts._sanitize_field` zeroes any `user_context` field containing injection markers
    (only `id, full_name, email, activation_status` are surfaced to the model).

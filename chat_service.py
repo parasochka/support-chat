@@ -27,6 +27,13 @@ class ChatReply:
     # {slug, title} when the model judged the question belongs to another topic
     # whose KB isn't loaded, so the front-end can offer a one-tap switch. Else None.
     suggested_topic: Optional[dict] = None
+    # Up to 3 short follow-up/clarifying questions (player's POV) the model offered
+    # to steer the player toward a concrete KB answer; the widget renders them as
+    # one-tap bubbles by the input field. Empty list when none.
+    suggestions: Optional[list] = None
+    # True when the model signalled the question looks fully resolved, so the widget
+    # can offer a "finish chat" button nudging the player toward closing the chat.
+    resolved: bool = False
 
 
 async def _on_failover(session_id: Optional[str], reason: str) -> None:
@@ -123,15 +130,19 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         )
         raw_text = ""
 
-    # --- strip control sentinels (escalation + topic + answer language) -----
+    # --- strip control sentinels (escalation + topic + language + suggest) --
     model_signalled = False
     suggested_slug: Optional[str] = None
     detected_lang: Optional[str] = None
+    suggestions: list = []
+    resolved = False
     clean_text = raw_text
     if raw_text:
         clean_text, model_signalled = prompts.strip_escalation_tag(raw_text)
         clean_text, suggested_slug = prompts.strip_topic_suggestion(clean_text)
         clean_text, detected_lang = prompts.strip_language_tag(clean_text)
+        clean_text, suggestions = prompts.strip_suggestions(clean_text)
+        clean_text, resolved = prompts.strip_resolved_tag(clean_text)
     # Only trust a [[LANG:xx]] code the model can actually answer in.
     if detected_lang and detected_lang not in language.supported_codes():
         detected_lang = None
@@ -174,6 +185,14 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     if not ok and not clean_text:
         # Model totally failed: give a graceful, escalation-flavoured message.
         clean_text = escalation.build_payload(answer_lang)["message"]
+
+    # On a hand-off the player is being routed to a human, so the guide-to-KB
+    # bubbles and the "finish chat" nudge are out of place — drop both. (The
+    # directive already tells the model to skip them when escalating; this is the
+    # backend guarantee.)
+    if decision.active:
+        suggestions = []
+        resolved = False
 
     # --- persist the turn atomically ----------------------------------------
     new_count = await db.persist_turn(
@@ -218,4 +237,6 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         escalation=esc_payload,
         message_count=new_count,
         suggested_topic=suggested_topic,
+        suggestions=suggestions,
+        resolved=resolved,
     )

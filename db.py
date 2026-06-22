@@ -396,6 +396,20 @@ async def mark_escalated(session_id: str) -> None:
     )
 
 
+async def mark_resolved(session_id: str) -> None:
+    """Close a session the player ended via the 'finish chat' nudge.
+
+    Sets status='resolved' so it drops out of the open-session metric. An
+    escalated session is left untouched — a pending hand-off to a human must not
+    be silently closed by the player tapping finish.
+    """
+    await _pool.execute(
+        "UPDATE chat_sessions SET status = 'resolved', updated_at = now() "
+        "WHERE id = $1 AND status <> 'escalated'",
+        session_id,
+    )
+
+
 async def get_history(session_id: str, limit: int = 50,
                       after_id: int = 0) -> list[dict[str, Any]]:
     """Return messages oldest-first (last `limit` turns).

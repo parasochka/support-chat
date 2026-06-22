@@ -49,7 +49,8 @@ const I18N = {
         startError: "Could not start chat. Please try again later.",
         sendError: "Something went wrong. Please try again.",
         suggest: "It looks like your question is about “{topic}”.",
-        switchTopic: "Switch to “{topic}”" },
+        switchTopic: "Switch to “{topic}”",
+        finish: "End chat", finished: "Chat ended. Thanks for reaching out!" },
   ru: { support: "Поддержка", topics: "Чем мы можем помочь?", other: "Другое",
         back: "К выбору темы",
         greeting: "Здравствуйте! Чем можем помочь?", placeholder: "Введите сообщение…",
@@ -57,7 +58,8 @@ const I18N = {
         startError: "Не удалось начать чат. Попробуйте позже.",
         sendError: "Что-то пошло не так. Попробуйте ещё раз.",
         suggest: "Похоже, ваш вопрос относится к теме «{topic}».",
-        switchTopic: "Перейти в «{topic}»" },
+        switchTopic: "Перейти в «{topic}»",
+        finish: "Завершить чат", finished: "Чат завершён. Спасибо за обращение!" },
   es: { support: "Soporte", topics: "¿En qué podemos ayudarte?", other: "Otro",
         back: "Volver a los temas",
         greeting: "¡Hola! ¿En qué podemos ayudarte hoy?", placeholder: "Escribe tu mensaje…",
@@ -65,7 +67,8 @@ const I18N = {
         startError: "No se pudo iniciar el chat. Inténtalo más tarde.",
         sendError: "Algo salió mal. Inténtalo de nuevo.",
         suggest: "Parece que tu pregunta es sobre «{topic}».",
-        switchTopic: "Cambiar a «{topic}»" },
+        switchTopic: "Cambiar a «{topic}»",
+        finish: "Finalizar chat", finished: "Chat finalizado. ¡Gracias por contactarnos!" },
   tr: { support: "Destek", topics: "Size nasıl yardımcı olabiliriz?", other: "Diğer",
         back: "Konulara dön",
         greeting: "Merhaba! Bugün size nasıl yardımcı olabiliriz?",
@@ -73,7 +76,8 @@ const I18N = {
         startError: "Sohbet başlatılamadı. Lütfen daha sonra tekrar deneyin.",
         sendError: "Bir şeyler ters gitti. Lütfen tekrar deneyin.",
         suggest: "Sorunuz “{topic}” konusuyla ilgili görünüyor.",
-        switchTopic: "“{topic}” konusuna geç" },
+        switchTopic: "“{topic}” konusuna geç",
+        finish: "Sohbeti bitir", finished: "Sohbet sona erdi. Bize ulaştığınız için teşekkürler!" },
   pt: { support: "Suporte", topics: "Como podemos ajudar?", other: "Outro",
         back: "Voltar aos tópicos",
         greeting: "Olá! Como podemos ajudar hoje?", placeholder: "Digite sua mensagem…",
@@ -81,7 +85,8 @@ const I18N = {
         startError: "Não foi possível iniciar o chat. Tente novamente mais tarde.",
         sendError: "Algo deu errado. Tente novamente.",
         suggest: "Parece que sua pergunta é sobre “{topic}”.",
-        switchTopic: "Mudar para “{topic}”" },
+        switchTopic: "Mudar para “{topic}”",
+        finish: "Encerrar chat", finished: "Chat encerrado. Obrigado pelo contato!" },
 };
 
 // Per-topic emoji so each menu item reads at a glance. Keyed by the backend
@@ -317,6 +322,11 @@ function buildUI() {
   const topics = el("div", "npchat-topics");
   const messages = el("div", "npchat-messages npchat-hidden");
 
+  // One-tap "guide-to-KB" question bubbles (+ the resolved "finish chat" button)
+  // sit just above the input field. Populated per assistant turn from the
+  // response's `suggestions` / `resolved`; hidden whenever it's empty.
+  const suggestions = el("div", "npchat-suggestions npchat-hidden");
+
   const inputRow = el("div", "npchat-inputrow npchat-hidden");
   const input = el("input", "npchat-input");
   input.type = "text";
@@ -345,14 +355,15 @@ function buildUI() {
 
   panel.appendChild(header);
   panel.appendChild(body);
+  panel.appendChild(suggestions);
   panel.appendChild(inputRow);
 
   root.appendChild(panel);
   root.appendChild(launcher);
   document.body.appendChild(root);
 
-  els = { root, launcher, panel, body, topics, messages, inputRow, input, sendBtn,
-          back: backBtn };
+  els = { root, launcher, panel, body, topics, messages, suggestions, inputRow,
+          input, sendBtn, back: backBtn };
 
   // Keep the open panel in the right mode if the viewport class changes
   // (rotate, window resize, responsive devtools): enter the full-screen sheet
@@ -598,11 +609,69 @@ async function switchTopicAndResend(slug, originalText, wrap, btn) {
   try {
     const data = await sendMessage(originalText);
     setMsgBody(typing, "assistant", data.reply || "");
-    if (data.escalation && data.escalation.active) addEscalation(data.escalation);
-    if (data.suggested_topic) addTopicSuggestion(data.suggested_topic, originalText);
+    applyTurnExtras(data, originalText);
   } catch (e) {
     typing.textContent = t("sendError");
   }
+}
+
+// ---------------------------------------------------------------------------
+// Suggested-question bubbles + the resolved "finish chat" button
+// ---------------------------------------------------------------------------
+// The model returns up to three short follow-up questions (player's POV) to nudge
+// the player toward the concrete KB answer their question is closest to. We render
+// them as one-tap bubbles right above the input field — each on its own line —
+// and tapping one sends it as the next message. When the model judges the question
+// resolved we add a green "finish chat" button below them to steer the satisfied
+// player toward closing. The whole strip is rebuilt every assistant turn and
+// hidden while empty.
+function clearSuggestions() {
+  if (!els.suggestions) return;
+  els.suggestions.innerHTML = "";
+  els.suggestions.classList.add("npchat-hidden");
+}
+
+function renderSuggestions(list, resolved) {
+  clearSuggestions();
+  const items = Array.isArray(list) ? list.slice(0, 3) : [];
+  for (const q of items) {
+    if (!q) continue;
+    const b = el("button", "npchat-suggestion", q);
+    b.addEventListener("click", () => submitText(q));
+    els.suggestions.appendChild(b);
+  }
+  if (resolved) {
+    const f = el("button", "npchat-finish", t("finish"));
+    f.addEventListener("click", finishChat);
+    els.suggestions.appendChild(f);
+  }
+  if (els.suggestions.childNodes.length) {
+    els.suggestions.classList.remove("npchat-hidden");
+  }
+}
+
+// Apply the per-turn side payloads shared by a typed send and a topic resend:
+// the escalation block, a cross-topic switch prompt, and the guide-to-KB
+// bubbles / finish button.
+function applyTurnExtras(data, originalText) {
+  if (data.escalation && data.escalation.active) addEscalation(data.escalation);
+  if (data.suggested_topic) addTopicSuggestion(data.suggested_topic, originalText);
+  renderSuggestions(data.suggestions, data.resolved);
+}
+
+// End the conversation from the resolved "finish chat" nudge: tell the backend to
+// close the session (status='resolved' + admin event), drop the bubbles, leave a
+// short closing note in the transcript, and collapse the panel so the satisfied
+// player is gently taken to a closed chat. The close call is best-effort — the
+// panel collapses regardless so the player is never stuck.
+function finishChat() {
+  clearSuggestions();
+  if (state.sessionId) {
+    api("/api/chat/resolve", { auth: true, body: { session_id: state.sessionId } })
+      .catch(() => { /* non-fatal: still close the panel below */ });
+  }
+  addMessage("assistant", t("finished"));
+  if (state.open) togglePanel();
 }
 
 // ---------------------------------------------------------------------------
@@ -766,6 +835,7 @@ async function onTopic(slug) {
 function goBackToTopics() {
   els.back.classList.add("npchat-hidden");
   els.inputRow.classList.add("npchat-hidden");
+  clearSuggestions();
   els.messages.classList.add("npchat-hidden");
   els.messages.innerHTML = "";
   state.greetingEl = null;
@@ -778,17 +848,21 @@ async function onSend() {
   const text = els.input.value.trim();
   if (!text) return;
   els.input.value = "";
+  await submitText(text);
+}
+
+// Send one player turn (typed or tapped from a suggestion bubble). The old
+// bubbles are stale the moment a new turn starts, so clear them up front; the
+// fresh set (and any finish button) is rendered from the response.
+async function submitText(text) {
+  if (!text) return;
+  clearSuggestions();
   addMessage("user", text);
   const typing = addMessage("assistant", "…");
   try {
     const data = await sendMessage(text);
     setMsgBody(typing, "assistant", data.reply || "");
-    if (data.escalation && data.escalation.active) {
-      addEscalation(data.escalation);
-    }
-    if (data.suggested_topic) {
-      addTopicSuggestion(data.suggested_topic, text);
-    }
+    applyTurnExtras(data, text);
   } catch (e) {
     typing.textContent = t("sendError");
   }

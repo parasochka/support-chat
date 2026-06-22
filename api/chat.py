@@ -7,6 +7,7 @@ Endpoints:
   POST /api/chat/message       one chat turn (gated, persisted atomically)
   GET  /api/chat/session/{id}  resume: history + state (token required)
   POST /api/chat/escalate      explicit escalation; returns button payload
+  POST /api/chat/resolve       player ended the chat (finish-chat nudge); closes it
 """
 from __future__ import annotations
 
@@ -59,6 +60,10 @@ class MessageSend(BaseModel):
 
 
 class EscalateReq(BaseModel):
+    session_id: str
+
+
+class ResolveReq(BaseModel):
     session_id: str
 
 
@@ -346,6 +351,10 @@ async def send_message(req: Request, body: MessageSend,
             "message_count": result.message_count,
             # {slug, title} when the model routed the question to another topic.
             "suggested_topic": result.suggested_topic,
+            # Up to 3 guide-to-KB follow-up questions rendered as one-tap bubbles.
+            "suggestions": result.suggestions or [],
+            # True when the question looks resolved -> widget offers "finish chat".
+            "resolved": result.resolved,
         },
     )
 
@@ -402,3 +411,28 @@ async def escalate(body: EscalateReq,
         status_code=200,
         content={"escalation": esc_payload},
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/chat/resolve  -- player ended the chat via the "finish chat" nudge
+# ---------------------------------------------------------------------------
+@router.post("/resolve")
+async def resolve(body: ResolveReq,
+                  authorization: Optional[str] = Header(default=None)) -> JSONResponse:
+    """Close a session the player finished after a [[RESOLVED]] turn.
+
+    Marks status='resolved' (unless the session is escalated — a pending hand-off
+    is never closed by the player) and logs the close as an admin event. Idempotent
+    and best-effort: the widget collapses the panel regardless of the outcome.
+    """
+    session, err = await _auth_session(authorization, body.session_id)
+    if err:
+        return err
+
+    already = session.get("status") == "resolved"
+    if not already and session.get("status") != "escalated":
+        await db.mark_resolved(body.session_id)
+        await db.log_admin_event(body.session_id, "session_resolved",
+                                 {"message_count": session.get("message_count", 0)})
+
+    return JSONResponse(status_code=200, content={"ok": True, "status": "resolved"})

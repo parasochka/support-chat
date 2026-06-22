@@ -234,6 +234,44 @@
 .npchat-suggest-done { opacity: 0.6; }
 .npchat-suggest-done .npchat-suggest-btn { display: none; }
 
+/* Guide-to-KB suggestion bubbles + the resolved "finish chat" button, stacked
+   just above the input field — one per line, pill-shaped, so each reads as a
+   tappable follow-up. Populated per assistant turn; hidden while empty. */
+.npchat-suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 8px 0;
+  background: #fff;
+}
+.npchat-suggestion {
+  align-self: stretch;
+  text-align: left;
+  padding: 8px 12px;
+  border: 1px solid #c7d2fe;
+  border-radius: 16px;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.npchat-suggestion:hover { background: #e0e7ff; border-color: #4f46e5; }
+/* The "issue resolved → close the chat" nudge: greener, weightier than the
+   neutral question bubbles so it reads as the natural end of the conversation. */
+.npchat-finish {
+  align-self: stretch;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 16px;
+  background: #10b981;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.npchat-finish:hover { background: #059669; }
+
 .npchat-inputrow {
   display: flex;
   border-top: 1px solid #e6e8eb;
