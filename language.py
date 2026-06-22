@@ -8,11 +8,13 @@ and the same visitor typing Spanish gets Spanish.
 
 Priority (for the fallback default):
   1. explicit `lang` param (if supported) — e.g. the player's manual header
-     switch, which is the deliberate top override
-  2. `locale` param mapped to a base code (e.g. es-MX -> es), if supported —
+     switch (or the test-profile force-language pin), the deliberate top override
+  2. `profile_lang` — the account/profile language carried in the front-end
+     handshake (`user_context`), mapped the same way as `locale`. This is a
+     deliberate account setting, so it outranks the (often incidental) browser
+     locale.
+  3. `locale` param mapped to a base code (e.g. es-MX -> es), if supported —
      this is where the browser language (navigator.language) lands
-  3. `profile_lang` — the account/profile language carried in the front-end
-     handshake (`user_context`), mapped the same way as `locale`
   4. persisted `session_lang` from a prior turn
   5. AUTO -> fall back to DEFAULT_LANGUAGE
 
@@ -67,21 +69,22 @@ def resolve(lang: Optional[str] = None, locale: Optional[str] = None,
             session_lang: Optional[str] = None) -> str:
     """Resolve the answer language code, or AUTO if it must be auto-detected.
 
-    Priority: manual `lang` -> browser `locale` -> `profile_lang` (account
-    language from the handshake) -> persisted `session_lang` -> AUTO. Both
-    `locale` and `profile_lang` accept either a base code ('ru') or a locale
-    ('ru-RU'). This function keeps the pure priority chain so it is easy to
-    unit-test.
+    Priority: manual `lang` -> `profile_lang` (account language from the
+    handshake) -> browser `locale` -> persisted `session_lang` -> AUTO. The
+    account/profile language is a deliberate setting, so it outranks the browser
+    locale, which is frequently just the OS/browser default. Both `locale` and
+    `profile_lang` accept either a base code ('ru') or a locale ('ru-RU'). This
+    function keeps the pure priority chain so it is easy to unit-test.
     """
     chosen = _supported(lang)
     if chosen:
         return chosen
 
-    chosen = locale_to_lang(locale)
+    chosen = locale_to_lang(profile_lang)
     if chosen:
         return chosen
 
-    chosen = locale_to_lang(profile_lang)
+    chosen = locale_to_lang(locale)
     if chosen:
         return chosen
 
