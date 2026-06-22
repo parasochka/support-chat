@@ -28,6 +28,8 @@ _GROUPS: dict[str, dict[str, Callable[[], Any]]] = {
         "max_input_chars": lambda: config.MAX_INPUT_CHARS,
         "recaptcha_min_score": lambda: config.RECAPTCHA_MIN_SCORE,
         "injection_hard_block": lambda: config.INJECTION_HARD_BLOCK,
+        "low_content_block": lambda: config.LOW_CONTENT_BLOCK,
+        "min_meaningful_chars": lambda: config.MIN_MEANINGFUL_CHARS,
     },
     "model": {
         "model": lambda: config.OPENAI_MODEL,

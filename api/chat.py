@@ -332,6 +332,26 @@ async def send_message(req: Request, body: MessageSend,
     except antispam.AntiSpamError as exc:
         return _err(exc.status, exc.code, exc.detail)
 
+    # 4b. low-content guard: lone characters, symbol/emoji-only spam, or one
+    # character mashed repeatedly carry nothing to answer, so we never call the
+    # model (no tokens burned). Return a localized nudge as a normal 200 turn
+    # rather than a hard error; don't persist or count it toward the cap.
+    try:
+        antispam.check_low_content(body.text)
+    except antispam.AntiSpamError:
+        ans_lang = session.get("lang") or language.default_code()
+        await db.log_admin_event(body.session_id, "low_content_blocked",
+                                 {"sample": body.text[:120]})
+        return JSONResponse(
+            status_code=200,
+            content={
+                "reply": antispam.low_content_reply(ans_lang),
+                "lang": ans_lang,
+                "escalation": {"active": False},
+                "message_count": session.get("message_count", 0),
+            },
+        )
+
     # 8. injection scan: always audit; optionally hard-block (settings-gated).
     if antispam.scan_injection(body.text):
         hard_block = settings.antispam()["injection_hard_block"]

@@ -96,6 +96,15 @@ RATE_LIMIT_WINDOW_SEC: int = _env_int("RATE_LIMIT_WINDOW_SEC", 600)
 RATE_LIMIT_MAX_PER_IP: int = _env_int("RATE_LIMIT_MAX_PER_IP", 20)
 MESSAGE_COOLDOWN_SEC: int = _env_int("MESSAGE_COOLDOWN_SEC", 2)
 
+# --- Low-content / junk guard -----------------------------------------------
+# Stops messages with no answerable content (a lone character, symbol/emoji-only
+# spam, or one character mashed over and over) BEFORE the model call so a bot or
+# idle user typing one char at a time in a loop can't keep burning OpenAI tokens.
+# LOW_CONTENT_BLOCK is the master switch; MIN_MEANINGFUL_CHARS is how many
+# letters/digits a message must carry to be worth answering.
+LOW_CONTENT_BLOCK: bool = _env("LOW_CONTENT_BLOCK", "1") not in ("0", "false", "False", "")
+MIN_MEANINGFUL_CHARS: int = _env_int("MIN_MEANINGFUL_CHARS", 2)
+
 # --- reCaptcha --------------------------------------------------------------
 RECAPTCHA_SECRET: str | None = _env_opt("RECAPTCHA_SECRET")
 RECAPTCHA_MIN_SCORE: float = _env_float("RECAPTCHA_MIN_SCORE", 0.5)

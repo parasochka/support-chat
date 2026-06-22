@@ -151,6 +151,55 @@ def check_input_length(text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 7b. Low-content / junk guard (lone chars, symbol spam, repeated mashing)
+# ---------------------------------------------------------------------------
+# A real product-support question carries at least a couple of distinct
+# letters/digits. A lone character ("a"), a message of pure punctuation or emoji
+# ("???", "🙂🙂"), or one character mashed over and over ("aaaaaa", "1111") can be
+# fired in a loop by a bot or an idle user and would each cost an OpenAI
+# round-trip for an answer that cannot exist. We stop them before the model call
+# so they never burn tokens. Tunable via the `antispam` settings group:
+# `low_content_block` (master switch) and `min_meaningful_chars` (how many
+# letters/digits a message must carry to be worth answering).
+def check_low_content(text: str) -> None:
+    """Raise AntiSpamError(400, 'low_content') for a message with no answerable
+    content so it never reaches the model. Assumes check_input_length already
+    rejected empty/oversized input."""
+    cfg = settings.antispam()
+    if not cfg["low_content_block"]:
+        return
+    min_chars = cfg["min_meaningful_chars"]
+    norm = unicodedata.normalize("NFKC", text or "")
+    alnum = [c for c in norm if c.isalnum()]
+    # Too few letters/digits to form a question — covers lone characters and
+    # messages that are only punctuation, separators, or emoji.
+    if len(alnum) < min_chars:
+        raise AntiSpamError(400, "low_content",
+                            "Please describe your question in a few words.")
+    # A single distinct character mashed/repeated ("aaaa", "11", "ё ё ё"): real
+    # content, however short, uses more than one distinct symbol.
+    if len(alnum) >= 2 and len({c.lower() for c in alnum}) < 2:
+        raise AntiSpamError(400, "low_content",
+                            "Please describe your question in a few words.")
+
+
+# Localized, model-free nudge shown when check_low_content rejects a turn, so the
+# player gets a gentle "ask a real question" reply instead of a hard error.
+_LOW_CONTENT_REPLY = {
+    "en": "Could you describe your question in a sentence or two? I didn't catch a question I can help with.",
+    "ru": "Опишите, пожалуйста, ваш вопрос в одном-двух предложениях — я не увидел вопроса, с которым могу помочь.",
+    "es": "¿Podrías describir tu pregunta en una o dos frases? No detecté una consulta con la que pueda ayudarte.",
+    "tr": "Sorununuzu bir iki cümleyle yazar mısınız? Yardımcı olabileceğim bir soru göremedim.",
+    "pt": "Você poderia descrever sua dúvida em uma ou duas frases? Não identifiquei uma pergunta com a qual eu possa ajudar.",
+}
+
+
+def low_content_reply(lang: str) -> str:
+    """Return the localized low-content nudge, falling back to English."""
+    return _LOW_CONTENT_REPLY.get(lang, _LOW_CONTENT_REPLY["en"])
+
+
+# ---------------------------------------------------------------------------
 # 8. Injection / jailbreak scan on the user message (log, don't necessarily block)
 # ---------------------------------------------------------------------------
 _INJECTION_PATTERNS = (
