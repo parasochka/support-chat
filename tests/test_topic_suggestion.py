@@ -68,7 +68,7 @@ def test_current_topic_named_in_layer3():
     last_user = msgs[-1]["content"]
     assert "deposits — Депозиты" in last_user
     # Conservative instruction: only switch when clearly NOT the current topic.
-    assert "ТОЛЬКО" in last_user
+    assert "ONLY" in last_user
     # The current-topic line must stay in Layer 3, never in the cached prefix.
     assert "deposits — Депозиты" not in msgs[0]["content"]
 
@@ -89,15 +89,15 @@ def test_other_topic_routes_aggressively():
     assert "bonuses — Bonuses & promotions" in last_user
     # The active-routing framing (generic section) replaces the conservative
     # "stay in the current topic" anchor used for specialized topics.
-    assert "общем разделе" in last_user
-    assert "НЕ предлагай сменить тему" not in last_user
+    assert "general section" in last_user
+    assert "do NOT offer to switch topics" not in last_user
     # Routing copy must stay in Layer 3, never in the cached prefix.
     msgs = prompts.build_messages(
         session, kb_block="KB", history=[], user_text="KYC бонус есть?",
         resolved_lang="ru", available_topics=_TOPICS,
         current_topic={"slug": "other", "title": "Другое"},
     )
-    assert "общем разделе" not in msgs[0]["content"]
+    assert "general section" not in msgs[0]["content"]
 
 
 def test_specialized_topic_routes_on_intent_not_keywords():
@@ -111,10 +111,10 @@ def test_specialized_topic_routes_on_intent_not_keywords():
         current_topic={"slug": "deposits", "title": "Депозиты"},
     )[-1]["content"]
     # Conservative anchor retained (only switch on a genuine mismatch)...
-    assert "ТОЛЬКО" in last_user
+    assert "ONLY" in last_user
     # ...but now framed around the player's intent + a concrete cross-topic example.
-    assert "НАМЕРЕНИЕ" in last_user
-    assert "ВЫВЕСТИ" in last_user
+    assert "INTENT" in last_user
+    assert "WITHDRAW" in last_user
 
 
 def test_no_current_topic_line_when_absent():
@@ -125,7 +125,7 @@ def test_no_current_topic_line_when_absent():
         session, kb_block="KB", history=[], user_text="q",
         resolved_lang="en", available_topics=_TOPICS,
     )[-1]["content"]
-    assert "Текущая тема" not in last_user
+    assert "Current topic" not in last_user
     assert "withdrawals — Withdrawals" in last_user
 
 
@@ -138,10 +138,12 @@ def test_topic_catalogue_stays_out_of_system_core():
         resolved_lang="en", available_topics=_TOPICS,
     )
     system = msgs[0]["content"]
-    assert "bonuses" not in system
+    # The dynamic catalogue line + the routing tag must not leak into the prefix.
+    assert "bonuses — Bonuses & promotions" not in system
     assert "[[TOPIC:" not in system
+    assert "TOPIC ROUTING" not in system
     # prefix up to the KB separator is unchanged
-    assert system.split("=== БАЗА ЗНАНИЙ", 1)[0].rstrip("\n") == core_before
+    assert system.split("=== KNOWLEDGE BASE", 1)[0].rstrip("\n") == core_before
 
 
 def test_no_topic_section_when_list_empty():
@@ -155,5 +157,5 @@ def test_no_topic_section_when_list_empty():
     without = prompts.build_messages(
         session, kb_block=None, history=[], user_text="q", resolved_lang="en",
     )[-1]["content"]
-    assert "ДРУГИЕ ТЕМЫ ПОДДЕРЖКИ" not in with_empty
+    assert "=== TOPIC ROUTING ===" not in with_empty
     assert with_empty == without

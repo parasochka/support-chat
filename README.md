@@ -75,8 +75,13 @@ system prefix; only per-request data may sit after the (growing) history.
   anti-injection / anti-off-topic reminder bites hardest closest to the input).
 
 A STATIC rule goes into Layer 1 (so it is cached); a rule that needs per-request data goes
-into Layer 3 — **never** does per-request data enter the byte-stable Layer-1 block. The
-source prompt and KB are Russian; only the answer language varies. The Layer-3 directive tells
+into Layer 3 — **never** does per-request data enter the byte-stable Layer-1 block. **The whole
+model-facing prompt is written in English** — English is the most token-efficient language for
+the model, and the prompt text never needs to match the player: the language directive makes the
+model **answer in the player's language** regardless, and the KB (Layer 2) can be in any language.
+Only the model-facing prompt is English; user-facing copy (escalation/contact text, the
+low-content nudge, widget chrome) and the user-input detectors (injection / escalation keyword
+scans) stay multilingual. The Layer-3 directive tells
 the model to **answer in the language of the player's current message** (falling back to the
 session's base language when it's too short/ambiguous) — so the answers follow the player if
 they switch language mid-chat, while the widget chrome stays fixed to the browser language
@@ -393,7 +398,8 @@ localizes to the player's language. Lives in Layer 3 only, so `SYSTEM_CORE` stay
 5. Two-key failover races the fallback after the switch timeout; log every failover.
 6. No ORM, no migrations: schema is `init_db()`; new columns via guarded `ALTER`; all DB
    access through `db.*` helpers.
-7. Source prompt + KB in Russian; answers in the resolved language.
+7. Model-facing prompt is English (token-efficient); KB may be in any language; answers
+   in the resolved language. User-facing copy + user-input detectors stay multilingual.
 8. Never request card numbers / CVV / passwords / 2FA codes / seed phrases; never invent
    player-facing facts — KB uses `{{PLACEHOLDER}}` tokens the owner replaces.
 9. `_PRICING` is "verify before trusting"; cost is derived, not ground truth.

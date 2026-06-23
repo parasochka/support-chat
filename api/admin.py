@@ -302,15 +302,15 @@ async def put_test_profile(body: TestProfileWrite,
 # ---------------------------------------------------------------------------
 _PREVIEW_CONTEXT = {
     "id": "10042",
-    "full_name": "Иван Петров",
-    "email": "ivan@example.com",
+    "full_name": "John Smith",
+    "email": "john@example.com",
     "activation_status": "active",
     "country": "KZ",
     "balance": "1500",
     "vip_level": "Silver",
     "registration_date": "2024-01-15",
 }
-_PREVIEW_USER_TEXT = "«…здесь будет текущее сообщение игрока…»"
+_PREVIEW_USER_TEXT = "«…the player's current message will appear here…»"
 
 
 async def _build_effective_preview() -> dict[str, Any]:

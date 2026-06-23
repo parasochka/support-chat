@@ -79,31 +79,31 @@ def test_strip_resolved_tag_inline_keeps_remainder():
 # ---------------------------------------------------------------------------
 def test_suggestions_directive_in_layer1_core():
     core = prompts.get_system_core()
-    assert "Наводящие вопросы:" in core
+    assert "Suggested questions:" in core
     assert "[[SUGGEST:" in core
     msgs = prompts.build_messages(
         {"user_context": {}}, kb_block="KB", history=[], user_text="hi",
         resolved_lang="en",
     )
-    assert "Наводящие вопросы:" in msgs[0]["content"]
-    assert "Наводящие вопросы:" not in msgs[-1]["content"]
+    assert "Suggested questions:" in msgs[0]["content"]
+    assert "Suggested questions:" not in msgs[-1]["content"]
 
 
 def test_resolved_directive_in_layer1_core():
     core = prompts.get_system_core()
-    assert "Завершение чата:" in core
+    assert "Finishing the chat:" in core
     assert "[[RESOLVED]]" in core
     msgs = prompts.build_messages(
         {"user_context": {}}, kb_block=None, history=[], user_text="hi",
         resolved_lang="en",
     )
-    assert "Завершение чата:" in msgs[0]["content"]
-    assert "Завершение чата:" not in msgs[-1]["content"]
+    assert "Finishing the chat:" in msgs[0]["content"]
+    assert "Finishing the chat:" not in msgs[-1]["content"]
 
 
 def test_lead_forward_directive_ties_suggest_and_resolved():
     """The lead-forward rule (STATIC, Layer-1) guarantees the reply never ends in a
     dead state: either [[SUGGEST]] bubbles or the [[RESOLVED]] finish nudge."""
     core = prompts.get_system_core()
-    assert "веди игрока дальше" in core.lower()
+    assert "lead the player forward" in core.lower()
     assert "[[SUGGEST" in core and "[[RESOLVED]]" in core

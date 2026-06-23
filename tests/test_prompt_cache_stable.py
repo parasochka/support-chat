@@ -16,7 +16,7 @@ def test_system_core_is_stable_string():
     assert a == b
     assert isinstance(a, str)
     # The persona core opens the block (Nika, the international guide persona).
-    assert a.splitlines()[0].startswith("Ты — Ника (Nika)")
+    assert a.splitlines()[0].startswith("You are Nika")
     assert a.startswith(prompts.SYSTEM_CORE)
 
 
@@ -34,7 +34,7 @@ def test_system_core_unaffected_by_language_or_context():
                                      user_text="hola", resolved_lang="es")
 
     def prefix(system_content: str) -> str:
-        return system_content.split("=== БАЗА ЗНАНИЙ", 1)[0]
+        return system_content.split("=== KNOWLEDGE BASE", 1)[0]
 
     assert prefix(msgs_en[0]["content"]) == prefix(msgs_es[0]["content"])
     assert prefix(msgs_en[0]["content"]).rstrip("\n") == core_before
@@ -80,9 +80,9 @@ def test_layer3_directive_follows_player_language():
                                   resolved_lang="tr")
     directive = msgs[-1]["content"]
     # Follows the current message language…
-    assert "ТЕКУЩЕЕ сообщение" in directive
+    assert "CURRENT message" in directive
     # …falls back to the base language (Turkish here) when ambiguous…
-    assert "отвечай на языке: Turkish" in directive
+    assert "reply in: Turkish" in directive
     # …and asks the model to report its answer language via the [[LANG:xx]] tag.
     assert "[[LANG:" in directive
     # The directive lives in Layer 3 only; the cached core must be untouched.
@@ -101,13 +101,13 @@ def test_forbidden_topics_directive_in_layer3_only():
                                   user_text="что думаешь о выборах?",
                                   resolved_lang="ru")
     last = msgs[-1]["content"]
-    assert "Запрещённые темы" in last
-    assert "программирование" in prompts.FORBIDDEN_TOPICS[0]  # sanity on the source list
+    assert "Forbidden topics" in last
+    assert "programming" in prompts.FORBIDDEN_TOPICS[0]  # sanity on the source list
     assert prompts.FORBIDDEN_TOPICS[0] in last                # the list is injected
     assert prompts.FORBIDDEN_TOPICS_REFUSAL in last           # refusal wording injected
     # Stays in Layer 3 only; the cached core is untouched.
-    assert "Запрещённые темы" not in msgs[0]["content"]
-    assert msgs[0]["content"].split("=== БАЗА ЗНАНИЙ", 1)[0].rstrip("\n") == core_before
+    assert "Forbidden topics" not in msgs[0]["content"]
+    assert msgs[0]["content"].split("=== KNOWLEDGE BASE", 1)[0].rstrip("\n") == core_before
 
 
 def test_forbidden_topics_can_be_disabled_with_empty_list(monkeypatch):
@@ -115,7 +115,7 @@ def test_forbidden_topics_can_be_disabled_with_empty_list(monkeypatch):
     monkeypatch.setattr(prompts, "FORBIDDEN_TOPICS", [])
     msgs = prompts.build_messages({"user_context": {}}, kb_block=None, history=[],
                                   user_text="hi", resolved_lang="en")
-    assert "Запрещённые темы" not in msgs[-1]["content"]
+    assert "Forbidden topics" not in msgs[-1]["content"]
 
 
 def test_strip_language_tag():
@@ -133,18 +133,18 @@ def test_persona_and_tone_in_core():
     """Nika's tone-of-voice + the responsible-gaming / links rules ride in the
     byte-stable persona core (SYSTEM_CORE)."""
     core = prompts.SYSTEM_CORE
-    assert "Ника" in core and "Nika" in core
-    assert "международный образ" in core          # not a Russia-specific persona
-    assert "флирт" in core                        # playful tone
-    assert "не используй эмодзи" in core.lower()  # no emoji
+    assert "Nika" in core
+    assert "international persona" in core          # not a Russia-specific persona
+    assert "flirtation" in core                     # playful tone
+    assert "do not use emoji" in core.lower()       # no emoji
     # Reward highlighting is allowed but only from the KB (no invented specifics).
-    assert "награду" in core
+    assert "rewards" in core
     # Responsible gaming: player-initiated only -> caring tone + escalate.
-    assert "самоисключение" in core
+    assert "self-exclude" in core
     # Links policy: only KB / official NikaBet links, never invented.
-    assert "не придумывай адреса" in core
+    assert "never invent page addresses" in core
     # Tone is preserved across languages (international persona).
-    assert "на любом языке" in core
+    assert "in any language" in core
 
 
 def test_greeting_directive_in_layer1_core():
@@ -152,13 +152,13 @@ def test_greeting_directive_in_layer1_core():
     block (get_system_core()), present for every request, and never in the per-turn
     user message."""
     core = prompts.get_system_core()
-    assert "Приветствие:" in core
-    assert "только один раз" in core
+    assert "Greeting:" in core
+    assert "greet only once" in core
 
     msgs = prompts.build_messages({"user_context": {}}, kb_block=None,
                                   history=[], user_text="hi", resolved_lang="en")
-    assert "Приветствие:" in msgs[0]["content"]   # system message
-    assert "Приветствие:" not in msgs[-1]["content"]  # not the user message
+    assert "Greeting:" in msgs[0]["content"]   # system message
+    assert "Greeting:" not in msgs[-1]["content"]  # not the user message
 
 
 def test_formatting_directive_in_layer1_core():
@@ -166,15 +166,15 @@ def test_formatting_directive_in_layer1_core():
     Layer-1 block (the widget renders only the subset it names — see renderMarkdown
     in widget.js)."""
     core = prompts.get_system_core()
-    assert "Форматирование:" in core
+    assert "Formatting:" in core
     assert "Markdown" in core
     # Must pin the model away from markup the widget can't render.
-    assert "таблицы" in core
+    assert "tables" in core
 
     msgs = prompts.build_messages({"user_context": {}}, kb_block=None,
                                   history=[], user_text="hi", resolved_lang="en")
-    assert "Форматирование:" in msgs[0]["content"]
-    assert "Форматирование:" not in msgs[-1]["content"]
+    assert "Formatting:" in msgs[0]["content"]
+    assert "Formatting:" not in msgs[-1]["content"]
 
 
 def test_escalation_restraint_directive_in_layer1_core():
@@ -182,16 +182,16 @@ def test_escalation_restraint_directive_in_layer1_core():
     Layer-1 block, present for every request, and tells the model to clarify before
     handing off."""
     core = prompts.get_system_core()
-    assert "Эскалация — крайняя мера" in core
+    assert "Escalation is a last resort" in core
     assert "[[ESCALATE]]" in core
-    assert "уточняющий вопрос" in core
+    assert "clarifying question" in core
 
     msgs = prompts.build_messages(
         {"user_context": {}}, kb_block="KB", history=[], user_text="hi",
         resolved_lang="en",
-        current_topic={"slug": "deposits", "title": "Депозиты"})
-    assert "Эскалация — крайняя мера" in msgs[0]["content"]
-    assert "Эскалация — крайняя мера" not in msgs[-1]["content"]
+        current_topic={"slug": "deposits", "title": "Deposits"})
+    assert "Escalation is a last resort" in msgs[0]["content"]
+    assert "Escalation is a last resort" not in msgs[-1]["content"]
 
 
 def test_layer3_guardrails_present_and_after_message():
@@ -205,10 +205,10 @@ def test_layer3_guardrails_present_and_after_message():
                                   resolved_lang="en")
     last_user = msgs[-1]["content"]
     # Guardrails present in the user message…
-    assert "ОГРАНИЧЕНИЯ" in last_user
-    assert "только на вопросы поддержки" in last_user
+    assert "CONSTRAINTS" in last_user
+    assert "NikaBet product support" in last_user
     # …positioned after the player's message (recency).
-    assert last_user.index("СООБЩЕНИЕ ИГРОКА") < last_user.index("ОГРАНИЧЕНИЯ")
+    assert last_user.index("PLAYER MESSAGE") < last_user.index("CONSTRAINTS")
     # …and never bleeding into the byte-stable cached system prefix.
-    assert "ОГРАНИЧЕНИЯ" not in msgs[0]["content"]
-    assert msgs[0]["content"].split("=== БАЗА ЗНАНИЙ", 1)[0].rstrip("\n") == core_before
+    assert "CONSTRAINTS" not in msgs[0]["content"]
+    assert msgs[0]["content"].split("=== KNOWLEDGE BASE", 1)[0].rstrip("\n") == core_before
