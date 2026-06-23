@@ -26,7 +26,7 @@ def test_strip_suggestions_parses_pipe_list_and_cleans_text():
     assert sugg == [
         "Какие лимиты на депозит?",
         "Как пополнить криптой?",
-        "Где найти бонус?",
+        "Где найти бонус.",
     ]
     assert "[[SUGGEST" not in clean
     assert clean == "Вот как пополнить счёт картой."
@@ -41,7 +41,7 @@ def test_strip_suggestions_none_when_absent():
 def test_strip_suggestions_caps_at_three_and_drops_blanks():
     raw = "[[SUGGEST: a | b |  | c | d ]]"
     clean, sugg = prompts.strip_suggestions(raw)
-    assert sugg == ["a", "b", "c"]  # blanks dropped, capped at 3
+    assert sugg == ["a", "b", "c."]  # blanks dropped, capped at 3; closing option is declarative
     assert clean == ""
 
 
@@ -50,6 +50,14 @@ def test_strip_suggestions_keeps_inline_remainder():
     clean, sugg = prompts.strip_suggestions(raw)
     assert sugg == ["ещё вопрос?"]
     assert clean == "Готово."
+
+
+def test_strip_suggestions_normalizes_third_closing_option_to_period():
+    raw = "[[SUGGEST: Где кнопка пополнения? | Какой минимум? | Всё ясно, закрыть?]]"
+
+    _, sugg = prompts.strip_suggestions(raw)
+
+    assert sugg == ["Где кнопка пополнения?", "Какой минимум?", "Всё ясно, закрыть."]
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +91,7 @@ def test_suggestions_directive_in_layer1_core():
     assert "Suggested questions:" in core
     assert "[[SUGGEST:" in core
     assert "third option must ALWAYS be a closing/resolution option" in core
+    assert "must end with a period, not a question mark" in core
     msgs = prompts.build_messages(
         {"user_context": {}}, kb_block="KB", history=[], user_text="hi",
         resolved_lang="en",
