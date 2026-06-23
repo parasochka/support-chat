@@ -8,7 +8,7 @@ A standalone FastAPI microservice serving an AI customer-support chat for **Nika
 (casino + sportsbook on the NowPlix B2B platform). It is API-isolated: other modules
 talk to it over HTTP/JSON by `session_id` (UUID), and the contract is consumer-agnostic
 so multiple front-ends can plug in. **Phase 1 and Phase 2 are both implemented** — the
-admin dashboard, hot-reloaded tuning, KB CRUD/import, Telegram escalation, and the signed
+admin dashboard, hot-reloaded tuning, KB CRUD, Telegram escalation, and the signed
 front-end handshake are all built (see "Phase 2" below).
 
 **The prompt lives in one place: the file `prompts.py` (the single source of truth).**
@@ -403,8 +403,7 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   resilient — if topics/KB can't load it still renders Layer 1 + the Layer-3 directives, never
   breaking the page. (Layer 2, the per-topic KB, is the one prompt input still edited in the
   admin — in the Knowledge-base tab — because it's answer content, not instructions.)
-- **KB CRUD + import** (`kb_import.py`, `db.*` helpers): versioned entries (edit = new
-  version row, delete = soft `active=false`); JSON/CSV/Markdown bulk import.
+- **KB CRUD** (`db.*` helpers): versioned entries (edit = new version row, delete = soft `active=false`).
 - **Escalation Phase 2** (`escalation.open_ticket`, `notifiers/telegram.py`,
   `escalation_tickets` table): snapshots the transcript + context into a ticket, notifies
   Telegram if configured, and ALWAYS returns the Phase 1 contact button (user never

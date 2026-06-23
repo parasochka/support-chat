@@ -400,30 +400,6 @@ async function viewKB(main) {
     const data = await api("/kb/topics");
     holder.innerHTML = "";
 
-    // import block
-    const imp = el("div", "npadmin-chart");
-    imp.appendChild(el("div", "npadmin-meta", "Bulk import (JSON / CSV / Markdown)"));
-    const file = el("input", "npadmin-input"); file.type = "file"; file.style.width = "auto";
-    const fmt = el("select", "npadmin-input"); fmt.style.width = "auto";
-    for (const f of ["json", "csv", "markdown"]) { const o = el("option", null, f); o.value = f; fmt.appendChild(o); }
-    const lang = langSelect("ru");
-    const up = el("button", "npadmin-btn", "Import");
-    const impErr = el("span", "npadmin-meta");
-    up.addEventListener("click", async () => {
-      if (!file.files[0]) return;
-      const fd = new FormData();
-      fd.append("file", file.files[0]); fd.append("format", fmt.value); fd.append("lang", lang.value);
-      try {
-        const r = await api("/kb/import", { method: "POST", form: fd });
-        impErr.textContent = `Imported ${r.inserted}; skipped ${r.skipped_unknown_topics.join(", ") || "none"}`;
-        viewKB(main);
-      } catch (e) { impErr.textContent = e.message; }
-    });
-    imp.append(el("div", "npadmin-toolbar", ""));
-    const row = el("div", "npadmin-toolbar"); row.append(file, fmt, el("span", "npadmin-meta", "lang"), lang, up, impErr);
-    imp.appendChild(row);
-    holder.appendChild(imp);
-
     for (const topic of data.topics) {
       const tt = topic.title.en || topic.title.ru || topic.slug;
       holder.appendChild(el("h3", null, `${tt} — ${topic.slug} (${topic.entry_count} entries)`));
