@@ -17,7 +17,6 @@ from typing import Any
 import config
 import db
 import escalation as _escalation
-import prompts
 
 # Raw DB values keyed by setting group (e.g. 'antispam' -> {...}). Empty until
 # reload(); an empty cache means every getter falls back to env defaults.
@@ -27,34 +26,10 @@ _cache: dict[str, Any] = {}
 # `model` carries the OpenAI tuning knobs (model name, sampling, timeouts,
 # concurrency); `general` carries operational knobs that don't fit another group
 # (session TTL, contact-button URL, request body cap). Both live in the admin
-# panel instead of Railway env.
-SETTING_KEYS = ("escalation", "forbidden_topics", "language", "antispam",
-                "model", "general")
-
-# Shipped defaults for the off-topic / unsafe-request guardrail. Kept non-empty
-# so the bot refuses obvious off-topic and unsafe asks out of the box (the model
-# is a casino/sportsbook support agent, not a general assistant). The owner edits
-# both the list and the refusal wording in the admin panel; the refusal is a
-# template the model localizes to the player's language. SYSTEM_CORE is untouched
-# — this rides in Layer 3 (see prompts._forbidden_topics_directive).
-_DEFAULT_FORBIDDEN_TOPICS: dict[str, Any] = {
-    "topics": [
-        "программирование, написание или отладка кода",
-        "написание эссе, сочинений, текстов и домашних заданий",
-        "политика, религия, новости и общественные споры",
-        "медицинские, юридические и налоговые консультации",
-        "инвестиции, трейдинг и криптовалюты вне платёжных методов NikaBet",
-        "«беспроигрышные» схемы, читы и обход правил или ограничений казино",
-        "конкуренты и сторонние букмекеры/казино",
-        "общие энциклопедические вопросы, математика и развлечения вне поддержки",
-    ],
-    "refusal": (
-        "Извините, я — помощник поддержки NikaBet и могу помочь только с "
-        "вопросами по нашему сервису: депозиты и выводы, аккаунт и верификация, "
-        "бонусы, ставки и игры, технические вопросы. Задайте, пожалуйста, вопрос "
-        "по теме поддержки."
-    ),
-}
+# panel instead of Railway env. NOTE: the PROMPT itself (Layer 1 core, the
+# Layer-3 directives, and the forbidden-topics list) is NOT here — it lives in
+# `prompts.py`, the single source of truth, and is not editable from the admin.
+SETTING_KEYS = ("escalation", "language", "antispam", "model", "general")
 
 # Test/dev sandbox profile. In a real deployment the host site supplies the
 # player's `user_context` over the signed handshake; in test/dev (no
@@ -168,57 +143,6 @@ def language() -> dict[str, Any]:
     }
 
 
-def forbidden_topics() -> dict[str, Any]:
-    """Resolved forbidden-topics guardrail: stored override, else shipped defaults.
-
-    The list + refusal wording are injected into the Layer-3 prompt
-    (`prompts._forbidden_topics_directive`) so the model refuses off-topic / unsafe
-    requests in addition to the always-on `_GUARDRAILS` topic restriction. Ships
-    with a non-empty default set so off-topic blocking works out of the box; the
-    owner tunes both in the admin panel (the `forbidden_topics` settings group).
-    """
-    db_v = _group("forbidden_topics")
-    return {
-        "topics": db_v.get("topics", list(_DEFAULT_FORBIDDEN_TOPICS["topics"])),
-        "refusal": db_v.get("refusal", _DEFAULT_FORBIDDEN_TOPICS["refusal"]),
-    }
-
-
-def system_prompt() -> dict[str, str]:
-    """Resolved Layer-1 core sections: stored overrides merged over the shipped
-    defaults. The runtime core itself is served from the published prompt
-    version; this is the editor's source of truth, so it always round-trips a
-    full set of section keys.
-    """
-    db_v = _group("system_prompt")
-    stored = db_v.get("sections")
-    out = prompts.default_sections()
-    if isinstance(stored, dict):
-        for key, body in stored.items():
-            if key in out and isinstance(body, str) and body.strip():
-                out[key] = body
-    return out
-
-
-def layer3_prompt() -> dict[str, str]:
-    """Resolved Layer-3 directive sections: stored overrides merged over the
-    shipped defaults. These always-present per-request rule blocks (greeting,
-    formatting, KB-grounding, escalation restraint, suggested questions,
-    finish-chat, recency guardrails) ride in the user message, so an override is
-    applied live with no prompt-version publish and no prefix-cache reset (Layer 3
-    is not cached). Read live per request by `prompts._resolved_layer3`. Always
-    round-trips a full set of section keys (defaults fill any gap).
-    """
-    db_v = _group("layer3_prompt")
-    stored = db_v.get("sections")
-    out = prompts.layer3_default_sections()
-    if isinstance(stored, dict):
-        for key, body in stored.items():
-            if key in out and isinstance(body, str) and body.strip():
-                out[key] = body
-    return out
-
-
 def test_profile() -> dict[str, Any]:
     """Resolved test/dev sandbox profile: stored overrides merged over defaults.
 
@@ -249,7 +173,6 @@ def general() -> dict[str, Any]:
 def resolved_all() -> dict[str, Any]:
     return {
         "escalation": escalation(),
-        "forbidden_topics": forbidden_topics(),
         "language": language(),
         "antispam": antispam(),
         "model": model(),
@@ -352,10 +275,6 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         if "default" in value and not isinstance(value["default"], str):
             raise ValueError("default must be a string")
         _require_str_list(value, "supported")
-    elif key == "forbidden_topics":
-        _require_str_list(value, "topics")
-        if "refusal" in value and not isinstance(value["refusal"], str):
-            raise ValueError("refusal must be a string")
     return value
 
 

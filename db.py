@@ -143,18 +143,6 @@ CREATE TABLE IF NOT EXISTS app_settings (
   updated_by TEXT
 );
 
--- System-prompt versioning + A/B.
-CREATE TABLE IF NOT EXISTS prompt_versions (
-  id           SERIAL PRIMARY KEY,
-  name         TEXT NOT NULL,
-  body         TEXT NOT NULL,
-  status       TEXT NOT NULL DEFAULT 'draft',   -- draft | published | archived
-  is_default   BOOLEAN NOT NULL DEFAULT FALSE,
-  ab_weight    INT NOT NULL DEFAULT 0,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  published_at TIMESTAMPTZ
-);
-
 -- Escalation tickets (snapshot + delivery state).
 CREATE TABLE IF NOT EXISTS escalation_tickets (
   id          BIGSERIAL PRIMARY KEY,
@@ -189,9 +177,6 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         # answer/UI language by hand, which hard-overrides auto-mirroring.
         "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
         "lang_locked BOOLEAN NOT NULL DEFAULT FALSE",
-        # Phase 2: which prompt_versions row this session ran on (A/B attribution).
-        "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
-        "prompt_version_id INT",
         # Prompt-history boundary bumped on each topic switch (loop fix); only
         # messages newer than this id are sent to the model.
         "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
@@ -203,6 +188,12 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         # later turn answers in it until they switch again.
         "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
         "conv_lang TEXT",
+        # Removed feature: system-prompt versioning + A/B. The prompt is now
+        # sourced solely from prompts.py (the file is the single source of truth),
+        # so drop the table and the per-session attribution column. Idempotent —
+        # a no-op once they're gone.
+        "ALTER TABLE chat_sessions DROP COLUMN IF EXISTS prompt_version_id",
+        "DROP TABLE IF EXISTS prompt_versions",
     ]
     for stmt in alters:
         await conn.execute(stmt)
@@ -293,15 +284,14 @@ def _row_to_topic(row: asyncpg.Record) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 async def create_session(consumer: str, player_id: Optional[str],
                          lang: Optional[str], user_context: dict[str, Any],
-                         prompt_version_id: Optional[int] = None,
                          session_id: Optional[str] = None) -> str:
     sid = session_id or str(uuid.uuid4())
     await _pool.execute(
         "INSERT INTO chat_sessions "
-        "(id, consumer, player_id, lang, user_context, prompt_version_id) "
-        "VALUES ($1, $2, $3, $4, $5::jsonb, $6)",
+        "(id, consumer, player_id, lang, user_context) "
+        "VALUES ($1, $2, $3, $4, $5::jsonb)",
         sid, consumer, player_id, lang,
-        json.dumps(user_context or {}), prompt_version_id,
+        json.dumps(user_context or {}),
     )
     return sid
 
@@ -309,7 +299,7 @@ async def create_session(consumer: str, player_id: Optional[str],
 async def get_session(session_id: str) -> Optional[dict[str, Any]]:
     row = await _pool.fetchrow(
         "SELECT id, consumer, player_id, lang, lang_locked, conv_lang, topic_id, "
-        "user_context, status, escalated, message_count, prompt_version_id, "
+        "user_context, status, escalated, message_count, "
         "context_reset_id, created_at, updated_at "
         "FROM chat_sessions WHERE id = $1",
         session_id,
@@ -534,136 +524,6 @@ async def set_setting(key: str, value: Any, updated_by: Optional[str] = None) ->
         "  SET value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by",
         key, json.dumps(value), updated_by,
     )
-
-
-# ---------------------------------------------------------------------------
-# prompt_versions
-# ---------------------------------------------------------------------------
-def _row_to_prompt_version(row: Optional[asyncpg.Record]) -> Optional[dict[str, Any]]:
-    if row is None:
-        return None
-    d = dict(row)
-    for ts in ("created_at", "published_at"):
-        if d.get(ts) is not None:
-            d[ts] = d[ts].isoformat()
-    return d
-
-
-async def list_prompt_versions() -> list[dict[str, Any]]:
-    rows = await _pool.fetch(
-        "SELECT id, name, body, status, is_default, ab_weight, created_at, "
-        "published_at FROM prompt_versions ORDER BY id DESC"
-    )
-    return [_row_to_prompt_version(r) for r in rows]
-
-
-async def get_prompt_version(version_id: int) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
-        "SELECT id, name, body, status, is_default, ab_weight, created_at, "
-        "published_at FROM prompt_versions WHERE id = $1",
-        version_id,
-    )
-    return _row_to_prompt_version(row)
-
-
-async def get_default_prompt_version() -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
-        "SELECT id, name, body, status, is_default, ab_weight, created_at, "
-        "published_at FROM prompt_versions WHERE is_default ORDER BY id DESC LIMIT 1"
-    )
-    return _row_to_prompt_version(row)
-
-
-async def get_active_ab_versions() -> list[dict[str, Any]]:
-    """Published versions participating in an A/B split (ab_weight > 0)."""
-    rows = await _pool.fetch(
-        "SELECT id, name, body, status, is_default, ab_weight, created_at, "
-        "published_at FROM prompt_versions "
-        "WHERE status = 'published' AND ab_weight > 0 ORDER BY id"
-    )
-    return [_row_to_prompt_version(r) for r in rows]
-
-
-async def create_prompt_version(name: str, body: str,
-                                status: str = "draft",
-                                is_default: bool = False) -> int:
-    row = await _pool.fetchrow(
-        "INSERT INTO prompt_versions (name, body, status, is_default, published_at) "
-        "VALUES ($1, $2, $3, $4, CASE WHEN $4 THEN now() ELSE NULL END) RETURNING id",
-        name, body, status, is_default,
-    )
-    return row["id"]
-
-
-async def update_prompt_version(version_id: int, name: Optional[str],
-                                body: Optional[str]) -> Optional[dict[str, Any]]:
-    """Edit a DRAFT version's name/body. Published versions are immutable."""
-    async with _pool.acquire() as conn:
-        async with conn.transaction():
-            cur = await conn.fetchrow(
-                "SELECT status FROM prompt_versions WHERE id = $1", version_id
-            )
-            if cur is None:
-                return None
-            if cur["status"] != "draft":
-                raise ValueError("only draft versions can be edited")
-            await conn.execute(
-                "UPDATE prompt_versions SET "
-                "name = COALESCE($2, name), body = COALESCE($3, body) WHERE id = $1",
-                version_id, name, body,
-            )
-    return await get_prompt_version(version_id)
-
-
-async def publish_prompt_version(version_id: int) -> Optional[dict[str, Any]]:
-    """Make `version_id` the live default; demote the previous default.
-
-    Deliberate, one-time cache reset (the new core breaks the warm prefix).
-    """
-    async with _pool.acquire() as conn:
-        async with conn.transaction():
-            cur = await conn.fetchrow(
-                "SELECT id FROM prompt_versions WHERE id = $1", version_id
-            )
-            if cur is None:
-                return None
-            await conn.execute("UPDATE prompt_versions SET is_default = FALSE")
-            await conn.execute(
-                "UPDATE prompt_versions SET status = 'published', is_default = TRUE, "
-                "published_at = COALESCE(published_at, now()) WHERE id = $1",
-                version_id,
-            )
-    return await get_prompt_version(version_id)
-
-
-async def archive_prompt_version(version_id: int) -> Optional[dict[str, Any]]:
-    async with _pool.acquire() as conn:
-        async with conn.transaction():
-            cur = await conn.fetchrow(
-                "SELECT is_default FROM prompt_versions WHERE id = $1", version_id
-            )
-            if cur is None:
-                return None
-            if cur["is_default"]:
-                raise ValueError("cannot archive the live default version")
-            await conn.execute(
-                "UPDATE prompt_versions SET status = 'archived', ab_weight = 0 "
-                "WHERE id = $1",
-                version_id,
-            )
-    return await get_prompt_version(version_id)
-
-
-async def set_ab_weights(weights: list[dict[str, int]]) -> None:
-    """Set ab_weight for the given published version ids (others left untouched)."""
-    async with _pool.acquire() as conn:
-        async with conn.transaction():
-            for w in weights:
-                await conn.execute(
-                    "UPDATE prompt_versions SET ab_weight = $2 "
-                    "WHERE id = $1 AND status = 'published'",
-                    int(w["id"]), int(w["weight"]),
-                )
 
 
 # ---------------------------------------------------------------------------
@@ -979,47 +839,6 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
         "logs": [_msg(r) for r in logs],
         "cost_usd_total": round(cost_total, 6),
     }
-
-
-async def ab_results(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
-    rows = await _pool.fetch(
-        "SELECT s.prompt_version_id AS version_id, pv.name AS version_name, "
-        "  COUNT(*) FILTER (WHERE s.message_count > 0) AS sessions, "
-        "  COUNT(*) FILTER (WHERE s.escalated) AS escalated, "
-        "  COALESCE(AVG(s.message_count) FILTER (WHERE s.message_count > 0), 0) AS avg_messages "
-        "FROM chat_sessions s "
-        "LEFT JOIN prompt_versions pv ON pv.id = s.prompt_version_id "
-        "WHERE s.created_at >= $1 AND s.created_at < $2 "
-        "  AND s.prompt_version_id IS NOT NULL "
-        "GROUP BY s.prompt_version_id, pv.name ORDER BY s.prompt_version_id",
-        dt_from, dt_to,
-    )
-    # Per-version cost from logs joined via session.
-    cost_rows = await _pool.fetch(
-        "SELECT s.prompt_version_id AS version_id, "
-        "  COALESCE(SUM(l.cost_usd), 0) AS cost "
-        "FROM ai_interaction_logs l JOIN chat_sessions s ON s.id = l.session_id "
-        "WHERE l.created_at >= $1 AND l.created_at < $2 "
-        "  AND s.prompt_version_id IS NOT NULL "
-        "GROUP BY s.prompt_version_id",
-        dt_from, dt_to,
-    )
-    cost_by_v = {r["version_id"]: float(r["cost"]) for r in cost_rows}
-    out = []
-    for r in rows:
-        sessions = r["sessions"]
-        cost = cost_by_v.get(r["version_id"], 0.0)
-        out.append({
-            "version_id": r["version_id"],
-            "version_name": r["version_name"],
-            "sessions": sessions,
-            "escalated": r["escalated"],
-            "escalation_rate": (r["escalated"] / sessions) if sessions else 0.0,
-            "resolution_rate": (1 - (r["escalated"] / sessions)) if sessions else 0.0,
-            "avg_messages": float(r["avg_messages"]),
-            "avg_cost": (cost / sessions) if sessions else 0.0,
-        })
-    return out
 
 
 async def unresolved_by_topic(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
