@@ -129,6 +129,23 @@ existing table will NOT be applied by `CREATE TABLE IF NOT EXISTS`** — add an 
 there, currently empty). Every table read/write goes through a `db.<name>(...)` async
 helper; nothing else touches tables directly.
 
+### Seeds are non-destructive bootstrap (`seed/*.run()`, the seed contract)
+On startup `main.py` runs `kb_seed.run()` → `prompt_seed.run()` → `settings_seed.run()`
+**on every boot** (the DB persists across redeploys; the seeds re-run each time). The DB —
+not the code — is the source of truth once the owner edits anything in the admin panel, so
+**every seed MUST be seed-once / non-destructive: create a row only when it is missing, and
+never overwrite an existing one.** `prompt_seed` (skips if a default prompt version exists)
+and `settings_seed` (fills only missing setting fields) already follow this; `kb_seed` now
+does too — it creates a built-in topic + its placeholder KB only when absent, and leaves an
+existing topic's `title/order/active` and KB untouched (a test enforces this). This is what
+keeps a redeploy from wiping admin edits. Earlier `kb_seed` clobbered the live KB on **every**
+restart (it deactivated all entries and re-inserted the placeholder at version 1), silently
+reverting the owner's changes back to placeholders — never reintroduce a seed that mutates
+existing data. (The old destructive `db.replace_topic_entry` helper was removed for the same
+reason; the seed creates fresh entries via `db.create_kb_entry`.) Deleting the `seed/` package
+is NOT a fix: it's the bootstrap for a fresh/empty DB (new env, DB recreation, local dev), and
+without it such a DB has no topics, KB, default prompt, or settings.
+
 ### Atomic turn write (invariant)
 `db.persist_turn` writes the user message, the assistant message, the `ai_interaction_logs`
 row, and the `chat_sessions.message_count` bump in **one transaction**. Do not split it.

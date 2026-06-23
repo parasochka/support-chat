@@ -1,6 +1,13 @@
 """Seed the 6 visible topics + hidden 'other', with placeholder Russian KB.
 
-Idempotent: re-running upserts topics by slug and replaces the active KB entry.
+Seed-once / NON-DESTRUCTIVE bootstrap (the seed contract — see CLAUDE.md): this
+creates the built-in topics and their placeholder KB ONLY when they are missing.
+A topic that already exists keeps its owner-edited title/order/active, and a topic
+that already has any KB (active or archived) is never re-seeded — so admin-panel
+edits survive every redeploy. Earlier this clobbered the live KB on each restart
+(it deactivated all entries and re-inserted the placeholder at version 1), silently
+wiping the owner's changes; never reintroduce that behaviour.
+
 ALL player-facing numbers are {{PLACEHOLDER}} tokens — the owner replaces them
 with real values later. Do NOT fabricate concrete numbers here.
 """
@@ -130,12 +137,24 @@ TOPICS: list[dict] = [
 
 
 async def run() -> None:
-    """Idempotent upsert of topics + their placeholder KB entries."""
+    """Create the built-in topics + placeholder KB, but only where missing.
+
+    Non-destructive: never overwrites an existing topic's metadata or KB, so the
+    owner's admin-panel edits are preserved across restarts/redeploys.
+    """
     for t in TOPICS:
-        topic_id = await db.upsert_topic(
-            slug=t["slug"],
-            title=t["title"],
-            display_order=t["order"],
-            active=True,  # 'other' stays active but is filtered from the picker
-        )
-        await db.replace_topic_entry(topic_id, lang="ru", content=t["kb"])
+        existing = await db.get_topic_by_slug(t["slug"])
+        if existing is None:
+            topic_id = await db.upsert_topic(
+                slug=t["slug"],
+                title=t["title"],
+                display_order=t["order"],
+                active=True,  # 'other' stays active but is filtered from the picker
+            )
+        else:
+            # Topic already there — leave owner-edited title/order/active alone.
+            topic_id = existing["id"]
+        # Seed the placeholder KB only when this topic has no entry at all (active
+        # or archived). Once any content has existed, the seed keeps its hands off.
+        if not await db.list_kb_entries(topic_id, include_inactive=True):
+            await db.create_kb_entry(topic_id, lang="ru", content=t["kb"])
