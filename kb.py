@@ -5,9 +5,12 @@ KB content is stored in Russian (source language) and injected as Layer 2.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 import db
+
+_VARIABLE_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 
 # The hidden free-text topic that routes to high escalation priority.
 OTHER_SLUG = "other"
@@ -41,13 +44,29 @@ async def topic_by_slug(slug: str) -> Optional[dict[str, Any]]:
 async def kb_block_for_topic(topic_id: Optional[int]) -> Optional[str]:
     """Return the KB chunk for the selected topic (Layer 2), or None.
 
-    The KB is single-language (the source language). The Layer-3 "answer in
-    {LANG}" directive still steers the output language regardless of the KB
-    language, so the model translates as it answers.
+    Variables like ``{min_deposit}`` are resolved from the admin-managed
+    ``kb_variables`` registry before the text is injected into the model prompt,
+    so the prompt receives the enriched, concrete knowledge rather than raw
+    placeholders. Unknown placeholders are intentionally left untouched to make
+    missing registry items visible in the prompt preview.
     """
     if topic_id is None:
         return None
-    return await db.get_kb_content(topic_id)
+    content = await db.get_kb_content(topic_id)
+    if not content:
+        return content
+    return await render_variables(content)
+
+
+async def render_variables(text: str) -> str:
+    """Replace ``{variable}`` placeholders with admin-managed values."""
+    variables = await db.get_kb_variables_map()
+
+    def repl(match: re.Match[str]) -> str:
+        key = match.group(1)
+        return variables.get(key, match.group(0))
+
+    return _VARIABLE_RE.sub(repl, text)
 
 
 async def suggestable_topics(
