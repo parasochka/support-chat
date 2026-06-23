@@ -200,6 +200,25 @@ def system_prompt() -> dict[str, str]:
     return out
 
 
+def layer3_prompt() -> dict[str, str]:
+    """Resolved Layer-3 directive sections: stored overrides merged over the
+    shipped defaults. These always-present per-request rule blocks (greeting,
+    formatting, KB-grounding, escalation restraint, suggested questions,
+    finish-chat, recency guardrails) ride in the user message, so an override is
+    applied live with no prompt-version publish and no prefix-cache reset (Layer 3
+    is not cached). Read live per request by `prompts._resolved_layer3`. Always
+    round-trips a full set of section keys (defaults fill any gap).
+    """
+    db_v = _group("layer3_prompt")
+    stored = db_v.get("sections")
+    out = prompts.layer3_default_sections()
+    if isinstance(stored, dict):
+        for key, body in stored.items():
+            if key in out and isinstance(body, str) and body.strip():
+                out[key] = body
+    return out
+
+
 def test_profile() -> dict[str, Any]:
     """Resolved test/dev sandbox profile: stored overrides merged over defaults.
 

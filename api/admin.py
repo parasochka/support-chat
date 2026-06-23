@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 import config
 import db
+import kb
 import kb_import
 import language
 import metrics
@@ -408,16 +409,93 @@ class SystemPromptWrite(BaseModel):
     sections: dict[str, str]
 
 
+# Representative inputs for the read-only "full effective prompt" preview. The
+# editable sections only cover Layer 1; almost every behavioural rule the owner
+# tunes lives in the per-request Layer-3 directives (greeting, formatting,
+# KB-grounding, escalation restraint, suggestions, resolved, topic routing,
+# language, personalization, guardrails, forbidden topics). To let the owner SEE
+# and verify the whole thing, we assemble the exact messages chat_service would
+# send for a sample player + sample topic and surface both the system message
+# (Layer 1 + Layer 2 KB) and the Layer-3 user message. Nothing here is sent to
+# the model — it's a faithful rendering of the live assembly.
+_PREVIEW_CONTEXT = {
+    "id": "10042",
+    "full_name": "Иван Петров",
+    "email": "ivan@example.com",
+    "activation_status": "active",
+    "country": "KZ",
+    "balance": "1500",
+    "vip_level": "Silver",
+    "registration_date": "2024-01-15",
+}
+_PREVIEW_USER_TEXT = "«…здесь будет текущее сообщение игрока…»"
+
+
+async def _build_effective_preview(live_core: str) -> dict[str, Any]:
+    """Assemble the full prompt exactly as chat_service would, with sample data.
+
+    Returns the system message (Layer 1 core + Layer 2 KB block) and the Layer-3
+    user message, plus a note of which example topic/language were used. Resilient
+    by design: if topics/KB can't be loaded the preview still renders Layer 1 +
+    the Layer-3 directives, so the settings page never breaks.
+    """
+    lang = language.default_code()
+    current_topic: Optional[dict[str, Any]] = None
+    kb_block: Optional[str] = None
+    suggestable: list[dict[str, Any]] = []
+    example_topic: Optional[str] = None
+    try:
+        topics = await db.list_topics(include_hidden=False)
+        # Prefer a specialized topic (the common case) so the KB-grounding +
+        # anchored routing directives are the ones shown.
+        chosen = next((t for t in topics if t["slug"] != kb.OTHER_SLUG), None)
+        if chosen is not None:
+            current_topic = {
+                "slug": chosen["slug"],
+                "title": kb.localize_title(chosen.get("title"), lang),
+            }
+            example_topic = current_topic["title"]
+            kb_block = await kb.kb_block_for_topic(chosen["id"], lang=lang)
+            suggestable = await kb.suggestable_topics(
+                exclude_topic_id=chosen["id"], lang=lang)
+    except Exception:  # pragma: no cover - preview must never break the page
+        current_topic, kb_block, suggestable = None, None, []
+
+    messages = prompts.build_messages(
+        session={"user_context": _PREVIEW_CONTEXT},
+        kb_block=kb_block,
+        history=[],
+        user_text=_PREVIEW_USER_TEXT,
+        resolved_lang=lang,
+        available_topics=suggestable,
+        current_topic=current_topic,
+        core=live_core,
+    )
+    return {
+        "system": messages[0]["content"],
+        "user": messages[-1]["content"],
+        "example": {
+            "topic": example_topic,
+            "lang": lang,
+            "user_text": _PREVIEW_USER_TEXT,
+        },
+    }
+
+
 @router.get("/system-prompt")
 async def get_system_prompt() -> JSONResponse:
     sections = settings_mod.system_prompt()
     live = await db.get_default_prompt_version()
+    # The live core is what's ACTUALLY sent (the published version body); fall
+    # back to composing the stored sections if no version row exists yet.
+    live_core = live["body"] if live else prompts.compose_core(sections)
     return JSONResponse(content={
         "sections": sections,
         "meta": prompts.section_meta(),
         "composed": prompts.compose_core(sections),
         "live_version": ({"id": live["id"], "name": live["name"]}
                          if live else None),
+        "effective_preview": await _build_effective_preview(live_core),
     })
 
 
@@ -450,3 +528,48 @@ async def put_system_prompt(body: SystemPromptWrite,
     return JSONResponse(content={"ok": True, "version_id": vid,
                                  "sections": settings_mod.system_prompt(),
                                  "composed": core})
+
+
+# ---------------------------------------------------------------------------
+# Layer-3 directives — structured, edit-and-apply-live (no version, no cache reset)
+#
+# The static, always-present Layer-3 rule blocks (greeting, formatting,
+# KB-grounding, escalation restraint, suggested questions, finish-chat, recency
+# guardrails) are the bulk of post-launch behavioural tuning. They ride in the
+# per-request user message, so unlike the Layer-1 core editing them is NOT a
+# prompt-version publish and does NOT reset the prefix cache — overrides just go
+# to the `layer3_prompt` settings group and apply to the next message. Mirrors the
+# system-prompt editor so the owner controls the WHOLE prompt from one place.
+# ---------------------------------------------------------------------------
+class Layer3PromptWrite(BaseModel):
+    sections: dict[str, str]
+
+
+@router.get("/layer3-prompt")
+async def get_layer3_prompt() -> JSONResponse:
+    return JSONResponse(content={
+        "sections": settings_mod.layer3_prompt(),
+        "meta": prompts.layer3_section_meta(),
+    })
+
+
+@router.put("/layer3-prompt")
+async def put_layer3_prompt(body: Layer3PromptWrite,
+                            admin=Depends(require_admin)) -> JSONResponse:
+    keys = set(prompts.LAYER3_SECTION_KEYS)
+    cleaned: dict[str, str] = {}
+    for key, val in (body.sections or {}).items():
+        if key not in keys:
+            raise HTTPException(status_code=400, detail=f"unknown section: {key!r}")
+        if not isinstance(val, str) or not val.strip():
+            raise HTTPException(status_code=400,
+                                detail=f"section {key!r} must be a non-empty string")
+        cleaned[key] = val.strip()
+
+    await db.set_setting("layer3_prompt", {"sections": cleaned},
+                         updated_by=admin.get("role"))
+    await settings_mod.reload()  # applies live to the next message (Layer 3)
+    await db.log_admin_event(None, "layer3_prompt_updated",
+                             {"sections": list(cleaned)})
+    return JSONResponse(content={"ok": True,
+                                 "sections": settings_mod.layer3_prompt()})

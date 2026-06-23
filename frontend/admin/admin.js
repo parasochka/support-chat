@@ -654,7 +654,9 @@ async function viewSettings(main) {
   try {
     await ensureMeta();
     holder.innerHTML = "";
-    await systemPromptBox(holder);
+    const sp = await systemPromptBox(holder);      // Layer 1 editor
+    await layer3PromptBox(holder);                 // Layer 3 directive editor
+    effectivePreviewBox(holder, sp && sp.effective_preview);  // full preview, last
     const data = await api("/settings");
     for (const key of data.keys) {
       if (key === "language") { languageSettingsBox(holder, data.resolved.language || {}); continue; }
@@ -694,12 +696,13 @@ async function systemPromptBox(holder) {
   box.appendChild(el("div", "npadmin-help",
     "The 3-layer prompt: Layer 1 is this core (tone of voice + the rule blocks "
     + "below); Layer 2 is the per-topic knowledge base (edited in the Knowledge "
-    + "base tab); Layer 3 is the player's data, supplied per request and not "
-    + "editable here. Saving applies the new core live to new sessions."));
+    + "base tab); Layer 3 is the per-request rules + player data — its always-on "
+    + "rule blocks are editable in the 'Layer 3 directives' editor below. Saving "
+    + "this core publishes a new prompt version live (one prefix-cache reset)."));
   let data;
   try {
     data = await api("/system-prompt");
-  } catch (e) { box.appendChild(errBox(e)); holder.appendChild(box); return; }
+  } catch (e) { box.appendChild(errBox(e)); holder.appendChild(box); return null; }
 
   if (data.live_version) {
     box.appendChild(el("div", "npadmin-meta",
@@ -735,6 +738,88 @@ async function systemPromptBox(holder) {
     } catch (e) { err.textContent = e.message; }
   });
   box.append(save, err);
+  holder.appendChild(box);
+  return data;
+}
+
+// Structured Layer-3 directive editor. The always-on Layer-3 rule blocks
+// (greeting hygiene, formatting, KB-grounding, escalation restraint, suggested
+// questions, finish-chat, recency guardrails) are the bulk of post-launch
+// behavioural tuning. They ride in the per-request user message, so editing them
+// is NOT a prompt-version publish and does NOT reset the prefix cache — overrides
+// apply to the next message. The dynamic directives (language, personalization,
+// topic routing) and the forbidden-topics list are managed elsewhere.
+async function layer3PromptBox(holder) {
+  const box = el("div", "npadmin-chart");
+  box.appendChild(el("div", "npadmin-meta", "Layer 3 directives — per-request rules"));
+  box.appendChild(el("div", "npadmin-help",
+    "The always-on Layer-3 rule blocks the model gets with every message. Unlike "
+    + "the Layer-1 core, these do NOT touch the cached prefix — saving applies to "
+    + "the next message with no cache reset. (The language, personalization and "
+    + "topic-routing directives are generated per request; the forbidden-topics "
+    + "list is in the 'forbidden_topics' settings block below.)"));
+  let data;
+  try {
+    data = await api("/layer3-prompt");
+  } catch (e) { box.appendChild(errBox(e)); holder.appendChild(box); return; }
+
+  const fields = {};
+  for (const m of data.meta) {
+    const lab = el("label", "npadmin-field");
+    lab.appendChild(el("span", null, m.label));
+    const ta = el("textarea", "npadmin-input");
+    ta.value = data.sections[m.key] || "";
+    ta.style.minHeight = "120px"; ta.style.width = "100%";
+    fields[m.key] = ta;
+    lab.appendChild(ta);
+    box.appendChild(lab);
+  }
+
+  const err = el("div", "npadmin-err");
+  const save = el("button", "npadmin-btn", "Save Layer 3 directives");
+  save.addEventListener("click", async () => {
+    err.textContent = ""; err.style.color = "";
+    const sections = {};
+    for (const [k, ta] of Object.entries(fields)) {
+      if (!ta.value.trim()) { err.textContent = "All sections must be non-empty"; return; }
+      sections[k] = ta.value;
+    }
+    if (!confirm("Apply the Layer-3 directives to new messages now?")) return;
+    try {
+      await api("/layer3-prompt", { method: "PUT", body: { sections } });
+      err.style.color = "var(--good)"; err.textContent = "Saved & applied live";
+    } catch (e) { err.textContent = e.message; }
+  });
+  box.append(save, err);
+  holder.appendChild(box);
+}
+
+// Read-only "full effective prompt" preview. Renders the WHOLE prompt exactly as
+// it's sent to the model (all 3 layers) for an example player + topic, so the
+// owner can see and verify everything — including the live result of the Layer-1
+// and Layer-3 edits above — in one place.
+function effectivePreviewBox(holder, pv) {
+  if (!pv) return;
+  const box = el("div", "npadmin-chart");
+  const ex = pv.example || {};
+  box.appendChild(el("div", "npadmin-meta", "Full effective prompt (all layers, as sent)"));
+  box.appendChild(el("div", "npadmin-help",
+    "Read-only. The COMPLETE prompt the model receives — Layer 1 (core) + Layer 2 "
+    + "(the selected topic's knowledge base) in the system message, then the "
+    + "Layer-3 directives + the player's data in the user message. Reflects the live "
+    + `Layer-1 and Layer-3 edits above. Example: topic «${ex.topic || "—"}», language `
+    + `${ex.lang || "—"}, sample player. Layer 2 (KB) and player data vary per request.`));
+
+  const sysWrap = el("label", "npadmin-field");
+  sysWrap.appendChild(el("span", null, "System message — Layer 1 (core) + Layer 2 (KB block)"));
+  const sysPre = el("pre", "npadmin-code"); sysPre.textContent = pv.system;
+  sysWrap.appendChild(sysPre); box.appendChild(sysWrap);
+
+  const usrWrap = el("label", "npadmin-field");
+  usrWrap.appendChild(el("span", null, "User message — Layer 3 (directives + player context + message)"));
+  const usrPre = el("pre", "npadmin-code"); usrPre.textContent = pv.user;
+  usrWrap.appendChild(usrPre); box.appendChild(usrWrap);
+
   holder.appendChild(box);
 }
 

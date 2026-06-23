@@ -82,3 +82,6 @@ table.npadmin-table { width: 100%; border-collapse: collapse; }
 .npadmin-help { color: var(--muted); font-size: 12px; margin: 4px 0 10px; }
 label.npadmin-field { display: block; margin: 10px 0; }
 label.npadmin-field span { display: block; color: var(--muted); margin-bottom: 4px; }
+.npadmin-code { background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px 12px; margin: 0; max-height: 360px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.5; }

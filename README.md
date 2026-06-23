@@ -396,6 +396,34 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   and publishes it live** as a new default `prompt_versions` row (apply-live = one deliberate
   cache reset), reusing the version machinery so A/B attribution + audit stay intact. Layer 2
   (KB) stays in the Knowledge-base tab; Layer 3 (player data) is per-request and not editable.
+  **Full effective-prompt preview (read-only):** the editor only exposes Layer 1, but almost
+  every behavioural rule the owner tunes lives in the per-request **Layer-3 directives**
+  (greeting, formatting, KB-grounding, escalation restraint, suggested questions, finish-chat,
+  topic routing, language, personalization, guardrails, forbidden topics) — so the editor alone
+  looks "stale" next to a bot that behaves "new". To close that gap `GET /admin/system-prompt`
+  also returns `effective_preview` — the **whole** prompt assembled exactly as `chat_service`
+  sends it (`api.admin._build_effective_preview` reuses `prompts.build_messages` with the **live**
+  core body + a sample player + a sample specialized topic's KB), split into the system message
+  (Layer 1 + Layer 2) and the user message (all Layer-3 directives + player context). The SPA
+  renders it below the editable sections as read-only blocks so the owner can always see and
+  verify the complete prompt in one place. It is resilient — if topics/KB can't load it still
+  renders Layer 1 + the Layer-3 directives, never breaking the Settings page.
+- **Structured Layer-3 directive editor** (`prompts.LAYER3_PROMPT_SECTIONS`/`layer3_default_sections`/
+  `_resolved_layer3`, `settings.layer3_prompt`, `api.admin` `GET/PUT /admin/layer3-prompt`, Settings
+  tab in the SPA): the always-on Layer-3 rule blocks — greeting hygiene, formatting, KB-grounding,
+  escalation restraint, suggested questions, finish-chat, recency guardrails — are the bulk of
+  post-launch behavioural tuning, so they are individually editable too (reusing the exact pattern of
+  the Layer-1 sections editor). Because they ride in the per-request **user message** (like
+  `forbidden_topics`), editing them is **NOT** a prompt-version publish and does **NOT** reset the
+  prefix cache (Layer 3 isn't cached) — an override just lands in `app_settings['layer3_prompt']` and
+  `prompts.build_dynamic_prompt` reads it live per request via `_resolved_layer3()` (lazy `settings`
+  import to dodge the cycle, mirroring `_forbidden_topics_directive`). The shipped section bodies are
+  the existing constants verbatim, so the assembled prompt is byte-identical until a section is
+  deliberately edited (a test asserts this, and `SYSTEM_CORE` byte-stability is unaffected). The
+  **dynamic** directives that splice per-request values (language, personalization, topic routing)
+  and the `forbidden_topics` list stay code-generated / managed in their own settings group. With
+  this, the owner controls the **whole** prompt — Layer 1 (core) and the static Layer-3 rules — from
+  one Settings tab; the read-only effective-prompt preview reflects both edits live.
 - **KB CRUD + import** (`kb_import.py`, `db.*` helpers): versioned entries (edit = new
   version row, delete = soft `active=false`); JSON/CSV/Markdown bulk import.
 - **Escalation Phase 2** (`escalation.open_ticket`, `notifiers/telegram.py`,
