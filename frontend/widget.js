@@ -708,7 +708,14 @@ function renderSuggestions(list, resolved) {
 function applyTurnExtras(data, originalText) {
   if (data.escalation && data.escalation.active) addEscalation(data.escalation);
   if (data.suggested_topic) addTopicSuggestion(data.suggested_topic, originalText);
-  renderSuggestions(data.suggestions, data.resolved);
+  // If a topic-switch prompt is visible, do not also show guide bubbles: they
+  // would invite the player to continue in the wrong topic. The backend already
+  // strips them, but keep the widget defensive for older/mixed deployments.
+  const canShowSuggestions = !data.suggested_topic;
+  renderSuggestions(
+    canShowSuggestions ? data.suggestions : [],
+    canShowSuggestions && data.resolved,
+  );
   // The follow-up bubbles render AFTER the reply was scrolled into view and sit
   // outside the scroll container, so they shrink the transcript's viewport and
   // would otherwise clip the bottom of the fresh answer. Re-pin once they're in.
