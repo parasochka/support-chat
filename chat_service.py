@@ -6,6 +6,8 @@ the atomic turn persistence in db.persist_turn. Keeps API handlers thin.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
+import time
 from typing import Any, Optional
 
 import db
@@ -15,6 +17,9 @@ import language
 import openai_client
 import prompts
 import settings
+
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -47,7 +52,13 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     gates and the message-cap fast path. Here we build the prompt, call the
     model, decide escalation, and persist the turn atomically.
     """
+    started = time.monotonic()
     session_id = session["id"]
+    log.info(
+        "chat_generation_started session_id=%s topic_id=%s message_count=%s chars=%s",
+        session_id, session.get("topic_id"),
+        session.get("message_count", 0), len(user_text),
+    )
     topic_id = session.get("topic_id")
     topic_slug = None
     topic = None
@@ -80,6 +91,10 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     # player switches anyway); fall back to the service default for AUTO.
     title_lang = resolved if resolved != language.AUTO else language.default_code()
     suggestable = await kb.suggestable_topics(exclude_topic_id=topic_id, lang=title_lang)
+    log.info(
+        "chat_prompt_context_loaded session_id=%s base_lang=%s title_lang=%s suggestable_topics=%s",
+        session_id, base_lang, title_lang, len(suggestable),
+    )
     # Name the CURRENT topic so the model answers in-topic questions from the
     # loaded KB instead of bouncing the player to another branch on keyword
     # overlap (e.g. both deposits and withdrawals mention crypto networks).
@@ -106,6 +121,10 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         available_topics=suggestable,
         current_topic=current_topic,
     )
+    log.info(
+        "chat_prompt_built session_id=%s topic_slug=%s history_turns=%s kb_chars=%s messages=%s",
+        session_id, topic_slug, len(history), len(kb_block or ""), len(messages),
+    )
 
     # --- call model (two-key failover) --------------------------------------
     client = openai_client.get_client()
@@ -116,6 +135,11 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         )
         raw_text = result.text
         ok = True
+        log.info(
+            "chat_model_completed session_id=%s model=%s key=%s latency_ms=%s tokens_in=%s tokens_out=%s cached_in=%s raw_chars=%s",
+            session_id, result.model, result.key_used, result.latency_ms,
+            result.tokens_in, result.tokens_out, result.cached_in, len(raw_text or ""),
+        )
     except Exception as exc:  # noqa: BLE001
         # Model failure: log it, fall back to a graceful escalation reply.
         error = f"{exc.__class__.__name__}: {exc}"
@@ -125,6 +149,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
             model=settings.model()["model"], key_used="none", latency_ms=0,
         )
         raw_text = ""
+        log.exception("chat_model_failed session_id=%s error=%s", session_id, error)
 
     # --- strip control sentinels (escalation + topic + language + suggest) --
     model_signalled = False
@@ -148,6 +173,10 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     # else the model invents is dropped silently.
     suggested_topic: Optional[dict] = None
     if suggested_slug:
+        log.info(
+            "chat_model_suggested_topic session_id=%s slug=%s",
+            session_id, suggested_slug,
+        )
         suggested_topic = next(
             (t for t in suggestable if t["slug"] == suggested_slug), None
         )
@@ -182,6 +211,12 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     if decision.active:
         esc_payload = escalation.build_payload(answer_lang)
 
+    if not clean_text:
+        log.warning(
+            "chat_empty_model_reply session_id=%s ok=%s escalation_active=%s raw_chars=%s",
+            session_id, ok, decision.active, len(raw_text or ""),
+        )
+
     if not clean_text and (not ok or decision.active):
         # The model may return only the [[ESCALATE]] control tag, which strips to
         # an empty answer. Persist and return the localized hand-off copy instead
@@ -209,6 +244,11 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     # Per the language directive the model answers in the language of the player's
     # CURRENT message, so it is a faithful proxy for the user turn's language too;
     # None when the model emitted no tag (kept null rather than guessed).
+    log.info(
+        "chat_persisting_turn session_id=%s ok=%s answer_lang=%s clean_chars=%s escalation_active=%s suggested_topic=%s suggestions=%s resolved=%s",
+        session_id, ok, answer_lang, len(clean_text or ""), decision.active,
+        suggested_topic["slug"] if suggested_topic else None, len(suggestions or []), resolved,
+    )
     new_count = await db.persist_turn(
         session_id=session_id,
         user_text=user_text,
@@ -235,6 +275,11 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
             await db.log_admin_event(
                 session_id, "escalation", {"reason": decision.reason}
             )
+
+    log.info(
+        "chat_generation_finished session_id=%s ok=%s message_count=%s elapsed_ms=%s",
+        session_id, ok, new_count, int((time.monotonic() - started) * 1000),
+    )
 
     return ChatReply(
         reply=clean_text,
