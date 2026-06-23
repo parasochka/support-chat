@@ -313,6 +313,16 @@
   transition: background 0.12s ease, border-color 0.12s ease;
 }
 .npchat-suggestion:hover { background: #e0e7ff; border-color: #4f46e5; }
+/* The player-driven "I'm done" bubble: a soft green tint so it reads as a finish
+   option distinct from the neutral question bubbles, but lighter than the green
+   model-driven finish button below. */
+.npchat-suggestion-closing {
+  border-color: #6ee7b7;
+  background: #ecfdf5;
+  color: #065f46;
+  font-weight: 600;
+}
+.npchat-suggestion-closing:hover { background: #d1fae5; border-color: #10b981; }
 /* The "issue resolved → close the chat" nudge: greener, weightier than the
    neutral question bubbles so it reads as the natural end of the conversation. */
 .npchat-finish {

@@ -1,6 +1,31 @@
 import asyncio
+import json
+from datetime import datetime, timezone
 
+import db
 import kb
+
+
+def test_row_to_kb_variable_serializes_datetime():
+    # `updated_at` must come out as an ISO string: JSONResponse cannot serialize a
+    # raw datetime, which previously 500'd the admin Variables tab.
+    row = {
+        "key": "min_deposit",
+        "description": "Minimum deposit",
+        "value": "10 USDT",
+        "updated_at": datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc),
+        "updated_by": "owner",
+    }
+    out = db._row_to_kb_variable(row)
+    assert out["updated_at"] == "2026-06-23T12:00:00+00:00"
+    # The whole payload must be JSON-serializable (as JSONResponse would render it).
+    json.dumps(out)
+
+
+def test_row_to_kb_variable_handles_null_updated_at():
+    out = db._row_to_kb_variable({"key": "k", "description": "", "value": "",
+                                  "updated_at": None, "updated_by": None})
+    assert out["updated_at"] is None
 
 
 def test_render_variables_replaces_known_and_leaves_unknown(monkeypatch):

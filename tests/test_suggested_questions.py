@@ -61,6 +61,27 @@ def test_strip_suggestions_normalizes_third_closing_option_to_period():
 
 
 # ---------------------------------------------------------------------------
+# split_closing — the trailing declarative option becomes the finish-chat bubble
+# ---------------------------------------------------------------------------
+def test_split_closing_separates_declarative_last_option():
+    questions, closing = prompts.split_closing(
+        ["Какие лимиты на депозит?", "Как пополнить криптой?", "Всё ясно, закрыть."]
+    )
+    assert questions == ["Какие лимиты на депозит?", "Как пополнить криптой?"]
+    assert closing == "Всё ясно, закрыть."
+
+
+def test_split_closing_none_when_last_is_a_question():
+    questions, closing = prompts.split_closing(["Вопрос один?", "Вопрос два?"])
+    assert questions == ["Вопрос один?", "Вопрос два?"]
+    assert closing is None
+
+
+def test_split_closing_empty():
+    assert prompts.split_closing([]) == ([], None)
+
+
+# ---------------------------------------------------------------------------
 # strip_resolved_tag
 # ---------------------------------------------------------------------------
 def test_strip_resolved_tag_detects_and_cleans():

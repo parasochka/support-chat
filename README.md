@@ -20,9 +20,10 @@ talk to it over HTTP/JSON by `session_id` (UUID), so multiple front-ends can plu
   length cap, a low-content/junk guard, and a prompt-injection scan (hard-block by default).
 - **Two-key OpenAI failover** — a fallback API key is raced in after a switch timeout so a
   silent primary key doesn't stall answers.
-- **Admin dashboard** (`/admin`) — overview metrics, per-topic/-language breakdowns,
-  session browsing, unresolved-cluster export, hot-reloaded runtime settings, and
-  knowledge-base editing.
+- **Admin dashboard** (`/admin`) — overview metrics, per-topic/-language breakdowns
+  (with per-row cost), session browsing (with per-session cost), unresolved-cluster
+  export, hot-reloaded runtime settings, knowledge-base editing, and a **Variables**
+  tab for the admin-managed `{placeholder}` values injected into KB answers.
 
 ## Architecture in one paragraph
 
@@ -76,7 +77,7 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `DEFAULT_LANGUAGE` / `SUPPORTED_LANGUAGES` | no | `en` / `en,es,ru,tr,pt` | Language defaults. |
 | `CORS_ALLOW_ORIGINS` | no | `*` | Comma-separated allowed origins (restrict in prod). |
 | `TRUSTED_PROXY_COUNT` | no | `1` | Trusted proxy hops to read from the right of `X-Forwarded-For`. |
-| `TRUSTED_PROXY_IPS` | no | — | Comma-separated immediate proxy IPs/CIDRs whose `X-Forwarded-For` headers may be trusted. Empty ⇒ ignore XFF. |
+| `TRUSTED_PROXY_IPS` | no | private/reserved ranges | Comma-separated immediate proxy IPs/CIDRs whose `X-Forwarded-For` may be trusted. Defaults to the private/reserved ranges (RFC1918 + CGNAT + loopback/ULA), which is correct on Railway and most PaaS — the platform proxy connects from a private peer IP that a public client cannot forge. Tighten to your edge's exact CIDR if you know it. |
 
 Most operational knobs (rate limits, cooldowns, model tuning, escalation thresholds,
 session TTL, body cap, etc.) are tunable live from the admin **Settings** tab and only need

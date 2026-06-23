@@ -21,8 +21,12 @@ async def test_effective_prompt_renders_all_layers(monkeypatch):
     async def _kb_content(topic_id, lang="ru"):
         return "Q: Как пополнить счёт?\nA: Через кассу." if topic_id == 2 else None
 
+    async def _kb_variables_map():
+        return {}
+
     monkeypatch.setattr(db, "list_topics", _list_topics)
     monkeypatch.setattr(db, "get_kb_content", _kb_content)
+    monkeypatch.setattr(db, "get_kb_variables_map", _kb_variables_map)
 
     resp = await admin.get_effective_prompt()
     pv = json.loads(resp.body)["effective_preview"]

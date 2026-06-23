@@ -273,6 +273,13 @@ async function sendMessage(text) {
     body: { session_id: state.sessionId, text },
   });
   if (!ok) {
+    // The session was already closed (resolved) or handed off (escalated): the
+    // backend rejects further turns with 409. Don't surface a raw error — end the
+    // conversation locally so the next open starts a fresh session.
+    if (status === 409 || (data && data.error === "session_closed")) {
+      endConversation();
+      return { reply: t("finished"), escalation: { active: false } };
+    }
     return { reply: data.detail || `Error (${status})`, escalation: { active: false } };
   }
   // The conversation language can drift when the player starts writing in
@@ -691,19 +698,29 @@ function clearSuggestions() {
   els.suggestions.classList.add("npchat-hidden");
 }
 
-function renderSuggestions(list, resolved) {
+function renderSuggestions(list, closing, resolved) {
   clearSuggestions();
-  const items = Array.isArray(list) ? list.slice(0, 3) : [];
+  const items = Array.isArray(list) ? list.slice(0, 2) : [];
   for (const q of items) {
     if (!q) continue;
     const b = el("button", "npchat-suggestion", q);
     b.addEventListener("click", () => submitText(q));
     els.suggestions.appendChild(b);
   }
+  // Two finish affordances, one at a time:
+  //  - resolved=true  -> the MODEL judged the chat done: show the green finish
+  //    button (finishChat collapses the panel with a canned note).
+  //  - else + closing -> the PLAYER may finish proactively: show the declarative
+  //    closing bubble; tapping it sends a goodbye turn and then resolves.
+  // The green button wins when both apply, so we never show two finish controls.
   if (resolved) {
     const f = el("button", "npchat-finish", t("finish"));
     f.addEventListener("click", finishChat);
     els.suggestions.appendChild(f);
+  } else if (closing) {
+    const c = el("button", "npchat-suggestion npchat-suggestion-closing", closing);
+    c.addEventListener("click", () => finishWithClosing(closing));
+    els.suggestions.appendChild(c);
   }
   if (els.suggestions.childNodes.length) {
     els.suggestions.classList.remove("npchat-hidden");
@@ -714,7 +731,16 @@ function renderSuggestions(list, resolved) {
 // the escalation block, a cross-topic switch prompt, and the guide-to-KB
 // bubbles / finish button.
 function applyTurnExtras(data, originalText) {
-  if (data.escalation && data.escalation.active) addEscalation(data.escalation);
+  if (data.escalation && data.escalation.active) {
+    // A hand-off ends the bot conversation: show the contact card, then interrupt
+    // all further chatting. The session is now 'escalated' on the backend (it
+    // would reject the next message with 409), so drop the input and the local
+    // credentials — the player can only talk again by starting a NEW conversation.
+    addEscalation(data.escalation);
+    endConversation();
+    scrollToBottom();
+    return;
+  }
   if (data.suggested_topic) addTopicSuggestion(data.suggested_topic, originalText);
   // If a topic-switch prompt is visible, do not also show guide bubbles: they
   // would invite the player to continue in the wrong topic. The backend already
@@ -722,6 +748,7 @@ function applyTurnExtras(data, originalText) {
   const canShowSuggestions = !data.suggested_topic;
   renderSuggestions(
     canShowSuggestions ? data.suggestions : [],
+    canShowSuggestions ? data.closing_suggestion : null,
     canShowSuggestions && data.resolved,
   );
   // The follow-up bubbles render AFTER the reply was scrolled into view and sit
@@ -751,6 +778,52 @@ function finishChat() {
   closePromise.finally(() => { /* intentionally best-effort */ });
   addMessage("assistant", t("finished"));
   if (state.open) togglePanel();
+}
+
+// Interrupt the current conversation without collapsing the panel: hide the
+// composer and drop the local session credentials so the visible transcript
+// (escalation card or goodbye) stays readable, while any further chatting can
+// only happen in a fresh session the next time the player opens the picker.
+// Shared by escalation hand-offs and the player-driven closing bubble.
+function endConversation() {
+  clearSuggestions();
+  if (els.inputRow) els.inputRow.classList.add("npchat-hidden");
+  resetSessionState();
+}
+
+// The player tapped the declarative closing bubble ("Issue solved."). Send it as
+// a normal turn so Nika gives a warm goodbye (generated, as before), then mark the
+// session resolved — but show NO green finish button afterwards, since finishing
+// is exactly what the player just chose. If that turn unexpectedly escalates, fall
+// back to the escalation hand-off instead of closing.
+async function finishWithClosing(text) {
+  if (!text) return;
+  clearSuggestions();
+  addMessage("user", text);
+  const typing = addTyping();
+  let data;
+  try {
+    data = await sendMessage(text);
+  } catch (e) {
+    fillTyping(typing, t("sendError"), true);
+    return;
+  }
+  fillTyping(typing, data.reply || "");
+  if (data.escalation && data.escalation.active) {
+    addEscalation(data.escalation);
+    endConversation();
+    scrollToBottom();
+    return;
+  }
+  // Mark resolved one step early (best-effort) and end the conversation: the
+  // goodbye stays on screen, and reopening starts a clean picker / fresh session.
+  const sessionId = state.sessionId;
+  if (sessionId) {
+    api("/api/chat/resolve", { auth: true, body: { session_id: sessionId } })
+      .catch(() => { /* non-fatal */ });
+  }
+  endConversation();
+  scrollToBottom();
 }
 
 // ---------------------------------------------------------------------------
