@@ -290,6 +290,21 @@
 .npchat-suggest-done { opacity: 0.6; }
 .npchat-suggest-done .npchat-suggest-btn { display: none; }
 
+/* Automatic cross-topic hand-off notice. Unlike the old switch button this is
+   informational only (no action) — a soft, centred system line that stays in the
+   transcript as the record of why the topic changed while the new answer loads. */
+.npchat-switch-note {
+  align-self: stretch;
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 1px solid #c7d2fe;
+  border-radius: 10px;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 13px;
+  text-align: center;
+}
+
 /* Guide-to-KB suggestion bubbles + the resolved "finish chat" button, stacked
    just above the input field — one per line, pill-shaped, so each reads as a
    tappable follow-up. Populated per assistant turn; hidden while empty. */

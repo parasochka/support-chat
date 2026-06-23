@@ -50,6 +50,7 @@ const I18N = {
         sendError: "Something went wrong. Please try again.",
         suggest: "It looks like your question is about “{topic}”.",
         switchTopic: "Switch to “{topic}”",
+        switching: "Looks like this is about “{topic}” — switching you there…",
         finish: "End chat", finished: "Chat ended. Thanks for reaching out!" },
   ru: { support: "Поддержка", topics: "Чем мы можем помочь?", other: "Другое",
         back: "К выбору темы",
@@ -59,6 +60,7 @@ const I18N = {
         sendError: "Что-то пошло не так. Попробуйте ещё раз.",
         suggest: "Похоже, ваш вопрос относится к теме «{topic}».",
         switchTopic: "Перейти в «{topic}»",
+        switching: "Похоже, это про «{topic}» — перевожу вас туда…",
         finish: "Завершить чат", finished: "Чат завершён. Спасибо за обращение!" },
   es: { support: "Soporte", topics: "¿En qué podemos ayudarte?", other: "Otro",
         back: "Volver a los temas",
@@ -68,6 +70,7 @@ const I18N = {
         sendError: "Algo salió mal. Inténtalo de nuevo.",
         suggest: "Parece que tu pregunta es sobre «{topic}».",
         switchTopic: "Cambiar a «{topic}»",
+        switching: "Parece que esto es sobre «{topic}» — te llevo allí…",
         finish: "Finalizar chat", finished: "Chat finalizado. ¡Gracias por contactarnos!" },
   tr: { support: "Destek", topics: "Size nasıl yardımcı olabiliriz?", other: "Diğer",
         back: "Konulara dön",
@@ -77,6 +80,7 @@ const I18N = {
         sendError: "Bir şeyler ters gitti. Lütfen tekrar deneyin.",
         suggest: "Sorunuz “{topic}” konusuyla ilgili görünüyor.",
         switchTopic: "“{topic}” konusuna geç",
+        switching: "Bu “{topic}” ile ilgili görünüyor — sizi oraya alıyorum…",
         finish: "Sohbeti bitir", finished: "Sohbet sona erdi. Bize ulaştığınız için teşekkürler!" },
   pt: { support: "Suporte", topics: "Como podemos ajudar?", other: "Outro",
         back: "Voltar aos tópicos",
@@ -86,6 +90,7 @@ const I18N = {
         sendError: "Algo deu errado. Tente novamente.",
         suggest: "Parece que sua pergunta é sobre “{topic}”.",
         switchTopic: "Mudar para “{topic}”",
+        switching: "Parece que isto é sobre “{topic}” — levando você até lá…",
         finish: "Encerrar chat", finished: "Chat encerrado. Obrigado pelo contato!" },
 };
 
@@ -692,35 +697,43 @@ function addEscalation(esc) {
   scrollToBottom();
 }
 
-// Render a soft "looks like another topic — switch?" prompt with a one-tap
-// button. Tapping switches the session topic, then auto-resends the player's
-// original question against the new topic's KB so they don't retype it.
-function addTopicSuggestion(suggested, originalText) {
+// How long the "switching to …" notice lingers before the re-asked answer
+// starts streaming in. The backend's second call is the real latency mask; this
+// brief, deliberate pause just makes the auto-switch legible (so it reads as an
+// intentional hand-off, not a flash) instead of the answer popping instantly.
+const SWITCH_NOTE_MS = 900;
+// Cap chained auto-switches so a misbehaving model can't bounce the player
+// across topics forever (the context-reset boundary makes this very unlikely,
+// but the guard is cheap insurance).
+const MAX_AUTO_SWITCHES = 2;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Seamlessly route the player to the topic the model flagged. Unlike the old
+// one-tap button, this happens automatically: the backend already SUPPRESSED the
+// ungrounded in-place answer (it was generated without the target topic's KB),
+// so we never show it. We drop a persistent "switching to …" notice into the
+// transcript (it stays in the history as the record of the hand-off — no button),
+// switch the session topic, then re-ask the player's original question against
+// the CORRECT KB and render that grounded answer. `depth` guards against loops.
+async function autoSwitchTopic(suggested, originalText, depth) {
   if (!suggested || !suggested.slug) return;
   const title = suggested.title || suggested.slug;
-  const wrap = el("div", "npchat-suggest");
-  wrap.appendChild(el("div", "npchat-suggest-msg", tTopic("suggest", title)));
-  const btn = el("button", "npchat-suggest-btn", tTopic("switchTopic", title));
-  btn.addEventListener("click", () => switchTopicAndResend(suggested.slug, originalText, wrap, btn));
-  wrap.appendChild(btn);
-  els.messages.appendChild(wrap);
+  const note = el("div", "npchat-switch-note", tTopic("switching", title));
+  els.messages.appendChild(note);
   scrollToBottom();
-}
-
-async function switchTopicAndResend(slug, originalText, wrap, btn) {
-  btn.disabled = true;
+  // Switch the session's topic (loads the new KB + resets the prompt-history
+  // boundary server-side); non-fatal if it fails — still attempt the re-ask.
   try {
-    await selectTopic(slug);
-  } catch (_) { /* non-fatal: still attempt the resend */ }
-  // Collapse the suggestion so it can't be tapped twice.
-  wrap.classList.add("npchat-suggest-done");
-  // The player's question is already in the transcript — just show a fresh
-  // assistant turn answered with the new topic's knowledge base.
+    await selectTopic(suggested.slug);
+  } catch (_) { /* non-fatal: still attempt the re-ask */ }
+  await sleep(SWITCH_NOTE_MS);
+  // The player's question is already in the transcript — re-ask it under the new
+  // topic and stream the grounded answer into a fresh assistant bubble.
   const typing = addTyping();
   try {
     const data = await sendMessage(originalText);
     fillTyping(typing, data.reply || "");
-    applyTurnExtras(data, originalText);
+    applyTurnExtras(data, originalText, depth + 1);
   } catch (e) {
     fillTyping(typing, t("sendError"), true);
   }
@@ -774,7 +787,7 @@ function renderSuggestions(list, closing, resolved) {
 // Apply the per-turn side payloads shared by a typed send and a topic resend:
 // the escalation block, a cross-topic switch prompt, and the guide-to-KB
 // bubbles / finish button.
-function applyTurnExtras(data, originalText) {
+function applyTurnExtras(data, originalText, depth = 0) {
   if (data.escalation && data.escalation.active) {
     // A hand-off ends the bot conversation: show the contact card, then interrupt
     // all further chatting. The session is now 'escalated' on the backend (it
@@ -785,10 +798,17 @@ function applyTurnExtras(data, originalText) {
     scrollToBottom();
     return;
   }
-  if (data.suggested_topic) addTopicSuggestion(data.suggested_topic, originalText);
-  // If a topic-switch prompt is visible, do not also show guide bubbles: they
-  // would invite the player to continue in the wrong topic. The backend already
-  // strips them, but keep the widget defensive for older/mixed deployments.
+  // The model routed the question to another topic: auto-switch to it and re-ask
+  // there (the backend already suppressed the ungrounded in-place answer, so the
+  // reply for THIS turn is empty and the typing bubble was already removed). The
+  // depth guard stops a runaway chain of switches.
+  if (data.suggested_topic && depth < MAX_AUTO_SWITCHES) {
+    autoSwitchTopic(data.suggested_topic, originalText, depth);
+    return;
+  }
+  // If a topic switch is in flight, do not also show guide bubbles: they would
+  // invite the player to continue in the wrong topic. The backend already strips
+  // them, but keep the widget defensive for older/mixed deployments.
   const canShowSuggestions = !data.suggested_topic;
   renderSuggestions(
     canShowSuggestions ? data.suggestions : [],

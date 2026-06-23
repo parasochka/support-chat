@@ -338,10 +338,26 @@ topic can't be answered well. To bridge this, Layer 3 lists the other topics (`k
 current topic + hidden `other` excluded) and instructs the model to prepend `[[TOPIC:slug]]` on its
 own first line when the question plainly belongs to one of them. `chat_service` strips the tag
 (`prompts.strip_topic_suggestion`, mirrors the `[[ESCALATE]]` strip), validates the slug against the
-offered list, and returns `suggested_topic:{slug,title}` in the `/message` response. The widget shows
-a soft one-tap "switch topic" prompt that calls `POST /api/chat/topic` and **auto-resends** the
-player's original question against the new KB. The topic list is dynamic data → Layer 3 only; it must
-never enter `SYSTEM_CORE` (a test asserts the cached prefix stays byte-stable).
+offered list, and returns `suggested_topic:{slug,title}` in the `/message` response. The topic list is
+dynamic data → Layer 3 only; it must never enter `SYSTEM_CORE` (a test asserts the cached prefix stays
+byte-stable).
+
+**Routing-only turn — the in-place answer is SUPPRESSED, the switch is AUTOMATIC.** A cross-topic turn
+is a *routing decision*, not an answer: the in-place reply the model produced was generated **without**
+the target topic's KB loaded, so it is ungrounded (potentially invented numbers/conditions) and must
+never reach the player. When `chat_service` resolves a valid `suggested_topic` (and the turn is **not**
+an escalation), it short-circuits: it returns `reply=""` + `suggested_topic`, **persists no chat turn**
+and does **not** bump the message cap (the re-ask below is the one persisted, counted turn) — but it
+**does** log the detect call's token cost via `db.log_ai_interaction` so OpenAI spend stays accounted
+(invariant §4: every OpenAI call → an `ai_interaction_logs` row, here without a `chat_messages` pair).
+The widget (`widget.js` `autoSwitchTopic`) then drops a persistent **"switching to «X»…"** notice into
+the transcript (informational, **no button** — it stays as the record of the hand-off), calls
+`POST /api/chat/topic`, and after a short legibility pause (`SWITCH_NOTE_MS`) **re-asks** the player's
+original question against the new KB — that second `/message` is the grounded answer the player sees.
+`applyTurnExtras` carries a `depth` guard (`MAX_AUTO_SWITCHES`) so a misbehaving model can't bounce the
+player across topics forever. (This replaced the earlier flow where the wrong-KB answer + a one-tap
+"switch topic" button were both shown and the player had to tap to proceed.) Net token cost is unchanged
+vs. that flow — still one detect call + one grounded answer call — but no ungrounded text is ever shown.
 
 **Two routing regimes (`prompts._topic_routing_directive`).** The directive's instruction flips on
 whether the current topic is the hidden catch-all `other` (`prompts.OTHER_TOPIC_SLUG`, mirrors
@@ -357,7 +373,7 @@ whether the current topic is the hidden catch-all `other` (`prompts.OTHER_TOPIC_
   from the thin generic block (and is told not to invent conditions/bonuses/dates/numbers). It answers
   in place only when nothing fits (a generic question, feedback, a one-off), and escalates complaints /
   suspected fraud. This fixes the case where a bonus question asked under «Другое» got a made-up
-  in-place answer instead of a one-tap switch to Bonuses.
+  in-place answer instead of an automatic switch to Bonuses.
 
 **Switch boundary (anti-ping-pong):** `set_session_topic` snapshots the current max `chat_messages.id`
 into `chat_sessions.context_reset_id`, and prompt-building history (`db.get_history(..., after_id=...)`
