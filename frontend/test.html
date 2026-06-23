@@ -52,13 +52,30 @@
   <div class="wrap">
     <h1>NikaBet Support Chat — Test Page</h1>
     <p>
-      This page embeds the floating support widget (bottom-right). The content
-      below is the full contents of <code>CLAUDE.md</code> (kept identical to
-      <code>README.md</code>), rendered live on each request.
+      This page embeds the floating AI support widget (bottom-right) — open it
+      and chat to test the bot end-to-end.
     </p>
 
     <div class="doc">
-      <pre><!--CLAUDE_MD_CONTENT--></pre>
+      <h2 style="font-size:18px;margin:0 0 12px;color:#e2e8f0;">What this service does</h2>
+      <ul style="color:#cbd5e1;line-height:1.7;padding-left:20px;">
+        <li>AI customer-support chat for NikaBet (casino + sportsbook), answering
+          from a per-topic knowledge base.</li>
+        <li>Answers follow the player's language automatically; the widget chrome
+          starts in the browser language.</li>
+        <li>Routes questions to the right topic, suggests follow-up questions, and
+          offers a "finish chat" action when resolved.</li>
+        <li>Escalates to human support (contact button) on request, complaints,
+          suspected fraud, or when it can't help.</li>
+        <li>Anti-spam: rate limiting, cooldown, low-content and prompt-injection
+          guards before any model call.</li>
+        <li>Admin dashboard at <a href="/admin" style="color:#7dd3fc;">/admin</a> —
+          metrics, sessions, and knowledge-base editing.</li>
+      </ul>
+      <p style="margin:12px 0 0;">
+        Developer docs: <code>README.md</code> (humans) and <code>CLAUDE.md</code>
+        (LLM/agent guidance) in the repo.
+      </p>
     </div>
   </div>
 

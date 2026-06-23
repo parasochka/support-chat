@@ -164,12 +164,6 @@ ADMIN_JWT_SECRET: str = _env_opt("ADMIN_JWT_SECRET") or SESSION_JWT_SECRET
 ADMIN_JWT_SECRET_IS_FALLBACK: bool = _env_opt("ADMIN_JWT_SECRET") is None
 ADMIN_TOKEN_TTL_MIN: int = _env_int("ADMIN_TOKEN_TTL_MIN", 480)
 
-# --- Telegram escalation notifier (Phase 2) ---------------------------------
-# Both must be set to enable the Telegram channel; otherwise escalation falls
-# back to the contact-button only (Phase 1 behaviour).
-TELEGRAM_BOT_TOKEN: str | None = _env_opt("TELEGRAM_BOT_TOKEN")
-TELEGRAM_AGENT_CHAT_ID: str | None = _env_opt("TELEGRAM_AGENT_CHAT_ID")
-
 # --- Secure front-end handshake (Phase 2) -----------------------------------
 # HMAC secret used to verify signed user_context blobs from real host sites.
 # When unset, signed mode is unavailable and unsigned context is zeroed.
@@ -177,10 +171,6 @@ WIDGET_HANDSHAKE_SECRET: str | None = _env_opt("WIDGET_HANDSHAKE_SECRET")
 # Max age (seconds) tolerated between a handshake's `iat`/`exp` — defence in
 # depth alongside the explicit `exp` in the signed payload.
 WIDGET_HANDSHAKE_MAX_AGE_SEC: int = _env_int("WIDGET_HANDSHAKE_MAX_AGE_SEC", 300)
-
-# --- Public base URL (Phase 2) ----------------------------------------------
-# Used to build deep links in Telegram tickets (e.g. dashboard session links).
-PUBLIC_BASE_URL: str | None = _env_opt("PUBLIC_BASE_URL")
 
 # --- Request body cap -------------------------------------------------------
 BODY_MAX_BYTES: int = _env_int("BODY_MAX_BYTES", 65536)

@@ -28,13 +28,10 @@ def _wire(monkeypatch, *, captured):
         ]
         return [] if after_id > 0 else full
 
-    async def _set_lang(*a, **k):
-        pass
-
     async def _suggestable(exclude_topic_id=None, lang="en"):
         return [{"slug": "deposits", "title": "Депозиты"}]
 
-    async def _kb_block(topic_id, lang="en"):
+    async def _kb_block(topic_id):
         return "KB по выводам"
 
     async def _persist(**kwargs):
@@ -57,7 +54,6 @@ def _wire(monkeypatch, *, captured):
 
     monkeypatch.setattr(db, "get_topic_by_id", _get_topic)
     monkeypatch.setattr(db, "get_history", _get_history)
-    monkeypatch.setattr(db, "set_session_lang", _set_lang)
     monkeypatch.setattr(db, "persist_turn", _persist)
     monkeypatch.setattr(db, "log_admin_event", _log)
     monkeypatch.setattr(kb, "suggestable_topics", _suggestable)
