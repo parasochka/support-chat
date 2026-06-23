@@ -88,3 +88,51 @@ async def test_resolve_idempotent_when_already_resolved(monkeypatch):
     assert _payload(resp)["ok"] is True
     # No second write for an already-resolved session.
     assert touched["resolved"] is False
+
+
+async def test_message_rejects_resolved_session_before_persist(monkeypatch):
+    touched = {"handled": False, "persisted": False}
+
+    async def fake_handle(session, text):
+        touched["handled"] = True
+
+    async def fake_persist(**kwargs):
+        touched["persisted"] = True
+
+    _stub_auth(monkeypatch, {"id": "s1", "status": "resolved", "message_count": 6})
+    monkeypatch.setattr(chat_api.chat_service, "handle_message", fake_handle)
+    monkeypatch.setattr(db, "persist_turn", fake_persist)
+
+    req = type(
+        "Req",
+        (),
+        {"headers": {}, "client": type("C", (), {"host": "127.0.0.1"})()},
+    )()
+    resp = await chat_api.send_message(
+        req,
+        chat_api.MessageSend(session_id="s1", text="какие провайдеры игр есть?"),
+        authorization="Bearer tok",
+    )
+    data = _payload(resp)
+    assert resp.status_code == 409
+    assert data["error"] == "session_closed"
+    assert touched == {"handled": False, "persisted": False}
+
+
+async def test_topic_switch_rejects_resolved_session(monkeypatch):
+    touched = {"topic": False}
+
+    async def fake_set_topic(sid, topic_id):
+        touched["topic"] = True
+
+    _stub_auth(monkeypatch, {"id": "s1", "status": "resolved", "message_count": 6})
+    monkeypatch.setattr(db, "set_session_topic", fake_set_topic)
+
+    resp = await chat_api.select_topic(
+        chat_api.TopicSelect(session_id="s1", topic_slug="betting_games"),
+        authorization="Bearer tok",
+    )
+    data = _payload(resp)
+    assert resp.status_code == 409
+    assert data["error"] == "session_closed"
+    assert touched["topic"] is False

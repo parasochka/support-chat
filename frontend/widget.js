@@ -727,14 +727,45 @@ function applyTurnExtras(data, originalText) {
 // short closing note in the transcript, and collapse the panel so the satisfied
 // player is gently taken to a closed chat. The close call is best-effort — the
 // panel collapses regardless so the player is never stuck.
-function finishChat() {
+async function finishChat() {
+  const closedSessionId = state.sessionId;
   clearSuggestions();
-  if (state.sessionId) {
-    api("/api/chat/resolve", { auth: true, body: { session_id: state.sessionId } })
-      .catch(() => { /* non-fatal: still close the panel below */ });
+  if (closedSessionId) {
+    try {
+      await api("/api/chat/resolve", {
+        auth: true,
+        body: { session_id: closedSessionId },
+      });
+    } catch (_) { /* non-fatal: still close locally below */ }
   }
   addMessage("assistant", t("finished"));
   if (state.open) togglePanel();
+  resetConversationState();
+}
+
+// Drop the closed transcript/session after the player explicitly ends the chat.
+// Without this reset, the next launcher click re-opened the same in-memory
+// session/topic and any new question was posted to the resolved case instead of
+// starting a new support case. The backend also rejects closed-session writes,
+// but resetting here keeps the happy path smooth and shows the topic picker on
+// the next open.
+function resetConversationState() {
+  state.sessionId = null;
+  state.token = null;
+  state.sessionPromise = null;
+  state.topicChosen = false;
+  state.greetingEl = null;
+  clearSuggestions();
+  if (els.back) els.back.classList.add("npchat-hidden");
+  if (els.inputRow) els.inputRow.classList.add("npchat-hidden");
+  if (els.messages) {
+    els.messages.classList.add("npchat-hidden");
+    els.messages.innerHTML = "";
+  }
+  if (els.topics) {
+    els.topics.classList.remove("npchat-hidden");
+    renderTopics();
+  }
 }
 
 // ---------------------------------------------------------------------------

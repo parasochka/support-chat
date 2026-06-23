@@ -91,6 +91,24 @@ def _err(status: int, code: str, detail: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": code, "detail": detail})
 
 
+def _session_closed_error(session: dict[str, Any]) -> Optional[JSONResponse]:
+    """Reject mutating chat actions once the conversation is no longer open.
+
+    A resolved/escalated session is an immutable transcript. If a stale widget
+    tab keeps the old token and tries to send (or switch topics) after the player
+    finished the chat, the backend must not silently append the new question to
+    that closed case — the client should create a fresh session instead.
+    """
+    status = session.get("status") or "open"
+    if status == "open":
+        return None
+    return _err(
+        409,
+        "session_closed",
+        "This chat session is closed. Please start a new chat session.",
+    )
+
+
 async def _auth_session(authorization: Optional[str], session_id: str
                         ) -> tuple[Optional[dict], Optional[JSONResponse]]:
     """Verify bearer token bound to session_id, then load the session row."""
@@ -241,6 +259,9 @@ async def select_topic(body: TopicSelect,
     session, err = await _auth_session(authorization, body.session_id)
     if err:
         return err
+    closed = _session_closed_error(session)
+    if closed:
+        return closed
 
     topic = await kb.topic_by_slug(body.topic_slug)
     if topic is None:
@@ -262,6 +283,9 @@ async def send_message(req: Request, body: MessageSend,
     session, err = await _auth_session(authorization, body.session_id)
     if err:
         return err
+    closed = _session_closed_error(session)
+    if closed:
+        return closed
 
     # 2. rate-limit (IP) -> 429 + log
     try:
