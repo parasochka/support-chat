@@ -177,11 +177,10 @@ async function viewOverview(main) {
     const o = await api(`/overview${q()}`);
     cards.innerHTML = "";
     const fmtPct = (v) => `${(v * 100).toFixed(1)}%`;
-    const fmtUsd = (v) => `$${Number(v).toFixed(4)}`;
     card(cards, o.sessions_total, "Sessions (total)");
     card(cards, o.sessions_engaged, "Engaged (≥1 msg)");
     card(cards, fmtPct(o.escalation_rate), "Escalation rate");
-    card(cards, fmtPct(o.resolution_rate), "Resolution rate", "proxy — incl. abandoned");
+    card(cards, fmtPct(o.resolution_rate), "Resolution rate");
     card(cards, o.sessions_open, "Open (abandonment)");
     card(cards, fmtUsd(o.cost_usd_total), "Cost total");
     card(cards, fmtUsd(o.cost_usd_per_session), "Cost / session");
@@ -806,6 +805,7 @@ function el(tag, cls, text) {
   return e;
 }
 function pct(v) { return `${(v * 100).toFixed(1)}%`; }
+function fmtUsd(v) { return `$${Number(v).toFixed(4)}`; }
 function errBox(e) { return el("div", "npadmin-warnbox", e.message || String(e)); }
 function section(main, title, node) {
   main.appendChild(el("h3", null, title)); main.appendChild(node);
