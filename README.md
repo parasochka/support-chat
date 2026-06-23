@@ -27,9 +27,12 @@ talk to it over HTTP/JSON by `session_id` (UUID), so multiple front-ends can plu
 ## Architecture in one paragraph
 
 Each request is assembled as a **3-layer, prefix-cache-optimised prompt**: a byte-stable
-Russian system core (Layer 1), the selected topic's KB block (Layer 2), and all dynamic
-data — player context, language directive, history, the new turn (Layer 3, in the user
-message). The prompt is the file **`prompts.py`** (the single source of truth) — it is not
+**English** system block (Layer 1 — the "Nika" persona/tone-of-voice plus every static
+behavioural directive), the selected topic's KB block (Layer 2), and only per-request data —
+player context, language directive, topic routing, history, the new turn (Layer 3, in the
+user message). The whole model-facing prompt is English for token efficiency; the language
+directive still makes the model **answer in the player's language**, and the KB may be in any
+language. The prompt is the file **`prompts.py`** (the single source of truth) — it is not
 editable from the admin; the admin **Prompt** tab is a read-only view of the assembled
 prompt. The data layer is direct `asyncpg` (no ORM, no migration files): the schema *is*
 `db.init_db()`. See `CLAUDE.md` for the full design and the invariants.

@@ -75,30 +75,35 @@ def test_strip_resolved_tag_inline_keeps_remainder():
 
 
 # ---------------------------------------------------------------------------
-# Directives live in Layer 3 only (cached prefix untouched)
+# Directives are STATIC -> they ride in the byte-stable Layer-1 block
 # ---------------------------------------------------------------------------
-def test_suggestions_directive_in_layer3_only():
-    core_before = prompts.get_system_core()
+def test_suggestions_directive_in_layer1_core():
+    core = prompts.get_system_core()
+    assert "Suggested questions:" in core
+    assert "[[SUGGEST:" in core
     msgs = prompts.build_messages(
         {"user_context": {}}, kb_block="KB", history=[], user_text="hi",
         resolved_lang="en",
     )
-    last = msgs[-1]["content"]
-    assert "Наводящие вопросы:" in last
-    assert "[[SUGGEST:" in last
-    # Stays in Layer 3 only; the cached core is untouched.
-    assert "Наводящие вопросы:" not in msgs[0]["content"]
-    assert msgs[0]["content"].split("=== БАЗА ЗНАНИЙ", 1)[0].rstrip("\n") == core_before
+    assert "Suggested questions:" in msgs[0]["content"]
+    assert "Suggested questions:" not in msgs[-1]["content"]
 
 
-def test_resolved_directive_in_layer3_only():
-    core_before = prompts.get_system_core()
+def test_resolved_directive_in_layer1_core():
+    core = prompts.get_system_core()
+    assert "Finishing the chat:" in core
+    assert "[[RESOLVED]]" in core
     msgs = prompts.build_messages(
         {"user_context": {}}, kb_block=None, history=[], user_text="hi",
         resolved_lang="en",
     )
-    last = msgs[-1]["content"]
-    assert "Завершение чата:" in last
-    assert "[[RESOLVED]]" in last
-    assert "Завершение чата:" not in msgs[0]["content"]
-    assert msgs[0]["content"] == core_before
+    assert "Finishing the chat:" in msgs[0]["content"]
+    assert "Finishing the chat:" not in msgs[-1]["content"]
+
+
+def test_lead_forward_directive_ties_suggest_and_resolved():
+    """The lead-forward rule (STATIC, Layer-1) guarantees the reply never ends in a
+    dead state: either [[SUGGEST]] bubbles or the [[RESOLVED]] finish nudge."""
+    core = prompts.get_system_core()
+    assert "lead the player forward" in core.lower()
+    assert "[[SUGGEST" in core and "[[RESOLVED]]" in core
