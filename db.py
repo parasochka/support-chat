@@ -67,6 +67,14 @@ CREATE TABLE IF NOT EXISTS kb_entries (
   active     BOOLEAN NOT NULL DEFAULT TRUE
 );
 
+CREATE TABLE IF NOT EXISTS kb_variables (
+  key         TEXT PRIMARY KEY,
+  description TEXT NOT NULL,
+  value       TEXT NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by  TEXT
+);
+
 -- SESSIONS & MESSAGES ----------------------------------------------
 CREATE TABLE IF NOT EXISTS chat_sessions (
   id            UUID PRIMARY KEY,
@@ -141,6 +149,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
 
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_kb_entries_topic ON kb_entries(topic_id) WHERE active;
+CREATE INDEX IF NOT EXISTS idx_kb_variables_updated ON kb_variables(updated_at);
 CREATE INDEX IF NOT EXISTS idx_admin_events_session ON admin_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_admin_events_type ON admin_events(type, created_at);
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_created ON chat_sessions(created_at);
@@ -186,6 +195,7 @@ async def init_db() -> None:
         async with conn.transaction():
             await conn.execute(_SCHEMA)
             await _ensure_columns(conn)
+            await seed_kb_variables(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +266,152 @@ def _row_to_topic(row: asyncpg.Record) -> dict[str, Any]:
         "display_order": row["display_order"],
         "active": row["active"],
     }
+
+
+
+
+# Default KB variables. Source: NikaBet knowledge-base variables registry; the
+# "Test value (TEST)" column is used until owners confirm final values.
+_DEFAULT_KB_VARIABLES: tuple[tuple[str, str, str], ...] = (
+    ("deposit_methods", "Deposit methods (per market)", "USDT (crypto: TRC20/ERC20/BEP20), Visa/Mastercard, local LATAM methods"),
+    ("crypto_networks", "Supported crypto networks", "TRC20, ERC20, BEP20"),
+    ("card_deposit", "Card availability by market", "Visa, Mastercard (availability depends on market)"),
+    ("local_methods_latam", "Local LATAM payment systems", "Rapipago, Pago Facil, Mercado Pago, PIX (by country) (test)"),
+    ("min_deposit", "Minimum deposit", "10 USDT"),
+    ("max_deposit", "Maximum deposit", "1000 USDT"),
+    ("deposit_fee", "Deposit fee", "0% (no deposit fee)"),
+    ("deposit_speed", "Deposit crediting speed", "crypto: after network confirmations (usually minutes); cards: instant"),
+    ("deposit_flow", "Exact deposit steps (UI)", "wallet -> method -> amount -> confirm"),
+    ("currencies", "Account currencies", "USDT"),
+    ("fiat_conversion", "Fiat-to-crypto conversion", "applied at the transaction rate, shown before confirmation (test)"),
+    ("decline_reasons", "Payment decline reasons/codes", "security checks, method/country limits, bank restrictions, incorrect details"),
+    ("deposit_address_policy", "Deposit address policy", "address tied to account; take the current one from the deposit page before each transfer"),
+    ("withdrawal_methods", "Withdrawal methods (per market)", "USDT, BTC (crypto); cards/e-wallets where available"),
+    ("withdrawal_to_source", "Return-to-source rule", "closed-loop: withdraw to the deposit method"),
+    ("min_withdrawal", "Minimum withdrawal", "20 USDT"),
+    ("max_withdrawal", "Maximum withdrawal per transaction", "1000 USDT per withdrawal"),
+    ("daily_withdrawal_limit", "Daily withdrawal limit", "5000 USDT/day (test)"),
+    ("withdrawal_period_limits", "Weekly/monthly withdrawal limit", "weekly 20000 USDT, monthly 50000 USDT (test)"),
+    ("withdrawal_fee_pct", "Withdrawal fee, percent", "0%"),
+    ("withdrawal_processing_time", "Withdrawal processing time (SLA)", "up to 24h (crypto usually faster)"),
+    ("withdrawal_flow", "Exact withdrawal steps (UI)", "wallet -> withdraw -> method -> amount -> details -> confirm"),
+    ("cancel_withdrawal_policy", "Withdrawal cancellation availability", "can cancel while Pending via support"),
+    ("withdrawal_taxes", "Withdrawal taxation", "per local jurisdiction (LATAM); not withheld by NikaBet"),
+    ("kyc_documents", "KYC document list", "government ID + proof of address + selfie with document"),
+    ("kyc_trigger", "Mandatory verification trigger", "before first withdrawal"),
+    ("kyc_sla", "Document review time", "up to 24h"),
+    ("kyc_doc_format", "Document format requirements", "JPG/PNG/PDF, clear, full document visible, no glare"),
+    ("min_age", "Minimum age", "18+"),
+    ("reg_fields", "Registration form fields", "email, password, date of birth, country"),
+    ("editable_profile_fields", "Editable profile fields", "contacts (email, phone) editable; KYC-confirmed data (name, DOB) locked"),
+    ("gdpr_deletion_process", "Account deletion process (GDPR)", "request via support; processed after active bonuses are closed and balance withdrawn"),
+    ("twofa_methods", "Available 2FA methods", "authenticator app, email, SMS"),
+    ("password_policy", "Password requirements", "min 8 chars, upper and lower case, a digit and a symbol"),
+    ("lockout_time_min", "Lockout after failed logins, minutes", "15 minutes"),
+    ("session_timeout_min", "Session timeout, minutes", "30 minutes"),
+    ("min_bet", "Minimum bet", "0.20 USDT"),
+    ("max_bet", "Maximum bet", "up to 100 USDT (varies by game/table) (test)"),
+    ("max_win_multiplier", "Maximum win multiplier", "5000x (varies by game) (test)"),
+    ("active_sports", "Active sports", "football, basketball, tennis, esports (after sports section launch) (test)"),
+    ("providers", "Provider list", "NetEnt, Pragmatic Play, Evolution, Play'n GO, Hacksaw Gaming"),
+    ("provably_fair", "Provably Fair for crash/fast games", "available for crash and instant games; verifiable by seed/hash per round"),
+    ("demo_mode", "Demo mode (fun play)", "available for most slots (fun play, no real winnings) (test)"),
+    ("welcome_bonus", "Welcome bonus value", "100% Match up to 200 USDT + 50 FS (test, pending unification with live 5000 USDT+80FS)"),
+    ("welcome_min_deposit", "Minimum deposit for Welcome bonus", "10 USDT"),
+    ("game_weighting", "Game weighting for wagering (table)", "slots 100%, live and table 10%, blackjack and baccarat 0%"),
+    ("promo_code_field", "Promo code input field", "Cashier/Deposit page -> 'Promo code' field"),
+    ("level_rewards_map", "Level rewards map", "per-level rewards (FS, bonus cash, perks) defined in the Loyalty Engine reward map"),
+    ("vip_thresholds", "VIP class thresholds", "Player -> Bronze -> Silver -> Gold -> Platinum -> VIP by accumulated XP (50 levels / 6 classes)"),
+    ("multi_bonus_policy", "Multiple-bonus policy", "one deposit bonus active at a time; Welcome has top priority"),
+    ("daily_card_super_prize", "Bonus card super prize", "Reload 20% on next deposit"),
+    ("license_info", "License and regulator", "Curacao eGaming license (test)"),
+    ("restricted_countries", "Restricted countries", "US, UK, FR, NL, AU (test list)"),
+    ("locales", "Site languages", "es-AR (primary), es-419, pt-BR, es-CL, en"),
+    ("support_languages", "Support languages", "Spanish, Portuguese, English"),
+    ("support_channels", "Support channels", "24/7 on-site chat, Telegram bot"),
+    ("app_platforms", "App platforms (PWA)", "iOS, Android (PWA)"),
+    ("supported_browsers", "Supported browsers", "Chrome, Safari, Opera, Firefox (current versions)"),
+    ("telegram_link_flow", "Telegram linking steps", "one-time token deep-link on bot subscription"),
+    ("referral_reward", "Referral reward", "10 USDT per 5 friends with KYC, wager x3, 14 days"),
+    ("daily_card_days", "Bonus card length, days", "15"),
+    ("support_hours", "Support hours", "24/7"),
+    ("responsible_gaming_tools", "Responsible gaming tools", "deposit/bet/time limits, self-exclusion, reality-check"),
+    ("mirror_channels", "Mirror channels", "Telegram channel, email newsletter, live bookmarks"),
+    ("kyc_address_docs", "Address verification documents", "utility bill or bank statement (recent, with name and address)"),
+    ("liveness_check", "Selfie/liveness verification requirement", "selfie with document; short liveness check when required"),
+    ("source_of_funds", "Source-of-funds verification (enhanced review)", "for large withdrawals: payslip / bank statement / proof of crypto origin (test)"),
+    ("social_login", "Social/Google login availability", "Google login available (test)"),
+    ("username_change", "Username change availability", "username can be changed in profile; KYC-confirmed data stays locked"),
+    ("active_promos", "Current active promotions list", "dynamic list from Bonuses Module (e.g. Kickstart Monday, Spin Mission Tuesday)"),
+    ("bonus_optout", "Deposit without bonus availability (opt-out)", "yes - deposit without a bonus by declining it at the cashier"),
+    ("welcome_wager_fs", "Welcome free spins wager", "x20"),
+    ("welcome_wager_match", "Welcome match bonus wager", "x35 (test)"),
+    ("crash_multibet", "Two-bet support per crash round", "2 simultaneous bets per round with separate cash-outs"),
+    ("feature_buy", "Feature buy availability", "available on selected slots (high-risk) (test)"),
+    ("live_limits", "Live table betting limits", "per table; typically 0.50-5000 USDT (varies) (test)"),
+    ("new_games_section", "New games catalogue section", "'New games' section in the casino catalog"),
+    ("video_poker", "Video poker / poker formats availability", "available (e.g. Jacks or Better) (test)"),
+    ("privacy_policy", "Privacy policy URL", "https://nikabet.com/privacy (test URL)"),
+    ("terms_url", "Terms and Conditions URL", "https://nikabet.com/terms (test URL)"),
+    ("vip_withdrawal_limits", "Withdrawal limits by status/VIP", "higher limits for VIP (e.g. daily 20000 USDT) (test)"),
+    ("social_links", "Official social links and channels", "Telegram: t.me/nikabet (test)"),
+    ("affiliate_program", "Affiliate program terms and onboarding", "revenue-share affiliate program; terms via support (test)"),
+    ("agent_program", "Agent/cooperation program terms", "agent/partner cooperation program; terms via support (test)"),
+    ("crypto_assets", "Accepted cryptocurrencies", "USDT, BTC, ETH"),
+    ("crypto_confirmations", "Network confirmations for deposits/withdrawals", "USDT TRC20: 1; ERC20: 12; BTC: 2 (test)"),
+    ("deposit_refund", "Deposit refund / chargeback policy", "disputed transactions handled via support; no bank chargebacks"),
+    ("ewallets", "E-wallets and Apple/Google Pay", "Skrill, Neteller (where available) (test)"),
+    ("network_fee_policy", "Network/gas fee payer and policy", "network/gas fee paid by the sender; shown before confirmation"),
+    ("third_party_deposit", "Third-party deposit policy", "own payment instruments only; third-party payments not accepted"),
+    ("third_party_withdrawal", "Third-party withdrawal policy", "own details only; no third-party payouts (AML)"),
+    ("support_sla", "Support response time target", "chat under 2 min; email under 24h (test)"),
+    ("bet_types", "Sports bet types (single/accumulator/system)", "single, accumulator, system (after sports launch)"),
+    ("live_betting", "Live betting (in-play) availability", "in-play betting after the sports section launch"),
+    ("max_payout_sports", "Maximum sports bet payout", "50000 USDT cap (after sports launch) (test)"),
+    ("odds_format", "Supported odds formats", "decimal (default), fractional, American"),
+    ("sports_cashout", "Sports cash-out (early settlement)", "early cash-out after the sports section launch"),
+)
+
+
+async def seed_kb_variables(conn: Optional[asyncpg.Connection] = None) -> None:
+    """Insert default variables without overwriting admin-edited values."""
+    target = conn or _pool
+    await target.executemany(
+        """
+        INSERT INTO kb_variables (key, description, value) VALUES ($1, $2, $3)
+        ON CONFLICT (key) DO NOTHING
+        """,
+        _DEFAULT_KB_VARIABLES,
+    )
+
+
+async def list_kb_variables() -> list[dict[str, Any]]:
+    rows = await _pool.fetch(
+        "SELECT key, description, value, updated_at, updated_by FROM kb_variables ORDER BY key"
+    )
+    return [dict(r) for r in rows]
+
+
+async def get_kb_variables_map() -> dict[str, str]:
+    rows = await _pool.fetch("SELECT key, value FROM kb_variables")
+    return {r["key"]: r["value"] for r in rows}
+
+
+async def set_kb_variable(key: str, description: str, value: str, updated_by: Optional[str] = None) -> dict[str, Any]:
+    row = await _pool.fetchrow(
+        """
+        INSERT INTO kb_variables (key, description, value, updated_at, updated_by)
+        VALUES ($1, $2, $3, now(), $4)
+        ON CONFLICT (key) DO UPDATE
+          SET description = EXCLUDED.description,
+              value = EXCLUDED.value,
+              updated_at = now(),
+              updated_by = EXCLUDED.updated_by
+        RETURNING key, description, value, updated_at, updated_by
+        """,
+        key, description, value, updated_by,
+    )
+    return dict(row)
 
 
 # ---------------------------------------------------------------------------

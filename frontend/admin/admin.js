@@ -115,7 +115,7 @@ function renderLogin() {
 // ---------------------------------------------------------------------------
 const VIEWS = [
   ["overview", "Overview"], ["sessions", "Sessions"], ["unresolved", "Unresolved"],
-  ["kb", "Knowledge base"], ["prompt", "Prompt"], ["settings", "Settings"],
+  ["kb", "Knowledge base"], ["variables", "Variables"], ["prompt", "Prompt"], ["settings", "Settings"],
   ["test", "Test sandbox"],
 ];
 
@@ -160,7 +160,7 @@ function routeView(main) {
   main.innerHTML = "";
   const map = {
     overview: viewOverview, sessions: viewSessions, unresolved: viewUnresolved,
-    kb: viewKB, prompt: viewPrompt, settings: viewSettings, test: viewTest,
+    kb: viewKB, variables: viewVariables, prompt: viewPrompt, settings: viewSettings, test: viewTest,
   };
   (map[state.view] || viewOverview)(main);
 }
@@ -431,6 +431,75 @@ async function viewKB(main) {
 
       holder.append(ta, save, clear, err);
     }
+  } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
+}
+
+
+// ---------------------------------------------------------------------------
+// Knowledge-base variables
+// ---------------------------------------------------------------------------
+async function viewVariables(main) {
+  main.appendChild(el("h1", "npadmin-h", "Variables"));
+  main.appendChild(el("div", "npadmin-help",
+    "Admin-managed values for placeholders used inside knowledge-base texts. "
+    + "When a KB answer contains a token like {min_deposit}, the prompt receives "
+    + "the value from this registry. Current defaults come from the TEST column."));
+  const holder = el("div", null, "Loading…"); main.appendChild(holder);
+  try {
+    const data = await api("/kb/variables");
+    holder.innerHTML = "";
+    const filter = el("input", "npadmin-input");
+    filter.placeholder = "Filter by variable, description, or value…";
+    filter.style.marginBottom = "12px";
+    holder.appendChild(filter);
+
+    const tableWrap = el("div", "npadmin-chart");
+    holder.appendChild(tableWrap);
+
+    function renderRows() {
+      tableWrap.innerHTML = "";
+      const term = filter.value.trim().toLowerCase();
+      const rows = (data.variables || []).filter((v) => {
+        const hay = `${v.key} ${v.description} ${v.value}`.toLowerCase();
+        return !term || hay.includes(term);
+      });
+      const t = table(["Variable", "Description", "Value", ""]);
+      for (const v of rows) {
+        const tr = el("tr");
+        tr.appendChild(el("td", "npadmin-codecell", `{${v.key}}`));
+        tr.appendChild(el("td", null, v.description || "—"));
+        const valueTd = el("td");
+        const valueInput = el("textarea", "npadmin-input");
+        valueInput.value = v.value || "";
+        valueInput.style.minHeight = "68px";
+        valueInput.style.fontFamily = "inherit";
+        valueTd.appendChild(valueInput);
+        tr.appendChild(valueTd);
+        const actionTd = el("td");
+        const status = el("div", "npadmin-err");
+        const save = el("button", "npadmin-btn", "Save");
+        save.addEventListener("click", async () => {
+          status.textContent = ""; status.style.color = "";
+          try {
+            const res = await api(`/kb/variables/${encodeURIComponent(v.key)}`, {
+              method: "PUT",
+              body: { key: v.key, description: v.description || "", value: valueInput.value },
+            });
+            v.value = res.variable.value;
+            status.style.color = "var(--good)";
+            status.textContent = "Saved";
+          } catch (e) { status.textContent = e.message; }
+        });
+        actionTd.append(save, status);
+        tr.appendChild(actionTd);
+        t.querySelector("tbody").appendChild(tr);
+      }
+      tableWrap.appendChild(t);
+      tableWrap.appendChild(el("div", "npadmin-meta", `${rows.length} variables`));
+    }
+
+    filter.addEventListener("input", renderRows);
+    renderRows();
   } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
 }
 

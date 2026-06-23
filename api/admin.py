@@ -209,6 +209,36 @@ async def kb_clear_content(topic_id: int) -> JSONResponse:
     return JSONResponse(content={"ok": True})
 
 
+
+
+# ---------------------------------------------------------------------------
+# KB variables
+# ---------------------------------------------------------------------------
+class KBVariableWrite(BaseModel):
+    key: str = Field(..., pattern=r"^[A-Za-z0-9_]+$")
+    description: str = ""
+    value: str = ""
+
+
+@router.get("/kb/variables")
+async def kb_variables() -> JSONResponse:
+    return JSONResponse(content={"variables": await db.list_kb_variables()})
+
+
+@router.put("/kb/variables/{key}")
+async def kb_set_variable(key: str, body: KBVariableWrite, admin=Depends(require_admin)) -> JSONResponse:
+    if body.key != key:
+        raise HTTPException(status_code=400, detail="Path key and body key must match.")
+    item = await db.set_kb_variable(
+        key=key,
+        description=body.description.strip(),
+        value=body.value.strip(),
+        updated_by=admin.get("role"),
+    )
+    await db.log_admin_event(None, "kb_variable_updated", {"key": key})
+    return JSONResponse(content={"variable": item})
+
+
 # ---------------------------------------------------------------------------
 # runtime settings
 # ---------------------------------------------------------------------------
