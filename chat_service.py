@@ -10,6 +10,7 @@ import logging
 import time
 from typing import Any, Optional
 
+import antispam
 import db
 import escalation
 import kb
@@ -232,6 +233,18 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         # of leaving the widget to render a blank assistant bubble before the
         # escalation card.
         clean_text = esc_payload["message"]
+    elif not clean_text and not suggested_topic:
+        # No usable text, and this is neither an escalation nor a topic switch
+        # (e.g. a reasoning model still truncated to empty even after the client's
+        # retry). Never leave the widget with a blank bubble that reads as a frozen
+        # chat — return a gentle, localized "rephrase" nudge so the player can keep
+        # going. (When suggested_topic is set the widget shows the switch card, so
+        # an empty answer there is fine and we leave it as-is.)
+        clean_text = antispam.low_content_reply(answer_lang)
+        log.warning(
+            "chat_empty_reply_fallback session_id=%s answer_lang=%s",
+            session_id, answer_lang,
+        )
 
     # On a hand-off the player is being routed to a human, so the guide-to-KB
     # bubbles and the "finish chat" nudge are out of place — drop both. (The

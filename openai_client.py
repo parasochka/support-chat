@@ -72,6 +72,33 @@ def _pricing_for_model(model: str) -> Optional[tuple[float, float, float]]:
     return None
 
 
+# A reasoning model (the GPT-5 family) can spend the WHOLE output budget on hidden
+# reasoning and return an empty visible answer (finish_reason 'length'). When that
+# happens we retry the call once with a larger budget — at least
+# _MIN_RETRY_OUTPUT_TOKENS, capped at _MAX_RETRY_OUTPUT_TOKENS — so the model has
+# room to finish reasoning AND emit the visible answer + control sentinels.
+_MIN_RETRY_OUTPUT_TOKENS = 2000
+_MAX_RETRY_OUTPUT_TOKENS = 8000
+
+
+def _is_truncated_empty(resp: Any) -> bool:
+    """True when the model returned NO visible text because it hit the token cap.
+
+    Catches the reasoning-model failure where hidden reasoning consumes the entire
+    `max_completion_tokens` budget: `finish_reason == 'length'` with empty content.
+    Defensive against partial/stub response shapes (returns False on anything it
+    cannot read), so it is a no-op for non-reasoning models and test doubles.
+    """
+    try:
+        choice = resp.choices[0]
+    except (AttributeError, IndexError, TypeError):
+        return False
+    content = getattr(getattr(choice, "message", None), "content", None) or ""
+    if content.strip():
+        return False
+    return getattr(choice, "finish_reason", None) == "length"
+
+
 @dataclass
 class ChatResult:
     text: str
@@ -110,10 +137,11 @@ class _KeyClient:
         # so the owner can disable either from the admin panel if a future model
         # rejects it.
         m = settings.model()
+        budget = int(m["max_output_tokens"])
         kwargs: dict[str, Any] = {
             "model": m["model"],
             "messages": messages,
-            "max_completion_tokens": int(m["max_output_tokens"]),
+            "max_completion_tokens": budget,
             "timeout": m["request_timeout_sec"],
         }
         effort = m.get("reasoning_effort")
@@ -129,7 +157,27 @@ class _KeyClient:
             kwargs["timeout"], len(messages),
         )
         async with self._sem:
-            return await self.client.chat.completions.create(**kwargs)
+            resp = await self.client.chat.completions.create(**kwargs)
+        # Self-heal a reasoning model that burned the entire budget on hidden
+        # reasoning and returned an empty visible answer (finish_reason 'length').
+        # Without this the player gets a blank turn (the chat "hangs") and NO
+        # control sentinels are emitted — so cross-topic routing ([[TOPIC:slug]])
+        # silently dies. Retry ONCE with a larger budget so the answer + tags fit.
+        if _is_truncated_empty(resp):
+            bumped = min(
+                max(budget * 3, _MIN_RETRY_OUTPUT_TOKENS), _MAX_RETRY_OUTPUT_TOKENS
+            )
+            if bumped > budget:
+                log.warning(
+                    "openai_empty_truncated_retry key=%s budget=%s bumped=%s "
+                    "(reasoning consumed the whole budget; raise the model group's "
+                    "max_output_tokens to avoid this retry)",
+                    self.name, budget, bumped,
+                )
+                kwargs["max_completion_tokens"] = bumped
+                async with self._sem:
+                    resp = await self.client.chat.completions.create(**kwargs)
+        return resp
 
 
 def _is_hard_error(exc: Exception) -> bool:

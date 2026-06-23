@@ -224,6 +224,20 @@ can drop a knob a future model rejects without a redeploy). The `max_output_toke
 counts reasoning tokens (billed as output), so it ships higher (2000) than a non-reasoning
 model would need — too low and the visible answer can return empty.
 
+**Truncation self-heal (`openai_client._is_truncated_empty` + `_KeyClient.call`).** A reasoning
+model can spend the **entire** `max_output_tokens` budget on hidden reasoning and return an empty
+visible answer (`finish_reason='length'`, no content). That blanks the chat turn AND emits **no
+control sentinels** — so cross-topic routing (`[[TOPIC:slug]]`), suggestions, and finish-chat all
+silently die and the widget looks frozen. When `call` detects this (empty content + `length`
+finish), it **retries the same request once** with a larger budget (`max(budget*3, 2000)`, capped
+at 8000) so the answer + tags fit; same messages, so the prefix cache stays warm. It logs
+`openai_empty_truncated_retry` (raise the `model` group's `max_output_tokens` to avoid the extra
+call). `chat_service` keeps a backstop: if the reply is still empty and it's neither an escalation
+nor a topic switch, it returns the localized low-content nudge (`chat_empty_reply_fallback`) so the
+widget never renders a blank bubble. This was the bug behind "a new chat in the wrong topic just
+hangs" — at `max_output_tokens=700` the wrong-topic routing reasoning ate the whole budget, so the
+switch suggestion was never produced.
+
 The tuning knobs (model name, reasoning effort, verbosity, max output tokens, request timeout,
 key-switch timeout, max attempts, per-key concurrency) are NOT read from env directly — they
 come from the hot-reloaded `model` settings group (`settings.model()`, precedence
