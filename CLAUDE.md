@@ -193,7 +193,7 @@ exponential backoff up to `OPENAI_MAX_ATTEMPTS`. Every fallback engagement fires
 `on_failover` callback → `admin_events('key_failover')`. Cost is computed from token usage
 via `_PRICING` (marked "verify before trusting" — prices may be stale; unknown models cost 0).
 
-The default model is the **GPT-5.4 mini reasoning family** (`gpt-5.4-mini`). Reasoning models
+The default model is the **GPT-5 mini reasoning family** (`gpt-5-mini`). Reasoning models
 change the request shape: the call sends `max_completion_tokens` (**not** `max_tokens`), does
 **not** send `temperature` (rejected by these models), and instead passes `reasoning_effort`
 and `verbosity` (each `low`/`medium`/`high`). Both are sent only when set — an empty string in

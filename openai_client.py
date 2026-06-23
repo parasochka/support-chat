@@ -35,14 +35,20 @@ except Exception:  # noqa: BLE001
 
 # ---------------------------------------------------------------------------
 # Pricing — USD per 1,000,000 tokens: (input, cached_input, output)
-# GPT-5.4 mini list prices verified 2026-06-23: input $0.75, cached input
+# gpt-5-mini list prices verified 2026-06-23: input $0.25, cached input
+# $0.025, output $2.00 per 1M tokens. GPT-5.4 mini: input $0.75, cached input
 # $0.075, output $4.50 per 1M tokens. Re-verify against current OpenAI pricing
-# if the model or OpenAI's published rates change.
+# if the model or OpenAI's published rates change. An unlisted model costs 0 (a
+# silent under-count), so add every model the `model` settings group can select.
 # ---------------------------------------------------------------------------
 _PRICING: dict[str, tuple[float, float, float]] = {
     # model: (input, cached_input, output)  -- USD per 1M tokens
-    # GPT-5.4 mini (the live default). Both the alias and the dated snapshot id
-    # map to the same prices so cost accounting works whichever is configured.
+    # For each model both the alias and the dated snapshot id map to the same
+    # prices so cost accounting works whichever is configured.
+    # gpt-5-mini (the live default).
+    "gpt-5-mini": (0.25, 0.025, 2.00),
+    "gpt-5-mini-2025-08-07": (0.25, 0.025, 2.00),
+    # GPT-5.4 mini (kept for cost accounting on older configs).
     "gpt-5.4-mini": (0.75, 0.075, 4.50),
     "gpt-5.4-mini-2026-03-17": (0.75, 0.075, 4.50),
 }
