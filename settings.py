@@ -125,15 +125,17 @@ def antispam() -> dict[str, Any]:
 def model() -> dict[str, Any]:
     """Resolved OpenAI tuning knobs: app_settings override over env defaults.
 
-    Read live by `openai_client` on every call (model/temperature/max tokens/
-    switch timeout/attempts) so edits are hot. `request_timeout_sec` and
+    Read live by `openai_client` on every call (model/reasoning_effort/verbosity/
+    max tokens/switch timeout/attempts) so edits are hot. `request_timeout_sec` and
     `max_concurrent_per_key` are bound when the client is constructed, so the
     admin write also calls `openai_client.reset()` to rebuild it.
     """
     db_v = _group("model")
     return {
         "model": db_v.get("model", config.OPENAI_MODEL),
-        "temperature": db_v.get("temperature", config.OPENAI_TEMPERATURE),
+        "reasoning_effort": db_v.get("reasoning_effort",
+                                     config.OPENAI_REASONING_EFFORT),
+        "verbosity": db_v.get("verbosity", config.OPENAI_VERBOSITY),
         "max_output_tokens": db_v.get("max_output_tokens",
                                       config.OPENAI_MAX_OUTPUT_TOKENS),
         "request_timeout_sec": db_v.get("request_timeout_sec",
@@ -274,6 +276,20 @@ def _require_str_list(d: dict, field: str) -> None:
             raise ValueError(f"{field} must be a list of strings")
 
 
+def _require_choice(d: dict, field: str, choices: tuple[str, ...],
+                    allow_empty: bool = False) -> None:
+    """Field, if present, must be a string in `choices` (or "" when allowed)."""
+    if field in d:
+        v = d[field]
+        if not isinstance(v, str):
+            raise ValueError(f"{field} must be a string")
+        if allow_empty and v == "":
+            return
+        if v not in choices:
+            allowed = ", ".join(choices)
+            raise ValueError(f"{field} must be one of: {allowed}")
+
+
 def validate_setting(key: str, value: Any) -> dict[str, Any]:
     """Validate a settings write. Returns the value on success; raises ValueError."""
     if key not in SETTING_KEYS:
@@ -292,7 +308,11 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "min_meaningful_chars", 1, 100)
     elif key == "model":
         _require_nonempty_str(value, "model")
-        _require_float(value, "temperature", 0.0, 2.0)
+        # GPT-5 reasoning knobs; "" ⇒ omit the parameter (use model default).
+        _require_choice(value, "reasoning_effort", ("low", "medium", "high"),
+                        allow_empty=True)
+        _require_choice(value, "verbosity", ("low", "medium", "high"),
+                        allow_empty=True)
         _require_int(value, "max_output_tokens", 1, 128_000)
         _require_int(value, "request_timeout_sec", 1, 600)
         _require_int(value, "key_switch_timeout_sec", 1, 600)

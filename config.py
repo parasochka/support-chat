@@ -97,13 +97,24 @@ OPENAI_API_KEY: str = require_env("OPENAI_API_KEY")
 SESSION_JWT_SECRET: str = require_env("SESSION_JWT_SECRET")
 
 # --- OpenAI -----------------------------------------------------------------
+# Default model is the GPT-5.4 reasoning family. Reasoning models take
+# `max_completion_tokens` (not `max_tokens`), do NOT accept `temperature`, and
+# expose `reasoning_effort` (low/medium/high) + `verbosity` (low/medium/high)
+# instead — see openai_client._KeyClient.call and the `model` settings group.
 OPENAI_API_KEY_FALLBACK: str | None = _env_opt("OPENAI_API_KEY_FALLBACK")
-OPENAI_MODEL: str = _env("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL: str = _env("OPENAI_MODEL", "gpt-5.4-mini")
 OPENAI_REQUEST_TIMEOUT_SEC: int = _env_int("OPENAI_REQUEST_TIMEOUT_SEC", 40)
 OPENAI_KEY_SWITCH_TIMEOUT_SEC: int = _env_int("OPENAI_KEY_SWITCH_TIMEOUT_SEC", 25)
 OPENAI_MAX_ATTEMPTS: int = _env_int("OPENAI_MAX_ATTEMPTS", 3)
-OPENAI_TEMPERATURE: float = _env_float("OPENAI_TEMPERATURE", 0.3)
-OPENAI_MAX_OUTPUT_TOKENS: int = _env_int("OPENAI_MAX_OUTPUT_TOKENS", 700)
+# Reasoning effort and output verbosity. Empty string ⇒ omit the parameter from
+# the request (use the model's own default). "low" keeps support answers fast,
+# cheap, and concise.
+OPENAI_REASONING_EFFORT: str = _env("OPENAI_REASONING_EFFORT", "low")
+OPENAI_VERBOSITY: str = _env("OPENAI_VERBOSITY", "low")
+# Output cap (sent as `max_completion_tokens`). Reasoning tokens are billed as
+# output and counted against this budget, so it needs more headroom than a
+# non-reasoning model — too low and the visible answer can come back empty.
+OPENAI_MAX_OUTPUT_TOKENS: int = _env_int("OPENAI_MAX_OUTPUT_TOKENS", 2000)
 OPENAI_MAX_CONCURRENT_PER_KEY: int = _env_int("OPENAI_MAX_CONCURRENT_PER_KEY", 4)
 
 # --- Sessions / limits ------------------------------------------------------
