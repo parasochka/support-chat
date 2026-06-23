@@ -528,3 +528,48 @@ async def put_system_prompt(body: SystemPromptWrite,
     return JSONResponse(content={"ok": True, "version_id": vid,
                                  "sections": settings_mod.system_prompt(),
                                  "composed": core})
+
+
+# ---------------------------------------------------------------------------
+# Layer-3 directives — structured, edit-and-apply-live (no version, no cache reset)
+#
+# The static, always-present Layer-3 rule blocks (greeting, formatting,
+# KB-grounding, escalation restraint, suggested questions, finish-chat, recency
+# guardrails) are the bulk of post-launch behavioural tuning. They ride in the
+# per-request user message, so unlike the Layer-1 core editing them is NOT a
+# prompt-version publish and does NOT reset the prefix cache — overrides just go
+# to the `layer3_prompt` settings group and apply to the next message. Mirrors the
+# system-prompt editor so the owner controls the WHOLE prompt from one place.
+# ---------------------------------------------------------------------------
+class Layer3PromptWrite(BaseModel):
+    sections: dict[str, str]
+
+
+@router.get("/layer3-prompt")
+async def get_layer3_prompt() -> JSONResponse:
+    return JSONResponse(content={
+        "sections": settings_mod.layer3_prompt(),
+        "meta": prompts.layer3_section_meta(),
+    })
+
+
+@router.put("/layer3-prompt")
+async def put_layer3_prompt(body: Layer3PromptWrite,
+                            admin=Depends(require_admin)) -> JSONResponse:
+    keys = set(prompts.LAYER3_SECTION_KEYS)
+    cleaned: dict[str, str] = {}
+    for key, val in (body.sections or {}).items():
+        if key not in keys:
+            raise HTTPException(status_code=400, detail=f"unknown section: {key!r}")
+        if not isinstance(val, str) or not val.strip():
+            raise HTTPException(status_code=400,
+                                detail=f"section {key!r} must be a non-empty string")
+        cleaned[key] = val.strip()
+
+    await db.set_setting("layer3_prompt", {"sections": cleaned},
+                         updated_by=admin.get("role"))
+    await settings_mod.reload()  # applies live to the next message (Layer 3)
+    await db.log_admin_event(None, "layer3_prompt_updated",
+                             {"sections": list(cleaned)})
+    return JSONResponse(content={"ok": True,
+                                 "sections": settings_mod.layer3_prompt()})

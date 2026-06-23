@@ -194,3 +194,113 @@ async def test_put_system_prompt_rejects_unknown_section(monkeypatch):
             admin.SystemPromptWrite(sections={"nope": "x"}),
             admin={"role": "owner"})
     assert exc.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Layer-3 directives as editable sections (per-request; no version, no cache reset)
+# ---------------------------------------------------------------------------
+def test_layer3_defaults_reproduce_the_shipped_constants():
+    d = prompts.layer3_default_sections()
+    assert d["greeting"] == prompts._GREETING_DIRECTIVE
+    assert d["formatting"] == prompts._FORMATTING_DIRECTIVE
+    assert d["kb_grounding"] == prompts._KB_GROUNDING_DIRECTIVE
+    assert d["escalation_restraint"] == prompts._ESCALATION_RESTRAINT_DIRECTIVE
+    assert d["suggestions"] == prompts._SUGGESTIONS_DIRECTIVE
+    assert d["resolved"] == prompts._RESOLVED_DIRECTIVE
+    assert d["guardrails"] == prompts._GUARDRAILS
+
+
+def test_layer3_section_meta_matches_keys_and_order():
+    meta = prompts.layer3_section_meta()
+    assert [m["key"] for m in meta] == list(prompts.LAYER3_SECTION_KEYS)
+    assert all(m["label"] for m in meta)
+
+
+def test_build_dynamic_prompt_uses_defaults_when_unconfigured():
+    # No override ⇒ the shipped directive constants appear verbatim.
+    settings.invalidate()
+    try:
+        out = prompts.build_dynamic_prompt(
+            user_context={}, resolved_lang="ru", user_text="вопрос")
+        assert prompts._GREETING_DIRECTIVE in out
+        assert prompts._GUARDRAILS in out
+        assert prompts._SUGGESTIONS_DIRECTIVE in out
+    finally:
+        settings.invalidate()
+
+
+def test_build_dynamic_prompt_applies_layer3_override():
+    settings.invalidate()
+    try:
+        settings._cache["layer3_prompt"] = {
+            "sections": {"greeting": "ВСЕГДА здоровайся по-новому."}}
+        out = prompts.build_dynamic_prompt(
+            user_context={}, resolved_lang="ru", user_text="вопрос")
+        assert "ВСЕГДА здоровайся по-новому." in out
+        assert prompts._GREETING_DIRECTIVE not in out      # default replaced
+        assert prompts._GUARDRAILS in out                  # untouched sections kept
+    finally:
+        settings.invalidate()
+
+
+def test_settings_layer3_prompt_merges_and_ignores_blank_unknown():
+    settings.invalidate()
+    try:
+        settings._cache["layer3_prompt"] = {
+            "sections": {"formatting": "Без разметки.", "bad": "x", "resolved": "  "}}
+        resolved = settings.layer3_prompt()
+        assert resolved["formatting"] == "Без разметки."
+        assert "bad" not in resolved
+        assert resolved["resolved"] == prompts.layer3_default_sections()["resolved"]
+        assert set(resolved) == set(prompts.LAYER3_SECTION_KEYS)
+    finally:
+        settings.invalidate()
+
+
+async def test_put_layer3_prompt_stores_and_reloads(monkeypatch):
+    stored: dict = {}
+    events: list = []
+
+    async def _set_setting(key, value, updated_by=None):
+        stored[key] = value
+
+    async def _reload():
+        settings._cache.clear()
+        settings._cache.update(stored)
+
+    async def _log(sid, type_, payload=None):
+        events.append((type_, payload))
+
+    monkeypatch.setattr(db, "set_setting", _set_setting)
+    monkeypatch.setattr(settings, "reload", _reload)
+    monkeypatch.setattr(db, "log_admin_event", _log)
+
+    settings.invalidate()
+    try:
+        resp = await admin.put_layer3_prompt(
+            admin.Layer3PromptWrite(sections={"suggestions": "Свои наводящие."}),
+            admin={"role": "owner"})
+        data = json.loads(resp.body)
+        assert data["ok"] is True
+        assert data["sections"]["suggestions"] == "Свои наводящие."
+        assert stored["layer3_prompt"] == {"sections": {"suggestions": "Свои наводящие."}}
+        assert ("layer3_prompt_updated", {"sections": ["suggestions"]}) in events
+    finally:
+        settings.invalidate()
+
+
+async def test_put_layer3_prompt_rejects_unknown_and_blank():
+    from fastapi import HTTPException
+    import pytest
+
+    with pytest.raises(HTTPException) as exc:
+        await admin.put_layer3_prompt(
+            admin.Layer3PromptWrite(sections={"nope": "x"}),
+            admin={"role": "owner"})
+    assert exc.value.status_code == 400
+
+    with pytest.raises(HTTPException) as exc:
+        await admin.put_layer3_prompt(
+            admin.Layer3PromptWrite(sections={"greeting": "  "}),
+            admin={"role": "owner"})
+    assert exc.value.status_code == 400
