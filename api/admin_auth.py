@@ -16,6 +16,7 @@ import antispam
 import auth
 import config
 import db
+from api.client_ip import client_ip
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -25,13 +26,7 @@ class AdminLogin(BaseModel):
 
 
 def _client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        parts = [p.strip() for p in fwd.split(",") if p.strip()]
-        if parts:
-            idx = min(max(config.TRUSTED_PROXY_COUNT, 1), len(parts))
-            return parts[-idx]
-    return request.client.host if request.client else "unknown"
+    return client_ip(request)
 
 
 async def require_admin(authorization: Optional[str] = Header(default=None)) -> dict:

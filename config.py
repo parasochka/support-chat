@@ -186,9 +186,14 @@ INJECTION_HARD_BLOCK: bool = _env_bool("INJECTION_HARD_BLOCK", True)
 
 # --- Proxy / client IP ------------------------------------------------------
 # Number of trusted reverse proxies in front of the app (Railway edge = 1).
-# The real client IP is taken this many hops from the RIGHT of X-Forwarded-For,
-# so a client-supplied (spoofed) left-hand value cannot defeat the rate limiter.
+# Only used after the immediate peer matches TRUSTED_PROXY_IPS; then the real
+# client IP is taken this many hops from the RIGHT of X-Forwarded-For.
 TRUSTED_PROXY_COUNT: int = _env_int("TRUSTED_PROXY_COUNT", 1)
+# Comma-separated IPs/CIDRs for immediate reverse proxies whose X-Forwarded-For
+# headers may be trusted. Empty by default: direct client-supplied XFF is ignored.
+TRUSTED_PROXY_IPS: list[str] = [
+    p.strip() for p in _env("TRUSTED_PROXY_IPS", "").split(",") if p.strip()
+]
 
 # --- CORS -------------------------------------------------------------------
 # Comma-separated list of allowed origins; "*" allows all (dev only).

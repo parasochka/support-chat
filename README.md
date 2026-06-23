@@ -75,7 +75,8 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `CONTACT_FORM_URL` | no | — | URL behind the escalation contact button. |
 | `DEFAULT_LANGUAGE` / `SUPPORTED_LANGUAGES` | no | `en` / `en,es,ru,tr,pt` | Language defaults. |
 | `CORS_ALLOW_ORIGINS` | no | `*` | Comma-separated allowed origins (restrict in prod). |
-| `TRUSTED_PROXY_COUNT` | no | `1` | Reverse proxies in front of the app (client-IP resolution). |
+| `TRUSTED_PROXY_COUNT` | no | `1` | Trusted proxy hops to read from the right of `X-Forwarded-For`. |
+| `TRUSTED_PROXY_IPS` | no | — | Comma-separated immediate proxy IPs/CIDRs whose `X-Forwarded-For` headers may be trusted. Empty ⇒ ignore XFF. |
 
 Most operational knobs (rate limits, cooldowns, model tuning, escalation thresholds,
 session TTL, body cap, etc.) are tunable live from the admin **Settings** tab and only need
