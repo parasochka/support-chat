@@ -388,8 +388,10 @@ _SUGGESTIONS_DIRECTIVE = (
     "base; pick the next logical questions whose answers ARE in the knowledge "
     "base. The third option must ALWAYS be a closing/resolution option that hints "
     "the issue is solved and the player is ready to finish the chat (for example: "
-    "\"Is my issue solved?\", \"All clear, finish the chat?\", or the same idea "
-    "in the reply language). Keep each option short (up to 7 words), in the same "
+    "\"Issue solved.\", \"All clear, finish the chat.\", or the same idea "
+    "in the reply language). This third closing/resolution option must end with "
+    "a period, not a question mark, because the widget treats it as the "
+    "end-of-dialog signal. Keep each option short (up to 7 words), in the same "
     "language as the reply, with no numbering inside the tag, separating the "
     "questions with the '|' character. If fewer than two suitable guiding "
     "questions remain, still include the third closing/resolution option. If no "
@@ -765,6 +767,14 @@ def strip_topic_suggestion(text: str) -> tuple[str, Optional[str]]:
     return "\n".join(cleaned).strip(), slug
 
 
+def _normalize_closing_suggestion(text: str) -> str:
+    """Keep the third/closing suggestion declarative for finish-chat detection."""
+
+    stripped = text.rstrip()
+    normalized = stripped.rstrip(".?!…")
+    return f"{normalized}." if normalized else stripped
+
+
 def strip_suggestions(text: str) -> tuple[str, list[str]]:
     """Detect + strip a `[[SUGGEST: a | b | c]]` tag. Returns (clean_text, list).
 
@@ -785,6 +795,8 @@ def strip_suggestions(text: str) -> tuple[str, list[str]]:
                     q = part.strip()
                     if q and len(suggestions) < _MAX_SUGGESTIONS:
                         suggestions.append(q)
+                if len(suggestions) == _MAX_SUGGESTIONS:
+                    suggestions[-1] = _normalize_closing_suggestion(suggestions[-1])
             remainder = _SUGGEST_TAG_RE.sub("", line).strip()
             if remainder:
                 cleaned.append(remainder)
