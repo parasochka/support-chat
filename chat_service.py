@@ -197,6 +197,13 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         suggestions = []
         resolved = False
 
+    # When the model says this question belongs to a different topic, the only
+    # useful next step is the topic-switch prompt. Follow-up bubbles would keep
+    # the player in the current topic, so never return them alongside a switch.
+    if suggested_topic:
+        suggestions = []
+        resolved = False
+
     # --- persist the turn atomically ----------------------------------------
     # `detected_lang` is the language the model ANSWERED in (from [[LANG:xx]]).
     # Per the language directive the model answers in the language of the player's
