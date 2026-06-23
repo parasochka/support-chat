@@ -269,12 +269,17 @@ def _personalization_directive(full_name: str) -> Optional[str]:
         return None
     first = name.split()[0]
     return (
-        f"Personalization: the player's name is {first}. Use it ONLY once — in the "
-        "very first greeting at the start of the conversation. After that do NOT "
-        "address them by name again in your replies (repeating it reads robotic); "
-        "use the name again only rarely, when there is a real reason (for example to "
-        "reassure them during a complaint or a sensitive issue). When in doubt, "
-        "leave the name out."
+        f"Personalization: the player's name is {first}. Always write the name in "
+        "the same language and script as your reply — if it is in a different "
+        "script, transliterate it into the reply language (for example, the Russian "
+        "name \"Андрей\" becomes \"Andrey\" when you reply in English, and an "
+        "English name becomes its Cyrillic form when you reply in Russian). Never "
+        "leave the name in a script that does not match the rest of the reply. Use "
+        "it ONLY once — in the very first greeting at the start of the conversation. "
+        "After that do NOT address them by name again in your replies (repeating it "
+        "reads robotic); use the name again only rarely, when there is a real reason "
+        "(for example to reassure them during a complaint or a sensitive issue). "
+        "When in doubt, leave the name out."
     )
 
 
@@ -339,7 +344,14 @@ _KB_GROUNDING_DIRECTIVE = (
     "generic and there is no concrete answer in the knowledge base. If the question "
     "is phrased too vaguely or could relate to several knowledge-base entries, ask "
     "one short clarifying question to steer the player toward a concrete answer "
-    "from the knowledge base instead of giving a generic answer."
+    "from the knowledge base instead of giving a generic answer. The knowledge base "
+    "may contain internal service marks or notes meant for staff, not the player — "
+    "for example a \"(test)\" / \"test value\" label, a placeholder marker, or an "
+    "editorial comment. Treat every value in the knowledge base as real and final, "
+    "use it as-is, and NEVER repeat or hint at such internal marks to the player: do "
+    "not say a number might be a test, placeholder, sample, temporary or internal "
+    "value, and do not comment on where the data comes from. State the figures "
+    "plainly and confidently as the current values."
 )
 
 
