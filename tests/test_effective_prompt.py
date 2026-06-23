@@ -27,19 +27,20 @@ async def test_effective_prompt_renders_all_layers(monkeypatch):
     resp = await admin.get_effective_prompt()
     pv = json.loads(resp.body)["effective_preview"]
 
-    # Layer 1 (the byte-stable SYSTEM_CORE) + Layer 2 (the chosen topic's KB) are
-    # in the system message; the catch-all 'other' is skipped for a specialized one.
+    # Layer 1 (the byte-stable core + every STATIC directive) + Layer 2 (the chosen
+    # topic's KB) are in the system message; 'other' is skipped for a specialized one.
     assert prompts.SYSTEM_CORE in pv["system"]
     assert "БАЗА ЗНАНИЙ" in pv["system"]
     assert "Как пополнить счёт" in pv["system"]
     assert pv["example"]["topic"] == "Deposits"  # localized to the default lang
+    # Static behavioural directives ride in the cached Layer-1 system block.
+    assert "Форматирование:" in pv["system"]            # formatting directive
+    assert "Опора на базу знаний:" in pv["system"]       # KB-grounding directive
+    assert "Эскалация — крайняя мера" in pv["system"]    # escalation restraint
+    assert "Наводящие вопросы:" in pv["system"]          # suggested questions
 
-    # Layer-3 directives are all visible in the user message.
+    # Per-request (dynamic) directives + recency guardrails live in the user message.
     user = pv["user"]
-    assert "Форматирование:" in user            # formatting directive
-    assert "Опора на базу знаний:" in user       # KB-grounding directive
-    assert "Эскалация — крайняя мера" in user    # escalation restraint
-    assert "Наводящие вопросы:" in user          # suggested questions
     assert "МАРШРУТИЗАЦИЯ ПО ТЕМАМ" in user      # topic routing
     assert "Запрещённые темы" in user            # forbidden topics (from the file)
     assert "Иван" in user                        # sample player personalization
@@ -56,7 +57,9 @@ async def test_effective_prompt_resilient_when_topics_unavailable(monkeypatch):
     pv = json.loads(resp.body)["effective_preview"]
     assert prompts.SYSTEM_CORE in pv["system"]
     assert pv["example"]["topic"] is None
-    assert "Эскалация — крайняя мера" in pv["user"]
+    # The escalation-restraint directive is static -> always in the Layer-1 system
+    # block, even when topics/KB fail to load.
+    assert "Эскалация — крайняя мера" in pv["system"]
 
 
 def test_no_prompt_editing_surface_on_admin():

@@ -12,7 +12,10 @@ admin dashboard, hot-reloaded tuning, KB CRUD, Telegram escalation, and the sign
 front-end handshake are all built (see "Phase 2" below).
 
 **The prompt lives in one place: the file `prompts.py` (the single source of truth).**
-Layer 1 (`SYSTEM_CORE`), every Layer-3 directive, and the forbidden-topics list are
+The Layer-1 core (`SYSTEM_CORE` — Nika's tone-of-voice + the absolute/escalation/
+responsible-gaming/links rules), every behavioural directive (greeting, formatting, KB-grounding,
+escalation restraint, suggestions, finish-chat, lead-forward — STATIC, in Layer 1; language,
+personalization, topic-routing — DYNAMIC, in Layer 3), and the forbidden-topics list are
 constants in that file. The prompt is **not** editable from the admin panel — to change
 it you edit `prompts.py` and redeploy. The admin **Prompt** tab is a **read-only** view of
 the whole assembled prompt (all layers, as sent) so you can always see exactly how it's
@@ -53,21 +56,48 @@ when invoking modules outside pytest.
 ## Architecture — the big picture
 
 ### 3-layer prefix-cache-optimised prompt (the central design)
-`prompts.py` assembles every request in three layers so the OpenAI prefix cache stays warm:
-- **Layer 1 `SYSTEM_CORE`** — a byte-stable Russian system prompt. It is **never** edited
-  to add behaviour; it must be byte-identical across requests (a test enforces this).
-- **Layer 2** — the KB block for the selected topic, appended to the system message after
-  a fixed separator. Changes only when the topic changes (an accepted cache break).
-- **Layer 3** — *all* dynamic data (sanitized `user_context`, the resolved language
-  directive, conversation history, the new user turn) lives in the **user message**, never
-  in the system message. This is what keeps the cached prefix stable.
+`prompts.py` assembles every request in three layers so the OpenAI prefix cache stays warm.
+The split is by **mutability**, not by topic: anything byte-stable belongs in the cached
+system prefix; only per-request data may sit after the (growing) history.
+- **Layer 1 — the byte-stable system block (`prompts.get_system_core()`)** — the persona
+  core `SYSTEM_CORE` (Nika's tone-of-voice + the absolute / escalation / responsible-gaming /
+  links rules) **plus every STATIC behavioural directive** (greeting, formatting, KB-grounding,
+  escalation restraint, suggested questions, finish-chat, lead-forward). None of these carry
+  per-request data, so they ride in the cached prefix; the whole block is byte-identical across
+  requests (a test enforces this). It is **never** edited to add per-request behaviour.
+- **Layer 2** — the KB block for the selected topic, appended to the system message after a
+  fixed separator. Changes only when the topic changes (an accepted cache break that never
+  invalidates the larger byte-stable Layer-1 prefix).
+- **Layer 3** — *only* per-request data lives in the **user message**: sanitized
+  `user_context`, the personalization line, the resolved language directive, the topic-routing
+  catalogue, the conversation history, the new user turn, and the recency guardrails /
+  forbidden-topics block (kept **last**, after the player's message, on purpose — an
+  anti-injection / anti-off-topic reminder bites hardest closest to the input).
 
-New rules go into the KB or Layer 3 — **never** into `SYSTEM_CORE`. The source prompt and
-KB are Russian; only the answer language varies. The Layer-3 directive tells the model to
-**answer in the language of the player's current message** (falling back to the session's
-base language when it's too short/ambiguous) — so the answers follow the player if they
-switch language mid-chat, while the widget chrome stays fixed to the browser language (see
-"Language resolution" below).
+A STATIC rule goes into Layer 1 (so it is cached); a rule that needs per-request data goes
+into Layer 3 — **never** does per-request data enter the byte-stable Layer-1 block. The
+source prompt and KB are Russian; only the answer language varies. The Layer-3 directive tells
+the model to **answer in the language of the player's current message** (falling back to the
+session's base language when it's too short/ambiguous) — so the answers follow the player if
+they switch language mid-chat, while the widget chrome stays fixed to the browser language
+(see "Language resolution" below).
+
+**Tone of voice — the persona "Nika" (`SYSTEM_CORE`).** The assistant is **Ника / Nika**, a
+warm, playful, lightly flirtatious **international** guide-persona (not a Russia-specific
+character): talks on «ты», simply and informally but respectfully, makes every player feel VIP,
+and nudges them toward play without pressure — while **dialling the playfulness down** in
+money/dispute/complaint/escalation situations (there she is calm, attentive, caring). She
+highlights the chance to win rewards (bonuses/prizes/tickets) but takes every concrete
+amount/condition/date/name **strictly from the KB** (never invents), never promises a win,
+**uses no emoji**, uses the player's name sparingly, and keeps her character **on every
+language**. The tone rides in the byte-stable core, so it is cached and consistent. To change
+the voice you edit `SYSTEM_CORE` and redeploy.
+
+**Responsible gaming (brief, `SYSTEM_CORE`).** Nika never raises addiction herself and never
+moralizes; but if the **player** says they have trouble controlling play or asks to limit/pause
+play or self-exclude, she drops the flirt, responds with care, and **escalates immediately**
+(`[[ESCALATE]]`) to a human. **Links policy (`SYSTEM_CORE`):** only links from the KB or
+official NikaBet links — never invent URLs.
 
 **Personalization** also lives in Layer 3 (never `SYSTEM_CORE`): when the sanitized
 `user_context` carries a `full_name`, `prompts._personalization_directive` adds a line giving
@@ -77,26 +107,26 @@ fields the model ever sees are `prompts._CONTEXT_FIELDS` (`id, full_name, email,
 activation_status, country, balance, vip_level, registration_date`) — anything else in
 `user_context` is dropped, so adding a model-visible field is a deliberate edit to that list.
 
-**Greeting hygiene** is a separate always-present Layer-3 line (`prompts._GREETING_DIRECTIVE`,
-included with or without a name): models otherwise open *every* reply with "Привет, <имя>!" /
-"Здравствуйте!", which reads robotic in a running chat. Since the conversation history is in the
-prompt, the model can tell whether the chat has already started; the directive tells it to greet
-exactly once — in the first reply — and otherwise skip the greeting (and the leading name) and go
-straight to the answer. The *when* to greet lives here; `_personalization_directive` only supplies
-the name and the "use it sparingly" rule.
+**Greeting hygiene** is a STATIC directive in the Layer-1 core (`prompts._GREETING_DIRECTIVE`):
+models otherwise open *every* reply with "Привет, <имя>!" / "Здравствуйте!", which reads robotic
+in a running chat. Since the conversation history is in the prompt, the model can tell whether the
+chat has already started; the directive tells it to greet exactly once — in the first reply — and
+otherwise skip the greeting (and the leading name) and go straight to the answer. The *when* to
+greet lives here; `_personalization_directive` (Layer 3) only supplies the name and the "use it
+sparingly" rule.
 
-**Formatting hygiene** is another always-present Layer-3 line (`prompts._FORMATTING_DIRECTIVE`):
+**Formatting hygiene** is another STATIC Layer-1 directive (`prompts._FORMATTING_DIRECTIVE`):
 the model reaches for Markdown on its own (`**bold**`, lists, links), and the widget now renders a
 small fixed subset of it (`widget.js` `renderMarkdown` — see "Conventions"). Left unguided the model
 also emits markup the widget can't render (tables, fenced code blocks, raw HTML), which leaks to the
 player as literal characters. This directive pins the model to exactly the rendered subset — bold,
 italic, inline `code`, links, and bulleted/numbered lists — and tells it to avoid the rest, so the
-two stay in lockstep: whatever the model emits, the widget renders. Lives in Layer 3 so `SYSTEM_CORE`
-stays byte-stable.
+two stay in lockstep: whatever the model emits, the widget renders. Rides in the byte-stable Layer-1
+block (it carries no per-request data).
 
-**KB grounding** is a Layer-3 line (`prompts._KB_GROUNDING_DIRECTIVE`) added for every **specialized**
-topic (skipped for the catch-all `other`, which has no KB and whose routing directive already steers
-the model to a specialized branch). The KB block (Layer 2) is the single source of truth, but the model
+**KB grounding** is a STATIC Layer-1 directive (`prompts._KB_GROUNDING_DIRECTIVE`), phrased to be a
+no-op for the catch-all `other` (which loads no KB and whose routing directive already steers the
+model to a specialized branch). The KB block (Layer 2) is the single source of truth, but the model
 tends to miss a matching entry when the player phrases the question differently from how the KB is
 written, then falls back to vague generic prose or invented specifics instead of the exact answer that
 IS in the KB (e.g. a player asks about a specific bonus under «Бонусы» worded unlike the KB's example
@@ -105,9 +135,9 @@ model to match the question to the KB by **meaning/intent**, not literal wording
 precisely from the matched entry; never substitute generic or invented conditions/numbers/dates/names
 when concrete ones exist; answer generically only when the question really is generic and the KB has
 nothing; and ask one short **clarifying question** to steer the player toward a specific KB answer when
-the question is too vague or spans several entries. Lives in Layer 3 so `SYSTEM_CORE` stays byte-stable.
+the question is too vague or spans several entries. Rides in the byte-stable Layer-1 block.
 
-**Escalation restraint** is an always-present Layer-3 line (`prompts._ESCALATION_RESTRAINT_DIRECTIVE`)
+**Escalation restraint** is a STATIC Layer-1 directive (`prompts._ESCALATION_RESTRAINT_DIRECTIVE`)
 that paces the model's hand-off. Layer 1's escalation rule tells the model to emit `[[ESCALATE]]` when
 it "cannot resolve the question or the KB has nothing" — but in practice the model reaches for the tag
 too early: it bails the moment the player's first phrasing doesn't hit an exact KB entry, or the
@@ -119,9 +149,9 @@ It deliberately **preserves the immediate-escalation cases** (explicit request f
 complaint/grievance, suspected fraud, legal threat) so genuine hand-offs are never delayed; everything
 else escalates only after an honest attempt to help and clarify still leaves nothing answerable in the
 KB. Applies in **every** topic, including the catch-all `other`. Pairs with `_KB_GROUNDING_DIRECTIVE`
-(try hard to find the answer → don't give up too early). Lives in Layer 3 so `SYSTEM_CORE` stays
-byte-stable; the `escalation.decide()` triggers (keyword/cap/`[[ESCALATE]]`) are unchanged — this only
-makes the model emit the sentinel more deliberately.
+(try hard to find the answer → don't give up too early). Rides in the byte-stable Layer-1 block; the
+`escalation.decide()` triggers (keyword/cap/`[[ESCALATE]]`) are unchanged — this only makes the model
+emit the sentinel more deliberately.
 
 ### Request flow
 `api/chat.py` (thin HTTP handlers + gate ordering) → `chat_service.handle_message`
@@ -294,8 +324,8 @@ transcript is untouched — resume (`GET /session/{id}`) and the escalation tick
 
 ### Suggested follow-up questions + finish-chat (`[[SUGGEST:…]]` / `[[RESOLVED]]` sentinels)
 To pull the player toward the exact KB entry their question is closest to, the model emits — along
-with its answer — two more Layer-3 sentinels (mirroring the `[[TOPIC:slug]]` machinery), both
-**stripped** before the reply is shown:
+with its answer — two sentinels (mirroring the `[[TOPIC:slug]]` machinery), both **stripped** before
+the reply is shown. Their directives are STATIC, so they ride in the byte-stable Layer-1 block:
 - **`[[SUGGEST: q1 | q2 | q3]]`** (own LAST line) — up to **three** short follow-up/clarifying
   questions phrased **from the player's point of view** (first person), pipe-separated. The directive
   (`prompts._SUGGESTIONS_DIRECTIVE`) tells the model to pick the *next logical questions whose answers
@@ -304,20 +334,31 @@ with its answer — two more Layer-3 sentinels (mirroring the `[[TOPIC:slug]]` m
   `prompts._MAX_SUGGESTIONS` = 3) and returns `suggestions:[…]` in the `/message` response. The widget
   renders them as one-tap **bubbles by the input field** (one per line); tapping one sends it as the
   next player turn (`submitText`), and the stale bubbles are cleared the moment a new turn starts.
-- **`[[RESOLVED]]`** (own line) — set once the question looks fully resolved (the player confirmed /
-  thanked / said it's closed). `chat_service` (`prompts.strip_resolved_tag`) returns `resolved:true`
-  and the widget surfaces a green **"finish chat"** button below the bubbles. Tapping it calls
+- **`[[RESOLVED]]`** (own line) — set when there is nothing more to offer on the current question.
+  The trigger is deliberately **broad** (`prompts._RESOLVED_DIRECTIVE`): not only an explicit
+  thanks/confirmation, but also when the question is essentially answered and **no suitable KB
+  follow-ups remain**. `chat_service` (`prompts.strip_resolved_tag`) returns `resolved:true` and the
+  widget surfaces a green **"finish chat"** button below the bubbles. Tapping it calls
   **`POST /api/chat/resolve`** (`db.mark_resolved` → `status='resolved'` + an `admin_events('session_resolved')`
   row) and collapses the panel — gently steering the satisfied player toward ending the chat, and
   dropping the session out of the open-session metric. The close never overrides an **escalated**
   session (a pending hand-off to a human must survive the player tapping finish), and the call is
-  best-effort (the panel collapses regardless). The directive (`prompts._RESOLVED_DIRECTIVE`) tells
-  the model NOT to set the tag while still clarifying.
+  best-effort (the panel collapses regardless). The directive tells the model NOT to set the tag while
+  still clarifying.
+
+**Lead-forward (no dead end, `prompts._LEAD_FORWARD_DIRECTIVE`).** Earlier the two directives left a
+gap: when the exchange was complete but the player hadn't thanked and no good follow-ups existed, the
+model emitted **neither** tag, so the reply ended with no bubbles AND no finish button. This STATIC
+Layer-1 directive ties them together: whenever the exchange on the current question is complete and the
+model is not itself asking a clarifying question, it MUST end with `[[SUGGEST]]` (if good KB follow-ups
+exist) **or** `[[RESOLVED]]` (if nothing is left) — and may emit both when there are follow-ups yet the
+core question is already resolved. Escalation is the only exception.
 
 On a hand-off both are suppressed in `chat_service` (the player is going to a human, so the
-guide-to-KB bubbles and the close nudge are out of place). Both directives live in Layer 3 only, so
-`SYSTEM_CORE` stays byte-stable (a test asserts it). The model-free paths (message-cap, low-content)
-return neither, so the widget simply shows no bubbles/finish button there.
+guide-to-KB bubbles and the close nudge are out of place) — the backend guarantee behind the directive's
+escalation exception. All three directives ride in the byte-stable Layer-1 block (a test asserts it).
+The model-free paths (message-cap, low-content) return neither, so the widget simply shows no
+bubbles/finish button there.
 
 ### Two layers of injection defense
 1. `prompts._sanitize_field` zeroes any `user_context` field containing injection markers
@@ -343,7 +384,8 @@ localizes to the player's language. Lives in Layer 3 only, so `SYSTEM_CORE` stay
 
 ## Invariants (these break silently — do not violate)
 
-1. `SYSTEM_CORE` is byte-stable; dynamic data lives only in the user message.
+1. The Layer-1 block (`get_system_core()` = `SYSTEM_CORE` + the static directives) is
+   byte-stable; per-request data lives only in the user message (Layer 3).
 2. KB is injected per topic from Postgres — never baked into the core.
 3. Persisting a turn is one atomic transaction (messages + counters + AI log).
 4. Every message → `chat_messages`; every OpenAI call → `ai_interaction_logs`; every state
@@ -388,21 +430,23 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   `resolution_rate` is a documented PROXY (counts "not escalated", incl. abandoned →
   `sessions_open` tracked separately).
 - **The prompt is the file `prompts.py` (single source of truth, NOT editable from admin).**
-  Layer 1 (`SYSTEM_CORE`), every Layer-3 directive (greeting, formatting, KB-grounding,
-  escalation restraint, suggested questions, finish-chat, recency guardrails, language,
-  personalization, topic routing) and the forbidden-topics list/refusal are constants in that
-  file. To change the prompt you edit `prompts.py` and redeploy — there is no admin editor, no
-  `prompt_versions` table, no A/B split, no `system_prompt`/`layer3_prompt` settings group. (This
-  replaced an earlier design where the core was versioned in the DB and edited from the panel;
-  it was removed so there's exactly one place the prompt comes from.) **Read-only effective-prompt
-  view** (`api.admin._build_effective_preview` + `GET /admin/effective-prompt`, the **Prompt** tab
-  in the SPA): so the owner can always SEE the whole assembled prompt, this endpoint reuses
-  `prompts.build_messages` with a sample player + a sample specialized topic's KB and returns the
-  complete prompt split into the system message (Layer 1 `SYSTEM_CORE` + Layer 2 KB) and the user
-  message (all Layer-3 directives + player context). The SPA renders it as read-only blocks. It is
-  resilient — if topics/KB can't load it still renders Layer 1 + the Layer-3 directives, never
-  breaking the page. (Layer 2, the per-topic KB, is the one prompt input still edited in the
-  admin — in the Knowledge-base tab — because it's answer content, not instructions.)
+  The Layer-1 core (`SYSTEM_CORE` — Nika's tone-of-voice + the absolute/escalation/
+  responsible-gaming/links rules), the STATIC Layer-1 directives (greeting, formatting,
+  KB-grounding, escalation restraint, suggested questions, finish-chat, lead-forward), the DYNAMIC
+  Layer-3 directives (language, personalization, topic routing) + the recency guardrails, and the
+  forbidden-topics list/refusal are constants in that file. To change the prompt you edit
+  `prompts.py` and redeploy — there is no admin editor, no `prompt_versions` table, no A/B split, no
+  `system_prompt`/`layer3_prompt` settings group. (This replaced an earlier design where the core was
+  versioned in the DB and edited from the panel; it was removed so there's exactly one place the
+  prompt comes from.) **Read-only effective-prompt view** (`api.admin._build_effective_preview` +
+  `GET /admin/effective-prompt`, the **Prompt** tab in the SPA): so the owner can always SEE the
+  whole assembled prompt, this endpoint reuses `prompts.build_messages` with a sample player + a
+  sample specialized topic's KB and returns the complete prompt split into the system message
+  (Layer 1 core + static directives + Layer 2 KB) and the user message (the dynamic Layer-3
+  directives + player context + recency guardrails). The SPA renders it as read-only blocks. It is
+  resilient — if topics/KB can't load it still renders Layer 1 + the Layer-3 block, never breaking
+  the page. (Layer 2, the per-topic KB, is the one prompt input still edited in the admin — in the
+  Knowledge-base tab — because it's answer content, not instructions.)
 - **KB CRUD** (`db.*` helpers): versioned entries (edit = new version row, delete = soft `active=false`).
 - **Escalation Phase 2** (`escalation.open_ticket`, `notifiers/telegram.py`,
   `escalation_tickets` table): snapshots the transcript + context into a ticket, notifies
