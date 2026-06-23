@@ -93,6 +93,17 @@ def _err(status: int, code: str, detail: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": code, "detail": detail})
 
 
+def _ensure_open_session(session: dict) -> Optional[JSONResponse]:
+    """Reject stale mutating requests for a session that is no longer open."""
+    if session.get("status") == "open":
+        return None
+    return _err(
+        409,
+        "session_closed",
+        "This chat session is already closed. Please start a new chat.",
+    )
+
+
 async def _auth_session(authorization: Optional[str], session_id: str
                         ) -> tuple[Optional[dict], Optional[JSONResponse]]:
     """Verify bearer token bound to session_id, then load the session row."""
@@ -243,6 +254,9 @@ async def select_topic(body: TopicSelect,
     session, err = await _auth_session(authorization, body.session_id)
     if err:
         return err
+    closed = _ensure_open_session(session)
+    if closed:
+        return closed
 
     topic = await kb.topic_by_slug(body.topic_slug)
     if topic is None:
@@ -274,6 +288,13 @@ async def send_message(req: Request, body: MessageSend,
         body.session_id, session.get("topic_id"),
         session.get("message_count", 0), session.get("status"),
     )
+    closed = _ensure_open_session(session)
+    if closed:
+        log.info(
+            "chat_message_rejected_closed_session session_id=%s status=%s",
+            body.session_id, session.get("status"),
+        )
+        return closed
 
     # 2. rate-limit (IP) -> 429 + log
     try:
@@ -440,6 +461,9 @@ async def escalate(body: EscalateReq,
     session, err = await _auth_session(authorization, body.session_id)
     if err:
         return err
+    closed = _ensure_open_session(session)
+    if closed:
+        return closed
 
     ans_lang = (session.get("conv_lang") or session.get("lang")
                 or language.default_code())
