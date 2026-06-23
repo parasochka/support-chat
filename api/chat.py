@@ -27,6 +27,7 @@ import escalation
 import kb
 import language
 import settings
+from api.client_ip import client_ip
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -70,21 +71,7 @@ class ResolveReq(BaseModel):
 # helpers
 # ---------------------------------------------------------------------------
 def _client_ip(request: Request) -> str:
-    """Resolve the real client IP without trusting attacker-controlled input.
-
-    `X-Forwarded-For` is appended left-to-right (client, proxy1, proxy2, …), so
-    the left-most entry is fully client-supplied and trivially spoofable. We take
-    the value `TRUSTED_PROXY_COUNT` hops from the RIGHT — the address our own
-    edge actually observed — so a forged left-hand IP cannot rotate around the
-    rate limiter.
-    """
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        parts = [p.strip() for p in fwd.split(",") if p.strip()]
-        if parts:
-            idx = min(max(config.TRUSTED_PROXY_COUNT, 1), len(parts))
-            return parts[-idx]
-    return request.client.host if request.client else "unknown"
+    return client_ip(request)
 
 
 def _err(status: int, code: str, detail: str) -> JSONResponse:
