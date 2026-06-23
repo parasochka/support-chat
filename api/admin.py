@@ -10,15 +10,13 @@ import io
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
-                     UploadFile)
+from fastapi import (APIRouter, Depends, HTTPException, Query)
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 import config
 import db
 import kb
-import kb_import
 import language
 import metrics
 import openai_client
@@ -150,7 +148,7 @@ async def unresolved(from_: Optional[str] = Query(default=None, alias="from"),
 
 
 # ---------------------------------------------------------------------------
-# KB management + import
+# KB management
 # ---------------------------------------------------------------------------
 class TopicUpsert(BaseModel):
     slug: str
@@ -214,31 +212,6 @@ async def kb_delete_entry(entry_id: int) -> JSONResponse:
         raise HTTPException(status_code=404, detail="Entry not found or already inactive.")
     await db.log_admin_event(None, "kb_entry_deleted", {"id": entry_id})
     return JSONResponse(content={"ok": True})
-
-
-@router.post("/kb/import")
-async def kb_import_endpoint(file: UploadFile = File(...),
-                            format: str = Form(...),
-                            lang: str = Form("ru")) -> JSONResponse:
-    raw = (await file.read()).decode("utf-8", errors="replace")
-    fallback_slug = (file.filename or "").rsplit(".", 1)[0]
-    try:
-        rows = kb_import.parse(raw, format, fallback_slug=fallback_slug, lang=lang)
-    except kb_import.ImportError_ as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    inserted, skipped = 0, []
-    for r in rows:
-        topic = await db.get_topic_by_slug(r["topic_slug"])
-        if topic is None:
-            skipped.append(r["topic_slug"])
-            continue
-        await db.create_kb_entry(topic["id"], r["lang"], r["content"])
-        inserted += 1
-    await db.log_admin_event(None, "kb_imported",
-                             {"inserted": inserted, "skipped": skipped,
-                              "format": format})
-    return JSONResponse(content={"inserted": inserted, "skipped_unknown_topics": skipped})
 
 
 # ---------------------------------------------------------------------------
