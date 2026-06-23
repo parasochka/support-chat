@@ -120,7 +120,7 @@ otherwise skip the greeting (and the leading name) and go straight to the answer
 greet lives here; `_personalization_directive` (Layer 3) only supplies the name and the "use it
 sparingly" rule.
 
-**Formatting hygiene** is another STATIC Layer-1 directive (`prompts._FORMATTING_DIRECTIVE`):
+**Formatting hygiene** is another STATIC Layer-1 directive (`prompts._FORMATTING_DIRECTIVE`), and `SYSTEM_CORE` must not contradict it by asking for plain text only:
 the model reaches for Markdown on its own (`**bold**`, lists, links), and the widget now renders a
 small fixed subset of it (`widget.js` `renderMarkdown` — see "Conventions"). Left unguided the model
 also emits markup the widget can't render (tables, fenced code blocks, raw HTML), which leaks to the
