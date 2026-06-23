@@ -237,24 +237,6 @@ async def upsert_topic(slug: str, title: dict[str, str], display_order: int,
     return row["id"]
 
 
-async def replace_topic_entry(topic_id: int, lang: str, content: str) -> None:
-    """Idempotent seed: deactivate existing entries for the topic+lang, insert fresh.
-
-    Keeps the seed re-runnable without piling up duplicate active chunks.
-    """
-    async with _pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                "UPDATE kb_entries SET active = FALSE WHERE topic_id = $1 AND lang = $2",
-                topic_id, lang,
-            )
-            await conn.execute(
-                "INSERT INTO kb_entries (topic_id, lang, content, version, active) "
-                "VALUES ($1, $2, $3, 1, TRUE)",
-                topic_id, lang, content,
-            )
-
-
 async def get_topic_by_slug(slug: str) -> Optional[dict[str, Any]]:
     row = await _pool.fetchrow(
         "SELECT id, slug, title, display_order, active FROM kb_topics WHERE slug = $1",
