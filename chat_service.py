@@ -178,9 +178,16 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         already_escalated=session.get("escalated", False),
     )
 
-    if not ok and not clean_text:
-        # Model totally failed: give a graceful, escalation-flavoured message.
-        clean_text = escalation.build_payload(answer_lang)["message"]
+    esc_payload = escalation.inactive_payload()
+    if decision.active:
+        esc_payload = escalation.build_payload(answer_lang)
+
+    if not clean_text and (not ok or decision.active):
+        # The model may return only the [[ESCALATE]] control tag, which strips to
+        # an empty answer. Persist and return the localized hand-off copy instead
+        # of leaving the widget to render a blank assistant bubble before the
+        # escalation card.
+        clean_text = esc_payload["message"]
 
     # On a hand-off the player is being routed to a human, so the guide-to-KB
     # bubbles and the "finish chat" nudge are out of place — drop both. (The
@@ -215,14 +222,12 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     )
 
     # --- apply escalation side effects --------------------------------------
-    esc_payload = escalation.inactive_payload()
     if decision.active:
         if not session.get("escalated", False):
             await db.mark_escalated(session_id)
             await db.log_admin_event(
                 session_id, "escalation", {"reason": decision.reason}
             )
-        esc_payload = escalation.build_payload(answer_lang)
 
     return ChatReply(
         reply=clean_text,

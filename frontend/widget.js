@@ -601,9 +601,18 @@ function addTyping() {
 // note), drop the typing class so the bubble lays out normally, and keep the
 // view pinned to the bottom so the fresh reply is always in focus.
 function fillTyping(elm, text, isError) {
+  const body = String(text || "").trim();
+  if (!body && !isError) {
+    // If a backend ever sends a side payload (for example an escalation card)
+    // without visible assistant text, remove the typing placeholder instead of
+    // converting it into an empty chat bubble.
+    elm.remove();
+    scrollToBottom();
+    return;
+  }
   elm.classList.remove("npchat-typing");
   if (isError) elm.textContent = text;
-  else setMsgBody(elm, "assistant", text);
+  else setMsgBody(elm, "assistant", body);
   scrollToBottom();
 }
 
