@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -51,6 +52,9 @@ async def meta() -> JSONResponse:
 # ---------------------------------------------------------------------------
 # date-range helper
 # ---------------------------------------------------------------------------
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 def _parse_dt(value: Optional[str], default: datetime) -> datetime:
     if not value:
         return default
@@ -70,6 +74,12 @@ def _parse_dt(value: Optional[str], default: datetime) -> datetime:
 def _range(from_: Optional[str], to: Optional[str]) -> tuple[datetime, datetime]:
     now = datetime.now(timezone.utc)
     dt_to = _parse_dt(to, now)
+    # Admin date inputs send YYYY-MM-DD. The SQL range is half-open, so treating
+    # the `to` date as midnight excluded the whole selected day (including
+    # today's sessions on the default dashboard). Make date-only upper bounds
+    # inclusive in the UI by querying up to the next midnight.
+    if to and _DATE_ONLY_RE.match(to):
+        dt_to = dt_to + timedelta(days=1)
     dt_from = _parse_dt(from_, now - timedelta(days=30))
     return dt_from, dt_to
 
