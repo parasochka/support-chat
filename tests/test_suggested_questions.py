@@ -2,7 +2,8 @@
 
 Along with its answer the model emits:
   - [[SUGGEST: q1 | q2 | q3]] — up to three short guide-to-KB follow-up questions
-    (player's POV) the widget renders as one-tap bubbles by the input field, and
+    (player's POV), with the third option nudging toward chat completion, that the
+    widget renders as one-tap bubbles by the input field, and
   - [[RESOLVED]] — once the question looks fully resolved, so the widget can offer
     a "finish chat" button.
 Both tags are stripped from the visible reply and their directives live in Layer
@@ -81,6 +82,7 @@ def test_suggestions_directive_in_layer1_core():
     core = prompts.get_system_core()
     assert "Suggested questions:" in core
     assert "[[SUGGEST:" in core
+    assert "third option must ALWAYS be a closing/resolution option" in core
     msgs = prompts.build_messages(
         {"user_context": {}}, kb_block="KB", history=[], user_text="hi",
         resolved_lang="en",
