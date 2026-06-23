@@ -735,6 +735,39 @@ async function systemPromptBox(holder) {
     } catch (e) { err.textContent = e.message; }
   });
   box.append(save, err);
+
+  // Read-only "full effective prompt" preview. The editable sections above are
+  // only Layer 1; almost every behavioural rule (greeting, formatting,
+  // KB-grounding, escalation restraint, suggestions, finish-chat, topic routing,
+  // language, personalization, guardrails, forbidden topics) lives in the
+  // per-request Layer 3 and never shows in the editor. This block renders the
+  // WHOLE prompt exactly as it's sent to the model, for an example player +
+  // topic, so the owner can see and verify everything in one place.
+  const pv = data.effective_preview;
+  if (pv) {
+    const ex = pv.example || {};
+    box.appendChild(el("div", "npadmin-meta", "Full effective prompt (all layers, as sent)"));
+    box.appendChild(el("div", "npadmin-help",
+      "Read-only. This is the COMPLETE prompt the model receives — Layer 1 (the "
+      + "core above) + Layer 2 (the selected topic's knowledge base) in the system "
+      + "message, then all the Layer-3 directives + the player's data in the user "
+      + "message. The Layer-3 directives (greeting, formatting, KB-grounding, "
+      + "escalation restraint, suggested questions, finish-chat, topic routing, "
+      + "language, guardrails, forbidden topics) are not editable here. Shown for an "
+      + `example: topic «${ex.topic || "—"}», language ${ex.lang || "—"}, sample player. `
+      + "Layer 2 (KB) and the player data vary per request."));
+
+    const sysWrap = el("label", "npadmin-field");
+    sysWrap.appendChild(el("span", null, "System message — Layer 1 (core) + Layer 2 (KB block)"));
+    const sysPre = el("pre", "npadmin-code"); sysPre.textContent = pv.system;
+    sysWrap.appendChild(sysPre); box.appendChild(sysWrap);
+
+    const usrWrap = el("label", "npadmin-field");
+    usrWrap.appendChild(el("span", null, "User message — Layer 3 (directives + player context + message)"));
+    const usrPre = el("pre", "npadmin-code"); usrPre.textContent = pv.user;
+    usrWrap.appendChild(usrPre); box.appendChild(usrWrap);
+  }
+
   holder.appendChild(box);
 }
 

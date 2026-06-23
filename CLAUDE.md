@@ -396,6 +396,18 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   and publishes it live** as a new default `prompt_versions` row (apply-live = one deliberate
   cache reset), reusing the version machinery so A/B attribution + audit stay intact. Layer 2
   (KB) stays in the Knowledge-base tab; Layer 3 (player data) is per-request and not editable.
+  **Full effective-prompt preview (read-only):** the editor only exposes Layer 1, but almost
+  every behavioural rule the owner tunes lives in the per-request **Layer-3 directives**
+  (greeting, formatting, KB-grounding, escalation restraint, suggested questions, finish-chat,
+  topic routing, language, personalization, guardrails, forbidden topics) — so the editor alone
+  looks "stale" next to a bot that behaves "new". To close that gap `GET /admin/system-prompt`
+  also returns `effective_preview` — the **whole** prompt assembled exactly as `chat_service`
+  sends it (`api.admin._build_effective_preview` reuses `prompts.build_messages` with the **live**
+  core body + a sample player + a sample specialized topic's KB), split into the system message
+  (Layer 1 + Layer 2) and the user message (all Layer-3 directives + player context). The SPA
+  renders it below the editable sections as read-only blocks so the owner can always see and
+  verify the complete prompt in one place. It is resilient — if topics/KB can't load it still
+  renders Layer 1 + the Layer-3 directives, never breaking the Settings page.
 - **KB CRUD + import** (`kb_import.py`, `db.*` helpers): versioned entries (edit = new
   version row, delete = soft `active=false`); JSON/CSV/Markdown bulk import.
 - **Escalation Phase 2** (`escalation.open_ticket`, `notifiers/telegram.py`,

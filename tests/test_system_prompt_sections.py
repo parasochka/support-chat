@@ -115,6 +115,76 @@ async def test_put_system_prompt_publishes_composed_core(monkeypatch):
         settings.invalidate()
 
 
+async def test_get_system_prompt_includes_full_effective_preview(monkeypatch):
+    # The admin must be able to see the WHOLE prompt (all 3 layers), not just the
+    # Layer-1 sections — otherwise the Layer-3 rules (greeting, formatting,
+    # KB-grounding, escalation restraint, suggestions, resolved, topic routing,
+    # forbidden topics) are invisible and can't be verified.
+    async def _default_version():
+        return {"id": 5, "name": "live-core", "body": "ЖИВОЕ ЯДРО ПРОМПТА"}
+
+    async def _list_topics(include_hidden=False):
+        return [
+            {"id": 1, "slug": "other", "title": {"ru": "Другое", "en": "Other"}},
+            {"id": 2, "slug": "deposits", "title": {"ru": "Депозиты", "en": "Deposits"}},
+            {"id": 3, "slug": "bonuses", "title": {"ru": "Бонусы", "en": "Bonuses"}},
+        ]
+
+    async def _kb_content(topic_id, lang="ru"):
+        return "Q: Как пополнить счёт?\nA: Через кассу." if topic_id == 2 else None
+
+    monkeypatch.setattr(db, "get_default_prompt_version", _default_version)
+    monkeypatch.setattr(db, "list_topics", _list_topics)
+    monkeypatch.setattr(db, "get_kb_content", _kb_content)
+
+    settings.invalidate()
+    try:
+        resp = await admin.get_system_prompt()
+        data = json.loads(resp.body)
+        pv = data["effective_preview"]
+        # Layer 1 (the live core body) + Layer 2 (the chosen topic's KB) are in
+        # the system message; the catch-all 'other' is skipped for a specialized one.
+        assert "ЖИВОЕ ЯДРО ПРОМПТА" in pv["system"]
+        assert "БАЗА ЗНАНИЙ" in pv["system"]
+        assert "Как пополнить счёт" in pv["system"]
+        assert pv["example"]["topic"] == "Deposits"  # localized to default lang
+        # Layer-3 directives that are NOT in the editable sections must be visible.
+        user = pv["user"]
+        assert "Форматирование:" in user           # formatting directive
+        assert "Опора на базу знаний:" in user      # KB-grounding directive
+        assert "Эскалация — крайняя мера" in user   # escalation restraint
+        assert "Наводящие вопросы:" in user         # suggested questions
+        assert "МАРШРУТИЗАЦИЯ ПО ТЕМАМ" in user     # topic routing
+        assert "Иван" in user                       # sample player personalization
+    finally:
+        settings.invalidate()
+
+
+async def test_effective_preview_resilient_when_topics_unavailable(monkeypatch):
+    # If topic/KB loading fails the preview must still render Layer 1 + Layer 3,
+    # never break the settings page.
+    async def _default_version():
+        return {"id": 1, "name": "v1", "body": prompts.SYSTEM_CORE}
+
+    async def _boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(db, "get_default_prompt_version", _default_version)
+    monkeypatch.setattr(db, "list_topics", _boom)
+
+    settings.invalidate()
+    try:
+        resp = await admin.get_system_prompt()
+        pv = json.loads(resp.body)["effective_preview"]
+        assert prompts.SYSTEM_CORE in pv["system"]
+        assert pv["example"]["topic"] is None
+        # 'other'/no-topic regime: KB-grounding is skipped only for the catch-all;
+        # with no current topic the grounding directive still appears.
+        assert "Эскалация — крайняя мера" in pv["user"]
+    finally:
+        settings.invalidate()
+
+
 async def test_put_system_prompt_rejects_unknown_section(monkeypatch):
     from fastapi import HTTPException
     import pytest
