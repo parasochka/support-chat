@@ -38,21 +38,16 @@ async def topic_by_slug(slug: str) -> Optional[dict[str, Any]]:
     return await db.get_topic_by_slug(slug)
 
 
-async def kb_block_for_topic(topic_id: Optional[int],
-                             lang: Optional[str] = None) -> Optional[str]:
+async def kb_block_for_topic(topic_id: Optional[int]) -> Optional[str]:
     """Return the KB chunk for the selected topic (Layer 2), or None.
 
-    Phase 2 §12: if a topic has an entry in the resolved answer language, inject
-    that; otherwise fall back to the Russian source entry (Phase 1 behaviour),
-    with the Layer-3 "answer in {LANG}" directive still steering the output.
+    The KB is single-language (the source language). The Layer-3 "answer in
+    {LANG}" directive still steers the output language regardless of the KB
+    language, so the model translates as it answers.
     """
     if topic_id is None:
         return None
-    if lang and lang != "ru":
-        localized = await db.get_kb_content(topic_id, lang=lang)
-        if localized:
-            return localized
-    return await db.get_kb_content(topic_id, lang="ru")
+    return await db.get_kb_content(topic_id)
 
 
 async def suggestable_topics(

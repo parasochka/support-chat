@@ -322,9 +322,7 @@ async def send_message(req: Request, body: MessageSend,
             await db.mark_escalated(body.session_id)
             await db.log_admin_event(body.session_id, "escalation",
                                      {"reason": "message_cap"})
-            esc_payload = await escalation.open_ticket(session, "cap_reached", ans_lang)
-        else:
-            esc_payload = escalation.build_payload(ans_lang)
+        esc_payload = escalation.build_payload(ans_lang)
         return JSONResponse(
             status_code=200,
             content={
@@ -398,9 +396,7 @@ async def escalate(body: EscalateReq,
     if not session.get("escalated", False):
         await db.mark_escalated(body.session_id)
         await db.log_admin_event(body.session_id, "escalation", {"reason": "explicit"})
-        esc_payload = await escalation.open_ticket(session, "user_request", ans_lang)
-    else:
-        esc_payload = escalation.build_payload(ans_lang)
+    esc_payload = escalation.build_payload(ans_lang)
 
     return JSONResponse(
         status_code=200,

@@ -1,11 +1,10 @@
-"""FastAPI app: lifespan(init_db + seed), body-cap middleware, routers, static.
+"""FastAPI app: lifespan(init_db), body-cap middleware, routers, static.
 
 Serves the frontend widget + test page statically so the owner can open the test
 page on Railway and tune the bot end-to-end.
 """
 from __future__ import annotations
 
-import html
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -22,8 +21,6 @@ from api import admin as admin_api
 from api import admin_auth as admin_auth_api
 from api import chat as chat_api
 from api import health as health_api
-from seed import kb_seed
-from seed import settings_seed
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,27 +29,7 @@ logging.basicConfig(
 log = logging.getLogger(config.SERVICE_NAME)
 
 _FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
-_PROJECT_DIR = os.path.dirname(__file__)
 _TEST_PAGE = os.path.join(_FRONTEND_DIR, "test.html")
-_CLAUDE_MD = os.path.join(_PROJECT_DIR, "CLAUDE.md")
-_CLAUDE_MD_MARKER = "<!--CLAUDE_MD_CONTENT-->"
-
-
-def _render_test_page() -> str:
-    """Inject the live CLAUDE.md contents into the test page template.
-
-    CLAUDE.md is the single source of truth and is kept identical to README.md;
-    it is read on every request so the root page always reflects the current
-    file. The contents are HTML-escaped before landing inside the <pre> block.
-    """
-    with open(_TEST_PAGE, encoding="utf-8") as f:
-        template = f.read()
-    try:
-        with open(_CLAUDE_MD, encoding="utf-8") as f:
-            doc = f.read()
-    except OSError:
-        doc = ""
-    return template.replace(_CLAUDE_MD_MARKER, html.escape(doc))
 
 
 def _warn_insecure_config() -> None:
@@ -76,11 +53,9 @@ def _warn_insecure_config() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("Starting %s: init_db + seed", config.SERVICE_NAME)
+    log.info("Starting %s: init_db", config.SERVICE_NAME)
     _warn_insecure_config()
     await db.init_db()
-    await kb_seed.run()
-    await settings_seed.run()     # capture current env tuning into app_settings (once)
     await settings.reload()       # populate the hot settings cache from app_settings
     log.info("Startup complete")
     try:
@@ -129,8 +104,8 @@ app.include_router(admin_api.router)        # /admin/* data + management (guarde
 
 # --- static frontend --------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
-async def index() -> HTMLResponse:
-    return HTMLResponse(_render_test_page())
+async def index() -> FileResponse:
+    return FileResponse(_TEST_PAGE, media_type="text/html")
 
 
 if os.path.isdir(_FRONTEND_DIR):
@@ -166,5 +141,5 @@ async def widget_css() -> FileResponse:
 
 
 @app.get("/test.html", response_class=HTMLResponse)
-async def test_html() -> HTMLResponse:
-    return HTMLResponse(_render_test_page())
+async def test_html() -> FileResponse:
+    return FileResponse(_TEST_PAGE, media_type="text/html")

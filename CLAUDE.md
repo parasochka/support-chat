@@ -7,9 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A standalone FastAPI microservice serving an AI customer-support chat for **NikaBet**
 (casino + sportsbook on the NowPlix B2B platform). It is API-isolated: other modules
 talk to it over HTTP/JSON by `session_id` (UUID), and the contract is consumer-agnostic
-so multiple front-ends can plug in. **Phase 1 and Phase 2 are both implemented** — the
-admin dashboard, hot-reloaded tuning, KB CRUD, Telegram escalation, and the signed
-front-end handshake are all built (see "Phase 2" below).
+so multiple front-ends can plug in. The admin dashboard, hot-reloaded tuning, KB editing,
+and the signed front-end handshake are all built (see "Admin / management" below).
+Escalation is a contact-button hand-off (no in-app form, no live agent).
 
 **The prompt lives in one place: the file `prompts.py` (the single source of truth).**
 Layer 1 (`SYSTEM_CORE`), every Layer-3 directive, and the forbidden-topics list are
@@ -131,29 +131,19 @@ model with failover, strips the `[[ESCALATE]]` sentinel, decides escalation, com
 and persists the turn — all in one place.
 
 ### Data layer — no ORM, no migrations (`db.py`)
-The schema *is* the code in `db.init_db()` (run on startup via `main.py` lifespan, then
-`seed/kb_seed.run()`). To change schema, edit the `_SCHEMA` string. **A new column on an
-existing table will NOT be applied by `CREATE TABLE IF NOT EXISTS`** — add an idempotent
-`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` to `_ensure_columns()` (the seam is already
-there, currently empty). Every table read/write goes through a `db.<name>(...)` async
-helper; nothing else touches tables directly.
+The schema *is* the code in `db.init_db()` (run on startup via `main.py` lifespan). To change
+schema, edit the `_SCHEMA` string. **A new column on an existing table will NOT be applied by
+`CREATE TABLE IF NOT EXISTS`** — add an idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
+to `_ensure_columns()`. Every table read/write goes through a `db.<name>(...)` async helper;
+nothing else touches tables directly.
 
-### Seeds are non-destructive bootstrap (`seed/*.run()`, the seed contract)
-On startup `main.py` runs `kb_seed.run()` → `settings_seed.run()`
-**on every boot** (the DB persists across redeploys; the seeds re-run each time). The DB —
-not the code — is the source of truth for runtime settings + KB once the owner edits anything
-in the admin panel, so **every seed MUST be seed-once / non-destructive: create a row only
-when it is missing, and never overwrite an existing one.** `settings_seed` (fills only missing
-setting fields) follows this; `kb_seed` now does too — it creates a built-in topic + its
-placeholder KB only when absent, and leaves an existing topic's `title/order/active` and KB
-untouched (a test enforces this). This is what keeps a redeploy from wiping admin edits.
-Earlier `kb_seed` clobbered the live KB on **every** restart (it deactivated all entries and
-re-inserted the placeholder at version 1), silently reverting the owner's changes back to
-placeholders — never reintroduce a seed that mutates existing data. (The old destructive
-`db.replace_topic_entry` helper was removed for the same reason; the seed creates fresh entries
-via `db.create_kb_entry`.) Deleting the `seed/` package is NOT a fix: it's the bootstrap for a
-fresh/empty DB (new env, DB recreation, local dev), and without it such a DB has no topics, KB,
-or settings. (The **prompt** is not seeded — it lives in `prompts.py`, not the DB.)
+### No seeds — empty DB starts empty
+There is **no seed step**. On a fresh/empty database there are no topics, KB, or stored
+settings: the owner creates topics + their KB from the admin panel, and runtime settings
+resolve through `settings.*()` with precedence `app_settings` (DB) → env → built-in default,
+so an empty `app_settings` simply falls back to env/defaults until the owner overrides a knob
+in the admin. The DB is the source of truth for KB + settings once edited; nothing on boot
+mutates existing rows. (The **prompt** is not stored at all — it lives in `prompts.py`.)
 
 ### Atomic turn write (invariant)
 `db.persist_turn` writes the user message, the assistant message, the `ai_interaction_logs`
@@ -184,9 +174,7 @@ come from the hot-reloaded `model` settings group (`settings.model()`, precedenc
 attempts are read **live per call**; `request_timeout_sec` and `max_concurrent_per_key` are
 bound when the client is built, so a `model` write also calls `openai_client.reset()` to
 rebuild the singleton (no effect on the OpenAI-side prefix cache). API keys themselves stay
-secrets in env. `seed/settings_seed.py` also runs a one-time migration that flips a stored
-legacy `gpt-4`/`gpt-3` `model` override to the new default and drops the dead `temperature`
-key, so an existing deployment moves to GPT-5.4 mini on boot without a manual settings edit.
+secrets in env.
 
 ### Anti-spam gate order (`antispam.py`, enforced in `api/chat.py`)
 `POST /api/chat/message` checks in this exact order: verify session token (401) → IP
@@ -247,14 +235,13 @@ drifts to another supported language. Async responses (`/topics`, `/session`) st
 `state.lang` and never redefine it. The set of supported languages still comes from the
 hot-reloaded `language` settings group (`default` + `supported`).
 
-> The `chat_sessions.lang_locked` column is dead (kept only to avoid a schema migration);
-> it is no longer read or written by the chat flow.
-
 ### Escalation (`escalation.py`)
-Phase 1 returns a contact-button payload only (no form, no live agent). `decide()` triggers
-on: high-risk keywords (fraud/legal), explicit human requests, message cap, or the model's
-`[[ESCALATE]]` sentinel. On escalation, `chat_sessions.status='escalated'` and an
-`admin_events('escalation')` row is written. The button URL is `CONTACT_FORM_URL`.
+Escalation returns a contact-button payload only (no form, no live agent, no ticket/Telegram
+notifier). `decide()` triggers on: high-risk keywords (fraud/legal), explicit human requests,
+message cap, or the model's `[[ESCALATE]]` sentinel. On escalation, `chat_sessions.status=
+'escalated'` and an `admin_events('escalation')` row is written, and `build_payload(lang)`
+returns the localized message + contact button. The button URL is `CONTACT_FORM_URL`
+(via the `general` settings group).
 
 ### Topic routing (`[[TOPIC:slug]]` sentinel)
 Only the selected topic's KB is loaded (Layer 2), so a question that belongs to a *different*
@@ -289,7 +276,7 @@ in `chat_service`) only feeds the model turns newer than that boundary. Without 
 re-sent the *whole* prior transcript; the model saw the old topic's conversation (now re-listed as a
 suggestable topic) and kept suggesting switching back — an endless loop. After a switch the first turn
 carries only the triggering message, so the new topic is the only thing in context. The **full**
-transcript is untouched — resume (`GET /session/{id}`) and the escalation ticket snapshot both call
+transcript is untouched — resume (`GET /session/{id}`) and the admin session view both call
 `get_history` without `after_id`, so the player and admins still see everything.
 
 ### Suggested follow-up questions + finish-chat (`[[SUGGEST:…]]` / `[[RESOLVED]]` sentinels)
@@ -356,9 +343,9 @@ localizes to the player's language. Lives in Layer 3 only, so `SYSTEM_CORE` stay
    player-facing facts — KB uses `{{PLACEHOLDER}}` tokens the owner replaces.
 9. `_PRICING` is "verify before trusting"; cost is derived, not ground truth.
 
-## Phase 2 (implemented)
+## Admin / management
 
-Built on the same stack, extending — not rebuilding — Phase 1. Map of what lives where:
+Map of what lives where:
 
 - **Admin auth** (`api/admin_auth.py`, `auth.py`): `POST /admin/login` (constant-time
   password compare against `ADMIN_PASSWORD`, rate-limited, failures → `admin_login_failed`)
@@ -377,12 +364,10 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   `body_max_bytes`). **The prompt is NOT a settings group** — it lives in `prompts.py` (the
   single source of truth), not `app_settings`. The goal is that every non-secret *operational*
   knob lives in the admin panel and only true secrets (API keys, JWT secrets, `DATABASE_URL`,
-  `ADMIN_PASSWORD`, Telegram/handshake/reCaptcha secrets) — plus the network-perimeter deploy
-  vars (`CORS_ALLOW_ORIGINS`, `TRUSTED_PROXY_COUNT`) — stay in Railway env. On startup
-  `seed/settings_seed.run()` snapshots the current env-resolved values for the `antispam`,
-  `model`, `general`, `language`, and `escalation` (max-messages) groups into `app_settings`
-  once (missing fields only; never clobbers an existing override) so the matching env vars
-  can be deleted from Railway with no behaviour change.
+  `ADMIN_PASSWORD`, handshake/reCaptcha secrets) — plus the network-perimeter deploy
+  vars (`CORS_ALLOW_ORIGINS`, `TRUSTED_PROXY_COUNT`) — stay in Railway env. There is no seed:
+  an empty `app_settings` resolves through env → default, and the owner's first write to a
+  group persists that override in the DB.
 - **Dashboard data API** (`api/admin.py` + `db.py` aggregation + `metrics.py` derived
   rates): overview/timeseries/by-topic/by-language/sessions/session/unresolved.
   `resolution_rate` is a documented PROXY (counts "not escalated", incl. abandoned →
@@ -403,14 +388,16 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   resilient — if topics/KB can't load it still renders Layer 1 + the Layer-3 directives, never
   breaking the page. (Layer 2, the per-topic KB, is the one prompt input still edited in the
   admin — in the Knowledge-base tab — because it's answer content, not instructions.)
-- **KB CRUD** (`db.*` helpers): versioned entries (edit = new version row, delete = soft `active=false`).
-- **Escalation Phase 2** (`escalation.open_ticket`, `notifiers/telegram.py`,
-  `escalation_tickets` table): snapshots the transcript + context into a ticket, notifies
-  Telegram if configured, and ALWAYS returns the Phase 1 contact button (user never
-  stranded; delivery failure → `telegram_notify_failed`).
+- **KB editing** (`db.*` helpers, `api/admin.py` `/admin/kb/*`): **one KB text per topic**,
+  single-language. `GET /admin/kb/content?topic_id=` reads it, `PUT /admin/kb/content` sets it
+  (updates the topic's active entry in place, or inserts one), `DELETE /admin/kb/content?topic_id=`
+  soft-clears it (`active=false`). No versioning, no per-language entries — the Layer-3 language
+  directive still makes the model answer in the player's language regardless of the KB language.
+- **Escalation** (`escalation.build_payload`): returns the localized contact-button payload.
+  No ticket snapshot, no Telegram notifier — the hand-off is the contact button only.
 - **Signed handshake** (`auth.sign_handshake`/`verify_handshake`, `api/chat.create_session`):
   with `WIDGET_HANDSHAKE_SECRET` set, only a valid signed blob is trusted for
-  `user_context`; raw browser context is ignored. No secret ⇒ Phase 1 dev behaviour. The
+  `user_context`; raw browser context is ignored. No secret ⇒ dev behaviour. The
   injection sanitizer runs in every mode.
 - **Test sandbox profile** (`settings.test_profile`/`validate_test_profile`,
   `app_settings['test_profile']`, `api.admin` `GET/PUT /admin/test-profile`, the **Test
@@ -433,7 +420,7 @@ host-site button only; admin auth = single owner (token shaped for future multi-
 
 - Stdlib-only JWT (`auth.py`) — HS256 via `hmac`/`hashlib`/`base64`, no PyJWT.
 - Front-end is vanilla ES modules with **no build step**; widget classes are prefixed
-  `npchat-` to avoid host-page collisions. Phase 2 admin SPA should use `npadmin-`.
+  `npchat-` to avoid host-page collisions. The admin SPA uses `npadmin-`.
 - **Assistant replies render a small, safe Markdown subset** (`widget.js`
   `renderMarkdown`): the model formats answers with light Markdown on its own
   (`**bold**`, numbered/bulleted lists, `code`, links), so rendering them as plain text
@@ -446,19 +433,11 @@ host-site button only; admin auth = single owner (token shaped for future multi-
   (`setMsgBody`); **user input is always rendered literally** via `textContent`.
 - Deploy is Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the
   CMD reads `$PORT`, no `startCommand` override. Health check is `/healthz`.
-- Develop on branch `claude/pensive-tesla-opotpt`; do not push to other branches.
 - Env var reference lives in `README.md` (§ "Environment variables").
-- **`CLAUDE.md` is the single source of truth for docs; `README.md` is a generated
-  mirror of it** (kept byte-identical) and the root test page (`main.py` `/`) renders
-  `CLAUDE.md` live on every request. Never edit `README.md` by hand — edit `CLAUDE.md`,
-  and the sync happens automatically via the `.githooks/pre-commit` hook (enable once
-  per clone: `git config core.hooksPath .githooks`). A `docs-sync` GitHub Action fails
-  the build if the two ever drift; `sh scripts/sync_readme.sh` re-syncs manually.
-
-> **MANDATORY DOCS-SYNC RULE (Claude must always follow this).** `CLAUDE.md` is the
-> single source of truth; `README.md` is a byte-identical generated mirror. **Whenever you
-> change `CLAUDE.md`, you MUST regenerate `README.md` in the SAME change** by running
-> `sh scripts/sync_readme.sh` (or copying `CLAUDE.md` over `README.md`) and staging both
-> files before committing. Never edit `README.md` by hand. The root test page (`main.py`
-> `/`) already renders `CLAUDE.md` live, and the `docs-sync` GitHub Action fails the build
-> if the two ever drift — so the human does not need to enable any git hook for this to work.
+- **Two docs, two audiences:** `README.md` is the human-facing overview; **`CLAUDE.md`
+  (this file) is the LLM/agent guidance** — architecture, invariants, conventions. They are
+  no longer mirrored or auto-synced (the old `docs-sync` hook/Action and `scripts/sync_readme.sh`
+  were removed). Edit each for its audience: update `CLAUDE.md` when you change architecture or
+  invariants, and `README.md` when the human-facing overview or env table changes. The root
+  test page (`main.py` `/`) serves a static `frontend/test.html` (a short feature summary), not
+  this file.

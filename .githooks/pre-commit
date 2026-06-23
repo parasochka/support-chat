@@ -1,7 +1,0 @@
-#!/bin/sh
-# Auto-sync README.md from CLAUDE.md on every commit, then re-stage it so the
-# two files never drift. Enable once with:  git config core.hooksPath .githooks
-set -e
-root="$(git rev-parse --show-toplevel)"
-sh "$root/scripts/sync_readme.sh"
-git add "$root/README.md"

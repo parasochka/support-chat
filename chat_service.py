@@ -89,7 +89,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
             "slug": topic_slug,
             "title": kb.localize_title(topic.get("title"), title_lang) if topic else topic_slug,
         }
-    kb_block = await kb.kb_block_for_topic(topic_id, lang=title_lang)
+    kb_block = await kb.kb_block_for_topic(topic_id)
     # Only feed the model turns from the current topic context. After a topic
     # switch `context_reset_id` marks the boundary, so the previous topic's
     # transcript can't re-trigger a [[TOPIC:...]] suggestion back to it (the
@@ -222,14 +222,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
             await db.log_admin_event(
                 session_id, "escalation", {"reason": decision.reason}
             )
-            # New escalation: snapshot a ticket + notify Telegram (button always
-            # returned, even if delivery fails). Already-escalated sessions skip
-            # this to avoid duplicate tickets.
-            esc_payload = await escalation.open_ticket(
-                session, decision.reason or "model_unresolved", answer_lang
-            )
-        else:
-            esc_payload = escalation.build_payload(answer_lang)
+        esc_payload = escalation.build_payload(answer_lang)
 
     return ChatReply(
         reply=clean_text,

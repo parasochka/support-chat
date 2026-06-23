@@ -51,5 +51,4 @@ def overview(raw: dict[str, Any]) -> dict[str, Any]:
         "rate_limit_blocks": events.get("rate_limited", 0),
         "injection_blocks": events.get("injection_blocked", 0),
         "escalations": events.get("escalation", 0),
-        "telegram_notify_failed": events.get("telegram_notify_failed", 0),
     }
