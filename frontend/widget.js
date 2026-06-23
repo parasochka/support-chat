@@ -556,12 +556,43 @@ function setMsgBody(elm, role, text) {
   else elm.textContent = text == null ? "" : text;
 }
 
+// Pin the transcript to its newest content. The scrolling element is
+// `.npchat-body` (it owns `overflow-y: auto`), NOT `.npchat-messages` — so this
+// is what keeps the latest turn in view without the player scrolling by hand.
+function scrollToBottom() {
+  if (els.body) els.body.scrollTop = els.body.scrollHeight;
+}
+
 function addMessage(role, text) {
   const m = el("div", `npchat-msg npchat-msg-${role}`);
   setMsgBody(m, role, text);
   els.messages.appendChild(m);
-  els.messages.scrollTop = els.messages.scrollHeight;
+  scrollToBottom();
   return m;
+}
+
+// A "typing" placeholder bubble — three bouncing dots shown while the model is
+// generating the reply, so the player sees the request is in flight and an
+// answer is coming. Replaced in place by fillTyping() once the turn resolves.
+function addTyping() {
+  const m = el("div", "npchat-msg npchat-msg-assistant npchat-typing");
+  m.innerHTML =
+    '<span class="npchat-dot"></span>' +
+    '<span class="npchat-dot"></span>' +
+    '<span class="npchat-dot"></span>';
+  els.messages.appendChild(m);
+  scrollToBottom();
+  return m;
+}
+
+// Swap the bouncing-dots placeholder for the real assistant answer (or an error
+// note), drop the typing class so the bubble lays out normally, and keep the
+// view pinned to the bottom so the fresh reply is always in focus.
+function fillTyping(elm, text, isError) {
+  elm.classList.remove("npchat-typing");
+  if (isError) elm.textContent = text;
+  else setMsgBody(elm, "assistant", text);
+  scrollToBottom();
 }
 
 function addEscalation(esc) {
@@ -578,7 +609,7 @@ function addEscalation(esc) {
       "(Contact form URL not configured — set CONTACT_FORM_URL)"));
   }
   els.messages.appendChild(wrap);
-  els.messages.scrollTop = els.messages.scrollHeight;
+  scrollToBottom();
 }
 
 // Render a soft "looks like another topic — switch?" prompt with a one-tap
@@ -593,7 +624,7 @@ function addTopicSuggestion(suggested, originalText) {
   btn.addEventListener("click", () => switchTopicAndResend(suggested.slug, originalText, wrap, btn));
   wrap.appendChild(btn);
   els.messages.appendChild(wrap);
-  els.messages.scrollTop = els.messages.scrollHeight;
+  scrollToBottom();
 }
 
 async function switchTopicAndResend(slug, originalText, wrap, btn) {
@@ -605,13 +636,13 @@ async function switchTopicAndResend(slug, originalText, wrap, btn) {
   wrap.classList.add("npchat-suggest-done");
   // The player's question is already in the transcript — just show a fresh
   // assistant turn answered with the new topic's knowledge base.
-  const typing = addMessage("assistant", "…");
+  const typing = addTyping();
   try {
     const data = await sendMessage(originalText);
-    setMsgBody(typing, "assistant", data.reply || "");
+    fillTyping(typing, data.reply || "");
     applyTurnExtras(data, originalText);
   } catch (e) {
-    typing.textContent = t("sendError");
+    fillTyping(typing, t("sendError"), true);
   }
 }
 
@@ -858,13 +889,13 @@ async function submitText(text) {
   if (!text) return;
   clearSuggestions();
   addMessage("user", text);
-  const typing = addMessage("assistant", "…");
+  const typing = addTyping();
   try {
     const data = await sendMessage(text);
-    setMsgBody(typing, "assistant", data.reply || "");
+    fillTyping(typing, data.reply || "");
     applyTurnExtras(data, text);
   } catch (e) {
-    typing.textContent = t("sendError");
+    fillTyping(typing, t("sendError"), true);
   }
 }
 
