@@ -107,7 +107,9 @@ RESPONSE LANGUAGE:
 
 RESPONSE STYLE:
 - Ordinary human speech: no internal terms, no thinking out loud, no mention of the knowledge base, tags or system details.
-- Short and to the point."""
+- Keep replies compact: normally 1-3 short sentences.
+- Prefer plain text over structure. Use bullets only when they make the answer clearly easier to read, and then use no more than 3 short bullets.
+- Do not add a long intro, recap, or extra closing paragraph when a direct answer is enough."""
 
 
 def _static_directives() -> list[str]:
@@ -301,7 +303,10 @@ _FORMATTING_DIRECTIVE = (
     "lists, `monospace` for technical values, and links like [text](https://...). "
     "Do NOT use other elements: tables, fenced code blocks in triple backticks "
     "(```), HTML tags or images — the widget does not render them, and such markup "
-    "reaches the player as stray characters. Emphasize moderately, without overload."
+    "reaches the player as stray characters. Keep formatting minimal: avoid lists "
+    "unless they are truly needed, never use more than 3 short bullets or numbered "
+    "items, and do not split a simple answer into many sections. Emphasize "
+    "moderately, without overload."
 )
 
 
@@ -377,16 +382,20 @@ _ESCALATION_RESTRAINT_DIRECTIVE = (
 _SUGGESTIONS_DIRECTIVE = (
     "Suggested questions: at the very end of the reply, on its own LAST line, "
     "output the machine tag [[SUGGEST: question 1 | question 2 | question 3]] — "
-    "2-3 short guiding/clarifying questions FROM THE PLAYER'S point of view (as if "
-    "they were asking them, in the first person) that will help lead them to a "
-    "concrete answer from the knowledge base. Pick them by which knowledge-base "
-    "entries the player's question is closest to: they should be the next logical "
-    "questions whose answers ARE in the knowledge base. Keep each one short (up to "
-    "7 words), in the same language as the reply, with no numbering inside the tag, "
-    "separating the questions with the '|' character. If no suitable guiding "
-    "questions from the knowledge base remain, do NOT output this tag (the finish-"
-    "chat signal below applies instead). The tag is for the system; write it "
-    "exactly like that."
+    "exactly 3 short options FROM THE PLAYER'S point of view (as if they were "
+    "asking them, in the first person). The first two options must be "
+    "guiding/clarifying questions that lead to concrete answers from the knowledge "
+    "base; pick the next logical questions whose answers ARE in the knowledge "
+    "base. The third option must ALWAYS be a closing/resolution option that hints "
+    "the issue is solved and the player is ready to finish the chat (for example: "
+    "\"Is my issue solved?\", \"All clear, finish the chat?\", or the same idea "
+    "in the reply language). Keep each option short (up to 7 words), in the same "
+    "language as the reply, with no numbering inside the tag, separating the "
+    "questions with the '|' character. If fewer than two suitable guiding "
+    "questions remain, still include the third closing/resolution option. If no "
+    "suitable guiding questions from the knowledge base remain at all, do NOT "
+    "output this tag (the finish-chat signal below applies instead). The tag is "
+    "for the system; write it exactly like that."
 )
 
 
