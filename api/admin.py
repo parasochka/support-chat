@@ -157,13 +157,8 @@ class TopicUpsert(BaseModel):
     active: bool = True
 
 
-class EntryCreate(BaseModel):
+class KBContentWrite(BaseModel):
     topic_id: int
-    lang: str = "ru"
-    content: str
-
-
-class EntryUpdate(BaseModel):
     content: str
 
 
@@ -180,37 +175,26 @@ async def kb_upsert_topic(body: TopicUpsert) -> JSONResponse:
     return JSONResponse(content=await db.get_topic_by_id(tid))
 
 
-@router.get("/kb/entries")
-async def kb_entries(topic_id: int, include_inactive: bool = False) -> JSONResponse:
-    return JSONResponse(content={
-        "entries": await db.list_kb_entries(topic_id, include_inactive=include_inactive)
-    })
+@router.get("/kb/content")
+async def kb_content(topic_id: int) -> JSONResponse:
+    """The topic's single KB text (one entry per topic), or null when empty."""
+    entry = await db.get_kb_entry(topic_id)
+    return JSONResponse(content={"content": entry["content"] if entry else None})
 
 
-@router.post("/kb/entries")
-async def kb_create_entry(body: EntryCreate) -> JSONResponse:
-    eid = await db.create_kb_entry(body.topic_id, body.lang.lower(), body.content)
-    await db.log_admin_event(None, "kb_entry_created",
-                             {"id": eid, "topic_id": body.topic_id, "lang": body.lang})
+@router.put("/kb/content")
+async def kb_set_content(body: KBContentWrite) -> JSONResponse:
+    eid = await db.set_kb_content(body.topic_id, body.content)
+    await db.log_admin_event(None, "kb_content_updated", {"topic_id": body.topic_id})
     return JSONResponse(content={"id": eid})
 
 
-@router.put("/kb/entries/{entry_id}")
-async def kb_update_entry(entry_id: int, body: EntryUpdate) -> JSONResponse:
-    new_id = await db.update_kb_entry(entry_id, body.content)
-    if new_id is None:
-        raise HTTPException(status_code=404, detail="Entry not found.")
-    await db.log_admin_event(None, "kb_entry_updated",
-                             {"from": entry_id, "to": new_id})
-    return JSONResponse(content={"id": new_id})
-
-
-@router.delete("/kb/entries/{entry_id}")
-async def kb_delete_entry(entry_id: int) -> JSONResponse:
-    ok = await db.soft_delete_kb_entry(entry_id)
+@router.delete("/kb/content")
+async def kb_clear_content(topic_id: int) -> JSONResponse:
+    ok = await db.clear_kb_content(topic_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="Entry not found or already inactive.")
-    await db.log_admin_event(None, "kb_entry_deleted", {"id": entry_id})
+        raise HTTPException(status_code=404, detail="Topic has no KB to clear.")
+    await db.log_admin_event(None, "kb_content_cleared", {"topic_id": topic_id})
     return JSONResponse(content={"ok": True})
 
 
@@ -337,7 +321,7 @@ async def _build_effective_preview() -> dict[str, Any]:
                 "title": kb.localize_title(chosen.get("title"), lang),
             }
             example_topic = current_topic["title"]
-            kb_block = await kb.kb_block_for_topic(chosen["id"], lang=lang)
+            kb_block = await kb.kb_block_for_topic(chosen["id"])
             suggestable = await kb.suggestable_topics(
                 exclude_topic_id=chosen["id"], lang=lang)
     except Exception:  # pragma: no cover - preview must never break the page

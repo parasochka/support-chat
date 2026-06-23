@@ -392,77 +392,47 @@ async function viewUnresolved(main) {
 async function viewKB(main) {
   main.appendChild(el("h1", "npadmin-h", "Knowledge base"));
   main.appendChild(el("div", "npadmin-help",
-    "These are the live knowledge-base entries injected per topic into the prompt. "
-    + "The default Russian KB ships seeded — view, edit or extend it below."));
+    "One knowledge-base text per topic, injected into the prompt for that topic. "
+    + "Edit a topic's text below and save."));
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
-    await ensureMeta();
     const data = await api("/kb/topics");
     holder.innerHTML = "";
 
     for (const topic of data.topics) {
       const tt = topic.title.en || topic.title.ru || topic.slug;
-      holder.appendChild(el("h3", null, `${tt} — ${topic.slug} (${topic.entry_count} entries)`));
-      const editor = el("div", "npadmin-row");
-      const ta = el("textarea", "npadmin-input");
-      ta.placeholder = "New entry content…";
-      const langSel = langSelect("ru");
-      const save = el("button", "npadmin-btn", "Add entry");
-      save.addEventListener("click", async () => {
-        if (!ta.value.trim()) return;
-        await api("/kb/entries", { method: "POST",
-          body: { topic_id: topic.id, lang: langSel.value, content: ta.value } });
-        viewKB(main);
-      });
-      const left = el("div", "npadmin-col"); left.append(ta);
-      const right = el("div", "npadmin-col");
-      right.append(el("div", "npadmin-meta", "lang"), langSel, save);
-      editor.append(left, right);
-      holder.appendChild(editor);
+      holder.appendChild(el("h3", null, `${tt} — ${topic.slug}`));
 
-      // list existing entries with inline edit + delete
-      const entries = await api(`/kb/entries?topic_id=${topic.id}`);
-      const t = table(["Lang", "Ver", "Content", "Actions"]);
-      for (const e of entries.entries) {
-        const actions = el("td");
-        const editBtn = el("button", "npadmin-btn ghost", "Edit");
-        const delBtn = el("button", "npadmin-btn ghost", "Delete");
-        editBtn.addEventListener("click", () => openKBEntryEditor(main, e));
-        delBtn.addEventListener("click", async () => {
-          if (!confirm("Delete this KB entry?")) return;
-          await api(`/kb/entries/${e.id}`, { method: "DELETE" }); viewKB(main);
-        });
-        actions.append(editBtn, delBtn);
-        const tr = rowEls(t, [e.lang, e.version, e.content.slice(0, 120)]);
-        tr.appendChild(actions);
-      }
-      holder.appendChild(t);
+      const ta = el("textarea", "npadmin-input");
+      ta.placeholder = "Knowledge-base text for this topic…";
+      ta.style.minHeight = "180px"; ta.style.width = "100%";
+      const current = await api(`/kb/content?topic_id=${topic.id}`);
+      ta.value = current.content || "";
+
+      const err = el("div", "npadmin-err");
+      const save = el("button", "npadmin-btn", "Save");
+      save.addEventListener("click", async () => {
+        err.textContent = "";
+        try {
+          await api("/kb/content", { method: "PUT",
+            body: { topic_id: topic.id, content: ta.value } });
+          save.textContent = "Saved ✓";
+          setTimeout(() => { save.textContent = "Save"; }, 1500);
+        } catch (e) { err.textContent = e.message; }
+      });
+
+      const clear = el("button", "npadmin-btn ghost", "Clear");
+      clear.addEventListener("click", async () => {
+        if (!confirm("Clear this topic's knowledge base?")) return;
+        try {
+          await api(`/kb/content?topic_id=${topic.id}`, { method: "DELETE" });
+          ta.value = "";
+        } catch (e) { err.textContent = e.message; }
+      });
+
+      holder.append(ta, save, clear, err);
     }
   } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
-}
-
-// Full-screen-ish inline editor for a single KB entry. Editing creates a new
-// version row server-side (PUT /kb/entries/{id}); the old version is superseded.
-function openKBEntryEditor(main, entry) {
-  main.innerHTML = "";
-  const back = el("button", "npadmin-btn ghost", "← Back to KB");
-  back.addEventListener("click", () => routeView(main));
-  main.appendChild(back);
-  main.appendChild(el("h1", "npadmin-h", `Edit KB entry #${entry.id} (${entry.lang})`));
-  const ta = el("textarea", "npadmin-input");
-  ta.value = entry.content;
-  ta.style.minHeight = "320px"; ta.style.width = "100%";
-  const err = el("div", "npadmin-err");
-  const save = el("button", "npadmin-btn", "Save (new version)");
-  save.addEventListener("click", async () => {
-    err.textContent = "";
-    if (!ta.value.trim()) { err.textContent = "Content cannot be empty"; return; }
-    try {
-      await api(`/kb/entries/${entry.id}`, { method: "PUT", body: { content: ta.value } });
-      routeView(main);
-    } catch (e) { err.textContent = e.message; }
-  });
-  main.append(ta, save, err);
 }
 
 // ---------------------------------------------------------------------------

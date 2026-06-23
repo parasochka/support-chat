@@ -63,9 +63,7 @@ CREATE TABLE IF NOT EXISTS kb_topics (
 CREATE TABLE IF NOT EXISTS kb_entries (
   id         SERIAL PRIMARY KEY,
   topic_id   INT NOT NULL REFERENCES kb_topics(id),
-  lang       TEXT NOT NULL DEFAULT 'ru',
   content    TEXT NOT NULL,
-  version    INT NOT NULL DEFAULT 1,
   active     BOOLEAN NOT NULL DEFAULT TRUE
 );
 
@@ -75,7 +73,6 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   consumer      TEXT NOT NULL DEFAULT 'web',
   player_id     TEXT,
   lang          TEXT,
-  lang_locked   BOOLEAN NOT NULL DEFAULT FALSE,
   topic_id      INT REFERENCES kb_topics(id),
   user_context  JSONB NOT NULL DEFAULT '{}',
   status        TEXT NOT NULL DEFAULT 'open',
@@ -134,7 +131,6 @@ CREATE TABLE IF NOT EXISTS rate_limit_hits (
   ts          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- PHASE 2 ----------------------------------------------------------
 -- Runtime-tunable settings (hot-reloaded; precedence app_settings > env > default).
 CREATE TABLE IF NOT EXISTS app_settings (
   key        TEXT PRIMARY KEY,
@@ -143,24 +139,12 @@ CREATE TABLE IF NOT EXISTS app_settings (
   updated_by TEXT
 );
 
--- Escalation tickets (snapshot + delivery state).
-CREATE TABLE IF NOT EXISTS escalation_tickets (
-  id          BIGSERIAL PRIMARY KEY,
-  session_id  UUID NOT NULL REFERENCES chat_sessions(id),
-  reason      TEXT NOT NULL,
-  channel     TEXT NOT NULL,            -- 'telegram' | 'button'
-  delivered   BOOLEAN NOT NULL DEFAULT FALSE,
-  payload     JSONB,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_kb_entries_topic ON kb_entries(topic_id) WHERE active;
 CREATE INDEX IF NOT EXISTS idx_admin_events_session ON admin_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_admin_events_type ON admin_events(type, created_at);
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_created ON chat_sessions(created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_logs_created ON ai_interaction_logs(created_at);
-CREATE INDEX IF NOT EXISTS idx_escalation_tickets_session ON escalation_tickets(session_id);
 """
 
 
@@ -173,10 +157,6 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
     baseline — but the seam is here so the rule from the brief is honoured.)
     """
     alters: list[str] = [
-        # Manual language switcher: a true value means the player picked the
-        # answer/UI language by hand, which hard-overrides auto-mirroring.
-        "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
-        "lang_locked BOOLEAN NOT NULL DEFAULT FALSE",
         # Prompt-history boundary bumped on each topic switch (loop fix); only
         # messages newer than this id are sent to the model.
         "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
@@ -256,12 +236,11 @@ async def list_topics(include_hidden: bool = False) -> list[dict[str, Any]]:
     return topics
 
 
-async def get_kb_content(topic_id: int, lang: str = "ru") -> Optional[str]:
+async def get_kb_content(topic_id: int) -> Optional[str]:
     row = await _pool.fetchrow(
         "SELECT content FROM kb_entries "
-        "WHERE topic_id = $1 AND lang = $2 AND active "
-        "ORDER BY version DESC, id DESC LIMIT 1",
-        topic_id, lang,
+        "WHERE topic_id = $1 AND active ORDER BY id DESC LIMIT 1",
+        topic_id,
     )
     return row["content"] if row else None
 
@@ -298,7 +277,7 @@ async def create_session(consumer: str, player_id: Optional[str],
 
 async def get_session(session_id: str) -> Optional[dict[str, Any]]:
     row = await _pool.fetchrow(
-        "SELECT id, consumer, player_id, lang, lang_locked, conv_lang, topic_id, "
+        "SELECT id, consumer, player_id, lang, conv_lang, topic_id, "
         "user_context, status, escalated, message_count, "
         "context_reset_id, created_at, updated_at "
         "FROM chat_sessions WHERE id = $1",
@@ -338,16 +317,6 @@ async def set_session_topic(session_id: str, topic_id: int) -> None:
                 "updated_at = now() WHERE id = $3",
                 topic_id, boundary, session_id,
             )
-
-
-async def set_session_lang(session_id: str, lang: str, locked: bool = False) -> None:
-    """Persist the session's answer/UI language. `locked=True` records that the
-    player chose it by hand, which hard-overrides auto language mirroring."""
-    await _pool.execute(
-        "UPDATE chat_sessions SET lang = $1, lang_locked = $2, updated_at = now() "
-        "WHERE id = $3",
-        lang, locked, session_id,
-    )
 
 
 async def set_conv_lang(session_id: str, conv_lang: str) -> None:
@@ -493,7 +462,7 @@ async def ping() -> bool:
 
 
 # ===========================================================================
-# PHASE 2 — settings, prompt versioning, escalation tickets, KB CRUD, metrics
+# Settings, KB CRUD, metrics
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
@@ -527,27 +496,7 @@ async def set_setting(key: str, value: Any, updated_by: Optional[str] = None) ->
 
 
 # ---------------------------------------------------------------------------
-# escalation_tickets
-# ---------------------------------------------------------------------------
-async def create_escalation_ticket(session_id: str, reason: str, channel: str,
-                                   delivered: bool, payload: dict[str, Any]) -> int:
-    row = await _pool.fetchrow(
-        "INSERT INTO escalation_tickets "
-        "(session_id, reason, channel, delivered, payload) "
-        "VALUES ($1, $2, $3, $4, $5::jsonb) RETURNING id",
-        session_id, reason, channel, delivered, json.dumps(payload or {}),
-    )
-    return row["id"]
-
-
-async def mark_ticket_delivered(ticket_id: int) -> None:
-    await _pool.execute(
-        "UPDATE escalation_tickets SET delivered = TRUE WHERE id = $1", ticket_id
-    )
-
-
-# ---------------------------------------------------------------------------
-# KB CRUD (Phase 2 management; reads still go through kb.py helpers)
+# KB CRUD (admin management; reads still go through kb.py helpers)
 # ---------------------------------------------------------------------------
 async def list_topics_with_counts() -> list[dict[str, Any]]:
     rows = await _pool.fetch(
@@ -579,58 +528,48 @@ async def update_topic(topic_id: int, title: Optional[dict[str, str]],
     return await get_topic_by_id(topic_id)
 
 
-async def list_kb_entries(topic_id: int, include_inactive: bool = False
-                          ) -> list[dict[str, Any]]:
-    q = ("SELECT id, topic_id, lang, content, version, active "
-         "FROM kb_entries WHERE topic_id = $1")
-    if not include_inactive:
-        q += " AND active"
-    q += " ORDER BY lang, version DESC, id DESC"
-    rows = await _pool.fetch(q, topic_id)
-    return [dict(r) for r in rows]
+async def get_kb_entry(topic_id: int) -> Optional[dict[str, Any]]:
+    """The topic's single active KB entry, or None. One entry per topic."""
+    row = await _pool.fetchrow(
+        "SELECT id, topic_id, content, active FROM kb_entries "
+        "WHERE topic_id = $1 AND active ORDER BY id DESC LIMIT 1",
+        topic_id,
+    )
+    return dict(row) if row else None
 
 
-async def create_kb_entry(topic_id: int, lang: str, content: str) -> int:
-    """Create a new active entry for topic+lang at the next version number,
-    deactivating prior active entries for that topic+lang (keeps history)."""
+async def set_kb_content(topic_id: int, content: str) -> int:
+    """Set the topic's KB text (one entry per topic). Updates the existing active
+    entry in place, or inserts one when the topic has none. Returns the entry id.
+    """
     async with _pool.acquire() as conn:
         async with conn.transaction():
-            ver = await conn.fetchval(
-                "SELECT COALESCE(MAX(version), 0) + 1 FROM kb_entries "
-                "WHERE topic_id = $1 AND lang = $2",
-                topic_id, lang,
+            existing = await conn.fetchval(
+                "SELECT id FROM kb_entries WHERE topic_id = $1 AND active "
+                "ORDER BY id DESC LIMIT 1",
+                topic_id,
             )
-            await conn.execute(
-                "UPDATE kb_entries SET active = FALSE "
-                "WHERE topic_id = $1 AND lang = $2 AND active",
-                topic_id, lang,
-            )
+            if existing is not None:
+                await conn.execute(
+                    "UPDATE kb_entries SET content = $2 WHERE id = $1",
+                    existing, content,
+                )
+                return existing
             row = await conn.fetchrow(
-                "INSERT INTO kb_entries (topic_id, lang, content, version, active) "
-                "VALUES ($1, $2, $3, $4, TRUE) RETURNING id",
-                topic_id, lang, content, ver,
+                "INSERT INTO kb_entries (topic_id, content, active) "
+                "VALUES ($1, $2, TRUE) RETURNING id",
+                topic_id, content,
             )
             return row["id"]
 
 
-async def update_kb_entry(entry_id: int, content: str) -> Optional[int]:
-    """Edit = a new version row for the same topic+lang (history preserved).
-
-    Returns the new entry id, or None if the source entry doesn't exist.
-    """
-    src = await _pool.fetchrow(
-        "SELECT topic_id, lang FROM kb_entries WHERE id = $1", entry_id
-    )
-    if src is None:
-        return None
-    return await create_kb_entry(src["topic_id"], src["lang"], content)
-
-
-async def soft_delete_kb_entry(entry_id: int) -> bool:
+async def clear_kb_content(topic_id: int) -> bool:
+    """Soft-delete the topic's active KB entry. Returns True if one was cleared."""
     res = await _pool.execute(
-        "UPDATE kb_entries SET active = FALSE WHERE id = $1 AND active", entry_id
+        "UPDATE kb_entries SET active = FALSE WHERE topic_id = $1 AND active",
+        topic_id,
     )
-    return res.endswith("1")
+    return not res.endswith(" 0")
 
 
 # ---------------------------------------------------------------------------
@@ -873,11 +812,3 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
             "created_at": r["created_at"].isoformat(),
         })
     return sorted(groups.values(), key=lambda x: x["count"], reverse=True)
-
-
-async def count_admin_events(type_: str, dt_from: Any, dt_to: Any) -> int:
-    return await _pool.fetchval(
-        "SELECT COUNT(*) FROM admin_events "
-        "WHERE type = $1 AND created_at >= $2 AND created_at < $3",
-        type_, dt_from, dt_to,
-    )

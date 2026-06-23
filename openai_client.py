@@ -35,8 +35,9 @@ except Exception:  # noqa: BLE001
 
 # ---------------------------------------------------------------------------
 # Pricing — USD per 1,000,000 tokens: (input, cached_input, output)
-# NOTE: verify against current OpenAI pricing before relying on cost numbers.
-# These are public list prices as of authoring and may be stale.
+# GPT-5.4 mini list prices verified 2026-06-23: input $0.75, cached input
+# $0.075, output $4.50 per 1M tokens. Re-verify against current OpenAI pricing
+# if the model or OpenAI's published rates change.
 # ---------------------------------------------------------------------------
 _PRICING: dict[str, tuple[float, float, float]] = {
     # model: (input, cached_input, output)  -- USD per 1M tokens

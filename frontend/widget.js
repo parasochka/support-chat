@@ -90,8 +90,8 @@ const I18N = {
 };
 
 // Per-topic emoji so each menu item reads at a glance. Keyed by the backend
-// slug (see seed/kb_seed.py); unknown slugs fall back to a neutral bubble so a
-// newly-added topic still renders something. "other" is special-cased in
+// topic slug; unknown slugs fall back to a neutral bubble so a newly-added
+// topic still renders something. "other" is special-cased in
 // renderTopics() with an AI-associated icon (it's the "ask anything" catch-all).
 const TOPIC_EMOJI = {
   deposits: "💳",
