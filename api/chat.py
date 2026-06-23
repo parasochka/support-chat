@@ -11,6 +11,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any, Optional
 
@@ -29,6 +30,7 @@ import language
 import settings
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -257,16 +259,30 @@ async def select_topic(body: TopicSelect,
 async def send_message(req: Request, body: MessageSend,
                        authorization: Optional[str] = Header(default=None)) -> JSONResponse:
     ip = _client_ip(req)
+    log.info(
+        "chat_message_received session_id=%s ip=%s chars=%s",
+        body.session_id, ip, len(body.text or ""),
+    )
 
     # 1. verify session token -> 401
     session, err = await _auth_session(authorization, body.session_id)
     if err:
+        log.warning("chat_message_auth_failed session_id=%s", body.session_id)
         return err
+    log.info(
+        "chat_message_session_loaded session_id=%s topic_id=%s message_count=%s status=%s",
+        body.session_id, session.get("topic_id"),
+        session.get("message_count", 0), session.get("status"),
+    )
 
     # 2. rate-limit (IP) -> 429 + log
     try:
         antispam.check_rate_limit(ip)
     except antispam.AntiSpamError as exc:
+        log.warning(
+            "chat_message_rate_limited session_id=%s ip=%s code=%s",
+            body.session_id, ip, exc.code,
+        )
         await db.log_admin_event(body.session_id, "rate_limited", {"ip": ip})
         return _err(exc.status, exc.code, exc.detail)
 
@@ -274,12 +290,20 @@ async def send_message(req: Request, body: MessageSend,
     try:
         antispam.check_cooldown(body.session_id)
     except antispam.AntiSpamError as exc:
+        log.warning(
+            "chat_message_cooldown_blocked session_id=%s code=%s",
+            body.session_id, exc.code,
+        )
         return _err(exc.status, exc.code, exc.detail)
 
     # 4. body/input caps -> 413/400  (body cap handled by middleware; input here)
     try:
         antispam.check_input_length(body.text)
     except antispam.AntiSpamError as exc:
+        log.warning(
+            "chat_message_input_too_long session_id=%s chars=%s code=%s",
+            body.session_id, len(body.text or ""), exc.code,
+        )
         return _err(exc.status, exc.code, exc.detail)
 
     # 4b. low-content guard: lone characters, symbol/emoji-only spam, or one
@@ -291,6 +315,10 @@ async def send_message(req: Request, body: MessageSend,
     except antispam.AntiSpamError:
         ans_lang = (session.get("conv_lang") or session.get("lang")
                     or language.default_code())
+        log.info(
+            "chat_message_low_content_blocked session_id=%s chars=%s",
+            body.session_id, len(body.text or ""),
+        )
         await db.log_admin_event(body.session_id, "low_content_blocked",
                                  {"sample": body.text[:120]})
         return JSONResponse(
@@ -306,6 +334,10 @@ async def send_message(req: Request, body: MessageSend,
     # 8. injection scan: always audit; optionally hard-block (settings-gated).
     if antispam.scan_injection(body.text):
         hard_block = settings.antispam()["injection_hard_block"]
+        log.warning(
+            "chat_message_injection_detected session_id=%s hard_block=%s",
+            body.session_id, hard_block,
+        )
         await db.log_admin_event(body.session_id, "injection_blocked",
                                  {"sample": body.text[:120],
                                   "blocked": hard_block})
@@ -316,6 +348,10 @@ async def send_message(req: Request, body: MessageSend,
 
     # 5. message cap reached -> force escalation response (no model call)
     if session.get("message_count", 0) >= settings.escalation()["max_messages_per_session"]:
+        log.info(
+            "chat_message_cap_reached session_id=%s count=%s",
+            body.session_id, session.get("message_count", 0),
+        )
         ans_lang = (session.get("conv_lang") or session.get("lang")
                     or language.default_code())
         esc_payload = escalation.build_payload(ans_lang)
@@ -342,7 +378,13 @@ async def send_message(req: Request, body: MessageSend,
         )
 
     # -> build prompt, call model, persist turn atomically, return
+    log.info("chat_message_dispatching_generation session_id=%s", body.session_id)
     result = await chat_service.handle_message(session, body.text)
+    log.info(
+        "chat_message_response_ready session_id=%s reply_chars=%s lang=%s escalation_active=%s message_count=%s",
+        body.session_id, len(result.reply or ""), result.lang,
+        bool((result.escalation or {}).get("active")), result.message_count,
+    )
     return JSONResponse(
         status_code=200,
         content={

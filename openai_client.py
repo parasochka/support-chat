@@ -17,6 +17,7 @@ to ai_interaction_logs + chat_messages.
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import time
 from dataclasses import dataclass
@@ -24,6 +25,8 @@ from typing import Any, Optional
 
 import config
 import settings
+
+log = logging.getLogger(__name__)
 
 try:  # native dep may be stubbed in tests
     from openai import AsyncOpenAI
@@ -119,6 +122,12 @@ class _KeyClient:
         verbosity = m.get("verbosity")
         if verbosity:
             kwargs["verbosity"] = verbosity
+        log.info(
+            "openai_request_start key=%s model=%s max_completion_tokens=%s effort=%s verbosity=%s timeout=%s messages=%s",
+            self.name, kwargs["model"], kwargs["max_completion_tokens"],
+            kwargs.get("reasoning_effort"), kwargs.get("verbosity"),
+            kwargs["timeout"], len(messages),
+        )
         async with self._sem:
             return await self.client.chat.completions.create(**kwargs)
 
@@ -169,16 +178,25 @@ async def _call_with_backoff(kc: _KeyClient, messages: list[dict[str, str]]) -> 
     max_attempts = int(settings.model()["max_attempts"])
     for attempt in range(max_attempts):
         try:
-            return await kc.call(messages)
+            resp = await kc.call(messages)
+            log.info("openai_request_success key=%s attempt=%s", kc.name, attempt + 1)
+            return resp
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
+            log.warning(
+                "openai_request_error key=%s attempt=%s/%s error_type=%s error=%s",
+                kc.name, attempt + 1, max_attempts, exc.__class__.__name__, exc,
+            )
             if _is_hard_error(exc):
+                log.warning("openai_request_hard_error key=%s", kc.name)
                 raise  # caller will fail over to the other key immediately
             if not _is_transient(exc) or attempt == max_attempts - 1:
+                log.warning("openai_request_exhausted key=%s attempts=%s", kc.name, attempt + 1)
                 raise
             delay = _retry_after_seconds(exc)
             if delay is None:
                 delay = (2 ** attempt) + random.uniform(0, 0.5)
+            log.info("openai_request_retrying key=%s delay_sec=%.2f", kc.name, delay)
             await asyncio.sleep(delay)
     if last_exc:
         raise last_exc
@@ -232,10 +250,15 @@ class OpenAIClient:
         engaged, so the caller can log a `key_failover` admin event.
         """
         started = time.monotonic()
+        log.info(
+            "openai_complete_started session_id=%s fallback_configured=%s",
+            session_id, self.fallback is not None,
+        )
 
         # No fallback configured -> just the primary with backoff.
         if self.fallback is None:
             resp = await _call_with_backoff(self.primary, messages)
+            log.info("openai_complete_primary_only_finished session_id=%s", session_id)
             return self._result(resp, self.primary, started)
 
         primary_task = asyncio.ensure_future(
@@ -253,11 +276,20 @@ class OpenAIClient:
             if exc is None:
                 return self._result(primary_task.result(), self.primary, started)
             # Primary failed (hard or exhausted). Fail over immediately.
+            log.warning(
+                "openai_complete_primary_error_failover session_id=%s "
+                "error_type=%s error=%s",
+                session_id, exc.__class__.__name__, exc,
+            )
             await self._note_failover(on_failover, session_id, reason="primary_error")
             resp = await _call_with_backoff(self.fallback, messages)
             return self._result(resp, self.fallback, started)
 
         # Primary still silent after switch timeout -> race the fallback.
+        log.warning(
+            "openai_complete_switch_timeout session_id=%s timeout_sec=%s",
+            session_id, switch_timeout,
+        )
         await self._note_failover(on_failover, session_id, reason="switch_timeout")
         fallback_task = asyncio.ensure_future(
             _call_with_backoff(self.fallback, messages)
@@ -275,8 +307,10 @@ class OpenAIClient:
                     winner = self.primary if task is primary_task else self.fallback
                     loser = fallback_task if task is primary_task else primary_task
                     loser.cancel()
+                    log.info("openai_complete_race_won key=%s", winner.name if winner else None)
                     return self._result(task.result(), winner, started)
         # Both failed: re-raise the primary's error for clarity.
+        log.error("openai_complete_race_failed")
         raise primary_task.exception() or fallback_task.exception()
 
     @staticmethod
