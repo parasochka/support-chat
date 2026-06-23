@@ -197,7 +197,6 @@ async function viewOverview(main) {
 
     await tableByTopic(main);
     await tableByLanguage(main);
-    await tableAB(main);
   } catch (e) { cards.innerHTML = ""; cards.appendChild(errBox(e)); }
 }
 
@@ -268,17 +267,6 @@ async function tableByLanguage(main) {
   section(main, "By language", t);
 }
 
-async function tableAB(main) {
-  const data = await api(`/ab/results${q()}`);
-  if (!data.results.length) return;
-  const t = table(["Version", "Sessions", "Escalation", "Resolution", "Avg msgs", "Avg cost"]);
-  for (const r of data.results) {
-    addRow(t, [r.version_name || r.version_id, r.sessions, pct(r.escalation_rate),
-               pct(r.resolution_rate), r.avg_messages.toFixed(1), `$${r.avg_cost.toFixed(5)}`]);
-  }
-  section(main, "A/B results", t);
-}
-
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
@@ -339,8 +327,7 @@ async function openSession(id) {
     main.appendChild(el("h1", "npadmin-h", "Session " + id.slice(0, 8)));
     const meta = el("div", "npadmin-meta");
     meta.textContent = `status=${d.session.status} · escalated=${d.session.escalated}`
-      + ` · lang=${d.session.lang || "—"} · cost=$${d.cost_usd_total}`
-      + ` · prompt_version=${d.session.prompt_version_id || "—"}`;
+      + ` · lang=${d.session.lang || "—"} · cost=$${d.cost_usd_total}`;
     main.appendChild(meta);
 
     const row = el("div", "npadmin-row");
@@ -503,144 +490,27 @@ function openKBEntryEditor(main, entry) {
 }
 
 // ---------------------------------------------------------------------------
-// Prompt versioning + A/B
+// Prompt (read-only)
+//
+// The prompt is sourced solely from the server file `prompts.py` — the single
+// source of truth — and is NOT editable from the admin. This tab just renders the
+// complete prompt the model receives (all layers) so the owner can see exactly
+// how it's assembled. To change the prompt, edit prompts.py and redeploy.
 // ---------------------------------------------------------------------------
 async function viewPrompt(main) {
-  main.appendChild(el("h1", "npadmin-h", "System prompt"));
+  main.appendChild(el("h1", "npadmin-h", "Prompt"));
   main.appendChild(el("div", "npadmin-help",
-    "The base system prompt (Russian) is shipped seeded as the live default. "
-    + "Published versions are immutable — to change the live prompt, edit it into "
-    + "a new draft and publish that draft."));
+    "Read-only. The prompt lives in the server file prompts.py — the single "
+    + "source of truth — and is not editable here. Below is the COMPLETE prompt "
+    + "the model receives, assembled exactly as it's sent. To change it, edit "
+    + "prompts.py and redeploy. (Knowledge-base answers — Layer 2 — are still "
+    + "editable in the Knowledge base tab.)"));
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
-    const data = await api("/prompts");
+    const data = await api("/effective-prompt");
     holder.innerHTML = "";
-
-    // live default (base) prompt — shown so the owner can see/edit what is active
-    const live = data.versions.find((v) => v.is_default);
-    if (live) {
-      const cur = el("div", "npadmin-chart");
-      cur.appendChild(el("div", "npadmin-meta",
-        `Live default prompt — ${live.name} (#${live.id})`));
-      const view = el("textarea", "npadmin-input");
-      view.value = live.body || ""; view.readOnly = true;
-      view.style.minHeight = "220px"; view.style.width = "100%";
-      cur.appendChild(view);
-      const edit = el("button", "npadmin-btn", "Edit as new draft");
-      edit.addEventListener("click", () => openPromptEditor(main, live, true));
-      cur.appendChild(edit);
-      holder.appendChild(cur);
-    }
-
-    // new draft (from scratch)
-    const draft = el("div", "npadmin-chart");
-    draft.appendChild(el("div", "npadmin-meta", "Create draft from scratch"));
-    const name = el("input", "npadmin-input"); name.placeholder = "Version name";
-    const bodyTa = el("textarea", "npadmin-input"); bodyTa.placeholder = "Core prompt body (Russian)…";
-    const create = el("button", "npadmin-btn", "Create draft");
-    create.addEventListener("click", async () => {
-      if (!name.value || !bodyTa.value) return;
-      await api("/prompts", { method: "POST", body: { name: name.value, body: bodyTa.value } });
-      viewPrompt(main);
-    });
-    draft.append(name, bodyTa, create);
-    holder.appendChild(draft);
-
-    const t = table(["ID", "Name", "Status", "Default", "A/B weight", "Actions"]);
-    for (const v of data.versions) {
-      const actions = el("td");
-      const view = el("button", "npadmin-btn ghost", v.status === "draft" ? "View / Edit" : "View");
-      view.addEventListener("click", () => openPromptEditor(main, v, false));
-      actions.appendChild(view);
-      if (v.status !== "published") {
-        const pub = el("button", "npadmin-btn", "Publish");
-        pub.addEventListener("click", async () => {
-          if (!confirm("Publishing changes the cached prompt prefix and temporarily "
-            + "raises cost until the cache re-warms. Continue?")) return;
-          await api(`/prompts/${v.id}/publish`, { method: "POST" }); viewPrompt(main);
-        });
-        actions.appendChild(pub);
-      }
-      if (!v.is_default) {
-        const arch = el("button", "npadmin-btn ghost", "Archive");
-        arch.addEventListener("click", async () => {
-          await api(`/prompts/${v.id}/archive`, { method: "POST" }); viewPrompt(main);
-        });
-        actions.appendChild(arch);
-      }
-      const tr = rowEls(t, [v.id, v.name, v.status, v.is_default ? "✓" : "", v.ab_weight]);
-      tr.appendChild(actions);
-    }
-    holder.appendChild(t);
-
-    // A/B weights editor (published only)
-    const pubs = data.versions.filter((v) => v.status === "published");
-    if (pubs.length >= 2) {
-      const ab = el("div", "npadmin-chart");
-      ab.appendChild(el("div", "npadmin-meta", "A/B weights (≥2 published with weight>0 = active split)"));
-      const inputs = {};
-      for (const v of pubs) {
-        const lab = el("label", "npadmin-field");
-        lab.appendChild(el("span", null, `${v.name} (#${v.id})`));
-        const inp = el("input", "npadmin-input"); inp.type = "number"; inp.value = v.ab_weight;
-        inp.style.width = "100px"; inputs[v.id] = inp; lab.appendChild(inp);
-        ab.appendChild(lab);
-      }
-      const saveAb = el("button", "npadmin-btn", "Save weights");
-      saveAb.addEventListener("click", async () => {
-        const weights = Object.entries(inputs).map(([id, inp]) =>
-          ({ id: Number(id), weight: Number(inp.value) || 0 }));
-        await api("/prompts/ab", { method: "POST", body: { weights } });
-        viewPrompt(main);
-      });
-      ab.appendChild(saveAb);
-      holder.appendChild(ab);
-    }
-
-    await tableAB(holder);
+    effectivePreviewBox(holder, data.effective_preview);
   } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
-}
-
-// Editor for a single prompt version's body.
-//  - `asDraft` true (or a published/default version): saving creates a NEW draft
-//    copy, since published versions are immutable. The owner then publishes it.
-//  - a draft version: saving edits it in place (PUT /prompts/{id}).
-function openPromptEditor(main, version, asDraft) {
-  const newDraft = asDraft || version.status !== "draft";
-  main.innerHTML = "";
-  const back = el("button", "npadmin-btn ghost", "← Back to prompts");
-  back.addEventListener("click", () => routeView(main));
-  main.appendChild(back);
-  main.appendChild(el("h1", "npadmin-h",
-    newDraft ? `Edit "${version.name}" as new draft` : `Edit draft "${version.name}"`));
-
-  const nameLab = el("label", "npadmin-field");
-  nameLab.appendChild(el("span", null, "Version name"));
-  const name = el("input", "npadmin-input");
-  name.value = newDraft ? `${version.name}-edit` : version.name;
-  nameLab.appendChild(name);
-  main.appendChild(nameLab);
-
-  const ta = el("textarea", "npadmin-input");
-  ta.value = version.body || "";
-  ta.style.minHeight = "360px"; ta.style.width = "100%";
-  const err = el("div", "npadmin-err");
-  const save = el("button", "npadmin-btn",
-    newDraft ? "Save as new draft" : "Save draft");
-  save.addEventListener("click", async () => {
-    err.textContent = "";
-    if (!ta.value.trim()) { err.textContent = "Prompt body cannot be empty"; return; }
-    try {
-      if (newDraft) {
-        await api("/prompts", { method: "POST", body: { name: name.value, body: ta.value } });
-      } else {
-        await api(`/prompts/${version.id}`, { method: "PUT",
-          body: { name: name.value, body: ta.value } });
-      }
-      routeView(main);
-    } catch (e) { err.textContent = e.message; }
-  });
-  main.append(ta, save, err);
 }
 
 // ---------------------------------------------------------------------------
@@ -654,9 +524,6 @@ async function viewSettings(main) {
   try {
     await ensureMeta();
     holder.innerHTML = "";
-    const sp = await systemPromptBox(holder);      // Layer 1 editor
-    await layer3PromptBox(holder);                 // Layer 3 directive editor
-    effectivePreviewBox(holder, sp && sp.effective_preview);  // full preview, last
     const data = await api("/settings");
     for (const key of data.keys) {
       if (key === "language") { languageSettingsBox(holder, data.resolved.language || {}); continue; }
@@ -685,119 +552,10 @@ async function viewSettings(main) {
   } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
 }
 
-// Structured Layer-1 system-prompt editor. The core is split into named
-// sections (tone of voice + each rule block); Layer 2 (KB) is edited in the
-// Knowledge base tab, Layer 3 (player data) is supplied per request and not
-// editable here. Saving composes the sections and publishes the core live as
-// the new default version (one deliberate prefix-cache reset).
-async function systemPromptBox(holder) {
-  const box = el("div", "npadmin-chart");
-  box.appendChild(el("div", "npadmin-meta", "System prompt — Layer 1 (core)"));
-  box.appendChild(el("div", "npadmin-help",
-    "The 3-layer prompt: Layer 1 is this core (tone of voice + the rule blocks "
-    + "below); Layer 2 is the per-topic knowledge base (edited in the Knowledge "
-    + "base tab); Layer 3 is the per-request rules + player data — its always-on "
-    + "rule blocks are editable in the 'Layer 3 directives' editor below. Saving "
-    + "this core publishes a new prompt version live (one prefix-cache reset)."));
-  let data;
-  try {
-    data = await api("/system-prompt");
-  } catch (e) { box.appendChild(errBox(e)); holder.appendChild(box); return null; }
-
-  if (data.live_version) {
-    box.appendChild(el("div", "npadmin-meta",
-      `Live default version: ${data.live_version.name} (#${data.live_version.id})`));
-  }
-
-  const fields = {};
-  for (const m of data.meta) {
-    const lab = el("label", "npadmin-field");
-    lab.appendChild(el("span", null, m.label));
-    const ta = el("textarea", "npadmin-input");
-    ta.value = data.sections[m.key] || "";
-    ta.style.minHeight = "120px"; ta.style.width = "100%";
-    fields[m.key] = ta;
-    lab.appendChild(ta);
-    box.appendChild(lab);
-  }
-
-  const err = el("div", "npadmin-err");
-  const save = el("button", "npadmin-btn", "Save & apply system prompt");
-  save.addEventListener("click", async () => {
-    err.textContent = ""; err.style.color = "";
-    const sections = {};
-    for (const [k, ta] of Object.entries(fields)) {
-      if (!ta.value.trim()) { err.textContent = "All sections must be non-empty"; return; }
-      sections[k] = ta.value;
-    }
-    if (!confirm("Publishing the system prompt changes the cached prompt prefix and "
-      + "temporarily raises cost until the cache re-warms. Apply now?")) return;
-    try {
-      await api("/system-prompt", { method: "PUT", body: { sections } });
-      err.style.color = "var(--good)"; err.textContent = "Saved & applied live";
-    } catch (e) { err.textContent = e.message; }
-  });
-  box.append(save, err);
-  holder.appendChild(box);
-  return data;
-}
-
-// Structured Layer-3 directive editor. The always-on Layer-3 rule blocks
-// (greeting hygiene, formatting, KB-grounding, escalation restraint, suggested
-// questions, finish-chat, recency guardrails) are the bulk of post-launch
-// behavioural tuning. They ride in the per-request user message, so editing them
-// is NOT a prompt-version publish and does NOT reset the prefix cache — overrides
-// apply to the next message. The dynamic directives (language, personalization,
-// topic routing) and the forbidden-topics list are managed elsewhere.
-async function layer3PromptBox(holder) {
-  const box = el("div", "npadmin-chart");
-  box.appendChild(el("div", "npadmin-meta", "Layer 3 directives — per-request rules"));
-  box.appendChild(el("div", "npadmin-help",
-    "The always-on Layer-3 rule blocks the model gets with every message. Unlike "
-    + "the Layer-1 core, these do NOT touch the cached prefix — saving applies to "
-    + "the next message with no cache reset. (The language, personalization and "
-    + "topic-routing directives are generated per request; the forbidden-topics "
-    + "list is in the 'forbidden_topics' settings block below.)"));
-  let data;
-  try {
-    data = await api("/layer3-prompt");
-  } catch (e) { box.appendChild(errBox(e)); holder.appendChild(box); return; }
-
-  const fields = {};
-  for (const m of data.meta) {
-    const lab = el("label", "npadmin-field");
-    lab.appendChild(el("span", null, m.label));
-    const ta = el("textarea", "npadmin-input");
-    ta.value = data.sections[m.key] || "";
-    ta.style.minHeight = "120px"; ta.style.width = "100%";
-    fields[m.key] = ta;
-    lab.appendChild(ta);
-    box.appendChild(lab);
-  }
-
-  const err = el("div", "npadmin-err");
-  const save = el("button", "npadmin-btn", "Save Layer 3 directives");
-  save.addEventListener("click", async () => {
-    err.textContent = ""; err.style.color = "";
-    const sections = {};
-    for (const [k, ta] of Object.entries(fields)) {
-      if (!ta.value.trim()) { err.textContent = "All sections must be non-empty"; return; }
-      sections[k] = ta.value;
-    }
-    if (!confirm("Apply the Layer-3 directives to new messages now?")) return;
-    try {
-      await api("/layer3-prompt", { method: "PUT", body: { sections } });
-      err.style.color = "var(--good)"; err.textContent = "Saved & applied live";
-    } catch (e) { err.textContent = e.message; }
-  });
-  box.append(save, err);
-  holder.appendChild(box);
-}
-
 // Read-only "full effective prompt" preview. Renders the WHOLE prompt exactly as
 // it's sent to the model (all 3 layers) for an example player + topic, so the
-// owner can see and verify everything — including the live result of the Layer-1
-// and Layer-3 edits above — in one place.
+// owner can see and verify everything in one place. The prompt is sourced from
+// the server file prompts.py (the single source of truth) and is not editable.
 function effectivePreviewBox(holder, pv) {
   if (!pv) return;
   const box = el("div", "npadmin-chart");
@@ -806,8 +564,8 @@ function effectivePreviewBox(holder, pv) {
   box.appendChild(el("div", "npadmin-help",
     "Read-only. The COMPLETE prompt the model receives — Layer 1 (core) + Layer 2 "
     + "(the selected topic's knowledge base) in the system message, then the "
-    + "Layer-3 directives + the player's data in the user message. Reflects the live "
-    + `Layer-1 and Layer-3 edits above. Example: topic «${ex.topic || "—"}», language `
+    + "Layer-3 directives + the player's data in the user message. Sourced from "
+    + `prompts.py. Example: topic «${ex.topic || "—"}», language `
     + `${ex.lang || "—"}, sample player. Layer 2 (KB) and player data vary per request.`));
 
   const sysWrap = el("label", "npadmin-field");

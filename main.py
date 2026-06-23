@@ -23,7 +23,6 @@ from api import admin_auth as admin_auth_api
 from api import chat as chat_api
 from api import health as health_api
 from seed import kb_seed
-from seed import prompt_seed
 from seed import settings_seed
 
 logging.basicConfig(
@@ -81,7 +80,6 @@ async def lifespan(app: FastAPI):
     _warn_insecure_config()
     await db.init_db()
     await kb_seed.run()
-    await prompt_seed.run()       # migrate Phase 1 core into prompt_versions (once)
     await settings_seed.run()     # capture current env tuning into app_settings (once)
     await settings.reload()       # populate the hot settings cache from app_settings
     log.info("Startup complete")

@@ -13,7 +13,6 @@ import escalation
 import kb
 import language
 import openai_client
-import prompt_store
 import prompts
 import settings
 
@@ -98,8 +97,6 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     history = await db.get_history(
         session_id, limit=20, after_id=session.get("context_reset_id", 0) or 0
     )
-    # Load the live core for THIS session's prompt version (A/B attribution).
-    core = await prompt_store.core_for_version(session.get("prompt_version_id"))
     messages = prompts.build_messages(
         session=session,
         kb_block=kb_block,
@@ -108,7 +105,6 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         resolved_lang=resolved,
         available_topics=suggestable,
         current_topic=current_topic,
-        core=core,
     )
 
     # --- call model (two-key failover) --------------------------------------

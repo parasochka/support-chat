@@ -8,9 +8,18 @@ A standalone FastAPI microservice serving an AI customer-support chat for **Nika
 (casino + sportsbook on the NowPlix B2B platform). It is API-isolated: other modules
 talk to it over HTTP/JSON by `session_id` (UUID), and the contract is consumer-agnostic
 so multiple front-ends can plug in. **Phase 1 and Phase 2 are both implemented** — the
-admin dashboard, hot-reloaded tuning, system-prompt versioning + A/B, KB CRUD/import,
-Telegram escalation, and the signed front-end handshake are all built (see "Phase 2"
-below).
+admin dashboard, hot-reloaded tuning, KB CRUD/import, Telegram escalation, and the signed
+front-end handshake are all built (see "Phase 2" below).
+
+**The prompt lives in one place: the file `prompts.py` (the single source of truth).**
+Layer 1 (`SYSTEM_CORE`), every Layer-3 directive, and the forbidden-topics list are
+constants in that file. The prompt is **not** editable from the admin panel — to change
+it you edit `prompts.py` and redeploy. The admin **Prompt** tab is a **read-only** view of
+the whole assembled prompt (all layers, as sent) so you can always see exactly how it's
+formed. (The per-topic knowledge base — Layer 2 — is the one prompt input that stays
+editable in the admin, since it's answer content, not instructions.) There is no
+system-prompt versioning, no A/B split, and no admin prompt editor — those were removed in
+favour of this single source of truth.
 
 The two source briefs (`CLAUDE_CODE_PROMPT_support_chat*.md`) are the authoritative spec.
 When extending the service, treat them as the contract and keep the invariants below.
@@ -130,27 +139,26 @@ there, currently empty). Every table read/write goes through a `db.<name>(...)` 
 helper; nothing else touches tables directly.
 
 ### Seeds are non-destructive bootstrap (`seed/*.run()`, the seed contract)
-On startup `main.py` runs `kb_seed.run()` → `prompt_seed.run()` → `settings_seed.run()`
+On startup `main.py` runs `kb_seed.run()` → `settings_seed.run()`
 **on every boot** (the DB persists across redeploys; the seeds re-run each time). The DB —
-not the code — is the source of truth once the owner edits anything in the admin panel, so
-**every seed MUST be seed-once / non-destructive: create a row only when it is missing, and
-never overwrite an existing one.** `prompt_seed` (skips if a default prompt version exists)
-and `settings_seed` (fills only missing setting fields) already follow this; `kb_seed` now
-does too — it creates a built-in topic + its placeholder KB only when absent, and leaves an
-existing topic's `title/order/active` and KB untouched (a test enforces this). This is what
-keeps a redeploy from wiping admin edits. Earlier `kb_seed` clobbered the live KB on **every**
-restart (it deactivated all entries and re-inserted the placeholder at version 1), silently
-reverting the owner's changes back to placeholders — never reintroduce a seed that mutates
-existing data. (The old destructive `db.replace_topic_entry` helper was removed for the same
-reason; the seed creates fresh entries via `db.create_kb_entry`.) Deleting the `seed/` package
-is NOT a fix: it's the bootstrap for a fresh/empty DB (new env, DB recreation, local dev), and
-without it such a DB has no topics, KB, default prompt, or settings.
+not the code — is the source of truth for runtime settings + KB once the owner edits anything
+in the admin panel, so **every seed MUST be seed-once / non-destructive: create a row only
+when it is missing, and never overwrite an existing one.** `settings_seed` (fills only missing
+setting fields) follows this; `kb_seed` now does too — it creates a built-in topic + its
+placeholder KB only when absent, and leaves an existing topic's `title/order/active` and KB
+untouched (a test enforces this). This is what keeps a redeploy from wiping admin edits.
+Earlier `kb_seed` clobbered the live KB on **every** restart (it deactivated all entries and
+re-inserted the placeholder at version 1), silently reverting the owner's changes back to
+placeholders — never reintroduce a seed that mutates existing data. (The old destructive
+`db.replace_topic_entry` helper was removed for the same reason; the seed creates fresh entries
+via `db.create_kb_entry`.) Deleting the `seed/` package is NOT a fix: it's the bootstrap for a
+fresh/empty DB (new env, DB recreation, local dev), and without it such a DB has no topics, KB,
+or settings. (The **prompt** is not seeded — it lives in `prompts.py`, not the DB.)
 
 ### Atomic turn write (invariant)
 `db.persist_turn` writes the user message, the assistant message, the `ai_interaction_logs`
 row, and the `chat_sessions.message_count` bump in **one transaction**. Do not split it.
-When adding per-turn columns (e.g. Phase 2 `prompt_version_id`), join them into this same
-transaction.
+When adding per-turn columns, join them into this same transaction.
 
 ### Two-key OpenAI failover (`openai_client.py`)
 Primary key first; if it stays silent for `OPENAI_KEY_SWITCH_TIMEOUT_SEC`, the fallback is
@@ -321,16 +329,17 @@ return neither, so the widget simply shows no bubbles/finish button there.
    call, so a jailbreak attempt burns no tokens; `SYSTEM_CORE` + the Layer-3 guardrails
    remain the substantive defence.
 
-### Off-topic / forbidden-topics guardrail (`forbidden_topics` setting)
-A Layer-3 line (`prompts._forbidden_topics_directive`) injects the owner-configured
-`forbidden_topics` list + custom refusal wording into the user message, so the model
-refuses off-topic and unsafe asks (programming, essays, politics, medical/legal/financial
-advice, competitors, "guaranteed-win"/cheat schemes, general knowledge, etc.) on top of the
-always-on `_GUARDRAILS` topic restriction. It ships with a **non-empty default set** (so
-off-topic blocking works out of the box and the admin panel isn't empty) and is editable in
-the `forbidden_topics` settings group; an explicit empty list disables it. The refusal is a
-template the model localizes to the player's language. Lives in Layer 3 only, so
-`SYSTEM_CORE` stays byte-stable (a test asserts it).
+### Off-topic / forbidden-topics guardrail (`prompts.FORBIDDEN_TOPICS`)
+A Layer-3 line (`prompts._forbidden_topics_directive`) injects the
+`prompts.FORBIDDEN_TOPICS` list + `prompts.FORBIDDEN_TOPICS_REFUSAL` wording into the user
+message, so the model refuses off-topic and unsafe asks (programming, essays, politics,
+medical/legal/financial advice, competitors, "guaranteed-win"/cheat schemes, general
+knowledge, etc.) on top of the always-on `_GUARDRAILS` topic restriction. These are
+**constants in `prompts.py`** — part of the prompt, so they live in the single source of
+truth, not the admin panel. Ships non-empty (off-topic blocking works out of the box); set
+`FORBIDDEN_TOPICS = []` in the file to disable it. The refusal is a template the model
+localizes to the player's language. Lives in Layer 3 only, so `SYSTEM_CORE` stays byte-stable
+(a test asserts it).
 
 ## Invariants (these break silently — do not violate)
 
@@ -359,71 +368,41 @@ Built on the same stack, extending — not rebuilding — Phase 1. Map of what l
   precedence `app_settings` (DB) → env → default. A sync in-process cache (populated at
   startup, reloaded on write) is read by `antispam`/`escalation`/`openai_client`/`language`/
   `auth`/api; writes validate hard and log `setting_updated`. Groups: `escalation`
-  (incl. `max_messages_per_session`), `forbidden_topics` (off-topic/unsafe-request list +
-  custom refusal, enforced in Layer 3 — see that section; ships with non-empty defaults),
-  `language` (default + supported
+  (incl. `max_messages_per_session`), `language` (default + supported
   set — every language read goes through `language.default_code()`/`supported_codes()`),
   `antispam` (rate limit/window/cooldown/input cap **plus** `recaptcha_min_score`,
   `injection_hard_block`, and the low-content guard `low_content_block` /
   `min_meaningful_chars`), `model` (OpenAI tuning — see the failover section), and `general`
   (operational knobs with no other home: `session_ttl_hours`, `contact_form_url`,
-  `body_max_bytes`). The goal is that every non-secret operational knob lives in the admin
-  panel and only true secrets (API keys, JWT secrets, `DATABASE_URL`, `ADMIN_PASSWORD`,
-  Telegram/handshake/reCaptcha secrets) — plus the network-perimeter deploy vars
-  (`CORS_ALLOW_ORIGINS`, `TRUSTED_PROXY_COUNT`) — stay in Railway env. On startup
+  `body_max_bytes`). **The prompt is NOT a settings group** — it lives in `prompts.py` (the
+  single source of truth), not `app_settings`. The goal is that every non-secret *operational*
+  knob lives in the admin panel and only true secrets (API keys, JWT secrets, `DATABASE_URL`,
+  `ADMIN_PASSWORD`, Telegram/handshake/reCaptcha secrets) — plus the network-perimeter deploy
+  vars (`CORS_ALLOW_ORIGINS`, `TRUSTED_PROXY_COUNT`) — stay in Railway env. On startup
   `seed/settings_seed.run()` snapshots the current env-resolved values for the `antispam`,
-  `model`, `general`, `language`, `escalation` (max-messages) and `forbidden_topics`
-  (shipped defaults) groups into `app_settings`
+  `model`, `general`, `language`, and `escalation` (max-messages) groups into `app_settings`
   once (missing fields only; never clobbers an existing override) so the matching env vars
   can be deleted from Railway with no behaviour change.
 - **Dashboard data API** (`api/admin.py` + `db.py` aggregation + `metrics.py` derived
-  rates): overview/timeseries/by-topic/by-language/sessions/session/unresolved/ab-results.
+  rates): overview/timeseries/by-topic/by-language/sessions/session/unresolved.
   `resolution_rate` is a documented PROXY (counts "not escalated", incl. abandoned →
   `sessions_open` tracked separately).
-- **Prompt versioning + A/B** (`prompt_store.py`, `prompt_versions` table,
-  `chat_sessions.prompt_version_id`): the live core loads from the DB (cached per version
-  → still byte-stable within a version, prefix cache unchanged). Editing makes a *draft*;
-  publishing swaps `is_default` (deliberate one-time cache reset; `prompt_store.invalidate()`).
-  Assignment at session create is a deterministic weighted hash of the session id.
-- **Structured system-prompt editor** (`prompts.SYSTEM_PROMPT_SECTIONS`/`compose_core`,
-  `settings.system_prompt`, `api.admin` `GET/PUT /admin/system-prompt`, Settings tab in the
-  SPA): Layer 1 is split into named, individually-editable sections — tone of voice (intro),
-  absolute rules, escalation rules, injection defense, language, style — so the owner tunes
-  the core from **Settings** without hand-editing one blob. Composing the shipped defaults
-  reproduces `SYSTEM_CORE` byte-for-byte (a test asserts this), so the cached prefix is
-  untouched until a section is deliberately edited. The sections are stored in
-  `app_settings['system_prompt']` (the editor's source of truth); **saving composes the core
-  and publishes it live** as a new default `prompt_versions` row (apply-live = one deliberate
-  cache reset), reusing the version machinery so A/B attribution + audit stay intact. Layer 2
-  (KB) stays in the Knowledge-base tab; Layer 3 (player data) is per-request and not editable.
-  **Full effective-prompt preview (read-only):** the editor only exposes Layer 1, but almost
-  every behavioural rule the owner tunes lives in the per-request **Layer-3 directives**
-  (greeting, formatting, KB-grounding, escalation restraint, suggested questions, finish-chat,
-  topic routing, language, personalization, guardrails, forbidden topics) — so the editor alone
-  looks "stale" next to a bot that behaves "new". To close that gap `GET /admin/system-prompt`
-  also returns `effective_preview` — the **whole** prompt assembled exactly as `chat_service`
-  sends it (`api.admin._build_effective_preview` reuses `prompts.build_messages` with the **live**
-  core body + a sample player + a sample specialized topic's KB), split into the system message
-  (Layer 1 + Layer 2) and the user message (all Layer-3 directives + player context). The SPA
-  renders it below the editable sections as read-only blocks so the owner can always see and
-  verify the complete prompt in one place. It is resilient — if topics/KB can't load it still
-  renders Layer 1 + the Layer-3 directives, never breaking the Settings page.
-- **Structured Layer-3 directive editor** (`prompts.LAYER3_PROMPT_SECTIONS`/`layer3_default_sections`/
-  `_resolved_layer3`, `settings.layer3_prompt`, `api.admin` `GET/PUT /admin/layer3-prompt`, Settings
-  tab in the SPA): the always-on Layer-3 rule blocks — greeting hygiene, formatting, KB-grounding,
-  escalation restraint, suggested questions, finish-chat, recency guardrails — are the bulk of
-  post-launch behavioural tuning, so they are individually editable too (reusing the exact pattern of
-  the Layer-1 sections editor). Because they ride in the per-request **user message** (like
-  `forbidden_topics`), editing them is **NOT** a prompt-version publish and does **NOT** reset the
-  prefix cache (Layer 3 isn't cached) — an override just lands in `app_settings['layer3_prompt']` and
-  `prompts.build_dynamic_prompt` reads it live per request via `_resolved_layer3()` (lazy `settings`
-  import to dodge the cycle, mirroring `_forbidden_topics_directive`). The shipped section bodies are
-  the existing constants verbatim, so the assembled prompt is byte-identical until a section is
-  deliberately edited (a test asserts this, and `SYSTEM_CORE` byte-stability is unaffected). The
-  **dynamic** directives that splice per-request values (language, personalization, topic routing)
-  and the `forbidden_topics` list stay code-generated / managed in their own settings group. With
-  this, the owner controls the **whole** prompt — Layer 1 (core) and the static Layer-3 rules — from
-  one Settings tab; the read-only effective-prompt preview reflects both edits live.
+- **The prompt is the file `prompts.py` (single source of truth, NOT editable from admin).**
+  Layer 1 (`SYSTEM_CORE`), every Layer-3 directive (greeting, formatting, KB-grounding,
+  escalation restraint, suggested questions, finish-chat, recency guardrails, language,
+  personalization, topic routing) and the forbidden-topics list/refusal are constants in that
+  file. To change the prompt you edit `prompts.py` and redeploy — there is no admin editor, no
+  `prompt_versions` table, no A/B split, no `system_prompt`/`layer3_prompt` settings group. (This
+  replaced an earlier design where the core was versioned in the DB and edited from the panel;
+  it was removed so there's exactly one place the prompt comes from.) **Read-only effective-prompt
+  view** (`api.admin._build_effective_preview` + `GET /admin/effective-prompt`, the **Prompt** tab
+  in the SPA): so the owner can always SEE the whole assembled prompt, this endpoint reuses
+  `prompts.build_messages` with a sample player + a sample specialized topic's KB and returns the
+  complete prompt split into the system message (Layer 1 `SYSTEM_CORE` + Layer 2 KB) and the user
+  message (all Layer-3 directives + player context). The SPA renders it as read-only blocks. It is
+  resilient — if topics/KB can't load it still renders Layer 1 + the Layer-3 directives, never
+  breaking the page. (Layer 2, the per-topic KB, is the one prompt input still edited in the
+  admin — in the Knowledge-base tab — because it's answer content, not instructions.)
 - **KB CRUD + import** (`kb_import.py`, `db.*` helpers): versioned entries (edit = new
   version row, delete = soft `active=false`); JSON/CSV/Markdown bulk import.
 - **Escalation Phase 2** (`escalation.open_ticket`, `notifiers/telegram.py`,

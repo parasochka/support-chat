@@ -12,7 +12,6 @@ import chat_service
 import db
 import kb
 import openai_client
-import prompt_store
 
 
 def _wire(monkeypatch, *, captured):
@@ -37,9 +36,6 @@ def _wire(monkeypatch, *, captured):
 
     async def _kb_block(topic_id, lang="en"):
         return "KB по выводам"
-
-    async def _core(version_id):
-        return "CORE"
 
     async def _persist(**kwargs):
         captured["persisted_user"] = kwargs.get("user_text")
@@ -66,7 +62,6 @@ def _wire(monkeypatch, *, captured):
     monkeypatch.setattr(db, "log_admin_event", _log)
     monkeypatch.setattr(kb, "suggestable_topics", _suggestable)
     monkeypatch.setattr(kb, "kb_block_for_topic", _kb_block)
-    monkeypatch.setattr(prompt_store, "core_for_version", _core)
     monkeypatch.setattr(openai_client, "get_client", lambda: _FakeClient())
 
 

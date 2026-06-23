@@ -26,7 +26,6 @@ import db
 import escalation
 import kb
 import language
-import prompt_store
 import settings
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -176,16 +175,12 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
     resolved = language.resolve(locale=body.locale)
     session_lang = None if resolved == language.AUTO else resolved
 
-    # Assign the prompt version for this session (A/B split or live default).
     new_id = str(uuid.uuid4())
-    prompt_version_id = await prompt_store.resolve_for_new_session(new_id)
-
     session_id = await db.create_session(
         consumer=body.consumer or "web",
         player_id=body.player_id or (user_context.get("id") if user_context else None),
         lang=session_lang,
         user_context=user_context,
-        prompt_version_id=prompt_version_id,
         session_id=new_id,
     )
     token = auth.issue_session_token(session_id)

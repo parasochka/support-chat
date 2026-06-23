@@ -22,7 +22,6 @@ import kb_import
 import language
 import metrics
 import openai_client
-import prompt_store
 import prompts
 import settings as settings_mod
 from api.admin_auth import require_admin
@@ -148,88 +147,6 @@ async def unresolved(from_: Optional[str] = Query(default=None, alias="from"),
                             s["created_at"]])
         return PlainTextResponse(content=buf.getvalue(), media_type="text/csv")
     return JSONResponse(content={"groups": groups})
-
-
-@router.get("/ab/results")
-async def ab_results(from_: Optional[str] = Query(default=None, alias="from"),
-                     to: Optional[str] = None) -> JSONResponse:
-    dt_from, dt_to = _range(from_, to)
-    return JSONResponse(content={"results": await db.ab_results(dt_from, dt_to)})
-
-
-# ---------------------------------------------------------------------------
-# prompt versioning + A/B
-# ---------------------------------------------------------------------------
-class PromptCreate(BaseModel):
-    name: str
-    body: str
-
-
-class PromptUpdate(BaseModel):
-    name: Optional[str] = None
-    body: Optional[str] = None
-
-
-class ABWeight(BaseModel):
-    id: int
-    weight: int
-
-
-class ABWeights(BaseModel):
-    weights: list[ABWeight]
-
-
-@router.get("/prompts")
-async def list_prompts() -> JSONResponse:
-    return JSONResponse(content={"versions": await db.list_prompt_versions()})
-
-
-@router.post("/prompts")
-async def create_prompt(body: PromptCreate, admin=Depends(require_admin)) -> JSONResponse:
-    vid = await db.create_prompt_version(name=body.name, body=body.body, status="draft")
-    await db.log_admin_event(None, "prompt_version_created", {"id": vid})
-    return JSONResponse(content=await db.get_prompt_version(vid))
-
-
-@router.put("/prompts/{version_id}")
-async def update_prompt(version_id: int, body: PromptUpdate) -> JSONResponse:
-    try:
-        row = await db.update_prompt_version(version_id, body.name, body.body)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    if row is None:
-        raise HTTPException(status_code=404, detail="Version not found.")
-    return JSONResponse(content=row)
-
-
-@router.post("/prompts/{version_id}/publish")
-async def publish_prompt(version_id: int) -> JSONResponse:
-    row = await db.publish_prompt_version(version_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Version not found.")
-    prompt_store.invalidate()  # deliberate, one-time cache reset
-    await db.log_admin_event(None, "prompt_version_published", {"id": version_id})
-    return JSONResponse(content=row)
-
-
-@router.post("/prompts/ab")
-async def set_ab(body: ABWeights) -> JSONResponse:
-    await db.set_ab_weights([{"id": w.id, "weight": w.weight} for w in body.weights])
-    await db.log_admin_event(None, "prompt_ab_weights_set",
-                             {"weights": [w.model_dump() for w in body.weights]})
-    return JSONResponse(content={"versions": await db.list_prompt_versions()})
-
-
-@router.post("/prompts/{version_id}/archive")
-async def archive_prompt(version_id: int) -> JSONResponse:
-    try:
-        row = await db.archive_prompt_version(version_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    if row is None:
-        raise HTTPException(status_code=404, detail="Version not found.")
-    await db.log_admin_event(None, "prompt_version_archived", {"id": version_id})
-    return JSONResponse(content=row)
 
 
 # ---------------------------------------------------------------------------
@@ -397,27 +314,19 @@ async def put_test_profile(body: TestProfileWrite,
 
 
 # ---------------------------------------------------------------------------
-# system prompt (Layer-1 core) — structured, edit-and-apply-live
+# effective prompt — READ-ONLY view of the whole assembled prompt
 #
-# The core is broken into named sections (tone of voice + each rule block) so the
-# owner can retune the prompt from Settings. Saving composes the sections into
-# the core and publishes it live as the new default prompt version — reusing the
-# version machinery keeps attribution, the audit trail, and the byte-stable cache
-# boundary intact (a publish is one deliberate, warned-about cache reset).
+# The prompt is sourced solely from `prompts.py` (the file is the single source
+# of truth) and is NOT editable from the admin. This endpoint lets the owner SEE
+# and verify the complete prompt the model receives — Layer 1 (byte-stable
+# SYSTEM_CORE) + Layer 2 (the selected topic's KB) in the system message, and all
+# Layer-3 directives (greeting, formatting, KB-grounding, escalation restraint,
+# suggestions, resolved, topic routing, language, personalization, guardrails,
+# forbidden topics) + the player context in the user message. We assemble the
+# exact messages chat_service would send for a sample player + sample topic.
+# Nothing here is sent to the model — it's a faithful rendering of the live
+# assembly so "how is the prompt formed?" has one answer in one place.
 # ---------------------------------------------------------------------------
-class SystemPromptWrite(BaseModel):
-    sections: dict[str, str]
-
-
-# Representative inputs for the read-only "full effective prompt" preview. The
-# editable sections only cover Layer 1; almost every behavioural rule the owner
-# tunes lives in the per-request Layer-3 directives (greeting, formatting,
-# KB-grounding, escalation restraint, suggestions, resolved, topic routing,
-# language, personalization, guardrails, forbidden topics). To let the owner SEE
-# and verify the whole thing, we assemble the exact messages chat_service would
-# send for a sample player + sample topic and surface both the system message
-# (Layer 1 + Layer 2 KB) and the Layer-3 user message. Nothing here is sent to
-# the model — it's a faithful rendering of the live assembly.
 _PREVIEW_CONTEXT = {
     "id": "10042",
     "full_name": "Иван Петров",
@@ -431,13 +340,13 @@ _PREVIEW_CONTEXT = {
 _PREVIEW_USER_TEXT = "«…здесь будет текущее сообщение игрока…»"
 
 
-async def _build_effective_preview(live_core: str) -> dict[str, Any]:
+async def _build_effective_preview() -> dict[str, Any]:
     """Assemble the full prompt exactly as chat_service would, with sample data.
 
-    Returns the system message (Layer 1 core + Layer 2 KB block) and the Layer-3
-    user message, plus a note of which example topic/language were used. Resilient
-    by design: if topics/KB can't be loaded the preview still renders Layer 1 +
-    the Layer-3 directives, so the settings page never breaks.
+    Returns the system message (Layer 1 SYSTEM_CORE + Layer 2 KB block) and the
+    Layer-3 user message, plus a note of which example topic/language were used.
+    Resilient by design: if topics/KB can't be loaded the preview still renders
+    Layer 1 + the Layer-3 directives, so the page never breaks.
     """
     lang = language.default_code()
     current_topic: Optional[dict[str, Any]] = None
@@ -469,7 +378,6 @@ async def _build_effective_preview(live_core: str) -> dict[str, Any]:
         resolved_lang=lang,
         available_topics=suggestable,
         current_topic=current_topic,
-        core=live_core,
     )
     return {
         "system": messages[0]["content"],
@@ -482,94 +390,7 @@ async def _build_effective_preview(live_core: str) -> dict[str, Any]:
     }
 
 
-@router.get("/system-prompt")
-async def get_system_prompt() -> JSONResponse:
-    sections = settings_mod.system_prompt()
-    live = await db.get_default_prompt_version()
-    # The live core is what's ACTUALLY sent (the published version body); fall
-    # back to composing the stored sections if no version row exists yet.
-    live_core = live["body"] if live else prompts.compose_core(sections)
-    return JSONResponse(content={
-        "sections": sections,
-        "meta": prompts.section_meta(),
-        "composed": prompts.compose_core(sections),
-        "live_version": ({"id": live["id"], "name": live["name"]}
-                         if live else None),
-        "effective_preview": await _build_effective_preview(live_core),
-    })
-
-
-@router.put("/system-prompt")
-async def put_system_prompt(body: SystemPromptWrite,
-                            admin=Depends(require_admin)) -> JSONResponse:
-    keys = set(prompts.SECTION_KEYS)
-    cleaned: dict[str, str] = {}
-    for key, val in (body.sections or {}).items():
-        if key not in keys:
-            raise HTTPException(status_code=400, detail=f"unknown section: {key!r}")
-        if not isinstance(val, str) or not val.strip():
-            raise HTTPException(status_code=400,
-                                detail=f"section {key!r} must be a non-empty string")
-        cleaned[key] = val.strip()
-
-    # Persist the structured sections (the editor's source of truth)…
-    await db.set_setting("system_prompt", {"sections": cleaned},
-                         updated_by=admin.get("role"))
-    await settings_mod.reload()
-    # …then publish the composed core live as the new default version.
-    core = prompts.compose_core(settings_mod.system_prompt())
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    vid = await db.create_prompt_version(name=f"settings-{stamp}", body=core,
-                                         status="draft")
-    await db.publish_prompt_version(vid)
-    prompt_store.invalidate()  # deliberate, one-time cache reset
-    await db.log_admin_event(None, "system_prompt_updated",
-                             {"version_id": vid, "sections": list(cleaned)})
-    return JSONResponse(content={"ok": True, "version_id": vid,
-                                 "sections": settings_mod.system_prompt(),
-                                 "composed": core})
-
-
-# ---------------------------------------------------------------------------
-# Layer-3 directives — structured, edit-and-apply-live (no version, no cache reset)
-#
-# The static, always-present Layer-3 rule blocks (greeting, formatting,
-# KB-grounding, escalation restraint, suggested questions, finish-chat, recency
-# guardrails) are the bulk of post-launch behavioural tuning. They ride in the
-# per-request user message, so unlike the Layer-1 core editing them is NOT a
-# prompt-version publish and does NOT reset the prefix cache — overrides just go
-# to the `layer3_prompt` settings group and apply to the next message. Mirrors the
-# system-prompt editor so the owner controls the WHOLE prompt from one place.
-# ---------------------------------------------------------------------------
-class Layer3PromptWrite(BaseModel):
-    sections: dict[str, str]
-
-
-@router.get("/layer3-prompt")
-async def get_layer3_prompt() -> JSONResponse:
-    return JSONResponse(content={
-        "sections": settings_mod.layer3_prompt(),
-        "meta": prompts.layer3_section_meta(),
-    })
-
-
-@router.put("/layer3-prompt")
-async def put_layer3_prompt(body: Layer3PromptWrite,
-                            admin=Depends(require_admin)) -> JSONResponse:
-    keys = set(prompts.LAYER3_SECTION_KEYS)
-    cleaned: dict[str, str] = {}
-    for key, val in (body.sections or {}).items():
-        if key not in keys:
-            raise HTTPException(status_code=400, detail=f"unknown section: {key!r}")
-        if not isinstance(val, str) or not val.strip():
-            raise HTTPException(status_code=400,
-                                detail=f"section {key!r} must be a non-empty string")
-        cleaned[key] = val.strip()
-
-    await db.set_setting("layer3_prompt", {"sections": cleaned},
-                         updated_by=admin.get("role"))
-    await settings_mod.reload()  # applies live to the next message (Layer 3)
-    await db.log_admin_event(None, "layer3_prompt_updated",
-                             {"sections": list(cleaned)})
-    return JSONResponse(content={"ok": True,
-                                 "sections": settings_mod.layer3_prompt()})
+@router.get("/effective-prompt")
+async def get_effective_prompt() -> JSONResponse:
+    """Read-only: the whole prompt as assembled from prompts.py (the source of truth)."""
+    return JSONResponse(content={"effective_preview": await _build_effective_preview()})
