@@ -143,13 +143,25 @@ exponential backoff up to `OPENAI_MAX_ATTEMPTS`. Every fallback engagement fires
 `on_failover` callback → `admin_events('key_failover')`. Cost is computed from token usage
 via `_PRICING` (marked "verify before trusting" — prices may be stale; unknown models cost 0).
 
-The tuning knobs (model name, temperature, max output tokens, request timeout, key-switch
-timeout, max attempts, per-key concurrency) are NOT read from env directly — they come from
-the hot-reloaded `model` settings group (`settings.model()`, precedence `app_settings` → env
-→ default). Model/temperature/max-tokens/switch-timeout/attempts are read **live per call**;
-`request_timeout_sec` and `max_concurrent_per_key` are bound when the client is built, so a
-`model` write also calls `openai_client.reset()` to rebuild the singleton (no effect on the
-OpenAI-side prefix cache). API keys themselves stay secrets in env.
+The default model is the **GPT-5.4 mini reasoning family** (`gpt-5.4-mini`). Reasoning models
+change the request shape: the call sends `max_completion_tokens` (**not** `max_tokens`), does
+**not** send `temperature` (rejected by these models), and instead passes `reasoning_effort`
+and `verbosity` (each `low`/`medium`/`high`). Both are sent only when set — an empty string in
+the `model` group **omits** the parameter so the model's own default applies (and so the owner
+can drop a knob a future model rejects without a redeploy). The `max_output_tokens` budget
+counts reasoning tokens (billed as output), so it ships higher (2000) than a non-reasoning
+model would need — too low and the visible answer can return empty.
+
+The tuning knobs (model name, reasoning effort, verbosity, max output tokens, request timeout,
+key-switch timeout, max attempts, per-key concurrency) are NOT read from env directly — they
+come from the hot-reloaded `model` settings group (`settings.model()`, precedence
+`app_settings` → env → default). Model/reasoning-effort/verbosity/max-tokens/switch-timeout/
+attempts are read **live per call**; `request_timeout_sec` and `max_concurrent_per_key` are
+bound when the client is built, so a `model` write also calls `openai_client.reset()` to
+rebuild the singleton (no effect on the OpenAI-side prefix cache). API keys themselves stay
+secrets in env. `seed/settings_seed.py` also runs a one-time migration that flips a stored
+legacy `gpt-4`/`gpt-3` `model` override to the new default and drops the dead `temperature`
+key, so an existing deployment moves to GPT-5.4 mini on boot without a manual settings edit.
 
 ### Anti-spam gate order (`antispam.py`, enforced in `api/chat.py`)
 `POST /api/chat/message` checks in this exact order: verify session token (401) → IP

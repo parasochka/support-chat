@@ -40,9 +40,10 @@ except Exception:  # noqa: BLE001
 # ---------------------------------------------------------------------------
 _PRICING: dict[str, tuple[float, float, float]] = {
     # model: (input, cached_input, output)  -- USD per 1M tokens
-    "gpt-4o-mini": (0.15, 0.075, 0.60),
-    "gpt-4o": (2.50, 1.25, 10.00),
-    "gpt-4.1-mini": (0.40, 0.10, 1.60),
+    # GPT-5.4 mini (the live default). Both the alias and the dated snapshot id
+    # map to the same prices so cost accounting works whichever is configured.
+    "gpt-5.4-mini": (0.75, 0.075, 4.50),
+    "gpt-5.4-mini-2026-03-17": (0.75, 0.075, 4.50),
 }
 
 
@@ -76,17 +77,28 @@ class _KeyClient:
             self.client = None
 
     async def call(self, messages: list[dict[str, str]]) -> Any:
-        # model / temperature / max tokens / per-call timeout are read live so
-        # tuning from the admin panel takes effect without a redeploy.
+        # model / reasoning effort / verbosity / max tokens / per-call timeout
+        # are read live so tuning from the admin panel takes effect without a
+        # redeploy. The GPT-5 reasoning family takes `max_completion_tokens`
+        # (not `max_tokens`) and does NOT accept `temperature`; reasoning_effort
+        # and verbosity are sent only when set (empty ⇒ use the model default),
+        # so the owner can disable either from the admin panel if a future model
+        # rejects it.
         m = settings.model()
+        kwargs: dict[str, Any] = {
+            "model": m["model"],
+            "messages": messages,
+            "max_completion_tokens": int(m["max_output_tokens"]),
+            "timeout": m["request_timeout_sec"],
+        }
+        effort = m.get("reasoning_effort")
+        if effort:
+            kwargs["reasoning_effort"] = effort
+        verbosity = m.get("verbosity")
+        if verbosity:
+            kwargs["verbosity"] = verbosity
         async with self._sem:
-            return await self.client.chat.completions.create(
-                model=m["model"],
-                messages=messages,
-                temperature=m["temperature"],
-                max_tokens=int(m["max_output_tokens"]),
-                timeout=m["request_timeout_sec"],
-            )
+            return await self.client.chat.completions.create(**kwargs)
 
 
 def _is_hard_error(exc: Exception) -> bool:

@@ -57,38 +57,41 @@ def test_validate_rejects_bad():
 # --- model tuning group (migrated from Railway env) -------------------------
 def test_model_env_default_when_cache_empty(monkeypatch):
     monkeypatch.setattr(config, "OPENAI_MODEL", "gpt-x")
-    monkeypatch.setattr(config, "OPENAI_TEMPERATURE", 0.7)
+    monkeypatch.setattr(config, "OPENAI_REASONING_EFFORT", "high")
     m = settings.model()
     assert m["model"] == "gpt-x"
-    assert m["temperature"] == 0.7
+    assert m["reasoning_effort"] == "high"
     assert m["max_attempts"] == config.OPENAI_MAX_ATTEMPTS
 
 
 def test_model_db_override_wins_over_env(monkeypatch):
     monkeypatch.setattr(config, "OPENAI_MODEL", "gpt-x")
-    settings._cache["model"] = {"model": "gpt-tuned", "temperature": 0.1}
+    settings._cache["model"] = {"model": "gpt-tuned", "reasoning_effort": "medium"}
     m = settings.model()
     assert m["model"] == "gpt-tuned"                 # DB override
-    assert m["temperature"] == 0.1
+    assert m["reasoning_effort"] == "medium"
     assert m["max_output_tokens"] == config.OPENAI_MAX_OUTPUT_TOKENS  # untouched
 
 
 def test_model_validate_accepts_good():
     v = settings.validate_setting("model", {
-        "model": "gpt-4o-mini", "temperature": 0.3, "max_output_tokens": 700,
+        "model": "gpt-5.4-mini", "reasoning_effort": "low", "verbosity": "low",
+        "max_output_tokens": 2000,
         "request_timeout_sec": 40, "key_switch_timeout_sec": 25,
         "max_attempts": 3, "max_concurrent_per_key": 4,
     })
-    assert v["model"] == "gpt-4o-mini"
+    assert v["model"] == "gpt-5.4-mini"
+    # empty string is accepted (⇒ the parameter is omitted from the request)
+    assert settings.validate_setting("model", {"verbosity": ""})["verbosity"] == ""
 
 
 def test_model_validate_rejects_bad():
     with pytest.raises(ValueError):
-        settings.validate_setting("model", {"model": ""})          # empty name
+        settings.validate_setting("model", {"model": ""})              # empty name
     with pytest.raises(ValueError):
-        settings.validate_setting("model", {"temperature": 5})     # > 2.0
+        settings.validate_setting("model", {"reasoning_effort": "max"})  # not a level
     with pytest.raises(ValueError):
-        settings.validate_setting("model", {"max_attempts": 0})    # below min
+        settings.validate_setting("model", {"max_attempts": 0})        # below min
 
 
 # --- antispam fields folded in from env ------------------------------------

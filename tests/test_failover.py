@@ -112,11 +112,11 @@ async def test_no_fallback_configured_uses_primary_only():
 
 
 def test_cost_computation_known_model():
-    cost = openai_client.compute_cost("gpt-4o-mini", tokens_in=1_000_000,
+    cost = openai_client.compute_cost("gpt-5.4-mini", tokens_in=1_000_000,
                                       tokens_out=0, cached_in=0)
-    assert cost == pytest.approx(0.15)
+    assert cost == pytest.approx(0.75)
     # cached tokens priced lower
-    cost2 = openai_client.compute_cost("gpt-4o-mini", tokens_in=1_000_000,
+    cost2 = openai_client.compute_cost("gpt-5.4-mini", tokens_in=1_000_000,
                                        tokens_out=0, cached_in=1_000_000)
     assert cost2 == pytest.approx(0.075)
 

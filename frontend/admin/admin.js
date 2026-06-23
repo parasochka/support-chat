@@ -790,13 +790,14 @@ function modelSettingsBox(holder, current) {
   const box = el("div", "npadmin-chart");
   box.appendChild(el("div", "npadmin-meta", "model — OpenAI tuning"));
   box.appendChild(el("div", "npadmin-help",
-    "Model name + sampling/timeout/retry knobs. These override the Railway env "
-    + "vars (OPENAI_MODEL, OPENAI_TEMPERATURE, …). Changes apply to new requests "
-    + "immediately; no redeploy. Secrets (API keys) stay in Railway."));
+    "Model name + reasoning/timeout/retry knobs. These override the Railway env "
+    + "vars (OPENAI_MODEL, OPENAI_REASONING_EFFORT, …). The default is the GPT-5.4 "
+    + "reasoning family: it has no temperature; control it with reasoning effort + "
+    + "verbosity instead. Changes apply to new requests immediately; no redeploy. "
+    + "Secrets (API keys) stay in Railway."));
 
   // [field, label, type, step/extra]
   const NUM = [
-    ["temperature", "Temperature (0–2)", "number", "0.1"],
     ["max_output_tokens", "Max output tokens", "number", "1"],
     ["request_timeout_sec", "Request timeout (sec)", "number", "1"],
     ["key_switch_timeout_sec", "Key switch timeout (sec)", "number", "1"],
@@ -809,9 +810,28 @@ function modelSettingsBox(holder, current) {
   nameLab.appendChild(el("span", null, "Model name"));
   const nameInp = el("input", "npadmin-input");
   nameInp.type = "text"; nameInp.value = current.model || "";
-  nameInp.placeholder = "gpt-4o-mini";
+  nameInp.placeholder = "gpt-5.4-mini";
   nameLab.appendChild(nameInp);
   box.appendChild(nameLab);
+
+  // GPT-5 reasoning knobs. "" ⇒ omit the parameter (use the model's default).
+  const selects = {};
+  const buildLevel = (key, label, value) => {
+    const lab = el("label", "npadmin-field");
+    lab.appendChild(el("span", null, label));
+    const sel = el("select", "npadmin-input"); sel.style.width = "auto";
+    for (const opt of ["", "low", "medium", "high"]) {
+      const o = el("option", null, opt === "" ? "(model default)" : opt);
+      o.value = opt;
+      if ((value || "") === opt) o.selected = true;
+      sel.appendChild(o);
+    }
+    selects[key] = sel;
+    lab.appendChild(sel);
+    box.appendChild(lab);
+  };
+  buildLevel("reasoning_effort", "Reasoning effort", current.reasoning_effort);
+  buildLevel("verbosity", "Verbosity", current.verbosity);
 
   for (const [key, label, type, step] of NUM) {
     const lab = el("label", "npadmin-field");
@@ -831,9 +851,9 @@ function modelSettingsBox(holder, current) {
     const name = nameInp.value.trim();
     if (!name) { err.textContent = "Model name is required"; return; }
     const value = { model: name };
-    value.temperature = parseFloat(fields.temperature.value);
+    value.reasoning_effort = selects.reasoning_effort.value;
+    value.verbosity = selects.verbosity.value;
     for (const [key] of NUM) {
-      if (key === "temperature") continue;
       value[key] = parseInt(fields[key].value, 10);
     }
     for (const [key, label] of NUM) {
