@@ -223,6 +223,14 @@ function ensureSession() {
   return state.sessionPromise;
 }
 
+function resetSessionState() {
+  state.sessionId = null;
+  state.token = null;
+  state.sessionPromise = null;
+  state.topicChosen = false;
+  state.greetingEl = null;
+}
+
 async function createSession() {
   const token = await recaptchaToken("chat_session");
   const { ok, data } = await api("/api/chat/session", {
@@ -729,10 +737,18 @@ function applyTurnExtras(data, originalText) {
 // panel collapses regardless so the player is never stuck.
 function finishChat() {
   clearSuggestions();
+  const sessionId = state.sessionId;
+  const closePromise = sessionId
+    ? api("/api/chat/resolve", { auth: true, body: { session_id: sessionId } })
+        .catch(() => { /* non-fatal: still close the panel below */ })
+    : Promise.resolve();
   if (state.sessionId) {
-    api("/api/chat/resolve", { auth: true, body: { session_id: state.sessionId } })
-      .catch(() => { /* non-fatal: still close the panel below */ });
+    // Drop stale credentials immediately so any next open starts a fresh session
+    // even if the close request is still in flight or the host keeps this widget
+    // instance alive for a long time.
+    resetSessionState();
   }
+  closePromise.finally(() => { /* intentionally best-effort */ });
   addMessage("assistant", t("finished"));
   if (state.open) togglePanel();
 }
@@ -848,6 +864,15 @@ async function togglePanel() {
   }
   setBodyScrollLock(state.open);
   if (state.open && !state.topicChosen) {
+    // A finished chat may leave the old transcript DOM around while the panel is
+    // collapsed. Re-opening without an active topic must always be a clean topic
+    // picker for a fresh backend session, not the previous closed conversation.
+    els.back.classList.add("npchat-hidden");
+    els.inputRow.classList.add("npchat-hidden");
+    els.messages.classList.add("npchat-hidden");
+    els.messages.innerHTML = "";
+    state.greetingEl = null;
+    els.topics.classList.remove("npchat-hidden");
     // Paint the category buttons as fast as we can. If the speculative mount
     // prefetch already landed, this is instant; otherwise fetch them now —
     // either way it does NOT wait on reCaptcha or the session create.

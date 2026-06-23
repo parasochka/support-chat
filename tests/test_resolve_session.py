@@ -6,9 +6,12 @@ pending escalation (a hand-off to a human must not be closed by the player).
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import auth
+import chat_service
 import db
+import kb
 from api import chat as chat_api
 
 
@@ -88,3 +91,54 @@ async def test_resolve_idempotent_when_already_resolved(monkeypatch):
     assert _payload(resp)["ok"] is True
     # No second write for an already-resolved session.
     assert touched["resolved"] is False
+
+
+async def test_message_to_resolved_session_is_rejected_before_generation(monkeypatch):
+    touched = {"handled": False, "persisted": False}
+
+    async def fake_handle_message(session, user_text):
+        touched["handled"] = True
+
+    async def fake_persist_turn(**kwargs):
+        touched["persisted"] = True
+
+    _stub_auth(monkeypatch, {"id": "s1", "status": "resolved", "message_count": 4})
+    monkeypatch.setattr(chat_service, "handle_message", fake_handle_message)
+    monkeypatch.setattr(db, "persist_turn", fake_persist_turn)
+
+    req = SimpleNamespace(headers={}, client=SimpleNamespace(host="127.0.0.1"))
+    resp = await chat_api.send_message(
+        req,
+        chat_api.MessageSend(session_id="s1", text="какие провайдеры игр есть?"),
+        authorization="Bearer tok",
+    )
+
+    data = _payload(resp)
+    assert resp.status_code == 409
+    assert data["error"] == "session_closed"
+    assert touched == {"handled": False, "persisted": False}
+
+
+async def test_topic_change_on_resolved_session_is_rejected(monkeypatch):
+    touched = {"topic_lookup": False, "set_topic": False}
+
+    async def fake_topic_by_slug(slug):
+        touched["topic_lookup"] = True
+        return {"id": 2, "slug": slug}
+
+    async def fake_set_session_topic(sid, topic_id):
+        touched["set_topic"] = True
+
+    _stub_auth(monkeypatch, {"id": "s1", "status": "resolved", "message_count": 4})
+    monkeypatch.setattr(kb, "topic_by_slug", fake_topic_by_slug)
+    monkeypatch.setattr(db, "set_session_topic", fake_set_session_topic)
+
+    resp = await chat_api.select_topic(
+        chat_api.TopicSelect(session_id="s1", topic_slug="betting_games"),
+        authorization="Bearer tok",
+    )
+
+    data = _payload(resp)
+    assert resp.status_code == 409
+    assert data["error"] == "session_closed"
+    assert touched == {"topic_lookup": False, "set_topic": False}
