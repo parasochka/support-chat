@@ -560,7 +560,19 @@ function setMsgBody(elm, role, text) {
 // `.npchat-body` (it owns `overflow-y: auto`), NOT `.npchat-messages` — so this
 // is what keeps the latest turn in view without the player scrolling by hand.
 function scrollToBottom() {
-  if (els.body) els.body.scrollTop = els.body.scrollHeight;
+  if (!els.body) return;
+  els.body.scrollTop = els.body.scrollHeight;
+  // Re-pin after the next layout pass. The suggestion strip lives OUTSIDE the
+  // scroll container (it's a sibling of .npchat-body), so showing it a moment
+  // later shrinks the transcript's viewport — and rendered Markdown / fonts can
+  // also reflow a frame after the text lands. Without this second pin the newest
+  // turn ends up clipped above the fold ("the new message is half-hidden behind
+  // the follow-up bubbles").
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => {
+      if (els.body) els.body.scrollTop = els.body.scrollHeight;
+    });
+  }
 }
 
 function addMessage(role, text) {
@@ -688,6 +700,10 @@ function applyTurnExtras(data, originalText) {
   if (data.escalation && data.escalation.active) addEscalation(data.escalation);
   if (data.suggested_topic) addTopicSuggestion(data.suggested_topic, originalText);
   renderSuggestions(data.suggestions, data.resolved);
+  // The follow-up bubbles render AFTER the reply was scrolled into view and sit
+  // outside the scroll container, so they shrink the transcript's viewport and
+  // would otherwise clip the bottom of the fresh answer. Re-pin once they're in.
+  scrollToBottom();
 }
 
 // End the conversation from the resolved "finish chat" nudge: tell the backend to
