@@ -385,11 +385,20 @@ async def seed_kb_variables(conn: Optional[asyncpg.Connection] = None) -> None:
     )
 
 
+def _row_to_kb_variable(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    # `updated_at` is a datetime; JSONResponse (Starlette json.dumps) cannot
+    # serialize it, so render it as an ISO string like every other admin payload.
+    updated_at = d.get("updated_at")
+    d["updated_at"] = updated_at.isoformat() if updated_at is not None else None
+    return d
+
+
 async def list_kb_variables() -> list[dict[str, Any]]:
     rows = await _pool.fetch(
         "SELECT key, description, value, updated_at, updated_by FROM kb_variables ORDER BY key"
     )
-    return [dict(r) for r in rows]
+    return [_row_to_kb_variable(r) for r in rows]
 
 
 async def get_kb_variables_map() -> dict[str, str]:
@@ -411,7 +420,7 @@ async def set_kb_variable(key: str, description: str, value: str, updated_by: Op
         """,
         key, description, value, updated_by,
     )
-    return dict(row)
+    return _row_to_kb_variable(row)
 
 
 # ---------------------------------------------------------------------------
