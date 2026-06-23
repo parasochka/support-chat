@@ -136,11 +136,12 @@ async def unresolved(from_: Optional[str] = Query(default=None, alias="from"),
     if format == "csv":
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["topic", "session_id", "message_count", "first_message",
-                    "created_at"])
+        w.writerow(["topic", "session_id", "status", "escalated",
+                    "message_count", "first_message", "created_at"])
         for g in groups:
             for s in g["sessions"]:
-                w.writerow([g["topic"], s["session_id"], s["message_count"],
+                w.writerow([g["topic"], s["session_id"], s.get("status"),
+                            s.get("escalated"), s["message_count"],
                             (s["first_message"] or "").replace("\n", " "),
                             s["created_at"]])
         return PlainTextResponse(content=buf.getvalue(), media_type="text/csv")

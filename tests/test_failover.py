@@ -121,5 +121,11 @@ def test_cost_computation_known_model():
     assert cost2 == pytest.approx(0.075)
 
 
+def test_cost_computation_snapshot_model_falls_back_to_alias():
+    cost = openai_client.compute_cost("gpt-5.5-2026-06-23", tokens_in=1_000_000,
+                                      tokens_out=1_000_000, cached_in=0)
+    assert cost == pytest.approx(35.0)
+
+
 def test_cost_unknown_model_zero():
     assert openai_client.compute_cost("nonexistent", 100, 100, 0) == 0.0

@@ -379,14 +379,17 @@ async def persist_turn(
     user_lang: Optional[str],
     assistant_text: str,
     assistant_lang: Optional[str],
-    ai_meta: dict[str, Any],
+    ai_meta: Optional[dict[str, Any]] = None,
 ) -> int:
     """Insert user + assistant rows, bump counters, write the AI log — atomically.
 
     Returns the new `message_count` for the session.
-    `ai_meta` carries: model, key_used, tokens_in, tokens_out, cached_in,
-    cost_usd, latency_ms, ok, error.
+    When present, `ai_meta` carries: model, key_used, tokens_in, tokens_out,
+    cached_in, cost_usd, latency_ms, ok, error. Model-free backend replies
+    (for example the message-cap hand-off) still persist the visible chat turn
+    but intentionally skip `ai_interaction_logs` because no API call happened.
     """
+    ai_meta = ai_meta or {}
     async with _pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
@@ -404,17 +407,18 @@ async def persist_turn(
                 ai_meta.get("tokens_in"), ai_meta.get("tokens_out"),
                 ai_meta.get("cached_in"), ai_meta.get("cost_usd"),
             )
-            await conn.execute(
-                "INSERT INTO ai_interaction_logs "
-                "(session_id, model, key_used, tokens_in, tokens_out, cached_in, "
-                " cost_usd, latency_ms, ok, error) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-                session_id, ai_meta.get("model"), ai_meta.get("key_used"),
-                ai_meta.get("tokens_in"), ai_meta.get("tokens_out"),
-                ai_meta.get("cached_in"), ai_meta.get("cost_usd"),
-                ai_meta.get("latency_ms"), ai_meta.get("ok", True),
-                ai_meta.get("error"),
-            )
+            if ai_meta:
+                await conn.execute(
+                    "INSERT INTO ai_interaction_logs "
+                    "(session_id, model, key_used, tokens_in, tokens_out, cached_in, "
+                    " cost_usd, latency_ms, ok, error) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                    session_id, ai_meta.get("model"), ai_meta.get("key_used"),
+                    ai_meta.get("tokens_in"), ai_meta.get("tokens_out"),
+                    ai_meta.get("cached_in"), ai_meta.get("cost_usd"),
+                    ai_meta.get("latency_ms"), ai_meta.get("ok", True),
+                    ai_meta.get("error"),
+                )
             row = await conn.fetchrow(
                 "UPDATE chat_sessions "
                 "SET message_count = message_count + 1, updated_at = now() "
@@ -660,11 +664,17 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
 
 async def by_topic(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
     rows = await _pool.fetch(
+        "WITH costs AS ("
+        "  SELECT session_id, SUM(cost_usd) AS cost_usd_total "
+        "  FROM ai_interaction_logs GROUP BY session_id"
+        ") "
         "SELECT t.slug, t.title, "
         "  COUNT(s.id) AS sessions, "
         "  COUNT(s.id) FILTER (WHERE s.escalated) AS escalated, "
-        "  COALESCE(AVG(s.message_count) FILTER (WHERE s.message_count > 0), 0) AS avg_messages "
+        "  COALESCE(AVG(s.message_count) FILTER (WHERE s.message_count > 0), 0) AS avg_messages, "
+        "  COALESCE(SUM(costs.cost_usd_total), 0) AS cost_usd_total "
         "FROM chat_sessions s JOIN kb_topics t ON t.id = s.topic_id "
+        "LEFT JOIN costs ON costs.session_id = s.id "
         "WHERE s.created_at >= $1 AND s.created_at < $2 "
         "GROUP BY t.slug, t.title ORDER BY sessions DESC",
         dt_from, dt_to,
@@ -679,23 +689,30 @@ async def by_topic(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
             "escalated": r["escalated"],
             "escalation_rate": (r["escalated"] / r["sessions"]) if r["sessions"] else 0.0,
             "avg_messages": float(r["avg_messages"]),
+            "cost_usd_total": round(float(r["cost_usd_total"]), 6),
         })
     return out
 
 
 async def by_language(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
     rows = await _pool.fetch(
-        "SELECT COALESCE(lang, 'unknown') AS lang, "
+        "WITH costs AS ("
+        "  SELECT session_id, SUM(cost_usd) AS cost_usd_total "
+        "  FROM ai_interaction_logs GROUP BY session_id"
+        ") "
+        "SELECT COALESCE(s.lang, 'unknown') AS lang, "
         "  COUNT(*) AS sessions, "
-        "  COUNT(*) FILTER (WHERE escalated) AS escalated "
-        "FROM chat_sessions "
-        "WHERE created_at >= $1 AND created_at < $2 "
-        "GROUP BY COALESCE(lang, 'unknown') ORDER BY sessions DESC",
+        "  COUNT(*) FILTER (WHERE s.escalated) AS escalated, "
+        "  COALESCE(SUM(costs.cost_usd_total), 0) AS cost_usd_total "
+        "FROM chat_sessions s LEFT JOIN costs ON costs.session_id = s.id "
+        "WHERE s.created_at >= $1 AND s.created_at < $2 "
+        "GROUP BY COALESCE(s.lang, 'unknown') ORDER BY sessions DESC",
         dt_from, dt_to,
     )
     return [
         {"lang": r["lang"], "sessions": r["sessions"], "escalated": r["escalated"],
-         "escalation_rate": (r["escalated"] / r["sessions"]) if r["sessions"] else 0.0}
+         "escalation_rate": (r["escalated"] / r["sessions"]) if r["sessions"] else 0.0,
+         "cost_usd_total": round(float(r["cost_usd_total"]), 6)}
         for r in rows
     ]
 
@@ -730,8 +747,12 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
     args2 = args + [page_size, (page - 1) * page_size]
     rows = await _pool.fetch(
         f"SELECT s.id, s.lang, s.status, s.escalated, s.message_count, "
-        f"  s.created_at, s.updated_at, t.slug AS topic "
+        f"  s.created_at, s.updated_at, t.slug AS topic, "
+        f"  COALESCE(c.cost_usd_total, 0) AS cost_usd_total "
         f"FROM chat_sessions s LEFT JOIN kb_topics t ON t.id = s.topic_id "
+        f"LEFT JOIN (SELECT session_id, SUM(cost_usd) AS cost_usd_total "
+        f"           FROM ai_interaction_logs GROUP BY session_id) c "
+        f"  ON c.session_id = s.id "
         f"WHERE {where_sql} ORDER BY s.created_at DESC "
         f"LIMIT ${len(args)+1} OFFSET ${len(args)+2}",
         *args2,
@@ -742,6 +763,7 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
         d["id"] = str(d["id"])
         d["created_at"] = d["created_at"].isoformat()
         d["updated_at"] = d["updated_at"].isoformat()
+        d["cost_usd_total"] = round(float(d.get("cost_usd_total") or 0), 6)
         items.append(d)
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
@@ -781,17 +803,23 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
 
 
 async def unresolved_by_topic(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
-    """Escalated/unresolved sessions grouped by topic, with a sample first
-    user message per session, sorted by frequency (most unresolved first)."""
+    """Open or escalated engaged sessions grouped by topic.
+
+    The admin page is an operational queue for conversations that still need KB
+    or human attention, so it includes both escalated sessions and abandoned open
+    chats with at least one user turn. Resolved sessions are excluded.
+    """
     rows = await _pool.fetch(
         "SELECT COALESCE(t.slug, 'unknown') AS topic, "
         "  COALESCE(t.title, '{}'::jsonb) AS title, "
-        "  s.id AS session_id, s.message_count, s.created_at, "
+        "  s.id AS session_id, s.status, s.escalated, s.message_count, s.created_at, "
         "  (SELECT m.content FROM chat_messages m "
         "    WHERE m.session_id = s.id AND m.role = 'user' "
         "    ORDER BY m.id ASC LIMIT 1) AS first_message "
         "FROM chat_sessions s LEFT JOIN kb_topics t ON t.id = s.topic_id "
-        "WHERE s.escalated AND s.created_at >= $1 AND s.created_at < $2 "
+        "WHERE s.message_count > 0 "
+        "  AND (s.escalated OR s.status = 'open') "
+        "  AND s.created_at >= $1 AND s.created_at < $2 "
         "ORDER BY topic, s.created_at DESC",
         dt_from, dt_to,
     )
@@ -807,6 +835,8 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
         g["count"] += 1
         g["sessions"].append({
             "session_id": str(r["session_id"]),
+            "status": r["status"],
+            "escalated": r["escalated"],
             "message_count": r["message_count"],
             "first_message": r["first_message"],
             "created_at": r["created_at"].isoformat(),
