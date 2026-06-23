@@ -170,9 +170,6 @@
 .npchat-msg-assistant {
   align-self: flex-start;
   background: #fff;
-  /* One solid black for the whole rendered answer — bold, lists, links and code
-     all read in the same color so the markup adds weight/structure, never a
-     second color and never a washed-out grey. */
   color: #000;
   border: 1px solid #e6e8eb;
   border-bottom-left-radius: 2px;
@@ -180,6 +177,23 @@
      (see renderMarkdown in widget.js), so the generated <p>/<ul>/<br> markup
      drives the layout — drop the pre-wrap that user (plain-text) bubbles use. */
   white-space: normal;
+}
+
+/* THE washed-out-grey fix. The answer is rendered to real HTML — <p>, <ul>,
+   <li>, <strong>, <a>, <code> (see renderMarkdown). Setting `color` only on the
+   bubble above is NOT enough: those child tags merely INHERIT it, and a host
+   page that styles bare tags (e.g. `p { color: #94a3b8 }` — the test page does
+   exactly this) repaints the inherited value, because a rule matching the
+   element directly always beats an inherited one regardless of specificity. So
+   the answer rendered grey no matter how many times the container colour was
+   set. Pin every rendered descendant to one solid black, and use !important +
+   -webkit-text-fill-color so even a host `!important` / text-fill rule can't
+   wash it out again. Links, bold, lists and inline code all read in the same
+   crisp black — the markup adds weight/structure, never a second colour. */
+.npchat-msg-assistant,
+.npchat-msg-assistant * {
+  color: #000 !important;
+  -webkit-text-fill-color: #000 !important;
 }
 
 /* Rendered Markdown inside an assistant bubble — kept compact so a formatted
@@ -191,13 +205,13 @@
 .npchat-msg-assistant li { margin: 2px 0; }
 .npchat-msg-assistant strong { font-weight: 600; }
 /* Links keep the underline as their affordance but stay the same crisp black as
-   the surrounding text — no blue accent breaking the one-color rule. */
-.npchat-msg-assistant a { color: inherit; text-decoration: underline; }
+   the surrounding text (colour is pinned by the rule above) — no blue accent
+   breaking the one-colour rule. */
+.npchat-msg-assistant a { text-decoration: underline; }
 .npchat-msg-assistant code {
   /* Very faint tint so inline code is still distinguishable, but the glyphs stay
-     the same solid black as the rest of the answer. */
+     the same solid black as the rest of the answer (colour pinned above). */
   background: #f0f1f3;
-  color: inherit;
   padding: 1px 4px;
   border-radius: 4px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
