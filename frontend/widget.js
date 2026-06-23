@@ -219,7 +219,16 @@ async function fetchTopics() {
 // Errors propagate so callers can surface a "couldn't start" message.
 function ensureSession() {
   if (state.sessionId) return Promise.resolve();
-  if (!state.sessionPromise) state.sessionPromise = createSession();
+  if (!state.sessionPromise) {
+    // Don't cache a REJECTED promise: a transient createSession failure (network
+    // blip, a session-create rate-limit 429, a reCaptcha hiccup) must not wedge
+    // every later attempt forever — clear it on failure so the next call retries
+    // cleanly instead of replaying the same rejection ("nothing happens").
+    state.sessionPromise = createSession().catch((e) => {
+      state.sessionPromise = null;
+      throw e;
+    });
+  }
   return state.sessionPromise;
 }
 
@@ -229,6 +238,24 @@ function resetSessionState() {
   state.sessionPromise = null;
   state.topicChosen = false;
   state.greetingEl = null;
+}
+
+// Return the panel to a clean topic picker. With `abandon: true` it also drops
+// the current session so the next engagement creates a BRAND-NEW one — the
+// single seam behind "every open / back / re-entry is a fresh conversation".
+// The old conversation is left as an abandoned `open` session server-side (the
+// Unresolved queue already accounts for those); we never resume it client-side.
+function resetToPicker({ abandon } = {}) {
+  if (abandon) resetSessionState();
+  if (!els.root) return;
+  els.back.classList.add("npchat-hidden");
+  els.inputRow.classList.add("npchat-hidden");
+  clearSuggestions();
+  els.messages.classList.add("npchat-hidden");
+  els.messages.innerHTML = "";
+  state.greetingEl = null;
+  state.topicChosen = false;
+  els.topics.classList.remove("npchat-hidden");
 }
 
 async function createSession() {
@@ -936,16 +963,13 @@ async function togglePanel() {
     exitFullscreen();
   }
   setBodyScrollLock(state.open);
-  if (state.open && !state.topicChosen) {
-    // A finished chat may leave the old transcript DOM around while the panel is
-    // collapsed. Re-opening without an active topic must always be a clean topic
-    // picker for a fresh backend session, not the previous closed conversation.
-    els.back.classList.add("npchat-hidden");
-    els.inputRow.classList.add("npchat-hidden");
-    els.messages.classList.add("npchat-hidden");
-    els.messages.innerHTML = "";
-    state.greetingEl = null;
-    els.topics.classList.remove("npchat-hidden");
+  if (state.open) {
+    // Every open is a FRESH conversation. Closing / leaving the widget abandons
+    // the previous session (below + goBackToTopics), so re-opening must always
+    // land on a clean topic picker backed by a brand-new session — never the
+    // previous (possibly closed) conversation. `abandon` drops any leftover
+    // session so the warm-up below mints a new one.
+    resetToPicker({ abandon: true });
     // Paint the category buttons as fast as we can. If the speculative mount
     // prefetch already landed, this is instant; otherwise fetch them now —
     // either way it does NOT wait on reCaptcha or the session create.
@@ -959,6 +983,10 @@ async function togglePanel() {
     // Warm up the (slower) reCaptcha + session create in the background so it's
     // ready by the time the player reads the list and taps a topic.
     ensureSession().catch(() => { /* surfaced when an action needs the token */ });
+  } else {
+    // Closing the widget abandons the current chat: drop the session credentials
+    // so nothing stale is reused. The next open starts cleanly (above).
+    resetSessionState();
   }
 }
 
@@ -989,20 +1017,16 @@ async function onTopic(slug) {
   els.input.focus();
 }
 
-// Return to the topic picker from inside a conversation so the player can pick a
-// different topic. The session/token are kept; the transcript is cleared so the
-// next topic starts on a clean slate (the backend already resets the model's
-// context on a topic switch — see set_session_topic).
+// Return to the topic picker from inside a conversation. Tapping "back" ABANDONS
+// the current chat: the session is dropped so picking a topic starts a brand-new
+// one (matching "back / close / finish all end the current conversation"). This
+// avoids reusing a session that may already be closed server-side — which used
+// to silently 409 the first message of the "new" chat and leave the player stuck.
 function goBackToTopics() {
-  els.back.classList.add("npchat-hidden");
-  els.inputRow.classList.add("npchat-hidden");
-  clearSuggestions();
-  els.messages.classList.add("npchat-hidden");
-  els.messages.innerHTML = "";
-  state.greetingEl = null;
-  state.topicChosen = false;
-  els.topics.classList.remove("npchat-hidden");
+  resetToPicker({ abandon: true });
   renderTopics();
+  // Pre-warm the replacement session so the next topic tap is instant.
+  ensureSession().catch(() => { /* surfaced when an action needs the token */ });
 }
 
 async function onSend() {
