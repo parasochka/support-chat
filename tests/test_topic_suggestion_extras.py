@@ -9,7 +9,13 @@ import kb
 import openai_client
 
 
-def test_topic_suggestion_suppresses_followup_bubbles(monkeypatch):
+def test_topic_suggestion_is_routing_only_and_suppresses_answer(monkeypatch):
+    """A cross-topic turn is routing-ONLY: the ungrounded in-place answer is never
+    persisted or returned (the widget auto-switches and re-asks against the right
+    KB), no chat turn is written, the message cap is not bumped, but the detect
+    call's token cost IS logged so OpenAI spend stays accounted (invariant §4)."""
+    calls = {"persist": 0, "ai_log": 0}
+
     async def _get_topic(tid):
         return {"slug": "bonuses", "id": tid, "title": {"ru": "Бонусы"}}
 
@@ -23,7 +29,11 @@ def test_topic_suggestion_suppresses_followup_bubbles(monkeypatch):
         return "KB про бонусы"
 
     async def _persist(**kwargs):
+        calls["persist"] += 1
         return 1
+
+    async def _log_ai(*args, **kwargs):
+        calls["ai_log"] += 1
 
     class _FakeClient:
         async def complete(self, messages, session_id=None, on_failover=None):
@@ -40,21 +50,29 @@ def test_topic_suggestion_suppresses_followup_bubbles(monkeypatch):
     monkeypatch.setattr(db, "get_topic_by_id", _get_topic)
     monkeypatch.setattr(db, "get_history", _get_history)
     monkeypatch.setattr(db, "persist_turn", _persist)
+    monkeypatch.setattr(db, "log_ai_interaction", _log_ai)
     monkeypatch.setattr(kb, "suggestable_topics", _suggestable)
     monkeypatch.setattr(kb, "kb_block_for_topic", _kb_block)
     monkeypatch.setattr(openai_client, "get_client", lambda: _FakeClient())
 
     session = {
         "id": "sess-topic-suggest", "topic_id": 1, "context_reset_id": 0,
-        "user_context": {}, "message_count": 0, "lang": "ru",
+        "user_context": {}, "message_count": 3, "lang": "ru",
     }
 
     reply = asyncio.run(chat_service.handle_message(session, "как пополнить счёт?"))
 
     assert reply.suggested_topic == {"slug": "deposits", "title": "Депозиты"}
+    # The ungrounded in-place answer must NOT leak to the player.
+    assert reply.reply == ""
+    # No bubbles/finish ride alongside a switch.
     assert reply.suggestions == []
     assert reply.closing_suggestion is None
     assert reply.resolved is False
+    # No chat turn persisted, cap not bumped, but the detect call's cost is logged.
+    assert calls["persist"] == 0
+    assert calls["ai_log"] == 1
+    assert reply.message_count == 3
 
 
 def test_normal_turn_splits_closing_suggestion(monkeypatch):

@@ -217,6 +217,37 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         already_escalated=session.get("escalated", False),
     )
 
+    # --- cross-topic auto-switch: routing-only turn (answer suppressed) ------
+    # When the model routes the question to a DIFFERENT topic (and this is not an
+    # escalation), the in-place answer it produced was generated WITHOUT that
+    # topic's KB loaded — so it is ungrounded and must never reach the player.
+    # Instead of persisting/showing it, return a routing-only result: the widget
+    # auto-switches the session to the suggested topic and re-asks the original
+    # question against the CORRECT KB (that re-ask is the one persisted, counted
+    # turn). We deliberately persist NO chat turn here and do not bump the message
+    # cap, but we DO log the detect call's token cost so OpenAI spend stays
+    # accounted for (invariant §4: every OpenAI call -> ai_interaction_logs).
+    if suggested_topic and not decision.active:
+        log.info(
+            "chat_auto_switch_routing session_id=%s slug=%s suppressed_answer_chars=%s",
+            session_id, suggested_topic["slug"], len(clean_text or ""),
+        )
+        await db.log_ai_interaction(
+            session_id, result.model, result.key_used,
+            result.tokens_in, result.tokens_out, result.cached_in,
+            cost, result.latency_ms, ok, error,
+        )
+        return ChatReply(
+            reply="",
+            lang=answer_lang,
+            escalation=escalation.inactive_payload(),
+            message_count=session.get("message_count", 0),
+            suggested_topic=suggested_topic,
+            suggestions=[],
+            closing_suggestion=None,
+            resolved=False,
+        )
+
     esc_payload = escalation.inactive_payload()
     if decision.active:
         esc_payload = escalation.build_payload(answer_lang)
