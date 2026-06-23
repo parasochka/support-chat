@@ -97,12 +97,12 @@ OPENAI_API_KEY: str = require_env("OPENAI_API_KEY")
 SESSION_JWT_SECRET: str = require_env("SESSION_JWT_SECRET")
 
 # --- OpenAI -----------------------------------------------------------------
-# Default model is the GPT-5.4 reasoning family. Reasoning models take
+# Default model is the GPT-5 mini reasoning family. Reasoning models take
 # `max_completion_tokens` (not `max_tokens`), do NOT accept `temperature`, and
 # expose `reasoning_effort` (low/medium/high) + `verbosity` (low/medium/high)
 # instead — see openai_client._KeyClient.call and the `model` settings group.
 OPENAI_API_KEY_FALLBACK: str | None = _env_opt("OPENAI_API_KEY_FALLBACK")
-OPENAI_MODEL: str = _env("OPENAI_MODEL", "gpt-5.4-mini")
+OPENAI_MODEL: str = _env("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_REQUEST_TIMEOUT_SEC: int = _env_int("OPENAI_REQUEST_TIMEOUT_SEC", 40)
 OPENAI_KEY_SWITCH_TIMEOUT_SEC: int = _env_int("OPENAI_KEY_SWITCH_TIMEOUT_SEC", 25)
 OPENAI_MAX_ATTEMPTS: int = _env_int("OPENAI_MAX_ATTEMPTS", 3)

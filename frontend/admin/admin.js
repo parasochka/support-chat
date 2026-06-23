@@ -580,7 +580,7 @@ function modelSettingsBox(holder, current) {
   box.appendChild(el("div", "npadmin-meta", "model — OpenAI tuning"));
   box.appendChild(el("div", "npadmin-help",
     "Model name + reasoning/timeout/retry knobs. These override the Railway env "
-    + "vars (OPENAI_MODEL, OPENAI_REASONING_EFFORT, …). The default is the GPT-5.4 "
+    + "vars (OPENAI_MODEL, OPENAI_REASONING_EFFORT, …). The default is the GPT-5 mini "
     + "reasoning family: it has no temperature; control it with reasoning effort + "
     + "verbosity instead. Changes apply to new requests immediately; no redeploy. "
     + "Secrets (API keys) stay in Railway."));
@@ -599,7 +599,7 @@ function modelSettingsBox(holder, current) {
   nameLab.appendChild(el("span", null, "Model name"));
   const nameInp = el("input", "npadmin-input");
   nameInp.type = "text"; nameInp.value = current.model || "";
-  nameInp.placeholder = "gpt-5.4-mini";
+  nameInp.placeholder = "gpt-5-mini";
   nameLab.appendChild(nameInp);
   box.appendChild(nameLab);
 
