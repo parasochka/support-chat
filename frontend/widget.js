@@ -147,6 +147,13 @@ const state = {
   // The widget chrome language. Starts at the browser locale and may later
   // follow the conversation if the player switches language (maybeSwitchLang).
   lang: resolveLang(),
+  // The locale handed to the NEXT session create / topic fetch. Starts at the
+  // browser locale and then FOLLOWS the conversation language (maybeSwitchLang),
+  // so a fresh session minted after back / close / finish / escalation inherits
+  // the language the player drifted to instead of snapping back to the browser
+  // language. Without this the chrome (and the new session's base language)
+  // flickered back to the browser locale every time the session was abandoned.
+  locale: CONFIG.LOCALE,
   topicChosen: false,
   open: false,
   // True while the mobile full-screen sheet is active (geometry driven by JS).
@@ -266,9 +273,13 @@ async function createSession() {
       player_id: CONFIG.USER_CONTEXT.id || null,
       user_context: CONFIG.USER_CONTEXT,
       signed_context: CONFIG.SIGNED_CONTEXT,
-      // The browser language; the backend resolves the same answer/chrome
-      // language from it, so the two always agree from turn one.
-      locale: CONFIG.LOCALE,
+      // The widget's current language: the browser locale on the first session,
+      // then whatever the conversation drifted to (state.locale follows
+      // maybeSwitchLang). The backend resolves the same answer/chrome language
+      // from it, so the two agree from turn one — and a session minted after
+      // back / close / finish stays in the drifted language instead of snapping
+      // back to the browser locale.
+      locale: state.locale,
       recaptcha_token: token,
     },
   });
@@ -451,6 +462,12 @@ function maybeSwitchLang(data) {
   const next = data && baseLang(data.lang);
   if (!next || next === state.lang) return;
   state.lang = next;
+  // Carry the drift into the locale used for the NEXT session create / topic
+  // fetch too, so abandoning this session (back / close / finish / escalation)
+  // and minting a fresh one keeps the widget in the drifted language instead of
+  // snapping back to the browser locale (the "language flickers to English on
+  // back" bug).
+  state.locale = next;
   applyStaticLabels();
   // Re-localize the canned greeting — the only chrome-language bubble in the
   // transcript (real answers are already in the new language).
