@@ -253,17 +253,17 @@ function lineChart(series) {
 
 async function tableByTopic(main) {
   const data = await api(`/by-topic${q()}`);
-  const t = table(["Topic", "Sessions", "Escalation rate", "Avg msgs"]);
+  const t = table(["Topic", "Sessions", "Escalation rate", "Avg msgs", "Cost"]);
   for (const r of data.topics) {
-    addRow(t, [r.slug, r.sessions, pct(r.escalation_rate), r.avg_messages.toFixed(1)]);
+    addRow(t, [r.slug, r.sessions, pct(r.escalation_rate), r.avg_messages.toFixed(1), fmtUsd(r.cost_usd_total || 0)]);
   }
   section(main, "By topic", t);
 }
 
 async function tableByLanguage(main) {
   const data = await api(`/by-language${q()}`);
-  const t = table(["Language", "Sessions", "Escalation rate"]);
-  for (const r of data.languages) addRow(t, [r.lang, r.sessions, pct(r.escalation_rate)]);
+  const t = table(["Language", "Sessions", "Escalation rate", "Cost"]);
+  for (const r of data.languages) addRow(t, [r.lang, r.sessions, pct(r.escalation_rate), fmtUsd(r.cost_usd_total || 0)]);
   section(main, "By language", t);
 }
 
@@ -292,11 +292,11 @@ async function viewSessions(main) {
     try {
       const data = await api(url);
       holder.innerHTML = "";
-      const t = table(["Created", "Topic", "Lang", "Status", "Msgs", ""]);
+      const t = table(["Created", "Topic", "Lang", "Status", "Msgs", "Cost", ""]);
       for (const s of data.items) {
         const tr = addRow(t, [s.created_at.slice(0, 16).replace("T", " "),
           s.topic || "—", s.lang || "—",
-          s.escalated ? "escalated" : s.status, s.message_count, "view →"]);
+          s.escalated ? "escalated" : s.status, s.message_count, fmtUsd(s.cost_usd_total || 0), "view →"]);
         tr.classList.add("click");
         tr.addEventListener("click", () => openSession(s.id));
       }
@@ -357,7 +357,7 @@ async function openSession(id) {
 async function viewUnresolved(main) {
   main.appendChild(el("h1", "npadmin-h", "Unresolved queries"));
   main.appendChild(el("div", "npadmin-help",
-    "Escalated/unresolved sessions grouped by topic — read clusters and grow the KB."));
+    "Open or escalated sessions grouped by topic — read clusters and grow the KB."));
   const bar = dateToolbar(() => routeView(main));
   const exp = el("button", "npadmin-btn ghost", "Export CSV");
   exp.addEventListener("click", async () => {
@@ -374,9 +374,9 @@ async function viewUnresolved(main) {
     holder.innerHTML = "";
     for (const g of data.groups) {
       holder.appendChild(el("h3", null, `${g.topic} (${g.count})`));
-      const t = table(["First message", "Msgs", "Session"]);
+      const t = table(["First message", "Status", "Msgs", "Session"]);
       for (const s of g.sessions) {
-        const tr = addRow(t, [s.first_message || "—", s.message_count, s.session_id.slice(0, 8)]);
+        const tr = addRow(t, [s.first_message || "—", s.escalated ? "escalated" : s.status, s.message_count, s.session_id.slice(0, 8)]);
         tr.classList.add("click");
         tr.addEventListener("click", () => openSession(s.session_id));
       }

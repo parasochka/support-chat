@@ -318,18 +318,26 @@ async def send_message(req: Request, body: MessageSend,
     if session.get("message_count", 0) >= settings.escalation()["max_messages_per_session"]:
         ans_lang = (session.get("conv_lang") or session.get("lang")
                     or language.default_code())
+        esc_payload = escalation.build_payload(ans_lang)
+        new_count = await db.persist_turn(
+            session_id=body.session_id,
+            user_text=body.text,
+            user_lang=None,
+            assistant_text=esc_payload["message"],
+            assistant_lang=ans_lang,
+            ai_meta=None,
+        )
         if not session.get("escalated", False):
             await db.mark_escalated(body.session_id)
             await db.log_admin_event(body.session_id, "escalation",
                                      {"reason": "message_cap"})
-        esc_payload = escalation.build_payload(ans_lang)
         return JSONResponse(
             status_code=200,
             content={
                 "reply": esc_payload["message"],
                 "lang": ans_lang,
                 "escalation": esc_payload,
-                "message_count": session.get("message_count", 0),
+                "message_count": new_count,
             },
         )
 

@@ -43,15 +43,30 @@ except Exception:  # noqa: BLE001
 # ---------------------------------------------------------------------------
 _PRICING: dict[str, tuple[float, float, float]] = {
     # model: (input, cached_input, output)  -- USD per 1M tokens
-    # For each model both the alias and the dated snapshot id map to the same
+    # For each model both the alias and dated snapshot ids map to the same
     # prices so cost accounting works whichever is configured.
+    "gpt-5.5": (5.00, 0.50, 30.00),
+    "gpt-5.4": (2.50, 0.25, 15.00),
+    "gpt-5.4-mini": (0.75, 0.075, 4.50),
+    "gpt-5.4-mini-2026-03-17": (0.75, 0.075, 4.50),
     # gpt-5-mini (the live default).
     "gpt-5-mini": (0.25, 0.025, 2.00),
     "gpt-5-mini-2025-08-07": (0.25, 0.025, 2.00),
-    # GPT-5.4 mini (kept for cost accounting on older configs).
-    "gpt-5.4-mini": (0.75, 0.075, 4.50),
-    "gpt-5.4-mini-2026-03-17": (0.75, 0.075, 4.50),
 }
+
+
+def _pricing_for_model(model: str) -> Optional[tuple[float, float, float]]:
+    pricing = _PRICING.get(model)
+    if pricing:
+        return pricing
+    # OpenAI can return dated snapshot ids (for example
+    # `gpt-5.4-mini-2026-03-17`) while admins often configure the stable alias.
+    # Strip a trailing -YYYY-MM-DD and price it as the alias when known, so a new
+    # snapshot does not silently flatten dashboard costs to $0.
+    parts = model.rsplit("-", 3)
+    if len(parts) == 4 and all(p.isdigit() for p in parts[1:]):
+        return _PRICING.get(parts[0])
+    return None
 
 
 @dataclass
@@ -172,7 +187,7 @@ async def _call_with_backoff(kc: _KeyClient, messages: list[dict[str, str]]) -> 
 
 def compute_cost(model: str, tokens_in: int, tokens_out: int, cached_in: int) -> float:
     """Cost in USD from token usage. Returns 0.0 for unknown models."""
-    pricing = _PRICING.get(model)
+    pricing = _pricing_for_model(model)
     if not pricing:
         return 0.0
     in_price, cached_price, out_price = pricing
