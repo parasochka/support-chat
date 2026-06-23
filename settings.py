@@ -251,8 +251,10 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
     elif key == "model":
         _require_nonempty_str(value, "model")
         # GPT-5 reasoning knobs; "" ⇒ omit the parameter (use model default).
-        _require_choice(value, "reasoning_effort", ("low", "medium", "high"),
-                        allow_empty=True)
+        # "minimal" is the GPT-5 family's lowest tier — almost no hidden reasoning
+        # tokens, which is what a KB-grounded support answer usually needs.
+        _require_choice(value, "reasoning_effort",
+                        ("minimal", "low", "medium", "high"), allow_empty=True)
         _require_choice(value, "verbosity", ("low", "medium", "high"),
                         allow_empty=True)
         _require_int(value, "max_output_tokens", 1, 128_000)
