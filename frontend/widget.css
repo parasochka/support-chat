@@ -106,7 +106,7 @@
 .npchat-topics-h {
   font-weight: 600;
   margin-bottom: 10px;
-  color: #111;
+  color: #000;
 }
 .npchat-topic {
   display: flex;
@@ -120,7 +120,7 @@
   border-radius: 8px;
   background: #fff;
   cursor: pointer;
-  color: #111;
+  color: #000;
   transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
 }
 .npchat-topic:hover { border-color: #2563eb; background: #f0f5ff; }
@@ -170,10 +170,10 @@
 .npchat-msg-assistant {
   align-self: flex-start;
   background: #fff;
-  /* One crisp near-black for the whole rendered answer — bold, lists, links and
-     code all read in the same solid color so the markup adds weight/structure,
-     never a second color. */
-  color: #111;
+  /* One solid black for the whole rendered answer — bold, lists, links and code
+     all read in the same color so the markup adds weight/structure, never a
+     second color and never a washed-out grey. */
+  color: #000;
   border: 1px solid #e6e8eb;
   border-bottom-left-radius: 2px;
   /* Assistant replies are rendered from a small Markdown subset to real HTML
@@ -260,7 +260,7 @@
   border-radius: 10px;
   background: #eef2ff;
 }
-.npchat-suggest-msg { margin-bottom: 8px; color: #111; }
+.npchat-suggest-msg { margin-bottom: 8px; color: #000; }
 .npchat-suggest-btn {
   display: inline-block;
   padding: 8px 14px;
@@ -293,7 +293,7 @@
   border: 1px solid #c7d2fe;
   border-radius: 16px;
   background: #eef2ff;
-  color: #3730a3;
+  color: #000;
   font-size: 13px;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease;
@@ -328,6 +328,11 @@
   padding: 8px 10px;
   font-size: 14px;
   outline: none;
+  /* Pin the typed text to solid black. Without this the field inherits the host
+     page's body `color` (often a pale grey on a dark theme), so what the player
+     types renders washed-out. */
+  color: #000;
+  background: #fff;
 }
 .npchat-input:focus { border-color: #2563eb; }
 .npchat-send {
