@@ -402,8 +402,11 @@ async def send_message(req: Request, body: MessageSend,
             "message_count": result.message_count,
             # {slug, title} when the model routed the question to another topic.
             "suggested_topic": result.suggested_topic,
-            # Up to 3 guide-to-KB follow-up questions rendered as one-tap bubbles.
+            # Up to 2 guide-to-KB follow-up questions rendered as one-tap bubbles.
             "suggestions": result.suggestions or [],
+            # The declarative closing option ("Issue solved.") rendered as a
+            # distinct finish-the-chat bubble; tapping it resolves the session.
+            "closing_suggestion": result.closing_suggestion,
             # True when the question looks resolved -> widget offers "finish chat".
             "resolved": result.resolved,
         },

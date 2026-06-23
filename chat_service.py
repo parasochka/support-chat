@@ -35,6 +35,11 @@ class ChatReply:
     # to steer the player toward a concrete KB answer; the widget renders them as
     # one-tap bubbles by the input field. Empty list when none.
     suggestions: Optional[list] = None
+    # The trailing closing/resolution suggestion (declarative, e.g. "Issue solved.")
+    # that the widget renders as a distinct finish-the-chat bubble: tapping it ends
+    # the conversation (marks it resolved) instead of sending another question.
+    # None when the model offered no closing option (or on escalation/topic switch).
+    closing_suggestion: Optional[str] = None
     # True when the model signalled the question looks fully resolved, so the widget
     # can offer a "finish chat" button nudging the player toward closing the chat.
     resolved: bool = False
@@ -156,6 +161,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     suggested_slug: Optional[str] = None
     detected_lang: Optional[str] = None
     suggestions: list = []
+    closing_suggestion: Optional[str] = None
     resolved = False
     clean_text = raw_text
     if raw_text:
@@ -163,6 +169,9 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         clean_text, suggested_slug = prompts.strip_topic_suggestion(clean_text)
         clean_text, detected_lang = prompts.strip_language_tag(clean_text)
         clean_text, suggestions = prompts.strip_suggestions(clean_text)
+        # Split the trailing declarative "Issue solved."-style option out of the
+        # guiding questions; the widget renders it as a finish-the-chat bubble.
+        suggestions, closing_suggestion = prompts.split_closing(suggestions)
         clean_text, resolved = prompts.strip_resolved_tag(clean_text)
     # Only trust a [[LANG:xx]] code the model can actually answer in.
     if detected_lang and detected_lang not in language.supported_codes():
@@ -230,6 +239,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     # backend guarantee.)
     if decision.active:
         suggestions = []
+        closing_suggestion = None
         resolved = False
 
     # When the model says this question belongs to a different topic, the only
@@ -237,6 +247,7 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     # the player in the current topic, so never return them alongside a switch.
     if suggested_topic:
         suggestions = []
+        closing_suggestion = None
         resolved = False
 
     # --- persist the turn atomically ----------------------------------------
@@ -288,5 +299,6 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         message_count=new_count,
         suggested_topic=suggested_topic,
         suggestions=suggestions,
+        closing_suggestion=closing_suggestion,
         resolved=resolved,
     )

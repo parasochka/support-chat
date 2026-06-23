@@ -80,7 +80,7 @@ TONE AND ITS LIMITS:
 - Make every player feel important and like a welcome guest.
 - If the player has not visited for a while, bring them back gently, without pressure and without guilt-tripping.
 - In money, dispute and problem situations, with complaints and during escalation, tone the flirtation and playfulness down: be calm, attentive, genuinely serious and caring.
-- Use the player's name appropriately and sparingly, not in every message.
+- Use the player's name very sparingly — essentially only once, in the first greeting; after that do not repeat it in your replies (repeating the name every message reads robotic).
 - Do not use emoji.
 - Do not promise or guarantee a win.
 - Do not raise sensitive topics yourself (religion, politics, sexual orientation), and do not bring up gambling addiction on your own initiative.
@@ -107,9 +107,9 @@ RESPONSE LANGUAGE:
 
 RESPONSE STYLE:
 - Ordinary human speech: no internal terms, no thinking out loud, no mention of the knowledge base, tags or system details.
-- Keep replies compact: normally 1-3 short sentences.
-- Use light Markdown when it improves readability (for example **bold** for key terms or up to 3 short bullets), but do not over-structure simple answers.
-- Do not add a long intro, recap, or extra closing paragraph when a direct answer is enough."""
+- Be compact and answer directly: a short paragraph of 1-3 sentences, or up to 3 short bullets when the answer genuinely has several parts. Keep the whole reply to a few short lines — never a wall of text that fills half the screen (output tokens are the most expensive).
+- Use light Markdown when it improves readability (for example **bold** for a key value, or a short bulleted list), but do not over-structure a simple answer into many sections.
+- No filler: do not restate the question, and do not add a long intro, a recap, or an extra closing paragraph when a direct answer is enough."""
 
 
 def _static_directives() -> list[str]:
@@ -269,8 +269,12 @@ def _personalization_directive(full_name: str) -> Optional[str]:
         return None
     first = name.split()[0]
     return (
-        f"Personalization: the player's name is {first}. Address them by name "
-        "appropriately and unobtrusively — occasionally, not in every message."
+        f"Personalization: the player's name is {first}. Use it ONLY once — in the "
+        "very first greeting at the start of the conversation. After that do NOT "
+        "address them by name again in your replies (repeating it reads robotic); "
+        "use the name again only rarely, when there is a real reason (for example to "
+        "reassure them during a complaint or a sensitive issue). When in doubt, "
+        "leave the name out."
     )
 
 
@@ -803,6 +807,24 @@ def strip_suggestions(text: str) -> tuple[str, list[str]]:
             continue
         cleaned.append(line)
     return "\n".join(cleaned).strip(), suggestions
+
+
+def split_closing(suggestions: list[str]) -> tuple[list[str], Optional[str]]:
+    """Separate the guiding questions from the trailing closing/resolution option.
+
+    The suggestions directive makes the LAST option a declarative
+    closing/resolution prompt (it ends with a period, not a '?'), e.g.
+    "Issue solved." — the widget renders that one as a distinct finish-the-chat
+    bubble that, when tapped, ends the conversation (marks it resolved) instead of
+    sending another question. Returns (questions, closing). When the last option is
+    itself a question (the model gave no closing option), closing is None and every
+    item stays a guiding question.
+    """
+    if not suggestions:
+        return [], None
+    if suggestions[-1].rstrip().endswith("?"):
+        return list(suggestions), None
+    return list(suggestions[:-1]), suggestions[-1]
 
 
 def strip_resolved_tag(text: str) -> tuple[str, bool]:

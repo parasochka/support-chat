@@ -190,9 +190,23 @@ INJECTION_HARD_BLOCK: bool = _env_bool("INJECTION_HARD_BLOCK", True)
 # client IP is taken this many hops from the RIGHT of X-Forwarded-For.
 TRUSTED_PROXY_COUNT: int = _env_int("TRUSTED_PROXY_COUNT", 1)
 # Comma-separated IPs/CIDRs for immediate reverse proxies whose X-Forwarded-For
-# headers may be trusted. Empty by default: direct client-supplied XFF is ignored.
+# headers may be trusted. We honour XFF only when the request's *immediate* socket
+# peer (the TCP source, which a public client cannot forge) falls in this set.
+#
+# Default = the private/reserved ranges. On Railway (and any standard PaaS / load
+# balancer) the platform proxy connects to the app from a private address, so this
+# default makes the real client IP resolve correctly out of the box WITHOUT
+# trusting attacker-supplied XFF: an attacker on the public internet has a public
+# peer IP and is never trusted. Override (or tighten to the exact proxy CIDR) via
+# the TRUSTED_PROXY_IPS env var when you know your edge's address range.
+_DEFAULT_TRUSTED_PROXY_IPS = (
+    "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,"
+    "100.64.0.0/10,::1/128,fc00::/7,fe80::/10"
+)
 TRUSTED_PROXY_IPS: list[str] = [
-    p.strip() for p in _env("TRUSTED_PROXY_IPS", "").split(",") if p.strip()
+    p.strip()
+    for p in _env("TRUSTED_PROXY_IPS", _DEFAULT_TRUSTED_PROXY_IPS).split(",")
+    if p.strip()
 ]
 
 # --- CORS -------------------------------------------------------------------

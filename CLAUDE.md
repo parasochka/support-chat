@@ -106,8 +106,10 @@ official NikaBet links — never invent URLs.
 
 **Personalization** also lives in Layer 3 (never `SYSTEM_CORE`): when the sanitized
 `user_context` carries a `full_name`, `prompts._personalization_directive` adds a line giving
-the model the player's **first name** and telling it to use the name sparingly (not on every
-line). No name ⇒ the line is omitted and the prompt is unchanged. The whitelisted context
+the model the player's **first name** and telling it to use the name **only once — in the first
+greeting — and then not again** in every reply (models otherwise parrot the name on every line,
+which reads robotic; the directive allows a rare reuse only for reassurance in a complaint/
+sensitive case). No name ⇒ the line is omitted and the prompt is unchanged. The whitelisted context
 fields the model ever sees are `prompts._CONTEXT_FIELDS` (`id, full_name, email,
 activation_status, country, balance, vip_level, registration_date`) — anything else in
 `user_context` is dropped, so adding a model-visible field is a deliberate edit to that list.
@@ -173,17 +175,33 @@ to `_ensure_columns()`. Every table read/write goes through a `db.<name>(...)` a
 nothing else touches tables directly.
 
 ### No seeds — empty DB starts empty
-There is **no seed step**. On a fresh/empty database there are no topics, KB, or stored
-settings: the owner creates topics + their KB from the admin panel, and runtime settings
-resolve through `settings.*()` with precedence `app_settings` (DB) → env → built-in default,
-so an empty `app_settings` simply falls back to env/defaults until the owner overrides a knob
-in the admin. The DB is the source of truth for KB + settings once edited; nothing on boot
-mutates existing rows. (The **prompt** is not stored at all — it lives in `prompts.py`.)
+There is **no seed step** for topics, KB content, or settings. On a fresh/empty database there
+are no topics, KB, or stored settings: the owner creates topics + their KB from the admin panel,
+and runtime settings resolve through `settings.*()` with precedence `app_settings` (DB) → env →
+built-in default, so an empty `app_settings` simply falls back to env/defaults until the owner
+overrides a knob in the admin. The DB is the source of truth for KB + settings once edited;
+nothing on boot mutates existing rows. (The **prompt** is not stored at all — it lives in
+`prompts.py`.) **The one seeded table is `kb_variables`** (`db.seed_kb_variables`, run in
+`init_db`): it inserts the default `{placeholder}` registry with `ON CONFLICT (key) DO NOTHING`,
+so it never overwrites an admin-edited value — boot only fills keys that don't exist yet.
+
+### KB variables — `{placeholder}` registry (`db.py` + `kb.render_variables`)
+KB texts may contain `{key}` placeholders (e.g. `{min_deposit}`). The `kb_variables` table holds
+one admin-managed `value` (+ description) per key. `kb.kb_block_for_topic` runs
+`kb.render_variables` over the topic's KB before it enters Layer 2, substituting each `{key}` with
+its registry value (unknown placeholders are left **as-is** so missing entries are visible in the
+prompt preview). The admin **Variables** tab (`GET/PUT /admin/kb/variables`) lists + edits them.
+NB: `list_kb_variables`/`set_kb_variable` must return `updated_at` as an **isoformat string**
+(via `db._row_to_kb_variable`) — a raw `datetime` cannot be serialized by `JSONResponse` and 500s
+the tab (the bug that shipped with the feature).
 
 ### Atomic turn write (invariant)
 `db.persist_turn` writes the user message, the assistant message, the `ai_interaction_logs`
 row, and the `chat_sessions.message_count` bump in **one transaction**. Do not split it.
-When adding per-turn columns, join them into this same transaction.
+When adding per-turn columns, join them into this same transaction. **`ai_meta` is optional**:
+model-free turns (the message-cap hand-off, low-content nudge) pass `ai_meta=None` so the visible
+chat turn + counter still persist atomically but **no `ai_interaction_logs` row** is written
+(there was no OpenAI call — consistent with invariant §4, which scopes the AI log to actual calls).
 
 ### Two-key OpenAI failover (`openai_client.py`)
 Primary key first; if it stays silent for `OPENAI_KEY_SWITCH_TIMEOUT_SEC`, the fallback is
@@ -192,6 +210,10 @@ launched **in parallel** and whichever responds first wins (loser cancelled). A 
 exponential backoff up to `OPENAI_MAX_ATTEMPTS`. Every fallback engagement fires an
 `on_failover` callback → `admin_events('key_failover')`. Cost is computed from token usage
 via `_PRICING` (marked "verify before trusting" — prices may be stale; unknown models cost 0).
+`_pricing_for_model` first tries the exact id, then strips a trailing `-YYYY-MM-DD` snapshot date
+and prices it as the stable alias — so a new dated snapshot doesn't silently flatten dashboard
+cost to $0. Every call path (incl. `_call_with_backoff` retries and the race) emits structured
+`log.info/warning` lines for Railway tracing.
 
 The default model is the **GPT-5 mini reasoning family** (`gpt-5-mini`). Reasoning models
 change the request shape: the call sends `max_completion_tokens` (**not** `max_tokens`), does
@@ -212,13 +234,23 @@ rebuild the singleton (no effect on the OpenAI-side prefix cache). API keys them
 secrets in env.
 
 ### Anti-spam gate order (`antispam.py`, enforced in `api/chat.py`)
-`POST /api/chat/message` checks in this exact order: verify session token (401) → IP
-rate-limit (429 + log) → cooldown (429) → input length (400) → **low-content guard** →
-injection scan (always audits; **hard-blocks with 400 by default**, settings-gated via
-`injection_hard_block`) → message-cap fast path (forces an escalation
-response with no model call) → build/call/persist. Rate-limit and cooldown use **in-memory
-dicts** — fine for Phase 1 but they do not span multiple instances. reCaptcha is verified at
-session create and skips gracefully (logged) when `RECAPTCHA_SECRET` is unset.
+`POST /api/chat/message` checks in this exact order: verify session token (401) →
+**open-session check (409 `session_closed` if resolved/escalated)** → IP rate-limit (429 + log)
+→ cooldown (429) → input length (400) → **low-content guard** → injection scan (always audits;
+**hard-blocks with 400 by default**, settings-gated via `injection_hard_block`) → message-cap
+fast path (forces an escalation response with no model call) → build/call/persist. Rate-limit
+and cooldown use **in-memory dicts** — fine for Phase 1 but they do not span multiple instances.
+reCaptcha is verified at session create and skips gracefully (logged) when `RECAPTCHA_SECRET`
+is unset.
+
+The **IP key** comes from `api/client_ip.py` `client_ip()`, which trusts `X-Forwarded-For` **only**
+when the immediate socket peer (the TCP source, which a public client cannot forge) is in
+`config.TRUSTED_PROXY_IPS`; then it reads `TRUSTED_PROXY_COUNT` hops from the RIGHT. The default
+trust list is the **private/reserved ranges** (RFC1918 + CGNAT + loopback/ULA), so on Railway/most
+PaaS the real client IP resolves correctly out of the box without trusting spoofable XFF — an
+attacker on the public internet has a public peer IP and is never trusted. This is a
+**network-perimeter deploy var → Railway env, not the admin panel** (like `CORS_ALLOW_ORIGINS` /
+`TRUSTED_PROXY_COUNT`): a compromised admin must not be able to disable spoofing protection.
 
 The **low-content guard** (`antispam.check_low_content`) stops messages with nothing to
 answer — a lone character, symbol/emoji-only spam, or one character mashed over and over
@@ -278,6 +310,14 @@ message cap, or the model's `[[ESCALATE]]` sentinel. On escalation, `chat_sessio
 returns the localized message + contact button. The button URL is `CONTACT_FORM_URL`
 (via the `general` settings group).
 
+**A hand-off ends the bot conversation.** Once a session is `escalated` (or `resolved`),
+`api/chat.py` `_ensure_open_session` rejects further mutating turns (`/message`, `/topic`,
+`/escalate`) with **HTTP 409 `session_closed`** — only an `open` session is chatable. The
+widget mirrors this: on an `escalation.active` turn it shows the contact card and then calls
+`endConversation()` (hides the composer, drops the local session credentials), so the player
+can only chat again by starting a **new** conversation. (This means the old `already_escalated`
+branch in `decide()` is now reachable only on the resume edge, not via fresh `/message` calls.)
+
 ### Topic routing (`[[TOPIC:slug]]` sentinel)
 Only the selected topic's KB is loaded (Layer 2), so a question that belongs to a *different*
 topic can't be answered well. To bridge this, Layer 3 lists the other topics (`kb.suggestable_topics`,
@@ -318,14 +358,19 @@ transcript is untouched — resume (`GET /session/{id}`) and the admin session v
 To pull the player toward the exact KB entry their question is closest to, the model emits — along
 with its answer — two sentinels (mirroring the `[[TOPIC:slug]]` machinery), both **stripped** before
 the reply is shown. Their directives are STATIC, so they ride in the byte-stable Layer-1 block:
-- **`[[SUGGEST: q1 | q2 | q3]]`** (own LAST line) — up to **three** short follow-up/clarifying
-  questions phrased **from the player's point of view** (first person), pipe-separated. The directive
-  (`prompts._SUGGESTIONS_DIRECTIVE`) tells the model to pick the *next logical questions whose answers
-  ARE in the KB*, so tapping one walks the player onto a concrete KB answer. `chat_service`
-  (`prompts.strip_suggestions`) parses them into a list (trimmed, blanks dropped, capped at
-  `prompts._MAX_SUGGESTIONS` = 3) and returns `suggestions:[…]` in the `/message` response. The widget
-  renders them as one-tap **bubbles by the input field** (one per line); tapping one sends it as the
-  next player turn (`submitText`), and the stale bubbles are cleared the moment a new turn starts.
+- **`[[SUGGEST: q1 | q2 | q3]]`** (own LAST line) — **three** options phrased **from the player's
+  point of view** (first person), pipe-separated. The first **two** are short follow-up/clarifying
+  *questions* whose answers ARE in the KB; the **third is a declarative closing/resolution option**
+  ("Issue solved.") ending with a **period, not a `?`** — that period is the machine signal that marks
+  it as the closing option. `chat_service` (`prompts.strip_suggestions`) parses + caps at
+  `prompts._MAX_SUGGESTIONS` = 3 and normalizes the closing option to end with a period, then
+  `prompts.split_closing` peels the declarative last item off into a separate field: the `/message`
+  response carries `suggestions:[…]` (the ≤2 guiding questions) **plus** `closing_suggestion` (the
+  closing option, or `null`). The widget renders the guiding questions as one-tap **bubbles**
+  (`submitText`) and the closing option as a distinct soft-green **closing bubble**: tapping it sends a
+  goodbye turn (Nika still generates a warm reply), then marks the session **resolved**
+  (`POST /api/chat/resolve`) and ends the conversation — and crucially does **not** then show the green
+  finish button (the player already chose to finish). Stale bubbles clear the moment a new turn starts.
 - **`[[RESOLVED]]`** (own line) — set when there is nothing more to offer on the current question.
   The trigger is deliberately **broad** (`prompts._RESOLVED_DIRECTIVE`): not only an explicit
   thanks/confirmation, but also when the question is essentially answered and **no suitable KB
@@ -336,7 +381,9 @@ the reply is shown. Their directives are STATIC, so they ride in the byte-stable
   dropping the session out of the open-session metric. The close never overrides an **escalated**
   session (a pending hand-off to a human must survive the player tapping finish), and the call is
   best-effort (the panel collapses regardless). The directive tells the model NOT to set the tag while
-  still clarifying.
+  still clarifying. **The green button is the MODEL-driven finish; the closing bubble above is the
+  PLAYER-driven finish** — the widget shows only one at a time (`resolved` wins, so the two finish
+  controls never appear together).
 
 **Lead-forward (no dead end, `prompts._LEAD_FORWARD_DIRECTIVE`).** Earlier the two directives left a
 gap: when the exchange was complete but the player hadn't thanked and no good follow-ups existed, the
@@ -419,7 +466,15 @@ Map of what lives where:
 - **Dashboard data API** (`api/admin.py` + `db.py` aggregation + `metrics.py` derived
   rates): overview/timeseries/by-topic/by-language/sessions/session/unresolved.
   `resolution_rate` is a documented PROXY (counts "not escalated", incl. abandoned →
-  `sessions_open` tracked separately).
+  `sessions_open` tracked separately). **Cost** is surfaced per row: `by-topic`, `by-language`,
+  and `sessions` each carry a `cost_usd_total` (summed from `ai_interaction_logs` via a join/CTE)
+  rendered in the SPA tables. **Date ranges** are half-open and a date-only `to=YYYY-MM-DD` is
+  made **inclusive** of that whole day (`api.admin._range` adds one day), so "today" isn't dropped.
+  The **Unresolved** queue lists engaged sessions that still need attention — both `escalated` and
+  abandoned `open` chats with ≥1 user turn (resolved excluded), grouped by topic.
+- **Variables tab** (`api/admin.py` `/admin/kb/variables`, the **Variables** view in the SPA):
+  list + edit the admin-managed `{placeholder}` registry (see "KB variables" above). Read returns
+  `updated_at` as an isoformat string so `JSONResponse` can serialize it.
 - **The prompt is the file `prompts.py` (single source of truth, NOT editable from admin).**
   The Layer-1 core (`SYSTEM_CORE` — Nika's tone-of-voice + the absolute/escalation/
   responsible-gaming/links rules), the STATIC Layer-1 directives (greeting, formatting,
