@@ -9,13 +9,16 @@ import config
 import openai_client
 
 
-def _make_resp(text: str, tin=10, tout=5, cached=0):
+def _make_resp(text: str, tin=10, tout=5, cached=0, finish=None):
     usage = type("U", (), {
         "prompt_tokens": tin,
         "completion_tokens": tout,
         "prompt_tokens_details": type("D", (), {"cached_tokens": cached})(),
     })()
-    choice = type("C", (), {"message": type("M", (), {"content": text})()})()
+    choice = type("C", (), {
+        "message": type("M", (), {"content": text})(),
+        "finish_reason": finish,
+    })()
     return type("R", (), {"choices": [choice], "usage": usage})()
 
 
@@ -109,6 +112,83 @@ async def test_no_fallback_configured_uses_primary_only():
     res = await client.complete([{"role": "user", "content": "x"}])
     assert res.text == "only-primary"
     assert res.key_used == "primary"
+
+
+def test_is_truncated_empty_detection():
+    # Reasoning ate the whole budget: length + empty -> retry-worthy.
+    assert openai_client._is_truncated_empty(_make_resp("", finish="length")) is True
+    assert openai_client._is_truncated_empty(_make_resp("   ", finish="length")) is True
+    # Normal completions are never flagged.
+    assert openai_client._is_truncated_empty(_make_resp("hi", finish="stop")) is False
+    assert openai_client._is_truncated_empty(_make_resp("hi", finish="length")) is False
+    assert openai_client._is_truncated_empty(_make_resp("", finish="stop")) is False
+    # Defensive against odd shapes (no finish_reason attr at all).
+    assert openai_client._is_truncated_empty(_make_resp("")) is False
+
+
+@pytest.mark.asyncio
+async def test_empty_truncated_reply_retries_with_larger_budget(monkeypatch):
+    budgets: list[int] = []
+
+    async def _create(**kwargs):
+        budgets.append(kwargs["max_completion_tokens"])
+        if len(budgets) == 1:
+            # First try: hidden reasoning consumed the whole budget -> empty.
+            return _make_resp("", tout=700, finish="length")
+        return _make_resp("real answer", tout=120, finish="stop")
+
+    import types as _types
+    fake_client = _types.SimpleNamespace(
+        chat=_types.SimpleNamespace(
+            completions=_types.SimpleNamespace(create=_create)
+        )
+    )
+    monkeypatch.setattr(openai_client.settings, "model", lambda: {
+        "model": "gpt-5-mini", "max_output_tokens": 700,
+        "request_timeout_sec": 40, "reasoning_effort": "low",
+        "verbosity": "low",
+    })
+
+    kc = openai_client._KeyClient.__new__(openai_client._KeyClient)
+    kc.name = "primary"
+    kc._sem = asyncio.Semaphore(1)
+    kc.client = fake_client
+
+    resp = await kc.call([{"role": "user", "content": "x"}])
+    assert resp.choices[0].message.content == "real answer"
+    # Retried exactly once, with a larger budget the second time.
+    assert len(budgets) == 2
+    assert budgets[0] == 700
+    assert budgets[1] >= openai_client._MIN_RETRY_OUTPUT_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_non_empty_reply_does_not_retry(monkeypatch):
+    budgets: list[int] = []
+
+    async def _create(**kwargs):
+        budgets.append(kwargs["max_completion_tokens"])
+        return _make_resp("answered", tout=120, finish="stop")
+
+    import types as _types
+    fake_client = _types.SimpleNamespace(
+        chat=_types.SimpleNamespace(
+            completions=_types.SimpleNamespace(create=_create)
+        )
+    )
+    monkeypatch.setattr(openai_client.settings, "model", lambda: {
+        "model": "gpt-5-mini", "max_output_tokens": 700,
+        "request_timeout_sec": 40, "reasoning_effort": "", "verbosity": "",
+    })
+
+    kc = openai_client._KeyClient.__new__(openai_client._KeyClient)
+    kc.name = "primary"
+    kc._sem = asyncio.Semaphore(1)
+    kc.client = fake_client
+
+    resp = await kc.call([{"role": "user", "content": "x"}])
+    assert resp.choices[0].message.content == "answered"
+    assert len(budgets) == 1  # no retry
 
 
 def test_cost_computation_known_model():
