@@ -96,6 +96,9 @@ table.npadmin-table { width: 100%; border-collapse: collapse; }
 .npadmin-msg.user { background: var(--panel2); }
 .npadmin-msg.assistant { background: var(--panel); border: 1px solid var(--line); }
 .npadmin-meta { color: var(--muted); font-size: 12px; }
+.npadmin-switch { margin: 8px auto; padding: 6px 10px; border-radius: 8px;
+  max-width: 90%; text-align: center; font-size: 13px; color: var(--muted);
+  background: var(--panel2); border: 1px dashed var(--line); }
 .npadmin-warnbox { background: rgba(232,179,73,.12); border: 1px solid var(--warn);
   color: var(--warn); padding: 10px 12px; border-radius: 8px; margin: 10px 0; }
 .npadmin-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }

@@ -14,7 +14,7 @@ def test_topic_suggestion_is_routing_only_and_suppresses_answer(monkeypatch):
     persisted or returned (the widget auto-switches and re-asks against the right
     KB), no chat turn is written, the message cap is not bumped, but the detect
     call's token cost IS logged so OpenAI spend stays accounted (invariant §4)."""
-    calls = {"persist": 0, "ai_log": 0}
+    calls = {"persist": 0, "ai_log": 0, "events": []}
 
     async def _get_topic(tid):
         return {"slug": "bonuses", "id": tid, "title": {"ru": "Бонусы"}}
@@ -35,6 +35,9 @@ def test_topic_suggestion_is_routing_only_and_suppresses_answer(monkeypatch):
     async def _log_ai(*args, **kwargs):
         calls["ai_log"] += 1
 
+    async def _log_event(session_id, type_, payload=None):
+        calls["events"].append((type_, payload or {}))
+
     class _FakeClient:
         async def complete(self, messages, session_id=None, on_failover=None):
             return openai_client.ChatResult(
@@ -51,6 +54,7 @@ def test_topic_suggestion_is_routing_only_and_suppresses_answer(monkeypatch):
     monkeypatch.setattr(db, "get_history", _get_history)
     monkeypatch.setattr(db, "persist_turn", _persist)
     monkeypatch.setattr(db, "log_ai_interaction", _log_ai)
+    monkeypatch.setattr(db, "log_admin_event", _log_event)
     monkeypatch.setattr(kb, "suggestable_topics", _suggestable)
     monkeypatch.setattr(kb, "kb_block_for_topic", _kb_block)
     monkeypatch.setattr(openai_client, "get_client", lambda: _FakeClient())
@@ -73,6 +77,12 @@ def test_topic_suggestion_is_routing_only_and_suppresses_answer(monkeypatch):
     assert calls["persist"] == 0
     assert calls["ai_log"] == 1
     assert reply.message_count == 3
+    # The switch is recorded as a traceable marker carrying from/to + this detect
+    # call's cost, so the admin session view can interleave it into the timeline.
+    assert calls["events"][0][0] == "topic_switch"
+    assert calls["events"][0][1]["from"] == "bonuses"
+    assert calls["events"][0][1]["to"] == "deposits"
+    assert "cost_usd" in calls["events"][0][1]
 
 
 def test_normal_turn_splits_closing_suggestion(monkeypatch):

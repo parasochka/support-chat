@@ -464,7 +464,25 @@ async function openSession(id) {
 
     const row = el("div", "npadmin-row");
     const convo = el("div", "npadmin-col");
-    for (const m of d.messages) {
+    // Interleave messages and topic-switch markers by time so the whole path is
+    // traceable: a cross-topic turn suppresses its answer and persists no message,
+    // so its detect-call cost would otherwise be invisible and the per-turn costs
+    // would not add up to the session total. The marker shows from→to + that cost.
+    const items = [];
+    for (const m of d.messages) items.push({ at: m.created_at, kind: "msg", m });
+    for (const e of (d.events || [])) items.push({ at: e.created_at, kind: "switch", e });
+    items.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+    for (const it of items) {
+      if (it.kind === "switch") {
+        const p = it.e.payload || {};
+        const marker = el("div", "npadmin-switch",
+          `↪ Topic switch: ${p.from || "—"} → ${p.to || "—"}`);
+        marker.appendChild(el("div", "npadmin-meta",
+          `routing call · $${p.cost_usd ?? 0}`));
+        convo.appendChild(marker);
+        continue;
+      }
+      const m = it.m;
       const bubble = el("div", `npadmin-msg ${m.role}`, m.content);
       if (m.role === "assistant" && (m.cost_usd != null || m.key_used)) {
         bubble.appendChild(el("div", "npadmin-meta",
