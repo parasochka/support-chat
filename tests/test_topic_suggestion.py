@@ -73,31 +73,36 @@ def test_current_topic_named_in_layer3():
     assert "deposits — Депозиты" not in msgs[0]["content"]
 
 
-def test_other_topic_routes_aggressively():
-    """In the hidden catch-all «Другое» (slug 'other') the model should ACTIVELY
-    route concrete questions to a specialized topic instead of answering from the
-    thin generic block — the screenshot bug where a KYC-bonus question got a made-
-    up in-place answer instead of a switch to Bonuses."""
+def test_other_topic_uses_the_same_regime_as_specialized():
+    """«Другое» (slug 'other') is a normal player-selectable topic with its own KB,
+    so it is routed EXACTLY like the specialized topics: answer from the loaded KB,
+    switch only on a genuine mismatch — no separate active-routing mode (the bug
+    where a question answerable from the general KB, e.g. changing the language, was
+    force-routed to a topic that didn't have the answer)."""
     session = {"user_context": {}}
     last_user = prompts.build_messages(
-        session, kb_block="KB", history=[], user_text="KYC бонус есть?",
+        session, kb_block="KB", history=[], user_text="как сменить язык?",
         resolved_lang="ru", available_topics=_TOPICS,
         current_topic={"slug": "other", "title": "Другое"},
     )[-1]["content"]
-    # Routing instruction + the catalogue are present.
+    # The current topic is named with the standard "knowledge base is loaded" anchor.
+    assert "other — Другое" in last_user
+    assert "knowledge base is loaded for you" in last_user
+    # Standard conservative regime: answer from current KB, switch only on mismatch.
+    assert "ONLY" in last_user
+    assert "INTENT" in last_user
+    # The old active-routing framing is gone.
+    assert "general section" not in last_user
+    # The catalogue is still offered so a genuine mismatch can route onward.
     assert "[[TOPIC:slug]]" in last_user
     assert "bonuses — Bonuses & promotions" in last_user
-    # The active-routing framing (generic section) replaces the conservative
-    # "stay in the current topic" anchor used for specialized topics.
-    assert "general section" in last_user
-    assert "do NOT offer to switch topics" not in last_user
     # Routing copy must stay in Layer 3, never in the cached prefix.
     msgs = prompts.build_messages(
-        session, kb_block="KB", history=[], user_text="KYC бонус есть?",
+        session, kb_block="KB", history=[], user_text="как сменить язык?",
         resolved_lang="ru", available_topics=_TOPICS,
         current_topic={"slug": "other", "title": "Другое"},
     )
-    assert "general section" not in msgs[0]["content"]
+    assert "other — Другое" not in msgs[0]["content"]
 
 
 def test_specialized_topic_routes_on_intent_not_keywords():

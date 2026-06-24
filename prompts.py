@@ -428,13 +428,14 @@ _LEAD_FORWARD_DIRECTIVE = (
 )
 
 
-# Slug of the hidden catch-all topic. Mirrors kb.OTHER_SLUG; duplicated here so
-# this pure prompt-assembly module needs no DB-touching import. The catch-all has
-# no real KB of its own, so when it is the current topic the routing directive
-# flips from the conservative "stay unless the question clearly belongs elsewhere"
-# to an active "route to a specific topic whenever the question plausibly fits
-# one" — otherwise the model answers generic-section questions itself (and tends
-# to invent facts) instead of sending the player to the branch that has the KB.
+# Slug of the general "other" topic. Mirrors kb.OTHER_SLUG; duplicated here so
+# this pure prompt-assembly module needs no DB-touching import. "other" is a
+# normal, player-selectable topic with its own knowledge base (it is the
+# always-available escape hatch in the picker for players who didn't find their
+# question among the six specialized topics) and is routed EXACTLY like them:
+# answer from its loaded KB, switch only on a genuine mismatch. This constant is
+# only used to label the `from` side of a topic-switch event when a session has
+# no topic set yet.
 OTHER_TOPIC_SLUG = "other"
 
 
@@ -446,17 +447,14 @@ def _topic_routing_directive(
 
     Only the current topic's KB is loaded (Layer 2). The model prepends
     `[[TOPIC:slug]]` on its own first line to offer a one-tap switch when the
-    player's question belongs to a different branch. Two regimes:
-
-    - **Catch-all "other" is the current topic** — it has no real KB, so almost
-      any concrete question actually belongs to a specialized topic. The directive
-      tells the model to route ACTIVELY: if the question plausibly fits any listed
-      topic, suggest the switch instead of answering from the thin generic block
-      (and instead of inventing facts). It answers in place only when nothing fits.
-    - **A specialized topic is the current topic** — the directive anchors the
-      model on it (so in-topic questions are answered from the loaded KB) but keys
-      the switch decision on the player's INTENT, not on isolated keyword overlap,
-      so e.g. "how do I withdraw?" asked under Deposits is routed to Withdrawals.
+    player's question belongs to a different branch. Every topic — including the
+    general "other" topic, which has its own knowledge base — uses the SAME
+    regime: the directive anchors the model on the current topic (so in-topic
+    questions are answered from the loaded KB) but keys the switch decision on the
+    player's INTENT, not on isolated keyword overlap, so e.g. "how do I withdraw?"
+    asked under Deposits is routed to Withdrawals. "other" tends to send players
+    onward more often (it is the general entry point), but that falls out of the
+    same intent test — it is not a separate routing mode.
 
     Lives in Layer 3 (dynamic): the topic catalogue and current topic change per
     request, so they must NEVER touch the byte-stable SYSTEM_CORE.
@@ -466,37 +464,6 @@ def _topic_routing_directive(
     topic_lines = "\n".join(
         f"- {t['slug']} — {t['title']}" for t in available_topics if t.get("slug")
     )
-
-    is_other = bool(
-        current_topic and current_topic.get("slug") == OTHER_TOPIC_SLUG
-    )
-    if is_other:
-        current_line = ""
-        if current_topic and current_topic.get("title"):
-            current_line = (
-                "The current topic is the general section \""
-                f"{current_topic['title']}\" (slug: {current_topic.get('slug')}); "
-                "it has no knowledge base of its own with concrete answers.\n"
-            )
-        return [
-            "=== TOPIC ROUTING ===",
-            current_line
-            + "The player is in the general section, so almost any concrete "
-            "question actually belongs to one of the specialized topics below — "
-            "that is where the relevant knowledge base is. Decide by the substance "
-            "(the player's intent) which topic the question belongs to, and if it "
-            "fits at least one of the topics below, put the tag [[TOPIC:slug]] with "
-            "its slug on its own line at the start of the reply and kindly offer to "
-            "switch there. Do NOT answer on the merits from the general section and do NOT "
-            "invent conditions, bonuses, deadlines or numbers.",
-            "Answer directly in the general section (without the tag) ONLY if the "
-            "question fits none of the topics below — for example a generic "
-            "question, feedback, or a one-off situation. On a complaint, a "
-            "grievance or suspected fraud, escalate per the rules.",
-            "Support topics (slug — title):",
-            topic_lines,
-            "",
-        ]
 
     current_line = ""
     if current_topic and current_topic.get("title"):

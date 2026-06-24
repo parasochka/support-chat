@@ -364,21 +364,24 @@ player across topics forever. (This replaced the earlier flow where the wrong-KB
 "switch topic" button were both shown and the player had to tap to proceed.) Net token cost is unchanged
 vs. that flow — still one detect call + one grounded answer call — but no ungrounded text is ever shown.
 
-**Two routing regimes (`prompts._topic_routing_directive`).** The directive's instruction flips on
-whether the current topic is the hidden catch-all `other` (`prompts.OTHER_TOPIC_SLUG`, mirrors
-`kb.OTHER_SLUG`):
-- **A specialized topic is current** — the model is *anchored* on it: it answers in-topic questions
-  from the loaded KB (or escalates) and switches **only** on a genuine mismatch. The decision keys on
-  the player's **intent**, not isolated keyword overlap — so "how do I withdraw?" asked under Deposits
-  routes to Withdrawals, while a shared term (crypto networks, verification, limits) that also fits the
-  current topic does **not** trigger a switch. This keeps cross-topic tracking active without ping-pong.
-- **The catch-all `other` is current** — it has no real KB, so the directive *reverses* the default and
-  routes **actively**: almost any concrete question really belongs to a specialized topic, so if the
-  question plausibly fits one of the listed topics the model suggests the switch instead of answering
-  from the thin generic block (and is told not to invent conditions/bonuses/dates/numbers). It answers
-  in place only when nothing fits (a generic question, feedback, a one-off), and escalates complaints /
-  suspected fraud. This fixes the case where a bonus question asked under «Другое» got a made-up
-  in-place answer instead of an automatic switch to Bonuses.
+**One routing regime for every topic (`prompts._topic_routing_directive`).** Every topic — the six
+specialized ones **and** the general `other` topic — is routed the same way: the model is *anchored* on
+the current topic, answers in-topic questions from the loaded KB (or escalates), and switches **only**
+on a genuine mismatch. The decision keys on the player's **intent**, not isolated keyword overlap — so
+"how do I withdraw?" asked under Deposits routes to Withdrawals, while a shared term (crypto networks,
+verification, limits) that also fits the current topic does **not** trigger a switch. This keeps
+cross-topic tracking active without ping-pong.
+
+`other` is **not special**. It is a normal, player-selectable topic (the always-available escape hatch
+in the picker — added client-side in `widget.js`, since `db.list_topics` filters its slug out of the
+dynamic catalogue) with its **own** ~50-entry KB, so it answers from that KB exactly like the others. In
+practice it sends players onward to a specialized topic more often (it is the general entry point), but
+that falls out of the same intent test, not a separate "route actively / don't answer from your own KB"
+mode. An earlier design treated `other` as a thin KB-less catch-all and force-routed everything off it —
+that **reversed** the anchor and broke any question whose answer actually lived in the `other` KB (e.g.
+"how do I change the language?" was force-routed to Technical, which had no such entry, dead-ending the
+chat). That special branch was removed. (`other` is still excluded from `suggestable_topics`, so it is
+never offered as a switch *target* — the model can route *out of* it but not dump a player *into* it.)
 
 **Switch boundary (anti-ping-pong):** `set_session_topic` snapshots the current max `chat_messages.id`
 into `chat_sessions.context_reset_id`, and prompt-building history (`db.get_history(..., after_id=...)`
