@@ -199,8 +199,9 @@ async function viewOverview(main) {
     await chartFor(charts, "escalation_rate", "Escalation rate over time",
       { format: pct, color: "#e8b349" });
 
-    await tableByTopic(main);
-    await tableByLanguage(main);
+    const tables = el("div", "npadmin-2col"); main.appendChild(tables);
+    await tableByTopic(tables);
+    await tableByLanguage(tables);
   } catch (e) { cards.innerHTML = ""; cards.appendChild(errBox(e)); }
 }
 
@@ -389,14 +390,14 @@ async function tableByTopic(main) {
   for (const r of data.topics) {
     addRow(t, [r.slug, r.sessions, pct(r.escalation_rate), r.avg_messages.toFixed(1), fmtUsd(r.cost_usd_total || 0)]);
   }
-  section(main, "By topic", t);
+  sectionCol(main, "By topic", t);
 }
 
 async function tableByLanguage(main) {
   const data = await api(`/by-language${q()}`);
   const t = table(["Language", "Sessions", "Escalation rate", "Cost"]);
   for (const r of data.languages) addRow(t, [r.lang, r.sessions, pct(r.escalation_rate), fmtUsd(r.cost_usd_total || 0)]);
-  section(main, "By language", t);
+  sectionCol(main, "By language", t);
 }
 
 // ---------------------------------------------------------------------------
@@ -1029,6 +1030,12 @@ function fmtUsd(v) { return `$${Number(v).toFixed(4)}`; }
 function errBox(e) { return el("div", "npadmin-warnbox", e.message || String(e)); }
 function section(main, title, node) {
   main.appendChild(el("h3", null, title)); main.appendChild(node);
+}
+// One grid cell (title + node) for the two-up .npadmin-2col layout.
+function sectionCol(parent, title, node) {
+  const col = el("div");
+  col.appendChild(el("h3", null, title)); col.appendChild(node);
+  parent.appendChild(col);
 }
 function table(headers) {
   const t = el("table", "npadmin-table");
