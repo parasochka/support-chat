@@ -322,7 +322,10 @@ notifier). `decide()` triggers on: high-risk keywords (fraud/legal), explicit hu
 message cap, or the model's `[[ESCALATE]]` sentinel — checked in that order. The two keyword
 scans run on a normalized copy of the message (NFKC + zero-width strip, via
 `antispam._normalize_for_scan`) so obfuscation can't hide a trigger; the keyword lists are
-stems (`поддержк`, `мошенн`, …) so inflected forms still match. The cap fires on the turn whose
+stems (`поддержк`, `мошенн`, …) so inflected forms still match. Both lists are tunable live from
+the admin `escalation` settings group — `high_risk_keywords` and `human_request_keywords`; the
+constants in `escalation.py` (`_HIGHRISK_KEYWORDS` / `_HUMAN_KEYWORDS`) are only the built-in
+defaults used until the owner overrides them. The cap fires on the turn whose
 prospective count (current + 1) reaches `max_messages_per_session`; the model-free fast path in
 `api/chat.py` is the cheap belt-and-suspenders for a session already at/over the cap (e.g. after
 the owner lowers it mid-session) — complementary, not a duplicate. (There is **no**
@@ -497,7 +500,8 @@ Map of what lives where:
   precedence `app_settings` (DB) → env → default. A sync in-process cache (populated at
   startup, reloaded on write) is read by `antispam`/`escalation`/`openai_client`/`language`/
   `auth`/api; writes validate hard and log `setting_updated`. Groups: `escalation`
-  (incl. `max_messages_per_session`), `language` (default + supported
+  (incl. `max_messages_per_session`, `high_risk_keywords`, `human_request_keywords`),
+  `language` (default + supported
   set — every language read goes through `language.default_code()`/`supported_codes()`),
   `antispam` (rate limit/window/cooldown/input cap **plus** `recaptcha_min_score`,
   `injection_hard_block`, and the low-content guard `low_content_block` /
