@@ -138,9 +138,12 @@ def test_topic_catalogue_stays_out_of_system_core():
         resolved_lang="en", available_topics=_TOPICS,
     )
     system = msgs[0]["content"]
-    # The dynamic catalogue line + the routing tag must not leak into the prefix.
+    # The dynamic catalogue line + the routing block must not leak into the prefix.
+    # (The byte-stable MACHINE TAGS block in SYSTEM_CORE names [[TOPIC:slug]] once as
+    # a static placement rule, so we check the dynamic routing instruction — which
+    # carries the per-request offer — rather than the bare tag literal.)
     assert "bonuses — Bonuses & promotions" not in system
-    assert "[[TOPIC:" not in system
+    assert "offer to switch" not in system
     assert "TOPIC ROUTING" not in system
     # prefix up to the KB separator is unchanged
     assert system.split("=== KNOWLEDGE BASE", 1)[0].rstrip("\n") == core_before
