@@ -190,9 +190,14 @@ async function viewOverview(main) {
     card(cards, o.rate_limit_blocks, "Rate-limit blocks");
     card(cards, o.injection_blocks, "Injection blocks");
 
-    await chartFor(main, "sessions", "Sessions over time");
-    await chartFor(main, "cost", "Cost over time (USD)");
-    await chartFor(main, "escalation_rate", "Escalation rate over time");
+    const charts = el("div", "npadmin-chartgrid"); main.appendChild(charts);
+    await chartFor(charts, "sessions", "Sessions over time",
+      { format: (v) => String(Math.round(v)), color: "#4f8cff" });
+    await chartFor(charts, "cost", "Cost over time", { format: fmtUsd, color: "#36c08a" });
+    await chartFor(charts, "cost_per_session", "Avg cost / session per day",
+      { format: fmtUsd, color: "#b483e8" });
+    await chartFor(charts, "escalation_rate", "Escalation rate over time",
+      { format: pct, color: "#e8b349" });
 
     await tableByTopic(main);
     await tableByLanguage(main);
@@ -207,47 +212,175 @@ function card(parent, value, label, note) {
   parent.appendChild(c);
 }
 
-async function chartFor(main, metric, title) {
+async function chartFor(main, metric, title, opts = {}) {
+  const fmt = opts.format || ((v) => String(v));
   const wrap = el("div", "npadmin-chart");
-  wrap.appendChild(el("div", "npadmin-meta", title));
+  const head = el("div", "npadmin-charthead");
+  head.appendChild(el("div", "npadmin-charttitle", title));
+  const summary = el("div", "npadmin-chartsum");
+  head.appendChild(summary);
+  wrap.appendChild(head);
   main.appendChild(wrap);
-  const data = await api(`/timeseries${q()}&metric=${metric}&bucket=day`);
-  wrap.appendChild(lineChart(data.series));
+  try {
+    const data = await api(`/timeseries${q()}&metric=${metric}&bucket=day`);
+    const series = data.series || [];
+    // A compact at-a-glance summary so each panel reads professionally even
+    // before the user hovers: latest point + the period's average.
+    if (series.length) {
+      const vals = series.map((d) => d.value);
+      const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+      const last = vals[vals.length - 1];
+      summary.appendChild(el("span", "npadmin-chipv", `latest ${fmt(last)}`));
+      summary.appendChild(el("span", "npadmin-chipm", `avg ${fmt(avg)}`));
+    }
+    wrap.appendChild(lineChart(series, { ...opts, format: fmt }));
+  } catch (e) { wrap.appendChild(errBox(e)); }
 }
 
-// Hand-rolled inline SVG line chart (no external charting dependency).
-function lineChart(series) {
-  const W = 800, H = 160, pad = 24;
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+// Hand-rolled interactive inline SVG line chart (no external dependency).
+// Renders a gradient area, dated x-axis ticks, y-axis gridlines, and a hover
+// tooltip that reads out the exact value/date under the cursor.
+function lineChart(series, opts = {}) {
+  const fmt = opts.format || ((v) => String(v));
+  const color = opts.color || "#4f8cff";
+  const W = 720, H = 200;
+  const m = { t: 12, r: 14, b: 26, l: 46 };
+  const NS = "http://www.w3.org/2000/svg";
+  const box = el("div", "npadmin-chartbox");
+  const svg = document.createElementNS(NS, "svg");
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  box.appendChild(svg);
+
   if (!series || !series.length) {
-    const t = document.createElementNS(svg.namespaceURI, "text");
-    t.setAttribute("x", 12); t.setAttribute("y", 24); t.setAttribute("fill", "#9aa7c2");
-    t.textContent = "No data in range"; svg.appendChild(t); return svg;
+    const t = document.createElementNS(NS, "text");
+    t.setAttribute("x", 14); t.setAttribute("y", 26); t.setAttribute("fill", "#9aa7c2");
+    t.setAttribute("font-size", "12"); t.textContent = "No data in range";
+    svg.appendChild(t); return box;
   }
+
+  const plotW = W - m.l - m.r, plotH = H - m.t - m.b;
   const vals = series.map((d) => d.value);
-  const max = Math.max(...vals, 0.0001);
-  const stepX = (W - pad * 2) / Math.max(series.length - 1, 1);
-  const pts = series.map((d, i) => {
-    const x = pad + i * stepX;
-    const y = H - pad - (d.value / max) * (H - pad * 2);
-    return [x, y];
-  });
-  const path = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
-  const line = document.createElementNS(svg.namespaceURI, "path");
-  line.setAttribute("d", path); line.setAttribute("fill", "none");
-  line.setAttribute("stroke", "#4f8cff"); line.setAttribute("stroke-width", "2");
-  svg.appendChild(line);
-  for (const [x, y] of pts) {
-    const c = document.createElementNS(svg.namespaceURI, "circle");
-    c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", "2.5");
-    c.setAttribute("fill", "#4f8cff"); svg.appendChild(c);
+  const rawMax = Math.max(...vals, 0);
+  const max = niceCeil(rawMax) || 1;
+  const stepX = plotW / Math.max(series.length - 1, 1);
+  const xOf = (i) => m.l + i * stepX;
+  const yOf = (v) => m.t + plotH - (v / max) * plotH;
+  const pts = series.map((d, i) => [xOf(i), yOf(d.value)]);
+
+  // y-axis gridlines + labels (4 ticks).
+  const TICKS = 4;
+  for (let k = 0; k <= TICKS; k++) {
+    const v = (max / TICKS) * k;
+    const y = yOf(v);
+    const grid = document.createElementNS(NS, "line");
+    grid.setAttribute("x1", m.l); grid.setAttribute("x2", W - m.r);
+    grid.setAttribute("y1", y.toFixed(1)); grid.setAttribute("y2", y.toFixed(1));
+    grid.setAttribute("stroke", "#2e3a57"); grid.setAttribute("stroke-width", "1");
+    if (k > 0) grid.setAttribute("stroke-dasharray", "3 3");
+    svg.appendChild(grid);
+    const lab = document.createElementNS(NS, "text");
+    lab.setAttribute("x", m.l - 6); lab.setAttribute("y", (y + 3).toFixed(1));
+    lab.setAttribute("text-anchor", "end"); lab.setAttribute("fill", "#9aa7c2");
+    lab.setAttribute("font-size", "10"); lab.textContent = fmt(v);
+    svg.appendChild(lab);
   }
-  const mx = document.createElementNS(svg.namespaceURI, "text");
-  mx.setAttribute("x", 4); mx.setAttribute("y", 14); mx.setAttribute("fill", "#9aa7c2");
-  mx.setAttribute("font-size", "11"); mx.textContent = `max ${max.toFixed(2)}`;
-  svg.appendChild(mx);
-  return svg;
+
+  // x-axis date labels (first / middle / last to avoid crowding).
+  const xIdx = series.length <= 2 ? [0, series.length - 1]
+    : [0, Math.floor((series.length - 1) / 2), series.length - 1];
+  for (const i of [...new Set(xIdx)]) {
+    const lab = document.createElementNS(NS, "text");
+    const anchor = i === 0 ? "start" : i === series.length - 1 ? "end" : "middle";
+    lab.setAttribute("x", xOf(i).toFixed(1)); lab.setAttribute("y", H - 8);
+    lab.setAttribute("text-anchor", anchor); lab.setAttribute("fill", "#9aa7c2");
+    lab.setAttribute("font-size", "10"); lab.textContent = shortDate(series[i].bucket);
+    svg.appendChild(lab);
+  }
+
+  // gradient area fill under the line.
+  const gid = "npgrad-" + Math.random().toString(36).slice(2, 8);
+  const defs = document.createElementNS(NS, "defs");
+  const grad = document.createElementNS(NS, "linearGradient");
+  grad.setAttribute("id", gid); grad.setAttribute("x1", "0"); grad.setAttribute("y1", "0");
+  grad.setAttribute("x2", "0"); grad.setAttribute("y2", "1");
+  const s0 = document.createElementNS(NS, "stop");
+  s0.setAttribute("offset", "0"); s0.setAttribute("stop-color", color);
+  s0.setAttribute("stop-opacity", "0.28");
+  const s1 = document.createElementNS(NS, "stop");
+  s1.setAttribute("offset", "1"); s1.setAttribute("stop-color", color);
+  s1.setAttribute("stop-opacity", "0");
+  grad.append(s0, s1); defs.appendChild(grad); svg.appendChild(defs);
+
+  const lineD = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+  const areaD = `${lineD} L${pts[pts.length - 1][0].toFixed(1)},${(m.t + plotH).toFixed(1)} `
+    + `L${pts[0][0].toFixed(1)},${(m.t + plotH).toFixed(1)} Z`;
+  const area = document.createElementNS(NS, "path");
+  area.setAttribute("d", areaD); area.setAttribute("fill", `url(#${gid})`);
+  svg.appendChild(area);
+
+  const line = document.createElementNS(NS, "path");
+  line.setAttribute("d", lineD); line.setAttribute("fill", "none");
+  line.setAttribute("stroke", color); line.setAttribute("stroke-width", "2");
+  line.setAttribute("stroke-linejoin", "round"); line.setAttribute("stroke-linecap", "round");
+  svg.appendChild(line);
+
+  // hover layer: vertical guide + highlighted dot, mirrored by an HTML tooltip.
+  const guide = document.createElementNS(NS, "line");
+  guide.setAttribute("stroke", "#7e8aa6"); guide.setAttribute("stroke-width", "1");
+  guide.setAttribute("stroke-dasharray", "3 3"); guide.setAttribute("opacity", "0");
+  guide.setAttribute("y1", m.t); guide.setAttribute("y2", m.t + plotH);
+  svg.appendChild(guide);
+  const dot = document.createElementNS(NS, "circle");
+  dot.setAttribute("r", "3.5"); dot.setAttribute("fill", color);
+  dot.setAttribute("stroke", "#0f1320"); dot.setAttribute("stroke-width", "1.5");
+  dot.setAttribute("opacity", "0"); svg.appendChild(dot);
+
+  const tip = el("div", "npadmin-tip"); box.appendChild(tip);
+
+  // Plot spans these fractions of the (scaled) viewBox width/height; map the
+  // pointer through the same fractions so it tracks regardless of CSS width.
+  const leftFrac = m.l / W, rightFrac = (W - m.r) / W;
+  function onMove(ev) {
+    const rect = svg.getBoundingClientRect();
+    const fx = (ev.clientX - rect.left) / rect.width;
+    let r = (fx - leftFrac) / (rightFrac - leftFrac);
+    r = Math.max(0, Math.min(1, r));
+    const i = Math.round(r * (series.length - 1));
+    const [px, py] = pts[i];
+    guide.setAttribute("x1", px); guide.setAttribute("x2", px);
+    guide.setAttribute("opacity", "1");
+    dot.setAttribute("cx", px); dot.setAttribute("cy", py); dot.setAttribute("opacity", "1");
+    tip.innerHTML = "";
+    tip.appendChild(el("div", "npadmin-tipv", fmt(series[i].value)));
+    tip.appendChild(el("div", "npadmin-tipd", shortDate(series[i].bucket)));
+    tip.style.left = (px / W * 100) + "%";
+    tip.style.top = (py / H * 100) + "%";
+    tip.classList.add("show");
+  }
+  function onLeave() {
+    guide.setAttribute("opacity", "0"); dot.setAttribute("opacity", "0");
+    tip.classList.remove("show");
+  }
+  svg.addEventListener("mousemove", onMove);
+  svg.addEventListener("mouseleave", onLeave);
+  return box;
+}
+
+// Round a max up to a clean axis bound so y-labels read nicely.
+function niceCeil(v) {
+  if (v <= 0) return 0;
+  const mag = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / mag;
+  const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+  return step * mag;
+}
+
+// "2026-06-24T00:00:00+00:00" -> "Jun 24".
+function shortDate(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso).slice(5, 10);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 async function tableByTopic(main) {
