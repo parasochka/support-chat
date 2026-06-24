@@ -160,6 +160,12 @@ const state = {
   // flickered back to the browser locale every time the session was abandoned.
   locale: CONFIG.LOCALE,
   topicChosen: false,
+  // Guards against double-tapping a topic button while the session is still
+  // warming up: onTopic awaits ensureSession(), and the buttons stay clickable
+  // during that wait, so a second tap used to fire a second onTopic and paint a
+  // second greeting bubble. Set the instant the first tap lands, cleared if the
+  // selection fails.
+  topicSelecting: false,
   open: false,
   // True while the mobile full-screen sheet is active (geometry driven by JS).
   fullscreen: false,
@@ -249,6 +255,7 @@ function resetSessionState() {
   state.token = null;
   state.sessionPromise = null;
   state.topicChosen = false;
+  state.topicSelecting = false;
   state.greetingEl = null;
 }
 
@@ -267,6 +274,7 @@ function resetToPicker({ abandon } = {}) {
   els.messages.innerHTML = "";
   state.greetingEl = null;
   state.topicChosen = false;
+  state.topicSelecting = false;
   els.topics.classList.remove("npchat-hidden");
 }
 
@@ -1032,12 +1040,18 @@ function addMessageToTopics(text) {
 }
 
 async function onTopic(slug) {
+  // Ignore repeat taps while the first selection is still in flight: the session
+  // (token) may still be warming up below, and without this guard a second tap
+  // during that await mints a duplicate greeting bubble (and double-handshakes).
+  if (state.topicSelecting || state.topicChosen) return;
+  state.topicSelecting = true;
   // The session (token) may still be warming up in the background — wait for it
   // here, the one place its absence would actually break the next request. A
   // failed session create is fatal (no token = no chat), so surface it.
   try {
     await ensureSession();
   } catch (e) {
+    state.topicSelecting = false;
     els.topics.innerHTML = "";
     addMessageToTopics(t("startError"));
     return;
@@ -1045,6 +1059,7 @@ async function onTopic(slug) {
   try {
     await selectTopic(slug);
   } catch (_) { /* non-fatal: still allow chatting */ }
+  state.topicSelecting = false;
   state.topicChosen = true;
   els.topics.classList.add("npchat-hidden");
   els.messages.classList.remove("npchat-hidden");
