@@ -791,7 +791,7 @@ async def overview_aggregates(dt_from: Any, dt_to: Any) -> dict[str, Any]:
 
 async def timeseries(metric: str, dt_from: Any, dt_to: Any,
                      bucket: str = "day") -> list[dict[str, Any]]:
-    """Per-bucket series for sessions | cost | escalation_rate."""
+    """Per-bucket series for sessions | cost | cost_per_session | escalation_rate."""
     trunc = "day" if bucket not in ("hour", "day", "week", "month") else bucket
     if metric == "cost":
         rows = await _pool.fetch(
@@ -801,6 +801,22 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
             "GROUP BY bucket ORDER BY bucket",
             dt_from, dt_to,
         )
+    elif metric == "cost_per_session":
+        # Average spend per session per bucket: total cost / distinct sessions that
+        # had at least one OpenAI call in the bucket. The "average price per day".
+        rows = await _pool.fetch(
+            f"SELECT date_trunc('{trunc}', created_at) AS bucket, "
+            "COALESCE(SUM(cost_usd), 0) AS cost, "
+            "COUNT(DISTINCT session_id) AS sessions "
+            "FROM ai_interaction_logs WHERE created_at >= $1 AND created_at < $2 "
+            "GROUP BY bucket ORDER BY bucket",
+            dt_from, dt_to,
+        )
+        return [
+            {"bucket": r["bucket"].isoformat(),
+             "value": (float(r["cost"]) / r["sessions"]) if r["sessions"] else 0.0}
+            for r in rows
+        ]
     elif metric == "escalation_rate":
         rows = await _pool.fetch(
             f"SELECT date_trunc('{trunc}', created_at) AS bucket, "
