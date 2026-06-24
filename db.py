@@ -954,7 +954,12 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
         d["created_at"] = d["created_at"].isoformat()
         d["cost_usd"] = float(d["cost_usd"]) if d["cost_usd"] is not None else None
         return d
-    cost_total = sum((float(r["cost_usd"]) for r in msgs if r["cost_usd"]), 0.0)
+    # Cost is summed from ai_interaction_logs (the canonical OpenAI-spend source,
+    # invariant §4) — NOT from chat_messages. A routing-only turn logs its detect
+    # call to ai_interaction_logs but persists no chat_messages row, so summing
+    # from msgs would undercount and disagree with the Sessions list / overview /
+    # by-topic aggregations, which all sum ai_interaction_logs.
+    cost_total = sum((float(r["cost_usd"]) for r in logs if r["cost_usd"]), 0.0)
     # Serialize session timestamps.
     for ts in ("created_at", "updated_at"):
         if session.get(ts) is not None and not isinstance(session[ts], str):
