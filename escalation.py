@@ -10,6 +10,9 @@ Keyword scans run on a normalized copy of the message (mirroring
 `antispam.scan_injection`) so trivial zero-width / Unicode-confusable obfuscation
 can't slip a trigger past the substring match. The keyword lists are stems
 (e.g. "поддержк", "мошенн") on purpose, so they keep matching inflected forms.
+Both lists (`high_risk_keywords` and `human_request_keywords`) are tunable live
+from the admin `escalation` settings group; the constants below are the built-in
+defaults used until the owner overrides them.
 """
 from __future__ import annotations
 
@@ -18,7 +21,9 @@ from typing import Optional
 
 import config
 
-# Explicit human-request keywords (multi-language).
+# Explicit human-request keywords (multi-language). Built-in DEFAULT only — the
+# owner can override the list live from the admin `escalation` settings group
+# (`human_request_keywords`), same as `high_risk_keywords` below.
 _HUMAN_KEYWORDS = (
     "оператор", "человек", "поддержк", "жалоба", "претензия",
     "agent", "human", "operator", "complaint", "representative",
@@ -27,7 +32,8 @@ _HUMAN_KEYWORDS = (
     "atendente", "reclamação", "humano",
 )
 
-# High-risk keywords -> immediate escalation.
+# High-risk keywords -> immediate escalation. Built-in DEFAULT only; overridable
+# live from the admin `escalation` settings group (`high_risk_keywords`).
 _HIGHRISK_KEYWORDS = (
     "fraud", "scam", "stolen", "lawsuit", "lawyer", "police", "chargeback",
     "мошенн", "украл", "суд", "адвокат", "полиц", "обман",
@@ -52,11 +58,12 @@ def _normalized(text: str) -> str:
     return antispam._normalize_for_scan(text)
 
 
-def user_requests_human(text: str) -> bool:
+def user_requests_human(text: str, keywords: Optional[tuple] = None) -> bool:
     if not text:
         return False
     norm = _normalized(text)
-    return any(k in norm for k in _HUMAN_KEYWORDS)
+    kws = keywords if keywords is not None else _HUMAN_KEYWORDS
+    return any(k in norm for k in kws)
 
 
 def is_high_risk(text: str, keywords: Optional[tuple] = None) -> bool:
@@ -89,12 +96,13 @@ def decide(
     cfg = settings.escalation()
     max_messages = cfg["max_messages_per_session"]
     high_risk_keywords = tuple(cfg["high_risk_keywords"])
+    human_request_keywords = tuple(cfg["human_request_keywords"])
 
     if already_escalated:
         return EscalationDecision(True, "already_escalated")
     if is_high_risk(user_text, high_risk_keywords):
         return EscalationDecision(True, "high_risk")
-    if user_requests_human(user_text):
+    if user_requests_human(user_text, human_request_keywords):
         return EscalationDecision(True, "user_requested_human")
     if message_count >= max_messages:
         return EscalationDecision(True, "message_cap")

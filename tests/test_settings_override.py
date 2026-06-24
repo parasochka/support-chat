@@ -29,10 +29,18 @@ def test_db_override_wins_over_env(monkeypatch):
 
 def test_escalation_override():
     settings._cache["escalation"] = {"max_messages_per_session": 5,
-                                     "high_risk_keywords": ["boom"]}
+                                     "high_risk_keywords": ["boom"],
+                                     "human_request_keywords": ["help-me"]}
     cfg = settings.escalation()
     assert cfg["max_messages_per_session"] == 5
     assert cfg["high_risk_keywords"] == ["boom"]
+    assert cfg["human_request_keywords"] == ["help-me"]
+
+
+def test_escalation_human_keywords_default_when_unset():
+    import escalation as esc
+    cfg = settings.escalation()  # empty cache -> built-in default
+    assert cfg["human_request_keywords"] == list(esc._HUMAN_KEYWORDS)
 
 
 def test_validate_accepts_good():
@@ -50,6 +58,8 @@ def test_validate_rejects_bad():
         settings.validate_setting("unknown_key", {})
     with pytest.raises(ValueError):
         settings.validate_setting("escalation", {"high_risk_keywords": [1, 2]})
+    with pytest.raises(ValueError):
+        settings.validate_setting("escalation", {"human_request_keywords": [1, 2]})
     with pytest.raises(ValueError):
         settings.validate_setting("language", "not-a-dict")
 

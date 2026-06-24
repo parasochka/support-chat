@@ -130,6 +130,8 @@ def escalation() -> dict[str, Any]:
                                              config.MAX_MESSAGES_PER_SESSION),
         "high_risk_keywords": db_v.get("high_risk_keywords",
                                        list(_escalation._HIGHRISK_KEYWORDS)),
+        "human_request_keywords": db_v.get("human_request_keywords",
+                                           list(_escalation._HUMAN_KEYWORDS)),
     }
 
 
@@ -270,6 +272,7 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
     elif key == "escalation":
         _require_int(value, "max_messages_per_session", 1, 10_000)
         _require_str_list(value, "high_risk_keywords")
+        _require_str_list(value, "human_request_keywords")
     elif key == "language":
         if "default" in value and not isinstance(value["default"], str):
             raise ValueError("default must be a string")
