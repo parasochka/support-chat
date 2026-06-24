@@ -123,6 +123,28 @@ function renderApp() {
   const root = document.getElementById("npadmin-root");
   root.innerHTML = "";
   const app = el("div", "npadmin-app");
+
+  // Drawer open/close (mobile only — on desktop the sidebar is always visible
+  // and these classes are inert). Toggling a class on `app` drives the CSS.
+  const closeDrawer = () => app.classList.remove("drawer-open");
+  const toggleDrawer = () => app.classList.toggle("drawer-open");
+
+  // Top bar — visible only on narrow viewports (CSS-gated). Holds the
+  // hamburger that reveals the off-canvas sidebar + the brand.
+  const topbar = el("div", "npadmin-topbar");
+  const burger = el("button", "npadmin-burger");
+  burger.setAttribute("aria-label", "Menu");
+  burger.innerHTML =
+    '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">' +
+    '<path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" fill="none"/></svg>';
+  burger.addEventListener("click", toggleDrawer);
+  topbar.append(burger, el("div", "npadmin-brand", "NowPlix Admin"));
+
+  // Tap-away scrim that closes the drawer.
+  const scrim = el("div", "npadmin-scrim");
+  scrim.addEventListener("click", closeDrawer);
+
   const side = el("div", "npadmin-side");
   side.appendChild(el("div", "npadmin-brand", "NowPlix Admin"));
   const nav = el("div", "npadmin-nav");
@@ -138,7 +160,7 @@ function renderApp() {
 
   const main = el("div", "npadmin-main");
   main.id = "npadmin-main";
-  app.append(side, main);
+  app.append(topbar, scrim, side, main);
   root.appendChild(app);
   routeView(main);
 }
