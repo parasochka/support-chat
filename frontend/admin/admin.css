@@ -46,8 +46,8 @@ textarea.npadmin-input { min-height: 220px; font-family: ui-monospace, Menlo, mo
   flex-wrap: wrap; }
 .npadmin-input { padding: 7px 9px; }
 
-/* KPI cards — two even columns */
-.npadmin-cards { display: grid; grid-template-columns: repeat(2, 1fr);
+/* KPI cards — six per row */
+.npadmin-cards { display: grid; grid-template-columns: repeat(6, 1fr);
   gap: 9px; margin-bottom: 18px; }
 .npadmin-card { background: var(--panel); border: 1px solid var(--line);
   border-radius: 9px; padding: 10px 12px; }
@@ -75,8 +75,12 @@ table.npadmin-table { width: 100%; border-collapse: collapse; }
 .npadmin-2col { display: grid; grid-template-columns: repeat(2, 1fr);
   gap: 12px 18px; align-items: start; margin-bottom: 18px; }
 .npadmin-2col h3 { margin-top: 0; }
+@media (max-width: 900px) {
+  .npadmin-cards { grid-template-columns: repeat(3, 1fr); }
+}
 @media (max-width: 720px) {
-  .npadmin-cards, .npadmin-chartgrid, .npadmin-2col { grid-template-columns: 1fr; }
+  .npadmin-cards { grid-template-columns: repeat(2, 1fr); }
+  .npadmin-chartgrid, .npadmin-2col { grid-template-columns: 1fr; }
 }
 .npadmin-chart { background: var(--panel); border: 1px solid var(--line);
   border-radius: 9px; padding: 12px 14px; margin-bottom: 14px; }
