@@ -16,6 +16,15 @@ a { color: var(--accent); }
   padding: 14px 0; }
 .npadmin-brand { font-weight: 700; padding: 0 16px 14px; font-size: 14px;
   letter-spacing: .02em; }
+
+/* top bar + hamburger — desktop hides them (the sidebar is always visible);
+   the mobile breakpoint below turns them on and the sidebar into a drawer. */
+.npadmin-topbar { display: none; }
+.npadmin-scrim { display: none; }
+.npadmin-burger { background: none; border: 1px solid var(--line);
+  border-radius: 8px; color: var(--text); padding: 5px 7px; cursor: pointer;
+  display: inline-flex; line-height: 0; }
+.npadmin-burger:hover { background: var(--panel2); }
 .npadmin-nav button { display: block; width: 100%; text-align: left; background: none;
   border: none; color: var(--muted); padding: 8px 16px; cursor: pointer; font-size: 13px; }
 .npadmin-nav button:hover { background: var(--panel2); color: var(--text); }
@@ -81,6 +90,23 @@ table.npadmin-table { width: 100%; border-collapse: collapse; }
 @media (max-width: 720px) {
   .npadmin-cards { grid-template-columns: repeat(2, 1fr); }
   .npadmin-chartgrid, .npadmin-2col { grid-template-columns: 1fr; }
+
+  /* single column; the sidebar leaves the flow and becomes a drawer */
+  .npadmin-app { grid-template-columns: 1fr; }
+  .npadmin-topbar { display: flex; align-items: center; gap: 11px;
+    position: sticky; top: 0; z-index: 30; background: var(--panel);
+    border-bottom: 1px solid var(--line); padding: 10px 14px; }
+  .npadmin-topbar .npadmin-brand { padding: 0; }
+  .npadmin-side { position: fixed; top: 0; left: 0; bottom: 0; width: 232px;
+    z-index: 50; overflow-y: auto; transform: translateX(-100%);
+    transition: transform .22s ease; box-shadow: 0 0 30px rgba(0,0,0,.45); }
+  .npadmin-app.drawer-open .npadmin-side { transform: translateX(0); }
+  .npadmin-scrim { display: block; position: fixed; inset: 0; z-index: 40;
+    background: rgba(0,0,0,.5); opacity: 0; pointer-events: none;
+    transition: opacity .22s ease; }
+  .npadmin-app.drawer-open .npadmin-scrim { opacity: 1; pointer-events: auto; }
+  .npadmin-main { padding: 14px 15px; }
+  .npadmin-toolbar { gap: 6px; }
 }
 .npadmin-chart { background: var(--panel); border: 1px solid var(--line);
   border-radius: 9px; padding: 12px 14px; margin-bottom: 14px; }
