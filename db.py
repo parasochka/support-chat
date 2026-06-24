@@ -949,11 +949,30 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
         "WHERE session_id = $1 ORDER BY id ASC",
         session_id,
     )
+    # Topic-switch markers: a cross-topic routing turn suppresses its (ungrounded)
+    # answer and persists no chat_messages row, so its detect-call cost would look
+    # orphaned in the transcript. Returning these lets the admin view interleave a
+    # "switched X -> Y" marker (with that call's cost) into the timeline, so the
+    # path is traceable and the per-step costs add up to cost_usd_total.
+    events = await _pool.fetch(
+        "SELECT type, payload, created_at FROM admin_events "
+        "WHERE session_id = $1 AND type = 'topic_switch' ORDER BY id ASC",
+        session_id,
+    )
     def _msg(r):
         d = dict(r)
         d["created_at"] = d["created_at"].isoformat()
         d["cost_usd"] = float(d["cost_usd"]) if d["cost_usd"] is not None else None
         return d
+    def _event(r):
+        payload = r["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        return {
+            "type": r["type"],
+            "payload": payload or {},
+            "created_at": r["created_at"].isoformat(),
+        }
     # Cost is summed from ai_interaction_logs (the canonical OpenAI-spend source,
     # invariant §4) — NOT from chat_messages. A routing-only turn logs its detect
     # call to ai_interaction_logs but persists no chat_messages row, so summing
@@ -968,6 +987,7 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
         "session": session,
         "messages": [_msg(r) for r in msgs],
         "logs": [_msg(r) for r in logs],
+        "events": [_event(r) for r in events],
         "cost_usd_total": round(cost_total, 6),
     }
 

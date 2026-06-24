@@ -253,6 +253,25 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
             result.tokens_in, result.tokens_out, result.cached_in,
             cost, result.latency_ms, ok, error,
         )
+        # Record the switch itself so the admin session view can trace the whole
+        # path: this detect call belongs to NO chat_messages turn (the answer was
+        # suppressed), so without this marker its cost looks orphaned and the
+        # per-turn costs no longer add up to the session total. The marker carries
+        # the from/to topics, the triggering message and this call's cost.
+        await db.log_admin_event(
+            session_id,
+            "topic_switch",
+            {
+                "from": topic_slug or prompts.OTHER_TOPIC_SLUG,
+                "to": suggested_topic["slug"],
+                "from_title": (current_topic or {}).get("title"),
+                "to_title": suggested_topic.get("title"),
+                "trigger": user_text[:200],
+                "cost_usd": cost,
+                "tokens_in": result.tokens_in,
+                "tokens_out": result.tokens_out,
+            },
+        )
         return ChatReply(
             reply="",
             lang=answer_lang,

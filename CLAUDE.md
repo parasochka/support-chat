@@ -350,6 +350,11 @@ an escalation), it short-circuits: it returns `reply=""` + `suggested_topic`, **
 and does **not** bump the message cap (the re-ask below is the one persisted, counted turn) — but it
 **does** log the detect call's token cost via `db.log_ai_interaction` so OpenAI spend stays accounted
 (invariant §4: every OpenAI call → an `ai_interaction_logs` row, here without a `chat_messages` pair).
+It also writes a `db.log_admin_event('topic_switch', {from, to, trigger, cost_usd, ...})` marker: because
+this turn persists no `chat_messages` row, its detect-call cost would otherwise look orphaned in the
+admin transcript and the per-turn costs would not sum to the session total. `db.session_detail` returns
+these as `events`, and the admin SPA interleaves a "switched X → Y · $cost" marker into the timeline by
+`created_at` so the whole path (original ask → switch → grounded answer) is traceable with each step's cost.
 The widget (`widget.js` `autoSwitchTopic`) then drops a persistent **"switching to «X»…"** notice into
 the transcript (informational, **no button** — it stays as the record of the hand-off), calls
 `POST /api/chat/topic`, and after a short legibility pause (`SWITCH_NOTE_MS`) **re-asks** the player's
