@@ -128,8 +128,6 @@ def escalation() -> dict[str, Any]:
     return {
         "max_messages_per_session": db_v.get("max_messages_per_session",
                                              config.MAX_MESSAGES_PER_SESSION),
-        "unresolved_turns_before_escalate": db_v.get(
-            "unresolved_turns_before_escalate", _escalation.OTHER_MAX_TURNS),
         "high_risk_keywords": db_v.get("high_risk_keywords",
                                        list(_escalation._HIGHRISK_KEYWORDS)),
     }
@@ -271,7 +269,6 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
                 raise ValueError("contact_form_url must be a string or null")
     elif key == "escalation":
         _require_int(value, "max_messages_per_session", 1, 10_000)
-        _require_int(value, "unresolved_turns_before_escalate", 1, 1_000)
         _require_str_list(value, "high_risk_keywords")
     elif key == "language":
         if "default" in value and not isinstance(value["default"], str):

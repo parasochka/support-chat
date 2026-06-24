@@ -1,11 +1,15 @@
 """Escalation decision + contact-button payload (no form / live agent in Phase 1).
 
 Escalate when ANY of:
-  - the model signalled it cannot help (leading [[ESCALATE]] tag, stripped upstream)
-  - the user explicitly asks for a human / operator / complaint
-  - message_count >= MAX_MESSAGES_PER_SESSION
-  - topic is 'other' and the model could not resolve after N turns
   - high-risk keywords (fraud / legal threats) -> immediate escalation
+  - the user explicitly asks for a human / operator / complaint
+  - message_count would reach MAX_MESSAGES_PER_SESSION
+  - the model signalled it cannot help (leading [[ESCALATE]] tag, stripped upstream)
+
+Keyword scans run on a normalized copy of the message (mirroring
+`antispam.scan_injection`) so trivial zero-width / Unicode-confusable obfuscation
+can't slip a trigger past the substring match. The keyword lists are stems
+(e.g. "поддержк", "мошенн") on purpose, so they keep matching inflected forms.
 """
 from __future__ import annotations
 
@@ -13,9 +17,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 import config
-
-# Topic 'other' escalates if unresolved after this many turns.
-OTHER_MAX_TURNS = 3
 
 # Explicit human-request keywords (multi-language).
 _HUMAN_KEYWORDS = (
@@ -42,19 +43,28 @@ class EscalationDecision:
     reason: Optional[str] = None
 
 
+def _normalized(text: str) -> str:
+    """Fold the message to the same canonical form `antispam.scan_injection` uses
+    (NFKC + lower-case + zero-width strip + de-spacing) so obfuscated keywords are
+    matched too. Lazy import keeps escalation free of an antispam->settings->
+    escalation import cycle."""
+    import antispam  # lazy: avoids the settings/escalation import cycle
+    return antispam._normalize_for_scan(text)
+
+
 def user_requests_human(text: str) -> bool:
     if not text:
         return False
-    lowered = text.lower()
-    return any(k in lowered for k in _HUMAN_KEYWORDS)
+    norm = _normalized(text)
+    return any(k in norm for k in _HUMAN_KEYWORDS)
 
 
 def is_high_risk(text: str, keywords: Optional[tuple] = None) -> bool:
     if not text:
         return False
-    lowered = text.lower()
+    norm = _normalized(text)
     kws = keywords if keywords is not None else _HIGHRISK_KEYWORDS
-    return any(k in lowered for k in kws)
+    return any(k in norm for k in kws)
 
 
 def decide(
@@ -62,18 +72,22 @@ def decide(
     user_text: str,
     model_signalled: bool,
     message_count: int,
-    topic_slug: Optional[str],
     already_escalated: bool = False,
 ) -> EscalationDecision:
     """Combine all escalation triggers into a single decision.
 
     Thresholds/keywords come from the resolved runtime settings (app_settings >
     env > default), so the owner can tune them live without a redeploy.
+
+    `message_count` is the PROSPECTIVE count for this turn (current + 1), so the
+    cap fires on the turn that reaches the limit. The model-free fast path in
+    api/chat.py is the cheap belt-and-suspenders for a session already AT/over the
+    cap (e.g. after the owner lowers it mid-session); the two are complementary,
+    not a duplicate check.
     """
     import settings  # lazy import to avoid a settings<->escalation cycle
     cfg = settings.escalation()
     max_messages = cfg["max_messages_per_session"]
-    unresolved_turns = cfg["unresolved_turns_before_escalate"]
     high_risk_keywords = tuple(cfg["high_risk_keywords"])
 
     if already_escalated:
@@ -85,10 +99,6 @@ def decide(
     if message_count >= max_messages:
         return EscalationDecision(True, "message_cap")
     if model_signalled:
-        if topic_slug == "other" and message_count < unresolved_turns:
-            # 'other' gets a couple of turns before we hand off, unless the
-            # model itself gave up — which it just did, so escalate.
-            return EscalationDecision(True, "model_signalled_other")
         return EscalationDecision(True, "model_signalled")
     return EscalationDecision(False)
 
