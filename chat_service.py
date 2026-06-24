@@ -229,7 +229,6 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         user_text=user_text,
         model_signalled=model_signalled or not ok,
         message_count=prospective_count,
-        topic_slug=topic_slug,
         already_escalated=session.get("escalated", False),
     )
 

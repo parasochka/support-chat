@@ -319,7 +319,16 @@ hot-reloaded `language` settings group (`default` + `supported`).
 ### Escalation (`escalation.py`)
 Escalation returns a contact-button payload only (no form, no live agent, no ticket/Telegram
 notifier). `decide()` triggers on: high-risk keywords (fraud/legal), explicit human requests,
-message cap, or the model's `[[ESCALATE]]` sentinel. On escalation, `chat_sessions.status=
+message cap, or the model's `[[ESCALATE]]` sentinel — checked in that order. The two keyword
+scans run on a normalized copy of the message (NFKC + zero-width strip, via
+`antispam._normalize_for_scan`) so obfuscation can't hide a trigger; the keyword lists are
+stems (`поддержк`, `мошенн`, …) so inflected forms still match. The cap fires on the turn whose
+prospective count (current + 1) reaches `max_messages_per_session`; the model-free fast path in
+`api/chat.py` is the cheap belt-and-suspenders for a session already at/over the cap (e.g. after
+the owner lowers it mid-session) — complementary, not a duplicate. (There is **no**
+`unresolved_turns_before_escalate` knob: the catch-all `other` is routed like every other topic,
+so it escalates on the same triggers — the old per-`other` turn threshold was removed with that
+redesign.) On escalation, `chat_sessions.status=
 'escalated'` and an `admin_events('escalation')` row is written, and `build_payload(lang)`
 returns the localized message + contact button. The button URL is `CONTACT_FORM_URL`
 (via the `general` settings group).
