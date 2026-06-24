@@ -216,14 +216,14 @@ async def list_catalogue(lang: Optional[str] = None,
     create_session, so the titles match the session from the first paint.
     """
     resolved = language.resolve(locale=lang or locale)
-    answer_lang = config.DEFAULT_LANGUAGE if resolved == language.AUTO else resolved
+    answer_lang = language.default_code() if resolved == language.AUTO else resolved
     topics = await kb.catalogue(lang=answer_lang)
     resp = JSONResponse(
         status_code=200,
         content={
             "topics": topics,
             "lang": answer_lang,
-            "languages": config.SUPPORTED_LANGUAGES,
+            "languages": language.supported_codes(),
         },
     )
     # The catalogue changes only on a KB edit; a short browser cache makes
