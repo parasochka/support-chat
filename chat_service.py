@@ -201,6 +201,22 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
     if detected_lang and detected_lang != session.get("conv_lang"):
         await db.set_conv_lang(session_id, detected_lang)
 
+    # The widget renders the cross-topic switch notice ("switching you to «X»…")
+    # in the language the model ANSWERED in (the player's current message
+    # language), not the session base. The suggested topic's title was localized
+    # to the base (`title_lang`) when `suggestable` was built, so a player who
+    # opened in one language but wrote in another would see the notice in their
+    # language but the topic name still in the base — e.g. a Russian line naming
+    # the topic in English ("Deposits"). Re-localize the title to `answer_lang`
+    # so the whole notice reads in one language.
+    if suggested_topic and answer_lang != title_lang:
+        raw_topic = await db.get_topic_by_slug(suggested_topic["slug"])
+        if raw_topic:
+            suggested_topic = {
+                **suggested_topic,
+                "title": kb.localize_title(raw_topic.get("title"), answer_lang),
+            }
+
     # --- cost accounting -----------------------------------------------------
     cost = openai_client.compute_cost(
         result.model, result.tokens_in, result.tokens_out, result.cached_in
