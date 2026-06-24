@@ -321,25 +321,37 @@ async def put_test_profile(body: TestProfileWrite,
 # Layer-3 directives (greeting, formatting, KB-grounding, escalation restraint,
 # suggestions, resolved, topic routing, language, personalization, guardrails,
 # forbidden topics) + the player context in the user message. We assemble the
-# exact messages chat_service would send for a sample player + sample topic.
+# exact messages chat_service would send for the SAME example player the chat
+# would actually use: the admin "Test sandbox" profile (the single source of the
+# test player). There is NO separate hard-coded preview player — that diverged
+# from the sandbox and showed one user in the prompt while the sandbox defined
+# another. When the sandbox is disabled (or its fields are blank) the preview
+# renders an anonymous session, so no invented player data appears anywhere.
 # Nothing here is sent to the model — it's a faithful rendering of the live
 # assembly so "how is the prompt formed?" has one answer in one place.
 # ---------------------------------------------------------------------------
-_PREVIEW_CONTEXT = {
-    "id": "10042",
-    "full_name": "John Smith",
-    "email": "john@example.com",
-    "activation_status": "active",
-    "country": "KZ",
-    "balance": "1500",
-    "vip_level": "Silver",
-    "registration_date": "2024-01-15",
-}
 _PREVIEW_USER_TEXT = "«…the player's current message will appear here…»"
 
 
+def _preview_context() -> dict[str, Any]:
+    """The player context for the preview: the admin Test-sandbox profile.
+
+    Mirrors api/chat.create_session's dev/test path so the preview shows exactly
+    the player the chat would use. When the sandbox is disabled the context is
+    empty (anonymous session) — `prompts.build_dynamic_prompt` then renders no
+    player-data lines and omits the personalization directive, so nothing
+    invented is written.
+    """
+    tp = settings_mod.test_profile()
+    if not tp.get("enabled"):
+        return {}
+    return {field: tp.get(field) or None
+            for field in prompts._CONTEXT_FIELDS}
+
+
 async def _build_effective_preview() -> dict[str, Any]:
-    """Assemble the full prompt exactly as chat_service would, with sample data.
+    """Assemble the full prompt exactly as chat_service would, using the Test
+    sandbox player.
 
     Returns the system message (Layer 1 SYSTEM_CORE + Layer 2 KB block) and the
     Layer-3 user message, plus a note of which example topic/language were used.
@@ -369,7 +381,7 @@ async def _build_effective_preview() -> dict[str, Any]:
         current_topic, kb_block, suggestable = None, None, []
 
     messages = prompts.build_messages(
-        session={"user_context": _PREVIEW_CONTEXT},
+        session={"user_context": _preview_context()},
         kb_block=kb_block,
         history=[],
         user_text=_PREVIEW_USER_TEXT,

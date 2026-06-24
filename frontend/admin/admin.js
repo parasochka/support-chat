@@ -732,7 +732,8 @@ function effectivePreviewBox(holder, pv) {
     + "(the selected topic's knowledge base) in the system message, then the "
     + "Layer-3 directives + the player's data in the user message. Sourced from "
     + `prompts.py. Example: topic «${ex.topic || "—"}», language `
-    + `${ex.lang || "—"}, sample player. Layer 2 (KB) and player data vary per request.`));
+    + `${ex.lang || "—"}, player from the Test sandbox profile (anonymous when the `
+    + `sandbox is disabled). Layer 2 (KB) and player data vary per request.`));
 
   const sysWrap = el("label", "npadmin-field");
   sysWrap.appendChild(el("span", null, "System message — Layer 1 (core) + Layer 2 (KB block)"));
