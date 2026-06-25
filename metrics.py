@@ -10,6 +10,10 @@ Metric definitions (documented per the brief §4):
                          escalated", which includes abandoned sessions. Track
                          sessions_open separately to see abandonment.
   - avg_messages_per_session = avg(message_count) over engaged sessions.
+  - cost_usd_per_session = cost_usd_total / sessions_with_ai, where sessions_with_ai
+                         is the count of sessions that made >= 1 OpenAI call. Greeting-
+                         only "zero" sessions (and model-free hand-offs) made no call,
+                         so they are excluded — the average reflects real spend.
   - cache_hit_ratio    = sum(cached_in) / sum(tokens_in)  (prefix-cache economics).
   - failovers / rate_limit_blocks / injection_blocks come from admin_events.
 """
@@ -43,7 +47,15 @@ def overview(raw: dict[str, Any]) -> dict[str, Any]:
         "resolution_rate_is_proxy": True,
         "avg_messages_per_session": round(raw["avg_messages_per_session"], 2),
         "cost_usd_total": round(raw["cost_usd_total"], 6),
-        "cost_usd_per_session": round(_safe_div(raw["cost_usd_total"], engaged), 6),
+        # Average cost is over sessions that actually called OpenAI, NOT all engaged
+        # sessions: a session can be "engaged" (message_count > 0) yet make no API
+        # call (the model-free message-cap hand-off), and a greeting-only session
+        # makes none at all. Dividing by sessions_with_ai keeps "zero" sessions out
+        # of the average so it reflects real per-conversation spend (and matches the
+        # cost_per_session timeseries, which counts distinct sessions in the logs).
+        "cost_usd_per_session": round(
+            _safe_div(raw["cost_usd_total"], raw.get("sessions_with_ai", 0)), 6
+        ),
         "cache_hit_ratio": round(
             _safe_div(raw["cached_in_total"], raw["tokens_in_total"]), 4
         ),
