@@ -118,10 +118,36 @@ if os.path.isdir(_FRONTEND_DIR):
 _ADMIN_DIR = os.path.join(_FRONTEND_DIR, "admin")
 
 
+def _asset_version() -> str:
+    """Cache-busting token from the admin assets' mtimes.
+
+    The SPA has no build step and its assets are served by StaticFiles, which
+    sets no explicit Cache-Control — so browsers apply *heuristic* caching and
+    can serve a stale admin.js for a while after a redeploy (the bug behind
+    "the new option isn't showing up"). We stamp the asset URLs with a token
+    derived from the files' modification times so every redeploy yields a fresh
+    URL and the browser is forced to refetch.
+    """
+    latest = 0.0
+    for name in ("admin.js", "admin.css"):
+        try:
+            latest = max(latest, os.path.getmtime(os.path.join(_ADMIN_DIR, name)))
+        except OSError:
+            pass
+    return str(int(latest))
+
+
 @app.get("/admin")
 @app.get("/admin/")
-async def admin_index() -> FileResponse:
-    return FileResponse(os.path.join(_ADMIN_DIR, "index.html"))
+async def admin_index() -> HTMLResponse:
+    with open(os.path.join(_ADMIN_DIR, "index.html"), encoding="utf-8") as fh:
+        html = fh.read()
+    v = _asset_version()
+    html = html.replace("/admin-static/admin.css", f"/admin-static/admin.css?v={v}")
+    html = html.replace("/admin-static/admin.js", f"/admin-static/admin.js?v={v}")
+    # Always revalidate the HTML itself so the freshly-stamped URLs take effect
+    # on the next load instead of being served from a stale cached page.
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 if os.path.isdir(_ADMIN_DIR):
