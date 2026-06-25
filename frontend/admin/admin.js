@@ -848,11 +848,11 @@ function modelSettingsBox(holder, current) {
 
   // GPT-5 reasoning knobs. "" ⇒ omit the parameter (use the model's default).
   const selects = {};
-  const buildLevel = (key, label, value) => {
+  const buildLevel = (key, label, value, opts) => {
     const lab = el("label", "npadmin-field");
     lab.appendChild(el("span", null, label));
     const sel = el("select", "npadmin-input"); sel.style.width = "auto";
-    for (const opt of ["", "low", "medium", "high"]) {
+    for (const opt of opts) {
       const o = el("option", null, opt === "" ? "(model default)" : opt);
       o.value = opt;
       if ((value || "") === opt) o.selected = true;
@@ -862,8 +862,13 @@ function modelSettingsBox(holder, current) {
     lab.appendChild(sel);
     box.appendChild(lab);
   };
-  buildLevel("reasoning_effort", "Reasoning effort", current.reasoning_effort);
-  buildLevel("verbosity", "Verbosity", current.verbosity);
+  // "minimal" is the GPT-5 family's lowest reasoning tier (almost no hidden
+  // reasoning) — valid for reasoning_effort only; verbosity stays low/medium/high
+  // (the backend rejects "minimal" for verbosity, see settings.py validation).
+  buildLevel("reasoning_effort", "Reasoning effort", current.reasoning_effort,
+             ["", "minimal", "low", "medium", "high"]);
+  buildLevel("verbosity", "Verbosity", current.verbosity,
+             ["", "low", "medium", "high"]);
 
   for (const [key, label, type, step] of NUM) {
     const lab = el("label", "npadmin-field");
