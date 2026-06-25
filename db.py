@@ -766,6 +766,7 @@ async def overview_aggregates(dt_from: Any, dt_to: Any) -> dict[str, Any]:
         "  COALESCE(SUM(cost_usd), 0) AS cost_usd_total, "
         "  COALESCE(SUM(cached_in), 0) AS cached_in_total, "
         "  COALESCE(SUM(tokens_in), 0) AS tokens_in_total, "
+        "  COUNT(DISTINCT session_id) AS sessions_with_ai, "
         "  COUNT(*) FILTER (WHERE NOT ok) AS failed_calls "
         "FROM ai_interaction_logs WHERE created_at >= $1 AND created_at < $2",
         dt_from, dt_to,
@@ -785,6 +786,11 @@ async def overview_aggregates(dt_from: Any, dt_to: Any) -> dict[str, Any]:
         "cost_usd_total": float(cost["cost_usd_total"]),
         "cached_in_total": int(cost["cached_in_total"]),
         "tokens_in_total": int(cost["tokens_in_total"]),
+        # Sessions that actually made >= 1 OpenAI call (distinct session_id in
+        # ai_interaction_logs). This is the precise denominator for average cost:
+        # greeting-only "zero" sessions (chat opened, canned greeting shown, no API
+        # call) never appear here, so they don't dilute cost-per-session.
+        "sessions_with_ai": int(cost["sessions_with_ai"]),
         "events": events,
     }
 
@@ -850,8 +856,10 @@ async def by_topic(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
         "  FROM ai_interaction_logs GROUP BY session_id"
         ") "
         "SELECT t.slug, t.title, "
-        "  COUNT(s.id) AS sessions, "
-        "  COUNT(s.id) FILTER (WHERE s.escalated) AS escalated, "
+        # Count only engaged sessions (>= 1 message): greeting-only "zero" sessions
+        # had no OpenAI call and must not dilute the per-topic counts or rates.
+        "  COUNT(s.id) FILTER (WHERE s.message_count > 0) AS sessions, "
+        "  COUNT(s.id) FILTER (WHERE s.escalated AND s.message_count > 0) AS escalated, "
         "  COALESCE(AVG(s.message_count) FILTER (WHERE s.message_count > 0), 0) AS avg_messages, "
         "  COALESCE(SUM(costs.cost_usd_total), 0) AS cost_usd_total "
         "FROM chat_sessions s JOIN kb_topics t ON t.id = s.topic_id "
@@ -882,8 +890,10 @@ async def by_language(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
         "  FROM ai_interaction_logs GROUP BY session_id"
         ") "
         "SELECT COALESCE(s.lang, 'unknown') AS lang, "
-        "  COUNT(*) AS sessions, "
-        "  COUNT(*) FILTER (WHERE s.escalated) AS escalated, "
+        # Engaged sessions only — exclude greeting-only "zero" sessions (no OpenAI
+        # call) so the per-language counts and escalation rates aren't diluted.
+        "  COUNT(*) FILTER (WHERE s.message_count > 0) AS sessions, "
+        "  COUNT(*) FILTER (WHERE s.escalated AND s.message_count > 0) AS escalated, "
         "  COALESCE(SUM(costs.cost_usd_total), 0) AS cost_usd_total "
         "FROM chat_sessions s LEFT JOIN costs ON costs.session_id = s.id "
         "WHERE s.created_at >= $1 AND s.created_at < $2 "
