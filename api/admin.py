@@ -15,6 +15,7 @@ from fastapi import (APIRouter, Depends, HTTPException, Query)
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
+import auth
 import config
 import db
 import kb
