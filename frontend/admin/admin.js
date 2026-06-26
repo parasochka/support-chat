@@ -2,21 +2,40 @@
 // All DOM classes are prefixed `npadmin-` to avoid host-page collisions.
 
 const TOKEN_KEY = "npadmin_token";
-const state = {
-  token: sessionStorage.getItem(TOKEN_KEY) || null,
-  view: "overview",
-  from: isoDaysAgo(30),
-  to: isoToday(),
-  // Supported languages (loaded once from /admin/meta) for the dropdowns.
-  languages: null,
-  defaultLang: "ru",
-};
+
+// ---------------------------------------------------------------------------
+// URL hash routing helpers
+// ---------------------------------------------------------------------------
+// Hash format: #view  or  #sessions/SESSION_ID
+function parseHash() {
+  const raw = location.hash.replace(/^#\/?/, "");
+  if (!raw) return { view: "overview", sessionId: null };
+  const slash = raw.indexOf("/");
+  return slash === -1
+    ? { view: raw, sessionId: null }
+    : { view: raw.slice(0, slash), sessionId: raw.slice(slash + 1) };
+}
+function pushHash(view, sessionId) {
+  const h = sessionId ? `#${view}/${sessionId}` : `#${view}`;
+  if (location.hash !== h) history.pushState(null, "", h);
+}
 
 function isoToday() { return new Date().toISOString().slice(0, 10); }
 function isoDaysAgo(n) {
   const d = new Date(); d.setDate(d.getDate() - n);
   return d.toISOString().slice(0, 10);
 }
+
+const _VALID_VIEWS = ["overview","sessions","unresolved","kb","variables","prompt","settings","test"];
+const state = {
+  token: sessionStorage.getItem(TOKEN_KEY) || null,
+  view: (() => { const { view } = parseHash(); return _VALID_VIEWS.includes(view) ? view : "overview"; })(),
+  from: isoDaysAgo(30),
+  to: isoToday(),
+  // Supported languages (loaded once from /admin/meta) for the dropdowns.
+  languages: null,
+  defaultLang: "ru",
+};
 
 // ---------------------------------------------------------------------------
 // API
@@ -150,7 +169,15 @@ function renderApp() {
   const nav = el("div", "npadmin-nav");
   for (const [id, label] of VIEWS) {
     const b = el("button", id === state.view ? "active" : null, label);
-    b.addEventListener("click", () => { state.view = id; renderApp(); });
+    b.dataset.view = id;
+    b.addEventListener("click", () => {
+      state.view = id;
+      pushHash(id);
+      nav.querySelectorAll("button").forEach((btn) =>
+        btn.classList.toggle("active", btn.dataset.view === id));
+      closeDrawer();
+      routeView(main);
+    });
     nav.appendChild(b);
   }
   side.appendChild(nav);
@@ -162,7 +189,14 @@ function renderApp() {
   main.id = "npadmin-main";
   app.append(topbar, scrim, side, main);
   root.appendChild(app);
-  routeView(main);
+
+  // If the URL points at a specific session, open it directly after the shell is ready.
+  const { view: hv, sessionId: hSid } = parseHash();
+  if (hv === "sessions" && hSid) {
+    openSession(hSid);
+  } else {
+    routeView(main);
+  }
 }
 
 function dateToolbar(onChange) {
@@ -435,7 +469,15 @@ async function viewSessions(main) {
     const o = el("option", null, l); o.value = v; escSel.appendChild(o);
   }
   const go = el("button", "npadmin-btn", "Filter");
-  bar.append(search, escSel, go);
+
+  // "Hide zero-message sessions" checkbox — on by default so empty greeting-only
+  // sessions don't clutter the list.
+  const hideEmptyCb = document.createElement("input");
+  hideEmptyCb.type = "checkbox"; hideEmptyCb.checked = true;
+  const hideEmptyLbl = el("label", "npadmin-hide-empty");
+  hideEmptyLbl.append(hideEmptyCb, document.createTextNode(" Hide empty"));
+
+  bar.append(search, escSel, go, hideEmptyLbl);
   main.appendChild(bar);
   const holder = el("div"); main.appendChild(holder);
 
@@ -444,6 +486,7 @@ async function viewSessions(main) {
     let url = `/sessions${q()}&page=${page}`;
     if (search.value) url += `&q=${encodeURIComponent(search.value)}`;
     if (escSel.value) url += `&escalated=${escSel.value}`;
+    if (hideEmptyCb.checked) url += `&min_messages=1`;
     try {
       const data = await api(url);
       holder.innerHTML = "";
@@ -455,7 +498,9 @@ async function viewSessions(main) {
         tr.classList.add("click");
         tr.addEventListener("click", () => openSession(s.id));
       }
-      holder.appendChild(t);
+      const scroll = el("div", "npadmin-table-scroll");
+      scroll.appendChild(t);
+      holder.appendChild(scroll);
       holder.appendChild(el("div", "npadmin-meta",
         `${data.total} sessions — page ${data.page}`));
       const pager = el("div", "npadmin-toolbar");
@@ -467,17 +512,25 @@ async function viewSessions(main) {
     } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
   }
   go.addEventListener("click", () => load(1));
+  hideEmptyCb.addEventListener("change", () => load(1));
   load(1);
 }
 
 async function openSession(id) {
+  pushHash("sessions", id);
   const main = document.getElementById("npadmin-main");
   main.innerHTML = "Loading…";
   try {
     const d = await api(`/session/${id}`);
     main.innerHTML = "";
     const back = el("button", "npadmin-btn ghost", "← Back");
-    back.addEventListener("click", () => routeView(main));
+    back.addEventListener("click", () => {
+      state.view = "sessions";
+      pushHash("sessions");
+      document.querySelectorAll(".npadmin-nav button").forEach((btn) =>
+        btn.classList.toggle("active", btn.dataset.view === "sessions"));
+      routeView(main);
+    });
     main.appendChild(back);
     main.appendChild(el("h1", "npadmin-h", "Session " + id.slice(0, 8)));
     const meta = el("div", "npadmin-meta");
@@ -553,7 +606,9 @@ async function viewUnresolved(main) {
         tr.classList.add("click");
         tr.addEventListener("click", () => openSession(s.session_id));
       }
-      holder.appendChild(t);
+      const scroll = el("div", "npadmin-table-scroll");
+      scroll.appendChild(t);
+      holder.appendChild(scroll);
     }
     if (!data.groups.length) holder.appendChild(el("div", "npadmin-meta", "Nothing unresolved 🎉"));
   } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
@@ -668,7 +723,9 @@ async function viewVariables(main) {
         tr.appendChild(actionTd);
         t.querySelector("tbody").appendChild(tr);
       }
-      tableWrap.appendChild(t);
+      const varScroll = el("div", "npadmin-table-scroll");
+      varScroll.appendChild(t);
+      tableWrap.appendChild(varScroll);
       tableWrap.appendChild(el("div", "npadmin-meta", `${rows.length} variables`));
     }
 
@@ -1060,9 +1117,17 @@ function section(main, title, node) {
   main.appendChild(el("h3", null, title)); main.appendChild(node);
 }
 // One grid cell (title + node) for the two-up .npadmin-2col layout.
+// Tables are wrapped in a scroll container so they don't break mobile layout.
 function sectionCol(parent, title, node) {
   const col = el("div");
-  col.appendChild(el("h3", null, title)); col.appendChild(node);
+  col.appendChild(el("h3", null, title));
+  if (node.tagName === "TABLE") {
+    const scroll = el("div", "npadmin-table-scroll");
+    scroll.appendChild(node);
+    col.appendChild(scroll);
+  } else {
+    col.appendChild(node);
+  }
   parent.appendChild(col);
 }
 function table(headers) {
@@ -1084,4 +1149,21 @@ function addRow(t, cells) { return rowEls(t, cells); }
 // ---------------------------------------------------------------------------
 // boot
 // ---------------------------------------------------------------------------
+// Sync view + main content when the user navigates with browser back/forward.
+window.addEventListener("popstate", () => {
+  if (!state.token) return;
+  const { view, sessionId } = parseHash();
+  state.view = _VALID_VIEWS.includes(view) ? view : "overview";
+  // Update the nav active state without a full re-render.
+  document.querySelectorAll(".npadmin-nav button").forEach((btn) =>
+    btn.classList.toggle("active", btn.dataset.view === state.view));
+  const mainEl = document.getElementById("npadmin-main");
+  if (!mainEl) return;
+  if (state.view === "sessions" && sessionId) {
+    openSession(sessionId);
+  } else {
+    routeView(mainEl);
+  }
+});
+
 if (state.token) renderApp(); else renderLogin();

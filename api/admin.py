@@ -123,10 +123,12 @@ async def sessions(from_: Optional[str] = Query(default=None, alias="from"),
                    to: Optional[str] = None, topic: Optional[str] = None,
                    lang: Optional[str] = None, status: Optional[str] = None,
                    escalated: Optional[bool] = None, q: Optional[str] = None,
+                   min_messages: Optional[int] = None,
                    page: int = 1) -> JSONResponse:
     dt_from, dt_to = _range(from_, to)
     res = await db.list_sessions(dt_from, dt_to, topic=topic, lang=lang,
-                                 status=status, escalated=escalated, q=q, page=page)
+                                 status=status, escalated=escalated, q=q,
+                                 min_messages=min_messages, page=page)
     return JSONResponse(content=res)
 
 
