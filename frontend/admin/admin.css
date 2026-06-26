@@ -54,6 +54,15 @@ textarea.npadmin-input { min-height: 220px; font-family: ui-monospace, Menlo, mo
 .npadmin-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 14px;
   flex-wrap: wrap; }
 .npadmin-input { padding: 7px 9px; }
+/* Equalize control heights inside a toolbar: buttons default to 9px vertical
+   padding while inputs/selects use 7px, which made buttons sit taller and look
+   misaligned next to the date/search fields. */
+.npadmin-toolbar .npadmin-btn { padding-top: 7px; padding-bottom: 7px; }
+
+/* "Hide empty" checkbox label in the sessions toolbar. */
+.npadmin-hide-empty { display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.npadmin-hide-empty input { margin: 0; }
 
 /* KPI cards — six per row */
 .npadmin-cards { display: grid; grid-template-columns: repeat(6, 1fr);
@@ -130,7 +139,8 @@ table.npadmin-table { width: 100%; border-collapse: collapse; }
 .npadmin-tipd { font-size: 10px; color: var(--muted); margin-top: 1px; }
 
 /* transcript */
-.npadmin-msg { margin: 8px 0; padding: 10px 12px; border-radius: 10px; max-width: 80%; }
+.npadmin-msg { margin: 8px 0; padding: 10px 12px; border-radius: 10px; max-width: 80%;
+  overflow-wrap: anywhere; }
 .npadmin-msg.user { background: var(--panel2); }
 .npadmin-msg.assistant { background: var(--panel); border: 1px solid var(--line); }
 .npadmin-meta { color: var(--muted); font-size: 12px; }
@@ -156,7 +166,4 @@ label.npadmin-field span { display: block; color: var(--muted); margin-bottom: 4
 @media (max-width: 720px) {
   /* Prevent body-level horizontal scroll — table wrappers scroll instead. */
   html { overflow-x: hidden; }
-  /* Keep the checkbox label inline with text */
-  .npadmin-hide-empty { display: flex; align-items: center; gap: 5px;
-    font-size: 12px; color: var(--muted); white-space: nowrap; }
 }

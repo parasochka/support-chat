@@ -26,7 +26,15 @@ function isoDaysAgo(n) {
   return d.toISOString().slice(0, 10);
 }
 
-const _VALID_VIEWS = ["overview","sessions","unresolved","kb","variables","prompt","settings","test"];
+// Sidebar tabs (id + label). `_VALID_VIEWS` is derived from this so the two
+// can never drift apart when a tab is added/removed.
+const VIEWS = [
+  ["overview", "Overview"], ["sessions", "Sessions"], ["unresolved", "Unresolved"],
+  ["kb", "Knowledge base"], ["variables", "Variables"], ["prompt", "Prompt"], ["settings", "Settings"],
+  ["test", "Test sandbox"],
+];
+const _VALID_VIEWS = VIEWS.map(([id]) => id);
+
 const state = {
   token: sessionStorage.getItem(TOKEN_KEY) || null,
   view: (() => { const { view } = parseHash(); return _VALID_VIEWS.includes(view) ? view : "overview"; })(),
@@ -132,11 +140,11 @@ function renderLogin() {
 // ---------------------------------------------------------------------------
 // shell
 // ---------------------------------------------------------------------------
-const VIEWS = [
-  ["overview", "Overview"], ["sessions", "Sessions"], ["unresolved", "Unresolved"],
-  ["kb", "Knowledge base"], ["variables", "Variables"], ["prompt", "Prompt"], ["settings", "Settings"],
-  ["test", "Test sandbox"],
-];
+// Reflect the active tab in the sidebar without a full re-render.
+function syncNavActive() {
+  document.querySelectorAll(".npadmin-nav button").forEach((btn) =>
+    btn.classList.toggle("active", btn.dataset.view === state.view));
+}
 
 function renderApp() {
   const root = document.getElementById("npadmin-root");
@@ -173,8 +181,7 @@ function renderApp() {
     b.addEventListener("click", () => {
       state.view = id;
       pushHash(id);
-      nav.querySelectorAll("button").forEach((btn) =>
-        btn.classList.toggle("active", btn.dataset.view === id));
+      syncNavActive();
       closeDrawer();
       routeView(main);
     });
@@ -517,7 +524,12 @@ async function viewSessions(main) {
 }
 
 async function openSession(id) {
+  // The URL becomes #sessions/ID, so keep state + sidebar highlight on Sessions
+  // (a session detail is part of the Sessions section regardless of where the
+  // click came from).
+  state.view = "sessions";
   pushHash("sessions", id);
+  syncNavActive();
   const main = document.getElementById("npadmin-main");
   main.innerHTML = "Loading…";
   try {
@@ -527,8 +539,7 @@ async function openSession(id) {
     back.addEventListener("click", () => {
       state.view = "sessions";
       pushHash("sessions");
-      document.querySelectorAll(".npadmin-nav button").forEach((btn) =>
-        btn.classList.toggle("active", btn.dataset.view === "sessions"));
+      syncNavActive();
       routeView(main);
     });
     main.appendChild(back);
@@ -571,6 +582,9 @@ async function openSession(id) {
     const pre = el("pre", "npadmin-input");
     pre.textContent = JSON.stringify(d.session.user_context, null, 2);
     pre.style.whiteSpace = "pre-wrap";
+    // Long unbroken values (emails, ids) must wrap, not push the page sideways.
+    pre.style.wordBreak = "break-word";
+    pre.style.overflowX = "hidden";
     ctx.appendChild(pre);
     row.append(convo, ctx);
     main.appendChild(row);
@@ -1153,15 +1167,13 @@ function addRow(t, cells) { return rowEls(t, cells); }
 window.addEventListener("popstate", () => {
   if (!state.token) return;
   const { view, sessionId } = parseHash();
-  state.view = _VALID_VIEWS.includes(view) ? view : "overview";
-  // Update the nav active state without a full re-render.
-  document.querySelectorAll(".npadmin-nav button").forEach((btn) =>
-    btn.classList.toggle("active", btn.dataset.view === state.view));
   const mainEl = document.getElementById("npadmin-main");
   if (!mainEl) return;
-  if (state.view === "sessions" && sessionId) {
-    openSession(sessionId);
+  if (view === "sessions" && sessionId) {
+    openSession(sessionId);   // sets state.view + syncs the nav itself
   } else {
+    state.view = _VALID_VIEWS.includes(view) ? view : "overview";
+    syncNavActive();
     routeView(mainEl);
   }
 });
