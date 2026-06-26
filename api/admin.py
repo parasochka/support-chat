@@ -23,7 +23,7 @@ import metrics
 import openai_client
 import prompts
 import settings as settings_mod
-from api.admin_auth import require_admin
+from api.admin_auth import require_admin, require_admin_write, WRITE_ROLES
 
 # Router-level dependency guards every route. Some handlers ALSO declare
 # `admin=Depends(require_admin)` to read the resolved role from the token; FastAPI
@@ -41,11 +41,17 @@ async def meta() -> JSONResponse:
     Keeps the SPA in sync with the env-configured `SUPPORTED_LANGUAGES` instead
     of hard-coding the list in JS.
     """
-    langs = [{"code": c, "name": language.LANG_NAMES.get(c, c.upper())}
-             for c in language.supported_codes()]
+    # `languages` is the SELECTABLE catalogue (built-ins + admin-added + currently
+    # supported) so the language tab can render a checkbox per known language, not
+    # only the ones already enabled. `iso_catalog` is the full ISO 639-1 list that
+    # drives the "add a language" picker. `supported` flags which are enabled.
     return JSONResponse(content={
-        "languages": langs,
+        "languages": language.selectable_languages(),
+        "supported": language.supported_codes(),
         "default_language": language.default_code(),
+        "iso_catalog": [{"code": c, "name": n}
+                        for c, n in sorted(language.ISO_639_1.items(),
+                                           key=lambda kv: kv[1])],
     })
 
 
@@ -148,12 +154,13 @@ async def unresolved(from_: Optional[str] = Query(default=None, alias="from"),
     if format == "csv":
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["topic", "session_id", "status", "escalated",
-                    "message_count", "first_message", "created_at"])
+        w.writerow(["topic", "session_id", "lang", "status", "escalated",
+                    "message_count", "cost_usd_total", "first_message", "created_at"])
         for g in groups:
             for s in g["sessions"]:
-                w.writerow([g["topic"], s["session_id"], s.get("status"),
+                w.writerow([g["topic"], s["session_id"], s.get("lang"), s.get("status"),
                             s.get("escalated"), s["message_count"],
+                            s.get("cost_usd_total"),
                             (s["first_message"] or "").replace("\n", " "),
                             s["created_at"]])
         return PlainTextResponse(content=buf.getvalue(), media_type="text/csv")
@@ -181,7 +188,8 @@ async def kb_topics() -> JSONResponse:
 
 
 @router.post("/kb/topics")
-async def kb_upsert_topic(body: TopicUpsert) -> JSONResponse:
+async def kb_upsert_topic(body: TopicUpsert,
+                          admin=Depends(require_admin_write)) -> JSONResponse:
     tid = await db.upsert_topic(slug=body.slug, title=body.title,
                                 display_order=body.order, active=body.active)
     await db.log_admin_event(None, "kb_topic_upserted", {"id": tid, "slug": body.slug})
@@ -196,14 +204,16 @@ async def kb_content(topic_id: int) -> JSONResponse:
 
 
 @router.put("/kb/content")
-async def kb_set_content(body: KBContentWrite) -> JSONResponse:
+async def kb_set_content(body: KBContentWrite,
+                         admin=Depends(require_admin_write)) -> JSONResponse:
     eid = await db.set_kb_content(body.topic_id, body.content)
     await db.log_admin_event(None, "kb_content_updated", {"topic_id": body.topic_id})
     return JSONResponse(content={"id": eid})
 
 
 @router.delete("/kb/content")
-async def kb_clear_content(topic_id: int) -> JSONResponse:
+async def kb_clear_content(topic_id: int,
+                           admin=Depends(require_admin_write)) -> JSONResponse:
     ok = await db.clear_kb_content(topic_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Topic has no KB to clear.")
@@ -228,7 +238,7 @@ async def kb_variables() -> JSONResponse:
 
 
 @router.put("/kb/variables/{key}")
-async def kb_set_variable(key: str, body: KBVariableWrite, admin=Depends(require_admin)) -> JSONResponse:
+async def kb_set_variable(key: str, body: KBVariableWrite, admin=Depends(require_admin_write)) -> JSONResponse:
     if body.key != key:
         raise HTTPException(status_code=400, detail="Path key and body key must match.")
     item = await db.set_kb_variable(
@@ -259,7 +269,7 @@ async def get_settings() -> JSONResponse:
 
 
 @router.put("/settings/{key}")
-async def put_setting(key: str, body: SettingWrite, admin=Depends(require_admin)
+async def put_setting(key: str, body: SettingWrite, admin=Depends(require_admin_write)
                       ) -> JSONResponse:
     try:
         validated = settings_mod.validate_setting(key, body.value)
@@ -302,7 +312,7 @@ async def get_test_profile() -> JSONResponse:
 
 @router.put("/test-profile")
 async def put_test_profile(body: TestProfileWrite,
-                           admin=Depends(require_admin)) -> JSONResponse:
+                           admin=Depends(require_admin_write)) -> JSONResponse:
     try:
         validated = settings_mod.validate_test_profile(body.value)
     except ValueError as exc:
@@ -311,6 +321,121 @@ async def put_test_profile(body: TestProfileWrite,
     await settings_mod.reload()  # hot: applies to the next session created
     await db.log_admin_event(None, "test_profile_updated", {})
     return JSONResponse(content={"profile": settings_mod.test_profile()})
+
+
+# ---------------------------------------------------------------------------
+# Current admin identity (so the SPA can role-gate its UI after a reload)
+# ---------------------------------------------------------------------------
+@router.get("/me")
+async def me(admin=Depends(require_admin)) -> JSONResponse:
+    return JSONResponse(content={
+        "role": admin.get("role"),
+        "email": admin.get("email"),
+        "can_write": admin.get("role") in WRITE_ROLES,
+    })
+
+
+# ---------------------------------------------------------------------------
+# User management — named admin/manager accounts (owner/admin only)
+#
+# Minimal by design: an owner/admin creates accounts with an email + password and
+# a role (admin = full write, manager = read-only). No email delivery, no reset
+# flows, no enumeration — all lifecycle is here. Passwords are stored only as a
+# salted PBKDF2 hash (auth.hash_password); the hash never leaves db.py.
+# ---------------------------------------------------------------------------
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_USER_ROLES = ("admin", "manager")
+
+
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    role: str = "manager"
+
+
+class UserUpdate(BaseModel):
+    password: Optional[str] = None
+    role: Optional[str] = None
+    active: Optional[bool] = None
+
+
+def _validate_email(email: str) -> str:
+    e = (email or "").strip().lower()
+    if not _EMAIL_RE.match(e):
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+    return e
+
+
+def _validate_password(password: str) -> None:
+    if not isinstance(password, str) or len(password) < 8:
+        raise HTTPException(status_code=400,
+                            detail="Password must be at least 8 characters.")
+
+
+def _validate_role(role: str) -> str:
+    if role not in _USER_ROLES:
+        raise HTTPException(status_code=400,
+                            detail=f"Role must be one of: {', '.join(_USER_ROLES)}.")
+    return role
+
+
+@router.get("/users")
+async def list_users(admin=Depends(require_admin_write)) -> JSONResponse:
+    return JSONResponse(content={"users": await db.list_admin_users()})
+
+
+@router.post("/users")
+async def create_user(body: UserCreate,
+                      admin=Depends(require_admin_write)) -> JSONResponse:
+    email = _validate_email(body.email)
+    _validate_password(body.password)
+    role = _validate_role(body.role)
+    if await db.get_admin_user(email):
+        raise HTTPException(status_code=409, detail="A user with that email already exists.")
+    user = await db.create_admin_user(email, auth.hash_password(body.password), role)
+    await db.log_admin_event(None, "admin_user_created",
+                             {"email": email, "role": role, "by": admin.get("email")})
+    return JSONResponse(content={"user": user})
+
+
+@router.put("/users/{email}")
+async def update_user(email: str, body: UserUpdate,
+                      admin=Depends(require_admin_write)) -> JSONResponse:
+    target = _validate_email(email)
+    existing = await db.get_admin_user(target)
+    if not existing:
+        raise HTTPException(status_code=404, detail="User not found.")
+    role = _validate_role(body.role) if body.role is not None else None
+    pw_hash = None
+    if body.password is not None:
+        _validate_password(body.password)
+        pw_hash = auth.hash_password(body.password)
+    # Guard against self-lockout: an account cannot demote or deactivate itself
+    # in the same session (the owner password login is always a recovery path).
+    if admin.get("email") == target:
+        if role is not None and role not in WRITE_ROLES:
+            raise HTTPException(status_code=400, detail="You cannot remove your own admin role.")
+        if body.active is False:
+            raise HTTPException(status_code=400, detail="You cannot deactivate your own account.")
+    user = await db.update_admin_user(target, role=role, active=body.active,
+                                      password_hash=pw_hash)
+    await db.log_admin_event(None, "admin_user_updated",
+                             {"email": target, "by": admin.get("email")})
+    return JSONResponse(content={"user": user})
+
+
+@router.delete("/users/{email}")
+async def delete_user(email: str,
+                      admin=Depends(require_admin_write)) -> JSONResponse:
+    target = _validate_email(email)
+    if admin.get("email") == target:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+    ok = await db.delete_admin_user(target)
+    if not ok:
+        raise HTTPException(status_code=404, detail="User not found.")
+    await db.log_admin_event(None, "admin_user_deleted",
+                             {"email": target, "by": admin.get("email")})
+    return JSONResponse(content={"ok": True})
 
 
 # ---------------------------------------------------------------------------

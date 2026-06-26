@@ -110,12 +110,20 @@ def _sign_with(secret: str, signing_input: bytes) -> bytes:
 
 
 def issue_admin_token(role: str = "owner",
-                      ttl_min: Optional[int] = None) -> str:
-    """Mint an admin JWT signed with ADMIN_JWT_SECRET (distinct from sessions)."""
+                      ttl_min: Optional[int] = None,
+                      email: Optional[str] = None) -> str:
+    """Mint an admin JWT signed with ADMIN_JWT_SECRET (distinct from sessions).
+
+    `role` drives authorization (owner/admin may write; manager is read-only).
+    `email` identifies a named user (the password-only owner login has none) and
+    rides in the token so the audit trail (`updated_by`) records who acted.
+    """
     ttl = config.ADMIN_TOKEN_TTL_MIN if ttl_min is None else ttl_min
     now = int(time.time())
     header = {"alg": _ALG, "typ": "JWT"}
-    payload = {"sub": "admin", "role": role, "iat": now, "exp": now + ttl * 60}
+    payload = {"sub": email or "admin", "role": role, "iat": now, "exp": now + ttl * 60}
+    if email:
+        payload["email"] = email
     header_b64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
     payload_b64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
     signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
@@ -202,6 +210,49 @@ def verify_handshake(blob: str) -> dict[str, Any]:
     if iat is not None and now - int(iat) > config.WIDGET_HANDSHAKE_MAX_AGE_SEC:
         raise TokenError("handshake too old")
     return payload
+
+
+# ---------------------------------------------------------------------------
+# Password hashing for named admin users (PBKDF2-HMAC-SHA256, stdlib only)
+#
+# The password-only owner login (config.ADMIN_PASSWORD) is unchanged. Named
+# users (created by an owner/admin from the Users tab) authenticate with an
+# email + password pair; their password is stored only as a salted PBKDF2 hash,
+# never in plaintext. Format mirrors Django's: "pbkdf2_sha256$iters$salt$hash"
+# (salt + hash base64url, no padding). Verification is constant-time.
+# ---------------------------------------------------------------------------
+_PBKDF2_ALG = "pbkdf2_sha256"
+_PBKDF2_ITERATIONS = 200_000
+
+
+def hash_password(password: str, *, iterations: int = _PBKDF2_ITERATIONS,
+                  salt: Optional[bytes] = None) -> str:
+    """Derive a salted PBKDF2-HMAC-SHA256 hash string for `password`."""
+    if not isinstance(password, str) or not password:
+        raise ValueError("password must be a non-empty string")
+    if salt is None:
+        import os
+        salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return (f"{_PBKDF2_ALG}${iterations}$"
+            f"{_b64url_encode(salt)}${_b64url_encode(dk)}")
+
+
+def verify_password(password: str, stored: str) -> bool:
+    """Constant-time check of `password` against a stored hash string."""
+    if not password or not stored:
+        return False
+    try:
+        alg, iters_s, salt_b64, hash_b64 = stored.split("$")
+        if alg != _PBKDF2_ALG:
+            return False
+        iterations = int(iters_s)
+        salt = _b64url_decode(salt_b64)
+        expected = _b64url_decode(hash_b64)
+    except Exception:  # noqa: BLE001 - any malformed hash fails closed
+        return False
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return hmac.compare_digest(dk, expected)
 
 
 def extract_bearer(authorization: Optional[str]) -> str:

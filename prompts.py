@@ -235,8 +235,9 @@ def _language_directive(resolved_lang: str) -> str:
     drift and localize side-payloads.
     """
     base = language.language_name(resolved_lang)
+    _names = language.all_language_names()
     supported = ", ".join(
-        language.LANG_NAMES.get(c, c) for c in language.supported_codes()
+        _names.get(c, c) for c in language.supported_codes()
     )
     return (
         "Response language: detect the language of the player's CURRENT message and "

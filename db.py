@@ -139,6 +139,20 @@ CREATE TABLE IF NOT EXISTS rate_limit_hits (
   ts          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Named admin/manager users (email + password pair). The password-only owner
+-- login (config.ADMIN_PASSWORD) is separate and always available; these are the
+-- extra accounts an owner/admin creates from the Users tab. role drives
+-- authorization: owner/admin may write, manager is read-only. The password is
+-- stored only as a salted PBKDF2 hash (auth.hash_password), never in plaintext.
+CREATE TABLE IF NOT EXISTS admin_users (
+  email         TEXT PRIMARY KEY,
+  password_hash TEXT NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'manager',
+  active        BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Runtime-tunable settings (hot-reloaded; precedence app_settings > env > default).
 CREATE TABLE IF NOT EXISTS app_settings (
   key        TEXT PRIMARY KEY,
@@ -665,6 +679,76 @@ async def set_setting(key: str, value: Any, updated_by: Optional[str] = None) ->
 
 
 # ---------------------------------------------------------------------------
+# admin_users (named login accounts; password hash never leaves this module)
+# ---------------------------------------------------------------------------
+def _row_to_admin_user(row: asyncpg.Record, *, include_hash: bool = False) -> dict[str, Any]:
+    """Serialize a user row for the API — the password hash is dropped by default."""
+    d = dict(row)
+    if not include_hash:
+        d.pop("password_hash", None)
+    for ts in ("created_at", "updated_at"):
+        if d.get(ts) is not None and not isinstance(d[ts], str):
+            d[ts] = d[ts].isoformat()
+    return d
+
+
+async def get_admin_user(email: str) -> Optional[dict[str, Any]]:
+    """Fetch a user INCLUDING the password hash (login path only)."""
+    row = await _pool.fetchrow(
+        "SELECT email, password_hash, role, active, created_at, updated_at "
+        "FROM admin_users WHERE email = $1",
+        email.strip().lower(),
+    )
+    return _row_to_admin_user(row, include_hash=True) if row else None
+
+
+async def list_admin_users() -> list[dict[str, Any]]:
+    rows = await _pool.fetch(
+        "SELECT email, role, active, created_at, updated_at "
+        "FROM admin_users ORDER BY email"
+    )
+    return [_row_to_admin_user(r) for r in rows]
+
+
+async def create_admin_user(email: str, password_hash: str, role: str) -> dict[str, Any]:
+    row = await _pool.fetchrow(
+        "INSERT INTO admin_users (email, password_hash, role) "
+        "VALUES ($1, $2, $3) "
+        "RETURNING email, role, active, created_at, updated_at",
+        email.strip().lower(), password_hash, role,
+    )
+    return _row_to_admin_user(row)
+
+
+async def update_admin_user(email: str, *, role: Optional[str] = None,
+                            active: Optional[bool] = None,
+                            password_hash: Optional[str] = None
+                            ) -> Optional[dict[str, Any]]:
+    sets: list[str] = ["updated_at = now()"]
+    args: list[Any] = []
+    if role is not None:
+        args.append(role); sets.append(f"role = ${len(args)}")
+    if active is not None:
+        args.append(active); sets.append(f"active = ${len(args)}")
+    if password_hash is not None:
+        args.append(password_hash); sets.append(f"password_hash = ${len(args)}")
+    args.append(email.strip().lower())
+    row = await _pool.fetchrow(
+        f"UPDATE admin_users SET {', '.join(sets)} WHERE email = ${len(args)} "
+        f"RETURNING email, role, active, created_at, updated_at",
+        *args,
+    )
+    return _row_to_admin_user(row) if row else None
+
+
+async def delete_admin_user(email: str) -> bool:
+    res = await _pool.execute(
+        "DELETE FROM admin_users WHERE email = $1", email.strip().lower()
+    )
+    return res.upper().startswith("DELETE") and not res.endswith(" 0")
+
+
+# ---------------------------------------------------------------------------
 # KB CRUD (admin management; reads still go through kb.py helpers)
 # ---------------------------------------------------------------------------
 async def list_topics_with_counts() -> list[dict[str, Any]]:
@@ -1029,13 +1113,20 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
     chats with at least one user turn. Resolved sessions are excluded.
     """
     rows = await _pool.fetch(
+        "WITH costs AS ("
+        "  SELECT session_id, SUM(cost_usd) AS cost_usd_total "
+        "  FROM ai_interaction_logs GROUP BY session_id"
+        ") "
         "SELECT COALESCE(t.slug, 'unknown') AS topic, "
         "  COALESCE(t.title, '{}'::jsonb) AS title, "
-        "  s.id AS session_id, s.status, s.escalated, s.message_count, s.created_at, "
+        "  s.id AS session_id, s.lang, s.status, s.escalated, s.message_count, "
+        "  s.created_at, s.updated_at, "
+        "  COALESCE(costs.cost_usd_total, 0) AS cost_usd_total, "
         "  (SELECT m.content FROM chat_messages m "
         "    WHERE m.session_id = s.id AND m.role = 'user' "
         "    ORDER BY m.id ASC LIMIT 1) AS first_message "
         "FROM chat_sessions s LEFT JOIN kb_topics t ON t.id = s.topic_id "
+        "LEFT JOIN costs ON costs.session_id = s.id "
         "WHERE s.message_count > 0 "
         "  AND (s.escalated OR s.status = 'open') "
         "  AND s.created_at >= $1 AND s.created_at < $2 "
@@ -1054,10 +1145,13 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
         g["count"] += 1
         g["sessions"].append({
             "session_id": str(r["session_id"]),
+            "lang": r["lang"],
             "status": r["status"],
             "escalated": r["escalated"],
             "message_count": r["message_count"],
             "first_message": r["first_message"],
+            "cost_usd_total": round(float(r["cost_usd_total"] or 0), 6),
             "created_at": r["created_at"].isoformat(),
+            "updated_at": r["updated_at"].isoformat(),
         })
     return sorted(groups.values(), key=lambda x: x["count"], reverse=True)
