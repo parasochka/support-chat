@@ -235,9 +235,6 @@ function renderApp() {
     nav.appendChild(b);
   }
   side.appendChild(nav);
-  const who = el("div", "npadmin-meta npadmin-whoami",
-    `${state.email || "owner"} · ${state.role || "—"}${canWrite() ? "" : " · read-only"}`);
-  side.appendChild(who);
   const out = el("button", "npadmin-btn ghost npadmin-logout", "Sign out");
   out.addEventListener("click", logout);
   side.appendChild(out);

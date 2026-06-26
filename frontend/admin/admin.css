@@ -31,7 +31,7 @@ a { color: var(--accent); }
 .npadmin-nav button.active { background: var(--panel2); color: var(--text);
   border-left: 3px solid var(--accent); }
 .npadmin-main { padding: 18px 22px; overflow-y: auto; overflow-x: hidden; max-width: 1180px; min-width: 0; }
-.npadmin-logout { margin: 14px 16px 0; }
+.npadmin-logout { margin: 14px 16px 0; margin-top: auto; }
 
 /* login */
 .npadmin-login { max-width: 340px; margin: 12vh auto; background: var(--panel);
@@ -176,7 +176,3 @@ label.npadmin-field span { display: block; color: var(--muted); margin-bottom: 4
   /* Prevent body-level horizontal scroll — table wrappers scroll instead. */
   html { overflow-x: hidden; }
 }
-
-/* Signed-in identity + role badge above the sign-out button. */
-.npadmin-whoami { padding: 6px 4px; margin-top: auto; opacity: .8;
-  word-break: break-word; }
