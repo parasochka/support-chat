@@ -581,6 +581,9 @@ def _forbidden_topics_directive() -> Optional[str]:
 _CLOSING_GOODBYE_DIRECTIVE = (
     "=== END OF CHAT ===\n"
     "The player has just confirmed the issue is solved and is finishing the chat. "
+    "Their last message is only the signal that they are leaving — do NOT read it as "
+    "a new request and do NOT ask what they mean by it, even if its wording seems "
+    "vague or open-ended. "
     "Reply with ONLY a brief, warm goodbye in Nika's voice (one or two short "
     "sentences) — thank them and wish them well. Do NOT ask any question, do NOT "
     "offer further help, do NOT propose any next step, and do NOT output [[SUGGEST]] "
