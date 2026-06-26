@@ -59,6 +59,10 @@ class TopicSelect(BaseModel):
 class MessageSend(BaseModel):
     session_id: str
     text: str
+    # Set by the widget when the player tapped the declarative "Issue solved."
+    # closing bubble: the turn is a farewell, so the model is asked for a pure
+    # goodbye with no follow-up that would reopen the conversation.
+    closing: bool = False
 
 
 class EscalateReq(BaseModel):
@@ -387,7 +391,7 @@ async def send_message(req: Request, body: MessageSend,
 
     # -> build prompt, call model, persist turn atomically, return
     log.info("chat_message_dispatching_generation session_id=%s", body.session_id)
-    result = await chat_service.handle_message(session, body.text)
+    result = await chat_service.handle_message(session, body.text, closing=body.closing)
     log.info(
         "chat_message_response_ready session_id=%s reply_chars=%s lang=%s escalation_active=%s message_count=%s",
         body.session_id, len(result.reply or ""), result.lang,
