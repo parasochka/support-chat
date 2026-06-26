@@ -412,7 +412,8 @@ async def update_user(email: str, body: UserUpdate,
         _validate_password(body.password)
         pw_hash = auth.hash_password(body.password)
     # Guard against self-lockout: an account cannot demote or deactivate itself
-    # in the same session (the owner password login is always a recovery path).
+    # in the same session. With no owner password recovery path, keep at least a
+    # second admin account so a forgotten password never locks everyone out.
     if admin.get("email") == target:
         if role is not None and role not in WRITE_ROLES:
             raise HTTPException(status_code=400, detail="You cannot remove your own admin role.")

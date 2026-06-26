@@ -150,11 +150,10 @@ SUPPORTED_LANGUAGES: list[str] = [
 ]
 
 # --- Admin dashboard (Phase 2) ----------------------------------------------
-# ADMIN_PASSWORD gates the dashboard: if unset, the dashboard/admin API is
-# disabled (login always 503). ADMIN_JWT_SECRET signs admin tokens; it falls
-# back to SESSION_JWT_SECRET only so dev runs work without extra config — set a
+# Admins sign in as named `admin_users` accounts (email + password); there is no
+# password-only owner login. ADMIN_JWT_SECRET signs admin tokens; it falls back
+# to SESSION_JWT_SECRET only so dev runs work without extra config — set a
 # distinct secret in production.
-ADMIN_PASSWORD: str | None = _env_opt("ADMIN_PASSWORD")
 ADMIN_JWT_SECRET: str = _env_opt("ADMIN_JWT_SECRET") or SESSION_JWT_SECRET
 # True when ADMIN_JWT_SECRET is not set on its own and silently reuses
 # SESSION_JWT_SECRET — fine for dev, flagged at startup in production.

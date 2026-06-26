@@ -1,11 +1,12 @@
-"""Admin authentication — single-owner password login + JWT guard (Phase 2).
+"""Admin authentication — named-user email+password login + JWT guard (Phase 2).
 
-Single owner for now, but the token carries a `role` claim so multi-admin can be
-added later without reshaping it (§16 decision: single owner, future-proofed).
+Every admin signs in as a named `admin_users` account (email + password); the
+token carries a `role` claim that drives authorization. The legacy password-only
+owner login (`ADMIN_PASSWORD`) was removed — there is no super-admin login any
+more, only named accounts created from the Users tab.
 """
 from __future__ import annotations
 
-import hmac
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -21,11 +22,10 @@ from api.client_ip import client_ip
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 # Roles allowed to MUTATE state. Everyone authenticated may read; only these may
-# write (KB, settings, variables, test profile, user management). "owner" is the
-# password-only super-admin; "admin" is a named user with the same write rights;
-# "manager" is read-only (support staff who triage sessions but touch nothing
-# technical).
-WRITE_ROLES = ("owner", "admin")
+# write (KB, settings, variables, test profile, user management). "admin" is a
+# named user with full write rights; "manager" is read-only (support staff who
+# triage sessions but touch nothing technical).
+WRITE_ROLES = ("admin",)
 
 
 class AdminLogin(BaseModel):
@@ -39,8 +39,6 @@ def _client_ip(request: Request) -> str:
 
 async def require_admin(authorization: Optional[str] = Header(default=None)) -> dict:
     """FastAPI dependency: verify the admin JWT or raise 401. Guards /admin/* data."""
-    if not config.ADMIN_PASSWORD:
-        raise HTTPException(status_code=503, detail="Admin dashboard is disabled.")
     try:
         token = auth.extract_bearer(authorization)
         return auth.verify_admin_token(token)
@@ -63,10 +61,6 @@ async def require_admin_write(admin: dict = Depends(require_admin)) -> dict:
 
 @router.post("/login")
 async def login(req: Request, body: AdminLogin) -> JSONResponse:
-    if not config.ADMIN_PASSWORD:
-        return JSONResponse(status_code=503,
-                            content={"error": "disabled",
-                                     "detail": "Admin dashboard is disabled."})
     ip = _client_ip(req)
     # Reuse the Phase 1 sliding-window to throttle brute force on a dedicated key.
     try:
@@ -78,36 +72,27 @@ async def login(req: Request, body: AdminLogin) -> JSONResponse:
                             content={"error": exc.code, "detail": exc.detail})
 
     email = (body.email or "").strip().lower()
-    if email:
-        # Named user login: email + password verified against the salted PBKDF2
-        # hash. A missing/disabled user and a bad password are indistinguishable
-        # to the client (no account enumeration).
-        user = await db.get_admin_user(email)
-        ok = bool(user) and user.get("active", False) \
-            and auth.verify_password(body.password, user["password_hash"])
-        if not ok:
-            await db.log_admin_event(None, "admin_login_failed",
-                                     {"ip": ip, "reason": "bad_user_credentials",
-                                      "email": email})
-            return JSONResponse(status_code=401,
-                                content={"error": "unauthorized",
-                                         "detail": "Invalid email or password."})
-        role = user["role"]
-        token = auth.issue_admin_token(role=role, email=email)
-        return JSONResponse(status_code=200,
-                            content={"token": token,
-                                     "ttl_min": config.ADMIN_TOKEN_TTL_MIN,
-                                     "role": role, "email": email})
+    if not email:
+        return JSONResponse(status_code=400,
+                            content={"error": "bad_request",
+                                     "detail": "Email and password are required."})
 
-    if not hmac.compare_digest(body.password, config.ADMIN_PASSWORD):
+    # Named user login: email + password verified against the salted PBKDF2
+    # hash. A missing/disabled user and a bad password are indistinguishable to
+    # the client (no account enumeration).
+    user = await db.get_admin_user(email)
+    ok = bool(user) and user.get("active", False) \
+        and auth.verify_password(body.password, user["password_hash"])
+    if not ok:
         await db.log_admin_event(None, "admin_login_failed",
-                                 {"ip": ip, "reason": "bad_password"})
+                                 {"ip": ip, "reason": "bad_user_credentials",
+                                  "email": email})
         return JSONResponse(status_code=401,
                             content={"error": "unauthorized",
-                                     "detail": "Invalid password."})
-
-    token = auth.issue_admin_token(role="owner")
+                                     "detail": "Invalid email or password."})
+    role = user["role"]
+    token = auth.issue_admin_token(role=role, email=email)
     return JSONResponse(status_code=200,
                         content={"token": token,
                                  "ttl_min": config.ADMIN_TOKEN_TTL_MIN,
-                                 "role": "owner"})
+                                 "role": role, "email": email})
