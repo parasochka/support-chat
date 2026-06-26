@@ -911,6 +911,7 @@ async def by_language(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
 async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None,
                         lang: Optional[str] = None, status: Optional[str] = None,
                         escalated: Optional[bool] = None, q: Optional[str] = None,
+                        min_messages: Optional[int] = None,
                         page: int = 1, page_size: int = 25) -> dict[str, Any]:
     where = ["s.created_at >= $1", "s.created_at < $2"]
     args: list[Any] = [dt_from, dt_to]
@@ -928,6 +929,8 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
             f"EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id = s.id "
             f"AND m.content ILIKE ${len(args)})"
         )
+    if min_messages is not None:
+        args.append(min_messages); where.append(f"s.message_count >= ${len(args)}")
     where_sql = " AND ".join(where)
     total = await _pool.fetchval(
         f"SELECT COUNT(*) FROM chat_sessions s "
