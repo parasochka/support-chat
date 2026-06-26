@@ -614,7 +614,11 @@ async function viewUnresolved(main) {
     holder.innerHTML = "";
     for (const g of data.groups) {
       holder.appendChild(el("h3", null, `${g.topic} (${g.count})`));
+      // Fixed column layout so every topic block lines up identically — without
+      // it each table auto-sizes to its own longest first message and the
+      // Status/Msgs/Session columns jump left/right between blocks.
       const t = table(["First message", "Status", "Msgs", "Session"]);
+      t.classList.add("fixed");
       for (const s of g.sessions) {
         const tr = addRow(t, [s.first_message || "—", s.escalated ? "escalated" : s.status, s.message_count, s.session_id.slice(0, 8)]);
         tr.classList.add("click");

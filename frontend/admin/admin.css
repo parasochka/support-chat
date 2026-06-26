@@ -81,6 +81,15 @@ table.npadmin-table { width: 100%; border-collapse: collapse; }
   text-transform: uppercase; letter-spacing: .04em; }
 .npadmin-table tr.click { cursor: pointer; }
 .npadmin-table tr.click:hover { background: var(--panel2); }
+/* Fixed-layout table: identical column geometry regardless of cell content, so
+   stacked tables (the Unresolved topic blocks) align perfectly with each other.
+   `min-width` keeps the columns readable on mobile — the scroll wrapper takes
+   over below that width. */
+.npadmin-table.fixed { table-layout: fixed; min-width: 560px; }
+.npadmin-table.fixed td:nth-child(1) { overflow-wrap: anywhere; }
+.npadmin-table.fixed th:nth-child(2), .npadmin-table.fixed td:nth-child(2) { width: 130px; }
+.npadmin-table.fixed th:nth-child(3), .npadmin-table.fixed td:nth-child(3) { width: 80px; }
+.npadmin-table.fixed th:nth-child(4), .npadmin-table.fixed td:nth-child(4) { width: 130px; }
 .npadmin-pill { padding: 2px 8px; border-radius: 999px; font-size: 12px; }
 .npadmin-pill.escalated { background: rgba(224,89,107,.18); color: var(--bad); }
 .npadmin-pill.open { background: rgba(54,192,138,.16); color: var(--good); }
