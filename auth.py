@@ -109,14 +109,14 @@ def _sign_with(secret: str, signing_input: bytes) -> bytes:
     return hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
 
 
-def issue_admin_token(role: str = "owner",
+def issue_admin_token(role: str = "admin",
                       ttl_min: Optional[int] = None,
                       email: Optional[str] = None) -> str:
     """Mint an admin JWT signed with ADMIN_JWT_SECRET (distinct from sessions).
 
-    `role` drives authorization (owner/admin may write; manager is read-only).
-    `email` identifies a named user (the password-only owner login has none) and
-    rides in the token so the audit trail (`updated_by`) records who acted.
+    `role` drives authorization (admin may write; manager is read-only).
+    `email` identifies the named user and rides in the token so the audit trail
+    (`updated_by`) records who acted.
     """
     ttl = config.ADMIN_TOKEN_TTL_MIN if ttl_min is None else ttl_min
     now = int(time.time())
@@ -215,8 +215,7 @@ def verify_handshake(blob: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Password hashing for named admin users (PBKDF2-HMAC-SHA256, stdlib only)
 #
-# The password-only owner login (config.ADMIN_PASSWORD) is unchanged. Named
-# users (created by an owner/admin from the Users tab) authenticate with an
+# Named admin/manager users (created from the Users tab) authenticate with an
 # email + password pair; their password is stored only as a salted PBKDF2 hash,
 # never in plaintext. Format mirrors Django's: "pbkdf2_sha256$iters$salt$hash"
 # (salt + hash base64url, no padding). Verification is constant-time.

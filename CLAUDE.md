@@ -492,26 +492,29 @@ localizes to the player's language. Lives in Layer 3 only, so `SYSTEM_CORE` stay
 
 Map of what lives where:
 
-- **Admin auth + roles** (`api/admin_auth.py`, `auth.py`): `POST /admin/login` takes an
-  **optional `email`**. No email ⇒ the legacy **owner** login (constant-time password compare
-  against `ADMIN_PASSWORD`) → role `owner`. With an email ⇒ a **named-user** login: the password
-  is checked against the salted **PBKDF2-HMAC-SHA256** hash in `admin_users`
-  (`auth.hash_password`/`verify_password`, stdlib only) → the user's stored role. Both paths are
-  rate-limited and log `admin_login_failed`; the named path is non-enumerating. The token is
-  signed with `ADMIN_JWT_SECRET` and carries `role` (+ `email` for named users). **`ADMIN_JWT_SECRET`
-  now signs named-user sessions too — set a distinct strong value in prod** (it falls back to
-  `SESSION_JWT_SECRET`, flagged at startup). **Three roles:** `owner` and `admin` may write;
-  `manager` is **read-only**. `require_admin` guards every `/admin/*` route (any valid token);
-  **`require_admin_write`** (role in `WRITE_ROLES = owner/admin`, else **403**) guards every
-  mutating route (KB, settings, variables, test profile, user management). `GET /admin/me` returns
-  the caller's role/email so the SPA can role-gate its UI (managers lose the Settings / Users /
-  Test-sandbox tabs and all edit controls — cosmetic; the server is authoritative).
-- **User management** (`api/admin.py` `/admin/users*`, the **Users** tab, owner/admin only):
+- **Admin auth + roles** (`api/admin_auth.py`, `auth.py`): `POST /admin/login` **requires `email`
+  + password** — every admin signs in as a named `admin_users` account. The password is checked
+  against the salted **PBKDF2-HMAC-SHA256** hash in `admin_users`
+  (`auth.hash_password`/`verify_password`, stdlib only) → the user's stored role; a missing email
+  is a 400, bad credentials a non-enumerating 401. Login is rate-limited and logs
+  `admin_login_failed`. The token is signed with `ADMIN_JWT_SECRET` and carries `role` + `email`.
+  **`ADMIN_JWT_SECRET` signs admin sessions — set a distinct strong value in prod** (it falls back
+  to `SESSION_JWT_SECRET`, flagged at startup). **There is no password-only owner login and no
+  `ADMIN_PASSWORD` env var** (both removed); the legacy `owner` role is gone. **Two roles:**
+  `admin` may write; `manager` is **read-only**. The dashboard is no longer gated by an env switch
+  — it is always mounted and protected by named-user login (an empty `admin_users` means nobody can
+  log in, so there is **no bootstrap path** — seed the first account against a live DB).
+  `require_admin` guards every `/admin/*` route (any valid token); **`require_admin_write`** (role
+  in `WRITE_ROLES = ("admin",)`, else **403**) guards every mutating route (KB, settings, variables,
+  test profile, user management). `GET /admin/me` returns the caller's role/email so the SPA can
+  role-gate its UI (managers lose the Settings / Users / Test-sandbox tabs and all edit controls —
+  cosmetic; the server is authoritative).
+- **User management** (`api/admin.py` `/admin/users*`, the **Users** tab, admins only):
   minimal CRUD over `admin_users` (email + password + role `admin`/`manager`). No email delivery,
-  no reset flows — the owner/admin sets passwords directly. A user can't demote/deactivate/delete
-  **itself** (self-lockout guard; the password-only owner login is always a recovery path). The
-  password hash never leaves `db.py` (`_row_to_admin_user` drops it). The owner login is unchanged;
-  an owner can add named accounts (incl. an `admin` account bound to their own email) from this tab.
+  no reset flows — an admin sets passwords directly. A user can't demote/deactivate/delete
+  **itself** (self-lockout guard). With no owner recovery path, **keep at least two `admin`
+  accounts** so a forgotten password can't lock everyone out. The password hash never leaves
+  `db.py` (`_row_to_admin_user` drops it).
 - **Settings** (`settings.py`, `app_settings` table): hot-reloaded runtime tuning with
   precedence `app_settings` (DB) → env → default. A sync in-process cache (populated at
   startup, reloaded on write) is read by `antispam`/`escalation`/`openai_client`/`language`/
@@ -532,7 +535,7 @@ Map of what lives where:
   `body_max_bytes`). **The prompt is NOT a settings group** — it lives in `prompts.py` (the
   single source of truth), not `app_settings`. The goal is that every non-secret *operational*
   knob lives in the admin panel and only true secrets (API keys, JWT secrets, `DATABASE_URL`,
-  `ADMIN_PASSWORD`, handshake/reCaptcha secrets) — plus the network-perimeter deploy
+  handshake/reCaptcha secrets) — plus the network-perimeter deploy
   vars (`CORS_ALLOW_ORIGINS`, `TRUSTED_PROXY_COUNT`) — stay in Railway env. There is no seed:
   an empty `app_settings` resolves through env → default, and the owner's first write to a
   group persists that override in the DB.
@@ -597,7 +600,8 @@ Map of what lives where:
   build step, no CDN): served at `/admin`, assets under `/admin-static`.
 
 §16 decisions: unresolved analysis = topic-grouped (no embeddings); contact form =
-host-site button only; admin auth = single owner (token shaped for future multi-admin).
+host-site button only; admin auth = named `admin_users` accounts only (email + password,
+role-driven; no password-only owner login).
 
 ## Conventions
 

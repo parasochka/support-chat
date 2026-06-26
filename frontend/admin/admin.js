@@ -36,7 +36,7 @@ const VIEWS = [
   ["settings", "Settings", true], ["users", "Users", true], ["test", "Test sandbox", true],
 ];
 const _VALID_VIEWS = VIEWS.map(([id]) => id);
-const WRITE_ROLES = ["owner", "admin"];
+const WRITE_ROLES = ["admin"];
 
 // Decode role/email out of the admin JWT payload (no verification — the server
 // is authoritative; this only drives which tabs/controls the SPA shows).
@@ -69,7 +69,7 @@ const state = {
   defaultLang: "ru",
 };
 
-// Write permission for the current role. Managers are read-only; owner/admin write.
+// Write permission for the current role. Managers are read-only; admins write.
 function canWrite() { return WRITE_ROLES.includes(state.role); }
 // The tabs this role may see (managers lose the adminOnly technical tabs).
 function allowedViews() {
@@ -146,10 +146,9 @@ function renderLogin() {
   root.innerHTML = "";
   const box = el("div", "npadmin-login");
   box.appendChild(el("h1", null, "NowPlix Support — Admin"));
-  // Email is optional: leave it blank for the password-only owner login; fill it
-  // to sign in as a named admin/manager account.
+  // Email is required: every admin signs in as a named admin/manager account.
   const emailInp = el("input", "npadmin-input");
-  emailInp.type = "email"; emailInp.placeholder = "Email (optional — leave blank for owner)";
+  emailInp.type = "email"; emailInp.placeholder = "Email"; emailInp.required = true;
   emailInp.autocomplete = "username";
   const inp = el("input", "npadmin-input");
   inp.type = "password"; inp.placeholder = "Password";
@@ -159,10 +158,13 @@ function renderLogin() {
   const err = el("div", "npadmin-err");
   async function doLogin() {
     err.textContent = "";
+    const email = emailInp.value.trim();
+    if (!email) { err.textContent = "Email is required"; emailInp.focus(); return; }
+    if (!inp.value) { err.textContent = "Password is required"; inp.focus(); return; }
     try {
       const res = await fetch("/admin/login", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: emailInp.value.trim(), password: inp.value }),
+        body: JSON.stringify({ email, password: inp.value }),
       });
       const data = await res.json();
       if (!res.ok) { err.textContent = data.detail || "Login failed"; return; }
@@ -1157,19 +1159,21 @@ function generalSettingsBox(holder, current) {
 }
 
 // ---------------------------------------------------------------------------
-// Users — named admin/manager accounts (owner/admin only)
+// Users — named admin/manager accounts (admins only)
 //
-// The password-only owner login stays as-is. Here an owner/admin creates extra
-// accounts with an email + password and a role: admin (full write) or manager
-// (read-only support access — sessions/unresolved/KB/variables/prompt, no edits).
+// Every admin signs in here; there is no password-only owner login. An admin
+// creates accounts with an email + password and a role: admin (full write) or
+// manager (read-only support access — sessions/unresolved/KB/variables/prompt,
+// no edits).
 // ---------------------------------------------------------------------------
 async function viewUsers(main) {
   main.appendChild(el("h1", "npadmin-h", "Users"));
   main.appendChild(el("div", "npadmin-help",
     "Named login accounts (email + password). Roles: admin can edit everything; "
     + "manager is read-only support access (view sessions, unresolved, knowledge "
-    + "base, variables and the prompt — no edits, no technical settings). The "
-    + "password-only owner login is unchanged. No emails are sent — you manage "
+    + "base, variables and the prompt — no edits, no technical settings). Keep at "
+    + "least two admin accounts — there is no password recovery, so a forgotten "
+    + "password could otherwise lock everyone out. No emails are sent — you manage "
     + "passwords here."));
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
@@ -1214,7 +1218,7 @@ async function viewUsers(main) {
     listBox.appendChild(el("div", "npadmin-meta", "Existing users"));
     if (!(data.users || []).length) {
       listBox.appendChild(el("div", "npadmin-meta",
-        "No named users yet — the owner password login is the only account."));
+        "No users yet."));
     }
     const t = table(["Email", "Role", "Active", "Created", "Actions"]);
     for (const u of (data.users || [])) {

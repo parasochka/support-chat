@@ -139,11 +139,11 @@ CREATE TABLE IF NOT EXISTS rate_limit_hits (
   ts          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Named admin/manager users (email + password pair). The password-only owner
--- login (config.ADMIN_PASSWORD) is separate and always available; these are the
--- extra accounts an owner/admin creates from the Users tab. role drives
--- authorization: owner/admin may write, manager is read-only. The password is
--- stored only as a salted PBKDF2 hash (auth.hash_password), never in plaintext.
+-- Named admin/manager users (email + password pair). These are the accounts
+-- admins create from the Users tab; every admin login goes through this table
+-- (there is no password-only owner login). role drives authorization: admin may
+-- write, manager is read-only. The password is stored only as a salted PBKDF2
+-- hash (auth.hash_password), never in plaintext.
 CREATE TABLE IF NOT EXISTS admin_users (
   email         TEXT PRIMARY KEY,
   password_hash TEXT NOT NULL,

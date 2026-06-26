@@ -1,7 +1,8 @@
-"""Admin auth: login issues a token, bad password is logged + rate-limited,
-require_admin blocks unauthenticated calls."""
+"""Admin auth: named-user login issues a token, bad credentials are logged +
+rate-limited, require_admin blocks unauthenticated calls."""
 from __future__ import annotations
 
+import json
 import types
 
 import pytest
@@ -16,14 +17,28 @@ from api import admin_auth
 
 @pytest.fixture(autouse=True)
 def _setup(monkeypatch):
-    monkeypatch.setattr(config, "ADMIN_PASSWORD", "s3cret")
     antispam.reset_state()
     logged = []
 
     async def _log(sid, type_, payload=None):
         logged.append((type_, payload))
 
+    # A single named admin account ("a@example.com" / "s3cret-pw") stands in for
+    # the DB; everyone else is unknown.
+    users = {
+        "a@example.com": {
+            "email": "a@example.com",
+            "password_hash": auth.hash_password("s3cret-pw"),
+            "role": "admin",
+            "active": True,
+        }
+    }
+
+    async def _get_user(email):
+        return users.get(email)
+
     monkeypatch.setattr(db, "log_admin_event", _log)
+    monkeypatch.setattr(db, "get_admin_user", _get_user)
     return logged
 
 
@@ -35,25 +50,40 @@ def _req(ip="9.9.9.9"):
 
 
 async def test_login_success_issues_admin_token():
-    resp = await admin_auth.login(_req(), admin_auth.AdminLogin(password="s3cret"))
+    resp = await admin_auth.login(
+        _req(), admin_auth.AdminLogin(email="a@example.com", password="s3cret-pw"))
     assert resp.status_code == 200
-    import json
-    token = json.loads(resp.body)["token"]
-    payload = auth.verify_admin_token(token)
-    assert payload["role"] == "owner"
+    body = json.loads(resp.body)
+    payload = auth.verify_admin_token(body["token"])
+    assert payload["role"] == "admin"
+    assert payload["email"] == "a@example.com"
+
+
+async def test_missing_email_rejected():
+    resp = await admin_auth.login(_req(), admin_auth.AdminLogin(password="s3cret-pw"))
+    assert resp.status_code == 400
 
 
 async def test_bad_password_logged_and_rejected(_setup):
-    resp = await admin_auth.login(_req(), admin_auth.AdminLogin(password="nope"))
+    resp = await admin_auth.login(
+        _req(), admin_auth.AdminLogin(email="a@example.com", password="nope"))
     assert resp.status_code == 401
     assert any(t == "admin_login_failed" for t, _ in _setup)
+
+
+async def test_unknown_user_rejected():
+    resp = await admin_auth.login(
+        _req(), admin_auth.AdminLogin(email="ghost@example.com", password="whatever"))
+    assert resp.status_code == 401
 
 
 async def test_login_rate_limited(monkeypatch, _setup):
     monkeypatch.setattr(config, "RATE_LIMIT_MAX_PER_IP", 3)
     for _ in range(3):
-        await admin_auth.login(_req("5.5.5.5"), admin_auth.AdminLogin(password="x"))
-    resp = await admin_auth.login(_req("5.5.5.5"), admin_auth.AdminLogin(password="x"))
+        await admin_auth.login(
+            _req("5.5.5.5"), admin_auth.AdminLogin(email="a@example.com", password="x"))
+    resp = await admin_auth.login(
+        _req("5.5.5.5"), admin_auth.AdminLogin(email="a@example.com", password="x"))
     assert resp.status_code == 429
 
 
@@ -63,14 +93,7 @@ async def test_require_admin_blocks_unauthenticated():
     assert exc.value.status_code == 401
 
 
-async def test_require_admin_disabled_when_no_password(monkeypatch):
-    monkeypatch.setattr(config, "ADMIN_PASSWORD", None)
-    with pytest.raises(HTTPException) as exc:
-        await admin_auth.require_admin(authorization="Bearer whatever")
-    assert exc.value.status_code == 503
-
-
 async def test_require_admin_accepts_valid_token():
-    token = auth.issue_admin_token(role="owner")
+    token = auth.issue_admin_token(role="admin", email="a@example.com")
     payload = await admin_auth.require_admin(authorization=f"Bearer {token}")
-    assert payload["role"] == "owner"
+    assert payload["role"] == "admin"

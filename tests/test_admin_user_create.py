@@ -46,7 +46,7 @@ def _stub_db(monkeypatch):
 
 async def test_create_user_hashes_password(monkeypatch):
     created = _stub_db(monkeypatch)
-    admin = {"role": "owner", "email": None}
+    admin = {"role": "admin", "email": "boss@nowplix.com"}
     res = await admin_api.create_user(
         UserCreate(email="artem@nowplix.com", password="G#EwiXCcvgo4", role="admin"),
         admin=admin)
@@ -59,7 +59,7 @@ async def test_create_user_hashes_password(monkeypatch):
 
 async def test_update_user_password_hashes(monkeypatch):
     created = _stub_db(monkeypatch)
-    admin = {"role": "owner", "email": None}
+    admin = {"role": "admin", "email": "boss@nowplix.com"}
     await admin_api.create_user(
         UserCreate(email="a@b.com", password="initialpw1", role="manager"),
         admin=admin)
