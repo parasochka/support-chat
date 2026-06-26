@@ -318,10 +318,10 @@ async function selectTopic(slug) {
   state.topicChosen = true;
 }
 
-async function sendMessage(text) {
+async function sendMessage(text, closing = false) {
   const { ok, data, status } = await api("/api/chat/message", {
     auth: true,
-    body: { session_id: state.sessionId, text },
+    body: { session_id: state.sessionId, text, closing },
   });
   if (!ok) {
     // The session was already closed (resolved) or handed off (escalated): the
@@ -875,7 +875,9 @@ async function finishWithClosing(text) {
   const typing = addTyping();
   let data;
   try {
-    data = await sendMessage(text);
+    // closing=true: the player is ending the chat, so the backend prompts Nika
+    // for a pure goodbye (no follow-up that would reopen the conversation).
+    data = await sendMessage(text, true);
   } catch (e) {
     fillTyping(typing, t("sendError"), true);
     return;

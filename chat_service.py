@@ -51,7 +51,9 @@ async def _on_failover(session_id: Optional[str], reason: str) -> None:
     await db.log_admin_event(session_id, "key_failover", {"reason": reason})
 
 
-async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
+async def handle_message(
+    session: dict[str, Any], user_text: str, closing: bool = False
+) -> ChatReply:
     """Process one user turn for an already-validated session.
 
     The caller (api/chat.py) has already enforced token/rate/cooldown/length
@@ -126,6 +128,9 @@ async def handle_message(session: dict[str, Any], user_text: str) -> ChatReply:
         resolved_lang=resolved,
         available_topics=suggestable,
         current_topic=current_topic,
+        # The player tapped the "Issue solved." closing bubble: this turn is a
+        # farewell, so the prompt asks for a pure goodbye with no continuation.
+        closing=closing,
     )
     log.info(
         "chat_prompt_built session_id=%s topic_slug=%s history_turns=%s kb_chars=%s messages=%s",

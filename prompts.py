@@ -379,7 +379,12 @@ _SUGGESTIONS_DIRECTIVE = (
     "question 2 | question 3]] — up to 3 short options FROM THE PLAYER'S point of "
     "view (first person), separated by '|': up to two guiding questions plus one "
     "closing option. The first two must be guiding/clarifying questions whose answers "
-    "ARE in the knowledge base (pick the next logical ones). The third option must "
+    "ARE in the CURRENT topic's knowledge base and that open a DIFFERENT, adjacent need "
+    "WITHIN that same knowledge base — never re-ask about something you already "
+    "explained in this reply. They must take the player to another point of the current "
+    "topic (a related but distinct question answerable from THIS knowledge base), not "
+    "keep exploring the same point you just covered, and NEVER toward a question that "
+    "belongs to a different topic / knowledge base. The third option must "
     "ALWAYS be a closing/resolution option that hints the issue is solved and the "
     "player is ready to finish the chat (for example \"Issue solved.\" or the same "
     "idea in the reply language); it must end with a period, not a question mark, "
@@ -567,12 +572,29 @@ def _forbidden_topics_directive() -> Optional[str]:
     return line
 
 
+# Closing-turn directive (Layer 3, per-request). The player tapped the declarative
+# "Issue solved." bubble to END the chat, so this turn is a farewell, not a question:
+# anything that invites continuing the dialog (a follow-up question, an offer of more
+# help, a "shall I prepare…?") drags the player back in after they chose to leave.
+# When this flag is set, the model must reply with ONLY a brief warm goodbye and stop.
+_CLOSING_GOODBYE_DIRECTIVE = (
+    "=== END OF CHAT ===\n"
+    "The player has just confirmed the issue is solved and is finishing the chat. "
+    "Reply with ONLY a brief, warm goodbye in Nika's voice (one or two short "
+    "sentences) — thank them and wish them well. Do NOT ask any question, do NOT "
+    "offer further help, do NOT propose any next step, and do NOT output [[SUGGEST]] "
+    "or any guiding questions; this conversation is over. End with [[RESOLVED]] on its "
+    "own line."
+)
+
+
 def build_dynamic_prompt(
     user_context: dict[str, Any],
     resolved_lang: str,
     user_text: str,
     available_topics: Optional[list[dict[str, Any]]] = None,
     current_topic: Optional[dict[str, Any]] = None,
+    closing: bool = False,
 ) -> str:
     """Assemble the Layer-3 block placed in the final user message.
 
@@ -611,6 +633,10 @@ def build_dynamic_prompt(
     forbidden = _forbidden_topics_directive()
     if forbidden:
         parts += ["", forbidden]
+    # Kept LAST (highest-priority, closest to the input) when the player is ending
+    # the chat: a pure goodbye, no continuation.
+    if closing:
+        parts += ["", _CLOSING_GOODBYE_DIRECTIVE]
     return "\n".join(parts)
 
 
@@ -623,6 +649,7 @@ def build_messages(
     history_window: int = 10,
     available_topics: Optional[list[dict[str, Any]]] = None,
     current_topic: Optional[dict[str, Any]] = None,
+    closing: bool = False,
 ) -> list[dict[str, str]]:
     """Return the OpenAI `messages` array.
 
@@ -650,6 +677,7 @@ def build_messages(
                 user_text=user_text,
                 available_topics=available_topics,
                 current_topic=current_topic,
+                closing=closing,
             ),
         }
     )
