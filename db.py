@@ -197,6 +197,17 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         # a no-op once they're gone.
         "ALTER TABLE chat_sessions DROP COLUMN IF EXISTS prompt_version_id",
         "DROP TABLE IF EXISTS prompt_versions",
+        # Named-login accounts (Users tab). The table shipped after the initial
+        # baseline, so a database created by an earlier deploy may have an older
+        # admin_users (or none of these columns). CREATE TABLE IF NOT EXISTS never
+        # alters an existing table, so the create-user path (which RETURNs these
+        # columns) 500s with UndefinedColumnError until they are backfilled here.
+        "ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS "
+        "active BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS "
+        "created_at TIMESTAMPTZ NOT NULL DEFAULT now()",
+        "ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS "
+        "updated_at TIMESTAMPTZ NOT NULL DEFAULT now()",
     ]
     for stmt in alters:
         await conn.execute(stmt)
