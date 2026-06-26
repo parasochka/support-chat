@@ -140,6 +140,9 @@ def language() -> dict[str, Any]:
     return {
         "default": db_v.get("default", config.DEFAULT_LANGUAGE),
         "supported": db_v.get("supported", list(config.SUPPORTED_LANGUAGES)),
+        # Custom display names for languages added from the admin panel beyond the
+        # built-in `language.LANG_NAMES` set (code -> name). Empty by default.
+        "names": db_v.get("names", {}),
     }
 
 
@@ -274,9 +277,26 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_str_list(value, "high_risk_keywords")
         _require_str_list(value, "human_request_keywords")
     elif key == "language":
+        import language as _language  # lazy: avoid import cycle at module load
         if "default" in value and not isinstance(value["default"], str):
             raise ValueError("default must be a string")
         _require_str_list(value, "supported")
+        # Every supported code must be a real ISO 639-1 code (built-in, in the ISO
+        # catalogue, or carrying a custom name in this same write) — so languages
+        # are always added with a correct code, never free-typed junk.
+        names = value.get("names", {})
+        if "names" in value:
+            if not isinstance(names, dict) or not all(
+                    isinstance(k, str) and isinstance(v, str)
+                    for k, v in names.items()):
+                raise ValueError("names must be a map of language code -> name")
+            for code in names:
+                if code.strip().lower() not in _language.ISO_639_1:
+                    raise ValueError(f"{code!r} is not a valid ISO 639-1 language code")
+        known = set(_language.ISO_639_1) | {k.strip().lower() for k in names}
+        for code in value.get("supported", []):
+            if code.strip().lower() not in known:
+                raise ValueError(f"{code!r} is not a valid ISO 639-1 language code")
     return value
 
 

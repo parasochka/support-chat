@@ -176,3 +176,7 @@ label.npadmin-field span { display: block; color: var(--muted); margin-bottom: 4
   /* Prevent body-level horizontal scroll — table wrappers scroll instead. */
   html { overflow-x: hidden; }
 }
+
+/* Signed-in identity + role badge above the sign-out button. */
+.npadmin-whoami { padding: 6px 4px; margin-top: auto; opacity: .8;
+  word-break: break-word; }

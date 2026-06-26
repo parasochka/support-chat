@@ -149,9 +149,6 @@ SUPPORTED_LANGUAGES: list[str] = [
     if code.strip()
 ]
 
-# --- Owner / debug ----------------------------------------------------------
-OWNER_TOKEN: str | None = _env_opt("OWNER_TOKEN")
-
 # --- Admin dashboard (Phase 2) ----------------------------------------------
 # ADMIN_PASSWORD gates the dashboard: if unset, the dashboard/admin API is
 # disabled (login always 503). ADMIN_JWT_SECRET signs admin tokens; it falls

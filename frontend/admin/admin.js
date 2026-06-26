@@ -26,24 +26,55 @@ function isoDaysAgo(n) {
   return d.toISOString().slice(0, 10);
 }
 
-// Sidebar tabs (id + label). `_VALID_VIEWS` is derived from this so the two
-// can never drift apart when a tab is added/removed.
+// Sidebar tabs (id + label, optional adminOnly flag). `_VALID_VIEWS` is derived
+// from this so the two can never drift apart when a tab is added/removed.
+// adminOnly views (the technical/management tabs) are hidden from managers, who
+// get a read-only support view; the server enforces this regardless of the UI.
 const VIEWS = [
   ["overview", "Overview"], ["sessions", "Sessions"], ["unresolved", "Unresolved"],
-  ["kb", "Knowledge base"], ["variables", "Variables"], ["prompt", "Prompt"], ["settings", "Settings"],
-  ["test", "Test sandbox"],
+  ["kb", "Knowledge base"], ["variables", "Variables"], ["prompt", "Prompt"],
+  ["settings", "Settings", true], ["users", "Users", true], ["test", "Test sandbox", true],
 ];
 const _VALID_VIEWS = VIEWS.map(([id]) => id);
+const WRITE_ROLES = ["owner", "admin"];
+
+// Decode role/email out of the admin JWT payload (no verification — the server
+// is authoritative; this only drives which tabs/controls the SPA shows).
+function decodeToken(token) {
+  try {
+    let b = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    b += "=".repeat((4 - (b.length % 4)) % 4);
+    const p = JSON.parse(atob(b));
+    return { role: p.role || null, email: p.email || null };
+  } catch (_) { return { role: null, email: null }; }
+}
+
+const _boot = state_token_decode();
+function state_token_decode() {
+  const token = sessionStorage.getItem(TOKEN_KEY) || null;
+  return { token, ...(token ? decodeToken(token) : { role: null, email: null }) };
+}
 
 const state = {
-  token: sessionStorage.getItem(TOKEN_KEY) || null,
+  token: _boot.token,
+  role: _boot.role,
+  email: _boot.email,
   view: (() => { const { view } = parseHash(); return _VALID_VIEWS.includes(view) ? view : "overview"; })(),
   from: isoDaysAgo(30),
   to: isoToday(),
   // Supported languages (loaded once from /admin/meta) for the dropdowns.
   languages: null,
+  supported: null,
+  isoCatalog: null,
   defaultLang: "ru",
 };
+
+// Write permission for the current role. Managers are read-only; owner/admin write.
+function canWrite() { return WRITE_ROLES.includes(state.role); }
+// The tabs this role may see (managers lose the adminOnly technical tabs).
+function allowedViews() {
+  return VIEWS.filter(([, , adminOnly]) => !adminOnly || canWrite());
+}
 
 // ---------------------------------------------------------------------------
 // API
@@ -72,6 +103,8 @@ async function ensureMeta() {
   try {
     const m = await api("/meta");
     state.languages = m.languages || [];
+    state.supported = m.supported || (m.languages || []).map((l) => l.code);
+    state.isoCatalog = m.iso_catalog || [];
     if (m.default_language) state.defaultLang = m.default_language;
   } catch (_) {
     state.languages = [
@@ -79,6 +112,8 @@ async function ensureMeta() {
       { code: "ru", name: "Russian" }, { code: "tr", name: "Turkish" },
       { code: "pt", name: "Portuguese" },
     ];
+    state.supported = state.languages.map((l) => l.code);
+    state.isoCatalog = [];
   }
 }
 
@@ -101,7 +136,7 @@ function langSelect(selected) {
 // auth
 // ---------------------------------------------------------------------------
 function logout() {
-  state.token = null;
+  state.token = null; state.role = null; state.email = null;
   sessionStorage.removeItem(TOKEN_KEY);
   renderLogin();
 }
@@ -111,8 +146,14 @@ function renderLogin() {
   root.innerHTML = "";
   const box = el("div", "npadmin-login");
   box.appendChild(el("h1", null, "NowPlix Support — Admin"));
+  // Email is optional: leave it blank for the password-only owner login; fill it
+  // to sign in as a named admin/manager account.
+  const emailInp = el("input", "npadmin-input");
+  emailInp.type = "email"; emailInp.placeholder = "Email (optional — leave blank for owner)";
+  emailInp.autocomplete = "username";
   const inp = el("input", "npadmin-input");
-  inp.type = "password"; inp.placeholder = "Admin password";
+  inp.type = "password"; inp.placeholder = "Password";
+  inp.style.marginTop = "8px"; inp.autocomplete = "current-password";
   const btn = el("button", "npadmin-btn", "Sign in");
   btn.style.marginTop = "12px";
   const err = el("div", "npadmin-err");
@@ -121,20 +162,23 @@ function renderLogin() {
     try {
       const res = await fetch("/admin/login", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: inp.value }),
+        body: JSON.stringify({ email: emailInp.value.trim(), password: inp.value }),
       });
       const data = await res.json();
       if (!res.ok) { err.textContent = data.detail || "Login failed"; return; }
       state.token = data.token;
+      state.role = data.role || decodeToken(data.token).role;
+      state.email = data.email || decodeToken(data.token).email;
       sessionStorage.setItem(TOKEN_KEY, data.token);
       renderApp();
     } catch (e) { err.textContent = "Network error"; }
   }
   btn.addEventListener("click", doLogin);
   inp.addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
-  box.append(inp, btn, err);
+  emailInp.addEventListener("keydown", (e) => { if (e.key === "Enter") inp.focus(); });
+  box.append(emailInp, inp, btn, err);
   root.appendChild(box);
-  inp.focus();
+  emailInp.focus();
 }
 
 // ---------------------------------------------------------------------------
@@ -172,10 +216,13 @@ function renderApp() {
   const scrim = el("div", "npadmin-scrim");
   scrim.addEventListener("click", closeDrawer);
 
+  // A manager landing (via URL hash) on a hidden technical tab falls back to overview.
+  if (!allowedViews().some(([id]) => id === state.view)) state.view = "overview";
+
   const side = el("div", "npadmin-side");
   side.appendChild(el("div", "npadmin-brand", "NowPlix Admin"));
   const nav = el("div", "npadmin-nav");
-  for (const [id, label] of VIEWS) {
+  for (const [id, label] of allowedViews()) {
     const b = el("button", id === state.view ? "active" : null, label);
     b.dataset.view = id;
     b.addEventListener("click", () => {
@@ -188,6 +235,9 @@ function renderApp() {
     nav.appendChild(b);
   }
   side.appendChild(nav);
+  const who = el("div", "npadmin-meta npadmin-whoami",
+    `${state.email || "owner"} · ${state.role || "—"}${canWrite() ? "" : " · read-only"}`);
+  side.appendChild(who);
   const out = el("button", "npadmin-btn ghost npadmin-logout", "Sign out");
   out.addEventListener("click", logout);
   side.appendChild(out);
@@ -221,9 +271,14 @@ function dateToolbar(onChange) {
 
 function routeView(main) {
   main.innerHTML = "";
+  // Guard: managers cannot reach the technical/management views even by URL.
+  if (!allowedViews().some(([id]) => id === state.view)) {
+    state.view = "overview"; pushHash("overview"); syncNavActive();
+  }
   const map = {
     overview: viewOverview, sessions: viewSessions, unresolved: viewUnresolved,
-    kb: viewKB, variables: viewVariables, prompt: viewPrompt, settings: viewSettings, test: viewTest,
+    kb: viewKB, variables: viewVariables, prompt: viewPrompt, settings: viewSettings,
+    users: viewUsers, test: viewTest,
   };
   (map[state.view] || viewOverview)(main);
 }
@@ -468,6 +523,7 @@ async function tableByLanguage(main) {
 // ---------------------------------------------------------------------------
 async function viewSessions(main) {
   main.appendChild(el("h1", "npadmin-h", "Sessions"));
+  main.appendChild(el("div", "npadmin-help", `Times shown in your timezone (${localTzLabel()}).`));
   const bar = dateToolbar(() => routeView(main));
   const search = el("input", "npadmin-input"); search.placeholder = "Search text…";
   search.style.width = "auto";
@@ -499,7 +555,7 @@ async function viewSessions(main) {
       holder.innerHTML = "";
       const t = table(["Created", "Topic", "Lang", "Status", "Msgs", "Cost", ""]);
       for (const s of data.items) {
-        const tr = addRow(t, [s.created_at.slice(0, 16).replace("T", " "),
+        const tr = addRow(t, [fmtDateTime(s.created_at),
           s.topic || "—", s.lang || "—",
           s.escalated ? "escalated" : s.status, s.message_count, fmtUsd(s.cost_usd_total || 0), "view →"]);
         tr.classList.add("click");
@@ -546,7 +602,8 @@ async function openSession(id) {
     main.appendChild(el("h1", "npadmin-h", "Session " + id.slice(0, 8)));
     const meta = el("div", "npadmin-meta");
     meta.textContent = `status=${d.session.status} · escalated=${d.session.escalated}`
-      + ` · lang=${d.session.lang || "—"} · cost=$${d.cost_usd_total}`;
+      + ` · lang=${d.session.lang || "—"} · cost=$${d.cost_usd_total}`
+      + ` · created ${fmtDateTime(d.session.created_at)}`;
     main.appendChild(meta);
 
     const row = el("div", "npadmin-row");
@@ -597,7 +654,8 @@ async function openSession(id) {
 async function viewUnresolved(main) {
   main.appendChild(el("h1", "npadmin-h", "Unresolved queries"));
   main.appendChild(el("div", "npadmin-help",
-    "Open or escalated sessions grouped by topic — read clusters and grow the KB."));
+    "Open or escalated sessions grouped by topic — same fields as the Sessions tab "
+    + `so you can scan and pick the ones to handle. Times in your timezone (${localTzLabel()}).`));
   const bar = dateToolbar(() => routeView(main));
   const exp = el("button", "npadmin-btn ghost", "Export CSV");
   exp.addEventListener("click", async () => {
@@ -614,13 +672,15 @@ async function viewUnresolved(main) {
     holder.innerHTML = "";
     for (const g of data.groups) {
       holder.appendChild(el("h3", null, `${g.topic} (${g.count})`));
-      // Fixed column layout so every topic block lines up identically — without
-      // it each table auto-sizes to its own longest first message and the
-      // Status/Msgs/Session columns jump left/right between blocks.
-      const t = table(["First message", "Status", "Msgs", "Session"]);
-      t.classList.add("fixed");
+      // Same columns as the Sessions tab (plus the first message) so a triager
+      // can read and filter clusters without losing the session metadata.
+      const t = table(["Created", "Lang", "Status", "Msgs", "Cost", "First message", "Session"]);
       for (const s of g.sessions) {
-        const tr = addRow(t, [s.first_message || "—", s.escalated ? "escalated" : s.status, s.message_count, s.session_id.slice(0, 8)]);
+        const tr = addRow(t, [
+          fmtDateTime(s.created_at), s.lang || "—",
+          s.escalated ? "escalated" : s.status, s.message_count,
+          fmtUsd(s.cost_usd_total || 0), s.first_message || "—",
+          s.session_id.slice(0, 8)]);
         tr.classList.add("click");
         tr.addEventListener("click", () => openSession(s.session_id));
       }
@@ -656,6 +716,12 @@ async function viewKB(main) {
       ta.value = current.content || "";
 
       const err = el("div", "npadmin-err");
+      if (!canWrite()) {
+        // Managers are read-only: show the KB but no edit controls.
+        ta.readOnly = true;
+        holder.append(ta);
+        continue;
+      }
       const save = el("button", "npadmin-btn", "Save");
       save.addEventListener("click", async () => {
         err.textContent = "";
@@ -720,10 +786,12 @@ async function viewVariables(main) {
         valueInput.value = v.value || "";
         valueInput.style.minHeight = "68px";
         valueInput.style.fontFamily = "inherit";
+        valueInput.readOnly = !canWrite();
         valueTd.appendChild(valueInput);
         tr.appendChild(valueTd);
         const actionTd = el("td");
         const status = el("div", "npadmin-err");
+        if (!canWrite()) { tr.appendChild(actionTd); t.querySelector("tbody").appendChild(tr); continue; }
         const save = el("button", "npadmin-btn", "Save");
         save.addEventListener("click", async () => {
           status.textContent = ""; status.style.color = "";
@@ -845,44 +913,100 @@ function effectivePreviewBox(holder, pv) {
   holder.appendChild(box);
 }
 
-// Dedicated language-settings editor: a dropdown for the default answer language
-// and checkboxes for the supported set — no hand-typed language codes.
+// Dedicated language-settings editor: a dropdown for the default answer language,
+// checkboxes for the supported set, and an "add language" picker tied to the full
+// ISO 639-1 catalogue — so a new language is always added with a valid code/name.
 function languageSettingsBox(holder, current) {
   const box = el("div", "npadmin-chart");
   box.appendChild(el("div", "npadmin-meta", "language"));
+  box.appendChild(el("div", "npadmin-help",
+    "Enable the languages the assistant answers in. To add one that isn't listed, "
+    + "pick it from the ISO 639-1 catalogue below — it appears as a new checkbox. "
+    + "The default must be one of the enabled languages."));
+
+  // Local mutable catalogue (built-ins + already-added + supported), keyed by code.
+  const catalog = new Map();
+  for (const l of (state.languages || [])) catalog.set(l.code, l.name);
+  // Custom names to persist (everything the owner added beyond the built-ins);
+  // seeded from what's already stored so previously-added languages round-trip.
+  const customNames = { ...(current.names || {}) };
+  const supported = new Set(current.supported || []);
+  const checks = {};
 
   const defLab = el("label", "npadmin-field");
   defLab.appendChild(el("span", null, "Default answer language"));
-  const defSel = langSelect(current.default || state.defaultLang);
+  const defSel = el("select", "npadmin-input"); defSel.style.width = "auto";
   defLab.appendChild(defSel);
   box.appendChild(defLab);
 
   box.appendChild(el("div", "npadmin-meta", "Supported languages"));
-  const supported = new Set(current.supported || []);
-  const checks = {};
   const checkRow = el("div", "npadmin-toolbar");
-  for (const l of (state.languages || [])) {
-    const lab = el("label", "npadmin-field");
-    lab.style.flexDirection = "row"; lab.style.alignItems = "center";
-    const cb = document.createElement("input"); cb.type = "checkbox";
-    cb.checked = supported.has(l.code); checks[l.code] = cb;
-    lab.append(cb, el("span", null, `${l.name} (${l.code})`));
-    checkRow.appendChild(lab);
-  }
+  checkRow.style.flexWrap = "wrap";
   box.appendChild(checkRow);
+
+  function rebuildDefault() {
+    const want = defSel.value || current.default || state.defaultLang;
+    defSel.innerHTML = "";
+    for (const [code, name] of catalog) {
+      const o = el("option", null, `${name} (${code})`); o.value = code;
+      if (code === want) o.selected = true;
+      defSel.appendChild(o);
+    }
+  }
+  function renderChecks() {
+    checkRow.innerHTML = "";
+    for (const [code, name] of catalog) {
+      const lab = el("label", "npadmin-field");
+      lab.style.flexDirection = "row"; lab.style.alignItems = "center";
+      const cb = checks[code] || document.createElement("input");
+      cb.type = "checkbox"; cb.checked = supported.has(code); checks[code] = cb;
+      lab.append(cb, el("span", null, `${name} (${code})`));
+      checkRow.appendChild(lab);
+    }
+  }
+  rebuildDefault(); renderChecks();
+
+  // Add-language picker: only ISO codes not already in the catalogue.
+  box.appendChild(el("div", "npadmin-meta", "Add a language (ISO 639-1)"));
+  const addRow = el("div", "npadmin-toolbar");
+  const addSel = el("select", "npadmin-input"); addSel.style.width = "auto";
+  function rebuildAddOptions() {
+    addSel.innerHTML = "";
+    const ph = el("option", null, "Select a language…"); ph.value = ""; addSel.appendChild(ph);
+    for (const l of (state.isoCatalog || [])) {
+      if (catalog.has(l.code)) continue;
+      const o = el("option", null, `${l.name} (${l.code})`); o.value = l.code;
+      addSel.appendChild(o);
+    }
+  }
+  rebuildAddOptions();
+  const addBtn = el("button", "npadmin-btn ghost", "Add language");
+  addBtn.addEventListener("click", () => {
+    const code = addSel.value;
+    if (!code || catalog.has(code)) return;
+    const found = (state.isoCatalog || []).find((l) => l.code === code);
+    const name = found ? found.name : code.toUpperCase();
+    catalog.set(code, name);
+    customNames[code] = name;   // persist its name
+    supported.add(code);        // newly added languages start enabled
+    rebuildAddOptions(); renderChecks(); rebuildDefault();
+  });
+  addRow.append(addSel, addBtn);
+  box.appendChild(addRow);
 
   const err = el("div", "npadmin-err");
   const save = el("button", "npadmin-btn", "Save language");
   save.addEventListener("click", async () => {
-    err.textContent = "";
+    err.textContent = ""; err.style.color = "";
     const sup = Object.entries(checks).filter(([, cb]) => cb.checked).map(([c]) => c);
     if (!sup.length) { err.textContent = "Select at least one supported language"; return; }
     if (!sup.includes(defSel.value)) { err.textContent = "Default must be a supported language"; return; }
     if (!confirm("Update 'language' settings now?")) return;
     try {
       await api("/settings/language", { method: "PUT",
-        body: { value: { default: defSel.value, supported: sup } } });
+        body: { value: { default: defSel.value, supported: sup, names: customNames } } });
       err.style.color = "var(--good)"; err.textContent = "Saved";
+      state.languages = null; await ensureMeta();   // refresh the cached catalogue
     } catch (e) { err.textContent = e.message; }
   });
   box.append(save, err);
@@ -1036,6 +1160,125 @@ function generalSettingsBox(holder, current) {
 }
 
 // ---------------------------------------------------------------------------
+// Users — named admin/manager accounts (owner/admin only)
+//
+// The password-only owner login stays as-is. Here an owner/admin creates extra
+// accounts with an email + password and a role: admin (full write) or manager
+// (read-only support access — sessions/unresolved/KB/variables/prompt, no edits).
+// ---------------------------------------------------------------------------
+async function viewUsers(main) {
+  main.appendChild(el("h1", "npadmin-h", "Users"));
+  main.appendChild(el("div", "npadmin-help",
+    "Named login accounts (email + password). Roles: admin can edit everything; "
+    + "manager is read-only support access (view sessions, unresolved, knowledge "
+    + "base, variables and the prompt — no edits, no technical settings). The "
+    + "password-only owner login is unchanged. No emails are sent — you manage "
+    + "passwords here."));
+  const holder = el("div", null, "Loading…"); main.appendChild(holder);
+  try {
+    const data = await api("/users");
+    holder.innerHTML = "";
+
+    // Create form
+    const createBox = el("div", "npadmin-chart");
+    createBox.appendChild(el("div", "npadmin-meta", "Add user"));
+    const emailLab = el("label", "npadmin-field");
+    emailLab.appendChild(el("span", null, "Email"));
+    const emailInp = el("input", "npadmin-input"); emailInp.type = "email";
+    emailInp.placeholder = "person@example.com"; emailLab.appendChild(emailInp);
+    const pwLab = el("label", "npadmin-field");
+    pwLab.appendChild(el("span", null, "Password (min 8 characters)"));
+    const pwInp = el("input", "npadmin-input"); pwInp.type = "text";
+    pwInp.placeholder = "Set an initial password"; pwLab.appendChild(pwInp);
+    const roleLab = el("label", "npadmin-field");
+    roleLab.appendChild(el("span", null, "Role"));
+    const roleSel = el("select", "npadmin-input"); roleSel.style.width = "auto";
+    for (const r of ["manager", "admin"]) {
+      const o = el("option", null, r); o.value = r; roleSel.appendChild(o);
+    }
+    roleLab.appendChild(roleSel);
+    const cErr = el("div", "npadmin-err");
+    const createBtn = el("button", "npadmin-btn", "Create user");
+    createBtn.addEventListener("click", async () => {
+      cErr.textContent = ""; cErr.style.color = "";
+      try {
+        await api("/users", { method: "POST", body: {
+          email: emailInp.value.trim(), password: pwInp.value, role: roleSel.value } });
+        cErr.style.color = "var(--good)"; cErr.textContent = "Created";
+        emailInp.value = ""; pwInp.value = "";
+        viewUsers(main);
+      } catch (e) { cErr.textContent = e.message; }
+    });
+    createBox.append(emailLab, pwLab, roleLab, createBtn, cErr);
+    holder.appendChild(createBox);
+
+    // Existing users
+    const listBox = el("div", "npadmin-chart");
+    listBox.appendChild(el("div", "npadmin-meta", "Existing users"));
+    if (!(data.users || []).length) {
+      listBox.appendChild(el("div", "npadmin-meta",
+        "No named users yet — the owner password login is the only account."));
+    }
+    const t = table(["Email", "Role", "Active", "Created", "Actions"]);
+    for (const u of (data.users || [])) {
+      const tr = el("tr");
+      tr.appendChild(el("td", null, u.email));
+      // role select
+      const roleTd = el("td");
+      const rSel = el("select", "npadmin-input"); rSel.style.width = "auto";
+      for (const r of ["manager", "admin"]) {
+        const o = el("option", null, r); o.value = r;
+        if (u.role === r) o.selected = true; rSel.appendChild(o);
+      }
+      roleTd.appendChild(rSel); tr.appendChild(roleTd);
+      // active toggle
+      const actTd = el("td");
+      const actCb = document.createElement("input"); actCb.type = "checkbox";
+      actCb.checked = u.active !== false; actTd.appendChild(actCb); tr.appendChild(actTd);
+      tr.appendChild(el("td", null, fmtDateTime(u.created_at)));
+      // actions
+      const opTd = el("td");
+      const status = el("div", "npadmin-err");
+      const saveB = el("button", "npadmin-btn", "Save");
+      saveB.addEventListener("click", async () => {
+        status.textContent = ""; status.style.color = "";
+        try {
+          await api(`/users/${encodeURIComponent(u.email)}`, { method: "PUT",
+            body: { role: rSel.value, active: actCb.checked } });
+          status.style.color = "var(--good)"; status.textContent = "Saved";
+        } catch (e) { status.textContent = e.message; }
+      });
+      const pwB = el("button", "npadmin-btn ghost", "Set password");
+      pwB.addEventListener("click", async () => {
+        const np = prompt(`New password for ${u.email} (min 8 characters):`);
+        if (!np) return;
+        status.textContent = ""; status.style.color = "";
+        try {
+          await api(`/users/${encodeURIComponent(u.email)}`, { method: "PUT",
+            body: { password: np } });
+          status.style.color = "var(--good)"; status.textContent = "Password updated";
+        } catch (e) { status.textContent = e.message; }
+      });
+      const delB = el("button", "npadmin-btn ghost", "Delete");
+      delB.addEventListener("click", async () => {
+        if (!confirm(`Delete user ${u.email}?`)) return;
+        try {
+          await api(`/users/${encodeURIComponent(u.email)}`, { method: "DELETE" });
+          viewUsers(main);
+        } catch (e) { status.textContent = e.message; }
+      });
+      const ops = el("div", "npadmin-toolbar");
+      ops.append(saveB, pwB, delB);
+      opTd.append(ops, status); tr.appendChild(opTd);
+      t.querySelector("tbody").appendChild(tr);
+    }
+    const scroll = el("div", "npadmin-table-scroll");
+    scroll.appendChild(t); listBox.appendChild(scroll);
+    holder.appendChild(listBox);
+  } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
+}
+
+// ---------------------------------------------------------------------------
 // Test sandbox — the stand-in player profile for the test widget (test page /)
 //
 // In production the host site supplies user_context over a signed handshake;
@@ -1130,6 +1373,22 @@ function el(tag, cls, text) {
 }
 function pct(v) { return `${(v * 100).toFixed(1)}%`; }
 function fmtUsd(v) { return `$${Number(v).toFixed(4)}`; }
+// Render a server ISO timestamp (UTC, tz-aware) in the VIEWER's local timezone —
+// the admin sits in their own zone, so 06:00Z shows as 09:00 for a UTC+3 viewer.
+function fmtDateTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+// The viewer's IANA timezone name, for a small "times shown in …" hint.
+function localTzLabel() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "local time"; }
+  catch (_) { return "local time"; }
+}
 function errBox(e) { return el("div", "npadmin-warnbox", e.message || String(e)); }
 function section(main, title, node) {
   main.appendChild(el("h3", null, title)); main.appendChild(node);

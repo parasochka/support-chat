@@ -492,17 +492,39 @@ localizes to the player's language. Lives in Layer 3 only, so `SYSTEM_CORE` stay
 
 Map of what lives where:
 
-- **Admin auth** (`api/admin_auth.py`, `auth.py`): `POST /admin/login` (constant-time
-  password compare against `ADMIN_PASSWORD`, rate-limited, failures → `admin_login_failed`)
-  issues an admin JWT signed with `ADMIN_JWT_SECRET` and carrying a `role` claim. The
-  `require_admin` dependency guards every `/admin/*` data route.
+- **Admin auth + roles** (`api/admin_auth.py`, `auth.py`): `POST /admin/login` takes an
+  **optional `email`**. No email ⇒ the legacy **owner** login (constant-time password compare
+  against `ADMIN_PASSWORD`) → role `owner`. With an email ⇒ a **named-user** login: the password
+  is checked against the salted **PBKDF2-HMAC-SHA256** hash in `admin_users`
+  (`auth.hash_password`/`verify_password`, stdlib only) → the user's stored role. Both paths are
+  rate-limited and log `admin_login_failed`; the named path is non-enumerating. The token is
+  signed with `ADMIN_JWT_SECRET` and carries `role` (+ `email` for named users). **`ADMIN_JWT_SECRET`
+  now signs named-user sessions too — set a distinct strong value in prod** (it falls back to
+  `SESSION_JWT_SECRET`, flagged at startup). **Three roles:** `owner` and `admin` may write;
+  `manager` is **read-only**. `require_admin` guards every `/admin/*` route (any valid token);
+  **`require_admin_write`** (role in `WRITE_ROLES = owner/admin`, else **403**) guards every
+  mutating route (KB, settings, variables, test profile, user management). `GET /admin/me` returns
+  the caller's role/email so the SPA can role-gate its UI (managers lose the Settings / Users /
+  Test-sandbox tabs and all edit controls — cosmetic; the server is authoritative).
+- **User management** (`api/admin.py` `/admin/users*`, the **Users** tab, owner/admin only):
+  minimal CRUD over `admin_users` (email + password + role `admin`/`manager`). No email delivery,
+  no reset flows — the owner/admin sets passwords directly. A user can't demote/deactivate/delete
+  **itself** (self-lockout guard; the password-only owner login is always a recovery path). The
+  password hash never leaves `db.py` (`_row_to_admin_user` drops it). The owner login is unchanged;
+  an owner can add named accounts (incl. an `admin` account bound to their own email) from this tab.
 - **Settings** (`settings.py`, `app_settings` table): hot-reloaded runtime tuning with
   precedence `app_settings` (DB) → env → default. A sync in-process cache (populated at
   startup, reloaded on write) is read by `antispam`/`escalation`/`openai_client`/`language`/
   `auth`/api; writes validate hard and log `setting_updated`. Groups: `escalation`
   (incl. `max_messages_per_session`, `high_risk_keywords`, `human_request_keywords`),
   `language` (default + supported
-  set — every language read goes through `language.default_code()`/`supported_codes()`),
+  set **+ `names`** — custom display names for languages added beyond the built-in
+  `language.LANG_NAMES`; every language read goes through `language.default_code()`/
+  `supported_codes()`/`all_language_names()`. Adding a language is ISO-validated: the admin
+  Language tab picks from `language.ISO_639_1` (the full ISO 639-1 catalogue), so a new
+  language only enters with a correct code + name, and `settings.validate_setting` rejects any
+  supported/`names` code not in that catalogue. `GET /admin/meta` exposes `languages`
+  (selectable catalogue), `supported`, `default_language`, and `iso_catalog` for the picker),
   `antispam` (rate limit/window/cooldown/input cap **plus** `recaptcha_min_score`,
   `injection_hard_block`, and the low-content guard `low_content_block` /
   `min_meaningful_chars`), `model` (OpenAI tuning — see the failover section), and `general`
@@ -522,7 +544,12 @@ Map of what lives where:
   rendered in the SPA tables. **Date ranges** are half-open and a date-only `to=YYYY-MM-DD` is
   made **inclusive** of that whole day (`api.admin._range` adds one day), so "today" isn't dropped.
   The **Unresolved** queue lists engaged sessions that still need attention — both `escalated` and
-  abandoned `open` chats with ≥1 user turn (resolved excluded), grouped by topic.
+  abandoned `open` chats with ≥1 user turn (resolved excluded), grouped by topic. It carries the
+  **same per-session fields as the Sessions tab** (created, lang, status, msgs, cost) + the first
+  message, so a triager can scan and pick (`db.unresolved_by_topic` joins lang + cost; CSV export
+  mirrors them). **Timestamps render in the viewer's local timezone** — the API returns tz-aware
+  ISO strings and the SPA formats them client-side via `fmtDateTime`/`toLocaleString` (a UTC `06:00`
+  shows as `09:00` for a UTC+3 admin), so the dashboard always reads in the operator's own time.
 - **Variables tab** (`api/admin.py` `/admin/kb/variables`, the **Variables** view in the SPA):
   list + edit the admin-managed `{placeholder}` registry (see "KB variables" above). Read returns
   `updated_at` as an isoformat string so `JSONResponse` can serialize it.
