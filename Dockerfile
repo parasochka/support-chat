@@ -7,8 +7,14 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Install dependencies first for better layer caching.
+# --retries / --timeout make the build survive transient PyPI network
+# blips (files.pythonhosted.org read timeouts) instead of failing outright.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir \
+        --retries 5 \
+        --timeout 60 \
+        -r requirements.txt
 
 # Copy the application.
 COPY . .
