@@ -143,6 +143,7 @@ class _KeyClient:
             "messages": messages,
             "max_completion_tokens": budget,
             "timeout": m["request_timeout_sec"],
+            "store": False,
         }
         effort = m.get("reasoning_effort")
         if effort:
