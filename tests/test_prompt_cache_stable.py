@@ -168,7 +168,7 @@ def test_formatting_directive_in_layer1_core():
     core = prompts.get_system_core()
     assert "Formatting:" in core
     assert "Markdown" in core
-    assert "Use light Markdown when it improves readability" in core
+    assert "Always use light Markdown to structure the reply" in core
     assert "Prefer plain text over structure" not in core
     # Must pin the model away from markup the widget can't render.
     assert "tables" in core
