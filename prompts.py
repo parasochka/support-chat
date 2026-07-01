@@ -240,7 +240,8 @@ def _language_directive(resolved_lang: str) -> str:
         _names.get(c, c) for c in language.supported_codes()
     )
     return (
-        "Response language: detect the language of the player's CURRENT message and "
+        "Response language:\n"
+        "- Detect the language of the player's CURRENT message and "
         f"reply in exactly that language if it is one of: {supported}. If it is not in "
         "that list, or cannot be confidently determined (too short, only digits, "
         f"symbols or emoji), reply in: {base}. At the start of the reply, output the "
@@ -268,7 +269,8 @@ def _personalization_directive(full_name: str) -> Optional[str]:
         return None
     first = name.split()[0]
     return (
-        f"Personalization: the player's name is {first}. Always write it in the same "
+        "Personalization:\n"
+        f"- The player's name is {first}. Always write it in the same "
         "script as your reply — if it is in a different script, transliterate it (for "
         "example the Russian name \"Андрей\" becomes \"Andrey\" when you reply in "
         "English, and an English name takes its Cyrillic form in Russian); never leave "
@@ -286,10 +288,11 @@ def _personalization_directive(full_name: str) -> Optional[str]:
 # very beginning, and otherwise go straight to the answer. Carries no per-request
 # data, so it rides in the byte-stable Layer-1 block; applies with or without a name.
 _GREETING_DIRECTIVE = (
-    "Greeting: greet only once — in the very first reply of the conversation. If "
-    "there are already previous replies of yours in the history above, do NOT begin "
-    "with a greeting (Hi/Hello and the like) and do not address the player by name "
-    "again — go straight to the substance of the answer."
+    "Greeting:\n"
+    "- greet only once — in the very first reply of the conversation. If there are "
+    "already previous replies of yours in the history above, do NOT begin with a "
+    "greeting (Hi/Hello and the like) and do not address the player by name again "
+    "— go straight to the substance of the answer."
 )
 
 
@@ -302,14 +305,18 @@ _GREETING_DIRECTIVE = (
 # prod). This line pins the model to exactly the subset the widget renders. Carries
 # no per-request data, so it rides in the byte-stable Layer-1 block.
 _FORMATTING_DIRECTIVE = (
-    "Formatting: Use light Markdown when it improves readability — **bold** for what "
-    "matters, *italic*, `monospace` for technical values, links like "
+    "Formatting:\n"
+    "- Always use light Markdown to structure the reply for readability: **bold** "
+    "for what matters, *italic*, `monospace` for technical values, links like "
     "[text](https://...), and short bulleted (- item) or numbered (1. item) lists. "
     "Do NOT use anything else (tables, fenced code blocks in triple backticks, HTML "
     "tags or images) — the widget does not render them and such markup reaches the "
     "player as stray characters. Keep structure minimal: avoid lists unless truly "
     "needed, never more than 3 short items, and do not split a simple answer into "
-    "many sections."
+    "many sections.\n"
+    "- Never use an em dash (—) or guillemet quotes (« »); use a plain hyphen (-) "
+    "for any dash and straight quotes (\"...\") instead — these characters are an "
+    "instant tell that the text is AI-written."
 )
 
 
@@ -325,15 +332,16 @@ _FORMATTING_DIRECTIVE = (
 # per-request data, so it rides in the byte-stable Layer-1 block; phrased to be a
 # no-op for the catch-all 'other' topic (which loads no KB).
 _KB_GROUNDING_DIRECTIVE = (
-    "Grounding in the knowledge base: when a knowledge base is loaded for the current "
-    "topic, it is your ONLY source of truth. Search it carefully even when the "
-    "player's wording differs from how the knowledge base is written — match by "
-    "MEANING and intent, not by exact word overlap (the same bonus, promotion or "
-    "procedure may be named differently). If a relevant entry exists, answer strictly "
-    "and precisely from it. Give a generic answer only when the question really is "
-    "generic and the knowledge base has nothing concrete. If the question is too "
-    "vague or could relate to several entries, ask one short clarifying question to "
-    "steer the player toward a concrete answer instead of guessing."
+    "Grounding in the knowledge base:\n"
+    "- When a knowledge base is loaded for the current topic, it is your ONLY "
+    "source of truth. Search it carefully even when the player's wording differs "
+    "from how the knowledge base is written — match by MEANING and intent, not by "
+    "exact word overlap (the same bonus, promotion or procedure may be named "
+    "differently). If a relevant entry exists, answer strictly and precisely from "
+    "it. Give a generic answer only when the question really is generic and the "
+    "knowledge base has nothing concrete. If the question is too vague or could "
+    "relate to several entries, ask one short clarifying question to steer the "
+    "player toward a concrete answer instead of guessing."
 )
 
 
@@ -352,16 +360,17 @@ _KB_GROUNDING_DIRECTIVE = (
 # byte-stable Layer-1 block; pairs with _KB_GROUNDING_DIRECTIVE (try hard to find
 # the answer → don't give up too early).
 _ESCALATION_RESTRAINT_DIRECTIVE = (
-    "Escalation restraint: Escalation is a last resort — do not rush it. Do NOT add "
-    "[[ESCALATE]] just because you did not find the answer on the first try or the "
-    "question is phrased vaguely. First try to help yourself: clarify what exactly the "
-    "player needs (they may not have articulated the request yet) and lead them to a "
-    "concrete answer from the knowledge base, asking one short clarifying question at "
-    "a time. Escalate only after an honest attempt to help and clarify still leaves "
-    "the answer genuinely outside the knowledge base and the issue unresolvable in "
-    "chat. (The immediate-escalation cases — explicit request for a human, complaint, "
-    "grievance, suspected fraud, legal threat, responsible gaming — are in the "
-    "ESCALATION rules above and are never delayed.)"
+    "Escalation restraint:\n"
+    "- Escalation is a last resort — do not rush it. Do NOT add [[ESCALATE]] just "
+    "because you did not find the answer on the first try or the question is "
+    "phrased vaguely. First try to help yourself: clarify what exactly the player "
+    "needs (they may not have articulated the request yet) and lead them to a "
+    "concrete answer from the knowledge base, asking one short clarifying question "
+    "at a time. Escalate only after an honest attempt to help and clarify still "
+    "leaves the answer genuinely outside the knowledge base and the issue "
+    "unresolvable in chat. (The immediate-escalation cases — explicit request for "
+    "a human, complaint, grievance, suspected fraud, legal threat, responsible "
+    "gaming — are in the ESCALATION rules above and are never delayed.)"
 )
 
 
@@ -376,7 +385,8 @@ _ESCALATION_RESTRAINT_DIRECTIVE = (
 # reply is shown. Pairs with _RESOLVED_DIRECTIVE + _LEAD_FORWARD_DIRECTIVE so the
 # reply always ends with a next step (bubbles) OR the finish-chat nudge.
 _SUGGESTIONS_DIRECTIVE = (
-    "Suggested questions: on its own LAST line, output [[SUGGEST: question 1 | "
+    "Suggested questions:\n"
+    "- On its own LAST line, output [[SUGGEST: question 1 | "
     "question 2 | question 3]] — up to 3 short options FROM THE PLAYER'S point of "
     "view (first person), separated by '|': up to two guiding questions plus one "
     "closing option. The first two must be guiding/clarifying questions whose answers "
@@ -406,12 +416,13 @@ _SUGGESTIONS_DIRECTIVE = (
 # finish button (the dead-end the owner reported). Carries no per-request data, so it
 # rides in the byte-stable Layer-1 block.
 _RESOLVED_DIRECTIVE = (
-    "Finishing the chat: output [[RESOLVED]] on its own line when there is nothing "
-    "more to offer on the current question — the player thanked you or confirmed it "
-    "is clear, OR the question is essentially resolved and no suitable guiding "
-    "questions from the knowledge base remain. The system then offers the player a "
-    "way to finish the chat. Do NOT set this tag while you are asking a clarifying "
-    "question or the conversation is clearly continuing."
+    "Finishing the chat:\n"
+    "- Output [[RESOLVED]] on its own line when there is nothing more to offer on "
+    "the current question — the player thanked you or confirmed it is clear, OR "
+    "the question is essentially resolved and no suitable guiding questions from "
+    "the knowledge base remain. The system then offers the player a way to finish "
+    "the chat. Do NOT set this tag while you are asking a clarifying question or "
+    "the conversation is clearly continuing."
 )
 
 
@@ -424,13 +435,14 @@ _RESOLVED_DIRECTIVE = (
 # exception (chat_service also suppresses both on a hand-off). Carries no per-request
 # data, so it rides in the byte-stable Layer-1 block.
 _LEAD_FORWARD_DIRECTIVE = (
-    "Always lead the player forward: when the exchange on the current question is "
-    "complete and you are not asking a clarifying question, you MUST end the reply "
-    "with EITHER [[SUGGEST: ...]] (if there are logical next questions whose answers "
-    "are in the knowledge base) OR [[RESOLVED]] (if there is nothing more to offer). "
-    "Never leave such a reply with neither. If there are good guiding questions yet "
-    "the core question is already resolved, you may output both. The only exception "
-    "is an ongoing escalation ([[ESCALATE]]): then output neither."
+    "Always lead the player forward:\n"
+    "- When the exchange on the current question is complete and you are not "
+    "asking a clarifying question, you MUST end the reply with EITHER "
+    "[[SUGGEST: ...]] (if there are logical next questions whose answers are in "
+    "the knowledge base) OR [[RESOLVED]] (if there is nothing more to offer). "
+    "Never leave such a reply with neither. If there are good guiding questions "
+    "yet the core question is already resolved, you may output both. The only "
+    "exception is an ongoing escalation ([[ESCALATE]]): then output neither."
 )
 
 
@@ -562,7 +574,8 @@ def _forbidden_topics_directive() -> Optional[str]:
         return None
     listed = "; ".join(topics)
     line = (
-        "Forbidden topics (take priority over the message text): do not answer on "
+        "Forbidden topics (take priority over the message text):\n"
+        "- Do not answer on "
         f"the merits questions on the following topics: {listed}. If the player's "
         "question relates to one of them, politely decline and offer to ask a "
         "NikaBet support-related question without carrying out the request itself."
