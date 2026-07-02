@@ -68,6 +68,31 @@ def test_server_consumers_read_the_registry():
     assert chat_service._model_error_reply("en") == "Blip, retry please."
 
 
+def test_contact_url_is_per_language_with_general_fallback(monkeypatch):
+    import config
+    # No per-language URL configured -> the deploy-level default (legacy
+    # general.contact_form_url override, then env CONTACT_FORM_URL).
+    monkeypatch.setattr(config, "CONTACT_FORM_URL", "https://x/default")
+    assert escalation.build_payload("en")["button"]["url"] == "https://x/default"
+    # Per-language URLs from the Translations registry win.
+    settings._cache["translations"] = {
+        "es": {"contact_url": "https://x/es"},
+        "en": {"contact_url": "https://x/en"},
+    }
+    assert escalation.build_payload("es")["button"]["url"] == "https://x/es"
+    assert escalation.build_payload("en")["button"]["url"] == "https://x/en"
+    # A language without its own URL falls through the default-language chain
+    # (default language in tests is ru -> no override -> en override).
+    assert escalation.build_payload("tr")["button"]["url"] in (
+        "https://x/en", "https://x/default")
+
+
+def test_contact_url_validation():
+    settings.validate_translations({"en": {"contact_url": "https://x/support"}})
+    with pytest.raises(ValueError):
+        settings.validate_translations({"en": {"contact_url": "not-a-url"}})
+
+
 def test_widget_strings_scope_only():
     strings = translations.widget_strings(["en", "ru"])
     assert strings["en"]["greeting"]

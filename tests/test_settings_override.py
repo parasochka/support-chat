@@ -28,13 +28,23 @@ def test_db_override_wins_over_env(monkeypatch):
 
 
 def test_escalation_override():
-    settings._cache["escalation"] = {"max_messages_per_session": 5,
-                                     "high_risk_keywords": ["boom"],
+    settings._cache["escalation"] = {"high_risk_keywords": ["boom"],
                                      "human_request_keywords": ["help-me"]}
     cfg = settings.escalation()
-    assert cfg["max_messages_per_session"] == 5
     assert cfg["high_risk_keywords"] == ["boom"]
     assert cfg["human_request_keywords"] == ["help-me"]
+
+
+def test_message_cap_lives_in_general_with_legacy_fallback():
+    # The cap moved to the `general` group; a legacy override stored in the old
+    # `escalation` group is still honoured until the owner re-saves.
+    settings._cache["escalation"] = {"max_messages_per_session": 5}
+    assert settings.general()["max_messages_per_session"] == 5
+    settings._cache["general"] = {"max_messages_per_session": 7}
+    assert settings.general()["max_messages_per_session"] == 7  # general wins
+    settings.invalidate()
+    assert (settings.general()["max_messages_per_session"]
+            == config.MAX_MESSAGES_PER_SESSION)  # empty cache -> env default
 
 
 def test_escalation_human_keywords_default_when_unset():
@@ -122,24 +132,34 @@ def test_antispam_validate_new_fields():
         settings.validate_setting("antispam", {"injection_hard_block": "yes"})
 
 
-# --- general group (session TTL / contact URL / body cap) ------------------
+# --- general group (lifetimes / caps / history window) ----------------------
 def test_general_env_default_when_cache_empty(monkeypatch):
     monkeypatch.setattr(config, "SESSION_TTL_HOURS", 12)
     monkeypatch.setattr(config, "CONTACT_FORM_URL", "https://x/support")
     g = settings.general()
     assert g["session_ttl_hours"] == 12
-    assert g["contact_form_url"] == "https://x/support"
+    assert g["contact_form_url"] == "https://x/support"  # legacy fallback value
     assert g["body_max_bytes"] == config.BODY_MAX_BYTES
+    assert g["admin_token_ttl_min"] == config.ADMIN_TOKEN_TTL_MIN
+    assert g["history_max_turns"] == config.HISTORY_MAX_TURNS
 
 
 def test_general_db_override_wins(monkeypatch):
     monkeypatch.setattr(config, "SESSION_TTL_HOURS", 12)
-    settings._cache["general"] = {"session_ttl_hours": 48}
-    assert settings.general()["session_ttl_hours"] == 48
+    settings._cache["general"] = {"session_ttl_hours": 48,
+                                  "admin_token_ttl_min": 60,
+                                  "history_max_turns": 8}
+    g = settings.general()
+    assert g["session_ttl_hours"] == 48
+    assert g["admin_token_ttl_min"] == 60
+    assert g["history_max_turns"] == 8
 
 
 def test_general_validate():
     settings.validate_setting("general", {"session_ttl_hours": 24,
+                                          "admin_token_ttl_min": 480,
+                                          "max_messages_per_session": 30,
+                                          "history_max_turns": 20,
                                           "body_max_bytes": 65536,
                                           "contact_form_url": "https://x"})
     settings.validate_setting("general", {"contact_form_url": None})  # null ok
@@ -149,6 +169,10 @@ def test_general_validate():
         settings.validate_setting("general", {"body_max_bytes": 1})     # below min
     with pytest.raises(ValueError):
         settings.validate_setting("general", {"contact_form_url": 123})  # not str
+    with pytest.raises(ValueError):
+        settings.validate_setting("general", {"admin_token_ttl_min": 1})  # below min
+    with pytest.raises(ValueError):
+        settings.validate_setting("general", {"history_max_turns": 0})    # below min
 
 
 def test_language_accessors_follow_settings(monkeypatch):

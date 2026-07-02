@@ -118,7 +118,11 @@ def issue_admin_token(role: str = "admin",
     `email` identifies the named user and rides in the token so the audit trail
     (`updated_by`) records who acted.
     """
-    ttl = config.ADMIN_TOKEN_TTL_MIN if ttl_min is None else ttl_min
+    if ttl_min is None:
+        import settings  # lazy: avoid an import cycle (settings is built atop db)
+        ttl = settings.general()["admin_token_ttl_min"]
+    else:
+        ttl = ttl_min
     now = int(time.time())
     header = {"alg": _ALG, "typ": "JWT"}
     payload = {"sub": email or "admin", "role": role, "iat": now, "exp": now + ttl * 60}

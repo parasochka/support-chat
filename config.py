@@ -120,6 +120,9 @@ OPENAI_MAX_CONCURRENT_PER_KEY: int = _env_int("OPENAI_MAX_CONCURRENT_PER_KEY", 4
 # --- Sessions / limits ------------------------------------------------------
 SESSION_TTL_HOURS: int = _env_int("SESSION_TTL_HOURS", 24)
 MAX_MESSAGES_PER_SESSION: int = _env_int("MAX_MESSAGES_PER_SESSION", 30)
+# How many recent turns from the current topic context feed the model's prompt
+# history (the full transcript is always persisted; this only bounds the prompt).
+HISTORY_MAX_TURNS: int = _env_int("HISTORY_MAX_TURNS", 20)
 MAX_INPUT_CHARS: int = _env_int("MAX_INPUT_CHARS", 2000)
 RATE_LIMIT_WINDOW_SEC: int = _env_int("RATE_LIMIT_WINDOW_SEC", 600)
 RATE_LIMIT_MAX_PER_IP: int = _env_int("RATE_LIMIT_MAX_PER_IP", 20)
@@ -139,6 +142,10 @@ RECAPTCHA_SECRET: str | None = _env_opt("RECAPTCHA_SECRET")
 RECAPTCHA_MIN_SCORE: float = _env_float("RECAPTCHA_MIN_SCORE", 0.5)
 
 # --- Escalation -------------------------------------------------------------
+# Default contact-button URL. Per-language URLs are set in the admin
+# Translations tab (the `contact_url` key); this env value (or a legacy
+# `general.contact_form_url` app_settings override) is the fallback when no
+# per-language URL is configured.
 CONTACT_FORM_URL: str | None = _env_opt("CONTACT_FORM_URL")
 
 # --- Language ---------------------------------------------------------------

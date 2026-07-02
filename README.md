@@ -78,7 +78,7 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `ADMIN_JWT_SECRET` | no | `SESSION_JWT_SECRET` | Signs admin tokens; set a distinct value in prod. |
 | `WIDGET_HANDSHAKE_SECRET` | no | — | HMAC secret for signed host-site `user_context`. Unset ⇒ dev mode. |
 | `RECAPTCHA_SECRET` | no | — | Enables reCaptcha v3 at session create; unset ⇒ skipped. |
-| `CONTACT_FORM_URL` | no | — | URL behind the escalation contact button. |
+| `CONTACT_FORM_URL` | no | — | Default URL behind the escalation contact button. Per-language URLs are set in the admin Translations tab (`contact_url`); this is the fallback. |
 | `DEFAULT_LANGUAGE` / `SUPPORTED_LANGUAGES` | no | `en` / `en,es,ru,tr,pt` | Language defaults. |
 | `CORS_ALLOW_ORIGINS` | no | `*` | Comma-separated allowed origins (restrict in prod). |
 | `TRUSTED_PROXY_COUNT` | no | `1` | Trusted proxy hops to read from the right of `X-Forwarded-For`. |

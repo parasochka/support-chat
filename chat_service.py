@@ -177,7 +177,8 @@ async def handle_message(
     # switch loop). 0 (default) means the whole transcript.
     context_reset_id = session.get("context_reset_id", 0) or 0
     history = await db.get_history(
-        session_id, limit=20, after_id=context_reset_id
+        session_id, limit=settings.general()["history_max_turns"],
+        after_id=context_reset_id,
     )
     messages = prompts.build_messages(
         session=session,

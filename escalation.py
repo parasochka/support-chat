@@ -23,9 +23,11 @@ can't slip a trigger past the match. The keyword lists are stems (e.g.
 stem only matches at the START of a word (and a very short stem must match the
 whole word), so "рассудите"/"судя по всему" no longer trip the "суд" stem the
 way plain substring matching did. Both lists (`high_risk_keywords` and
-`human_request_keywords`) are tunable live from the admin `escalation` settings
-group; the constants below are the built-in defaults used until the owner
-overrides them.
+`human_request_keywords`) are tunable live from the admin Prompt → Prompt
+variables sub-tab (they are content tuning, stored in the `escalation` settings
+group); the constants below are the built-in defaults used until the owner
+overrides them. The technical message cap (`max_messages_per_session`) lives in
+the `general` settings group (admin Settings tab).
 """
 from __future__ import annotations
 
@@ -155,9 +157,8 @@ def decide(*, model_signalled: bool, message_count: int) -> EscalationDecision:
     not a duplicate check.
     """
     import settings  # lazy import to avoid a settings<->escalation cycle
-    cfg = settings.escalation()
 
-    if message_count >= cfg["max_messages_per_session"]:
+    if message_count >= settings.general()["max_messages_per_session"]:
         return EscalationDecision(True, "message_cap")
     if model_signalled:
         return EscalationDecision(True, "model_signalled")
@@ -170,20 +171,25 @@ def build_payload(lang: str, final: bool = True) -> dict:
     `final` mirrors the hard/soft split (module docstring): True closes the
     conversation in the widget (hard hand-off), False shows the contact card but
     keeps the chat usable (soft keyword trigger — a false positive must not kill
-    the conversation). The localized copy comes from the translations registry
-    (admin Translations tab > built-in defaults, falling back through the default
-    language to English); the contact-button URL comes from the resolved runtime
-    settings — both tunable in the admin panel without a redeploy.
+    the conversation). The localized copy AND the contact-button URL come from
+    the translations registry (admin Translations tab > built-in defaults,
+    falling back through the default language to English) — the URL is
+    per-language (`contact_url`) so each language can point at its own contact
+    form; when no per-language URL is configured it falls back to the
+    deploy-level default (the legacy general.contact_form_url override, then
+    the CONTACT_FORM_URL env var). All tunable in the admin without a redeploy.
     """
     import settings      # lazy to keep this module import-light
     import translations  # lazy: same
+    url = translations.text("contact_url", lang).strip() \
+        or settings.general()["contact_form_url"] or ""
     return {
         "active": True,
         "final": final,
         "message": translations.text("escalation_message", lang),
         "button": {
             "label": translations.text("escalation_button", lang),
-            "url": settings.general()["contact_form_url"] or "",
+            "url": url,
         },
     }
 

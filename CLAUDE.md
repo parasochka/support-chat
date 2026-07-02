@@ -419,13 +419,19 @@ The keyword scans run on a normalized copy of the message (NFKC + zero-width str
 aware** (`_matches_keywords`), not raw substring: a phrase (with a space) matches as a substring; a
 stem matches only at the **start of a word** (`поддержк` → «поддержку», never mid-word); a **short
 stem (≤3 chars) must equal a whole word** — so «судя по всему»/«судьба»/«рассудите» no longer trip
-the `суд` stem (the substring matcher used to escalate-and-close on those). Both lists are tunable
-live from the admin `escalation` settings group — `high_risk_keywords` and
-`human_request_keywords`; the constants in `escalation.py` are only the built-in defaults. The cap
-fires on the turn whose prospective count (current + 1) reaches `max_messages_per_session`; the
+the `суд` stem (the substring matcher used to escalate-and-close on those). Both lists live in the
+`escalation` settings group — `high_risk_keywords` and `human_request_keywords` — and their ONE
+admin editor is the **Prompt → Prompt variables** sub-tab (content tuning, next to the prompt);
+the group is deliberately skipped in the generic Settings tab so the same knob is never editable
+from two places. The constants in `escalation.py` are only the built-in defaults. The cap
+fires on the turn whose prospective count (current + 1) reaches `max_messages_per_session` — a
+technical limit that lives in the **`general`** settings group (the legacy
+`escalation.max_messages_per_session` DB override is still honoured as a fallback); the
 model-free fast path in `api/chat.py` is the cheap belt-and-suspenders for a session already
-at/over the cap — complementary, not a duplicate. The button URL is `CONTACT_FORM_URL` (via the
-`general` settings group).
+at/over the cap — complementary, not a duplicate. The button URL is **per-language**: the
+`contact_url` key in the translations registry (admin Translations tab — each language can point
+at its own contact form), falling back to the deploy default (`CONTACT_FORM_URL` env / the legacy
+`general.contact_form_url` override) when no per-language URL is set.
 
 **A transient model failure does NOT escalate.** When the OpenAI call fails outright (retries +
 failover exhausted — e.g. a provider outage), `chat_service` returns a localized model-free
@@ -631,7 +637,10 @@ Map of what lives where:
   precedence `app_settings` (DB) → env → default. A sync in-process cache (populated at
   startup, reloaded on write) is read by `antispam`/`escalation`/`openai_client`/`language`/
   `auth`/api; writes validate hard and log `setting_updated`. Groups: `escalation`
-  (incl. `max_messages_per_session`, `high_risk_keywords`, `human_request_keywords`),
+  (`high_risk_keywords`, `human_request_keywords` — content tuning, so its ONLY editor is the
+  Prompt → Prompt variables sub-tab; the Settings tab skips this group to avoid a duplicate
+  editor. `max_messages_per_session` moved to `general`; a legacy `escalation` override is still
+  read as a fallback),
   `language` (default + supported
   set **+ `names`** — custom display names for languages added beyond the built-in
   `language.LANG_NAMES`; every language read goes through `language.default_code()`/
@@ -643,8 +652,13 @@ Map of what lives where:
   `antispam` (rate limit/window/cooldown/input cap **plus** `recaptcha_min_score`,
   `injection_hard_block`, and the low-content guard `low_content_block` /
   `min_meaningful_chars`), `model` (OpenAI tuning — see the failover section), and `general`
-  (operational knobs with no other home: `session_ttl_hours`, `contact_form_url`,
-  `body_max_bytes`). Three more app_settings keys live OUTSIDE `SETTING_KEYS` (each with its
+  (technical operational knobs with no other home: `session_ttl_hours`, `admin_token_ttl_min`
+  — the admin login lifetime, env `ADMIN_TOKEN_TTL_MIN` as default —, `max_messages_per_session`,
+  `history_max_turns` — how many recent turns feed the model's prompt history, env
+  `HISTORY_MAX_TURNS`/20 default; the full transcript is always persisted —, and
+  `body_max_bytes`. `contact_form_url` is still resolved by `settings.general()` but only as a
+  LEGACY fallback for the per-language `contact_url` translation key — it is no longer shown in
+  the Settings UI). Three more app_settings keys live OUTSIDE `SETTING_KEYS` (each with its
   own admin endpoint, so they never appear in the generic Settings editor): `test_profile`,
   `prompt_variables` and `translations`. **The prompt WORDING is NOT a settings group** — it
   lives in `prompts.py` (the single source of truth), not `app_settings`; only the
@@ -697,7 +711,9 @@ Map of what lives where:
   it's answer content, not instructions.)
 - **Translations tab** (`translations.py`, `api/admin.py` `GET/PUT /admin/translations`, public
   `GET /api/chat/i18n`): per-language editing of every user-facing widget string — chrome copy,
-  server-generated service replies, and the per-language topic titles (via the existing
+  server-generated service replies, the per-language escalation contact-button URL (the
+  `contact_url` key, http(s)-validated; empty falls back to the deploy default), and the
+  per-language topic titles (via the existing
   `POST /admin/kb/topics` upsert). See "Translations" above. The admin panel itself stays English.
 - **KB editing** (`db.*` helpers, `api/admin.py` `/admin/kb/*`): **one KB text per topic**,
   single-language. `GET /admin/kb/content?topic_id=` reads it, `PUT /admin/kb/content` sets it
@@ -705,8 +721,8 @@ Map of what lives where:
   soft-clears it (`active=false`). No versioning, no per-language entries — the Layer-3 language
   directive still makes the model answer in the player's language regardless of the KB language.
 - **Escalation** (`escalation.build_payload`): returns the localized contact-button payload
-  (copy from the translations registry). No ticket snapshot, no Telegram notifier — the
-  hand-off is the contact button only.
+  (copy AND the per-language button URL from the translations registry). No ticket snapshot,
+  no Telegram notifier — the hand-off is the contact button only.
 - **Signed handshake** (`auth.sign_handshake`/`verify_handshake`, `api/chat.create_session`):
   with `WIDGET_HANDSHAKE_SECRET` set, only a valid signed blob is trusted for
   `user_context`; raw browser context is ignored. No secret ⇒ dev behaviour. The
@@ -730,6 +746,26 @@ Map of what lives where:
 §16 decisions: unresolved analysis = topic-grouped (no embeddings); contact form =
 host-site button only; admin auth = named `admin_users` accounts only (email + password,
 role-driven; no password-only owner login).
+
+### Future multi-tenancy (planned — not built; keep the seams clean)
+The service is single-tenant today, but the roadmap is a multi-user system of **projects**
+containing **products**, each with its own user set plus shared/global admins. Nothing is
+implemented yet — but the admin surface is deliberately organized so that tenanting later is a
+scoping change, not a redesign. The seams to preserve when extending:
+- **Everything brand/product-specific already lives in exactly three admin-editable stores**,
+  each a candidate for a per-product scope key: `prompt_variables` (persona/brand wording),
+  `translations` (all player-facing copy incl. the per-language `contact_url`), and the KB
+  (topics + texts + `kb_variables`). Don't scatter new brand-specific values outside these.
+- **Technical/operational knobs stay in the settings groups** (`general`, `antispam`, `model`,
+  `language`) — per-deployment today, per-project or per-product later. When adding a knob,
+  put it in the group it belongs to (or `general`), never hard-code it, so a future tenant
+  override has a place to land.
+- **`admin_users` is flat (email + global role)**; multi-tenancy will add a membership/scoping
+  layer (user ↔ project/product ↔ role) on top. Keep authorization decisions going through
+  `require_admin`/`require_admin_write` (single choke points) so scope checks slot in there.
+- The **prompt template** (`prompts.py`) stays the one shared, deploy-level artifact — brands
+  differ only via prompt variables + KB + translations, which is what makes white-label/
+  multi-product reuse possible without per-tenant prompt forks.
 
 ## Conventions
 
