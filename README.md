@@ -1,7 +1,7 @@
 # NikaBet Support Chat
 
 A standalone FastAPI microservice serving an AI customer-support chat for **NikaBet**
-(casino + sportsbook on the NowPlix B2B platform). It is API-isolated: other modules
+(casino + sportsbook). It is API-isolated: other modules
 talk to it over HTTP/JSON by `session_id` (UUID), so multiple front-ends can plug in.
 
 > Developer/agent guidance lives in **[`CLAUDE.md`](./CLAUDE.md)** — architecture,
@@ -25,7 +25,7 @@ talk to it over HTTP/JSON by `session_id` (UUID), so multiple front-ends can plu
   export, hot-reloaded runtime settings, knowledge-base editing (with a **Variables**
   sub-tab for the `{placeholder}` values injected into KB answers), a **Prompt** view
   (read-only assembled prompt + a **Prompt variables** sub-tab that re-brands the prompt
-  template — persona/brand/platform/tone — and hosts the escalation keyword lists and the
+  template — persona/brand/products/tone — and hosts the escalation keyword lists and the
   test player profile), and a **Translations** tab for every user-facing widget string
   (chrome, service replies, topic names) per language.
 
@@ -40,7 +40,7 @@ directive still makes the model **answer in the player's language**, and the KB 
 language. The prompt WORDING is the file **`prompts.py`** (the single source of truth) — a
 dry template that is not editable from the admin; the admin **Prompt** tab shows a read-only
 view of the assembled prompt, and its **Prompt variables** sub-tab edits the `{placeholder}`
-values (persona name, brand, platform, tone of voice) that uniquify the template per brand.
+values (persona name, brand, products, tone of voice) that uniquify the template per brand.
 The data layer is direct `asyncpg` (no ORM, no migration files): the schema *is*
 `db.init_db()`. See `CLAUDE.md` for the full design and the invariants.
 

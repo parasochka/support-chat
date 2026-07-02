@@ -1,5 +1,5 @@
 """Prompt variables: the prompt is a dry template; the admin-tunable values
-(persona/brand/platform/tone) render into it via render_prompt_variables, with
+(persona/brand/products/tone) render into it via render_prompt_variables, with
 precedence app_settings override > the defaults in prompts.PROMPT_VARIABLES."""
 from __future__ import annotations
 
@@ -20,10 +20,18 @@ def test_defaults_render_the_shipped_brand():
     core = prompts.get_system_core()
     assert "You are Nika" in core
     assert "NikaBet" in core
-    assert "NowPlix" in core
     # No unresolved registered placeholders survive.
     for key, _desc, _default in prompts.PROMPT_VARIABLES:
         assert "{%s}" % key not in core
+
+
+def test_platform_never_reaches_the_prompt():
+    # The B2B platform the brand runs on is KB content, not prompt material:
+    # there is no {platform_name} variable and the core never mentions it.
+    assert "platform_name" not in {k for k, _d, _v in prompts.PROMPT_VARIABLES}
+    core = prompts.get_system_core()
+    assert "NowPlix" not in core
+    assert "platform" not in core.lower()
 
 
 def test_override_rebrands_the_whole_prompt():

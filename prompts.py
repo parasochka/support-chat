@@ -68,7 +68,7 @@ _RESOLVED_TAG_RE = re.compile(r"\[\[RESOLVED\]\]", re.IGNORECASE)
 # PROMPT VARIABLES — the brand-uniquification registry
 #
 # The prompt text below is a DRY TEMPLATE: every brand-specific bit (the persona
-# name, the brand, the platform, the tone of voice) is a {placeholder} resolved
+# name, the brand, the products, the tone of voice) is a {placeholder} resolved
 # through the admin-editable `prompt_variables` store (app_settings override >
 # the defaults here, hot-reloaded like every other setting — see
 # settings.prompt_variables()). This keeps the file the single source of truth
@@ -83,9 +83,7 @@ PROMPT_VARIABLES: tuple[tuple[str, str, str], ...] = (
      "Nika"),
     ("brand_name", "Brand the assistant supports (used in rules, links policy, refusals)",
      "NikaBet"),
-    ("platform_name", "B2B platform the brand runs on",
-     "NowPlix"),
-    ("products", "What the brand offers (short parenthetical after the platform name)",
+    ("products", "What the brand offers (short parenthetical after the brand name)",
      "casino and sports betting"),
     ("persona_role", "Who the persona is (the sentence fragment right after the name)",
      "a lively woman who guides players and works as a customer-support assistant"),
@@ -141,7 +139,7 @@ def render_prompt_variables(text: str) -> str:
 # variables above (see render_prompt_variables); get_system_core() returns the
 # rendered block.
 # ---------------------------------------------------------------------------
-SYSTEM_CORE = """You are {persona_name}, {persona_role} for the {brand_name} brand on the {platform_name} platform ({products}). {tone_of_voice}
+SYSTEM_CORE = """You are {persona_name}, {persona_role} for the {brand_name} brand ({products}). {tone_of_voice}
 
 TONE:
 - Highlight the chance to win rewards (bonuses, prizes, tickets), but only what genuinely exists in the knowledge base.
@@ -598,8 +596,8 @@ _GUARDRAILS = (
 )
 
 
-# Off-topic / unsafe-request guardrail. The bot is a casino/sportsbook support
-# agent, not a general assistant, so it refuses these subjects outright. This is
+# Off-topic / unsafe-request guardrail. The bot is a product support agent, not
+# a general assistant, so it refuses these subjects outright. This is
 # part of the PROMPT (it rides in Layer 3), so it lives here in the file — the
 # single source of truth — alongside every other directive, not in the admin
 # panel. To disable it entirely, set FORBIDDEN_TOPICS = []. SYSTEM_CORE stays
@@ -610,8 +608,8 @@ FORBIDDEN_TOPICS: list[str] = [
     "politics, religion, news and public disputes",
     "medical, legal and tax advice",
     "investing, trading and cryptocurrencies outside {brand_name} payment methods",
-    "\"guaranteed-win\" schemes, cheats, and bypassing casino rules or limits",
-    "competitors and third-party bookmakers/casinos",
+    "\"guaranteed-win\" schemes, cheats, and bypassing {brand_name} rules or limits",
+    "competitors and third-party services offering similar products",
     "general encyclopedic questions, math and entertainment outside support",
 ]
 

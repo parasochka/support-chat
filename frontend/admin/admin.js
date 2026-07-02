@@ -864,7 +864,7 @@ async function kbVariablesView(main) {
 // The prompt WORDING is sourced solely from the server file `prompts.py` — the
 // single source of truth — and is NOT editable from the admin; it is a dry
 // template with {placeholders}. The Variables sub-tab edits the values that
-// fill them (persona name, brand, platform, tone of voice), plus the escalation
+// fill them (persona name, brand, products, tone of voice), plus the escalation
 // keyword lists and the test player profile (both feed the same "tune the
 // assistant per brand" workflow). To change the wording itself, edit prompts.py
 // and redeploy.
@@ -916,7 +916,7 @@ function promptVariablesBox(holder, variables) {
   box.appendChild(el("div", "npadmin-meta", "Prompt variables — brand uniquification"));
   box.appendChild(el("div", "npadmin-help",
     "The prompt in prompts.py is a dry template; these values fill its "
-    + "{placeholders} (persona name, brand, platform, tone of voice) so the "
+    + "{placeholders} (persona name, brand, products, tone of voice) so the "
     + "assistant can be re-branded from here without touching the prompt file. "
     + "Values are English (the model-facing prompt stays English; the assistant "
     + "still answers in the player's language). Clear a field to fall back to "
