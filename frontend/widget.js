@@ -41,6 +41,9 @@ export const CONFIG = {
 // UI string translations. The chat *answers* are in the same (browser) language
 // (handled server-side); these only cover the widget chrome so a Russian
 // browser doesn't see an English shell.
+// These are the BAKED-IN defaults so the first paint never waits on the
+// network; fetchI18n() then merges the server-resolved copy (the admin
+// Translations tab) over them — including languages added beyond this set.
 // House style (matches Nika's own formatting rules): straight quotes only, no
 // guillemets «», no curly quotes, no em dashes.
 const I18N = {
@@ -226,6 +229,26 @@ async function fetchTopics() {
   state.topics = data.topics || [];
   state.topicsLoaded = true;
   applyStaticLabels();
+}
+
+// Fetch the server-resolved chrome copy (admin Translations tab > built-in
+// defaults) and merge it over the baked-in I18N. A language added from the
+// admin beyond the baked-in set becomes a valid chrome language here (its
+// missing keys inherit English via the server's own fallback chain). Cheap,
+// cacheable, session-free; failures are non-fatal — the baked-in copy stands.
+async function fetchI18n() {
+  const { ok, data } = await api("/api/chat/i18n", { method: "GET" });
+  if (!ok || !data || !data.strings) return;
+  for (const [code, dict] of Object.entries(data.strings)) {
+    I18N[code] = Object.assign({}, I18N[code] || I18N.en, dict);
+  }
+  // Re-apply anything already painted from the defaults.
+  applyStaticLabels();
+  if (state.greetingEl) state.greetingEl.textContent = t("greeting");
+  if (els.topics && !els.topics.classList.contains("npchat-hidden")
+      && state.topicsLoaded) {
+    renderTopics();
+  }
 }
 
 // Kick off (once) and await the background session create. Anything that needs
@@ -449,6 +472,8 @@ function buildUI() {
   // category buttons instantly. It's a cheap, cacheable, session-free GET and
   // touches no reCaptcha or DB, so doing it on mount is cheap insurance.
   fetchTopics().catch(() => { /* the open handler retries if this missed */ });
+  // Merge the admin-edited chrome copy over the baked-in defaults (non-fatal).
+  fetchI18n().catch(() => { /* baked-in copy stands */ });
 }
 
 // Re-apply chrome strings. Idempotent, and re-run whenever the language changes

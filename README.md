@@ -22,8 +22,12 @@ talk to it over HTTP/JSON by `session_id` (UUID), so multiple front-ends can plu
   silent primary key doesn't stall answers.
 - **Admin dashboard** (`/admin`) — overview metrics, per-topic/-language breakdowns
   (with per-row cost), session browsing (with per-session cost), unresolved-cluster
-  export, hot-reloaded runtime settings, knowledge-base editing, and a **Variables**
-  tab for the admin-managed `{placeholder}` values injected into KB answers.
+  export, hot-reloaded runtime settings, knowledge-base editing (with a **Variables**
+  sub-tab for the `{placeholder}` values injected into KB answers), a **Prompt** view
+  (read-only assembled prompt + a **Prompt variables** sub-tab that re-brands the prompt
+  template — persona/brand/platform/tone — and hosts the escalation keyword lists and the
+  test player profile), and a **Translations** tab for every user-facing widget string
+  (chrome, service replies, topic names) per language.
 
 ## Architecture in one paragraph
 
@@ -33,9 +37,11 @@ behavioural directive), the selected topic's KB block (Layer 2), and only per-re
 player context, language directive, topic routing, history, the new turn (Layer 3, in the
 user message). The whole model-facing prompt is English for token efficiency; the language
 directive still makes the model **answer in the player's language**, and the KB may be in any
-language. The prompt is the file **`prompts.py`** (the single source of truth) — it is not
-editable from the admin; the admin **Prompt** tab is a read-only view of the assembled
-prompt. The data layer is direct `asyncpg` (no ORM, no migration files): the schema *is*
+language. The prompt WORDING is the file **`prompts.py`** (the single source of truth) — a
+dry template that is not editable from the admin; the admin **Prompt** tab shows a read-only
+view of the assembled prompt, and its **Prompt variables** sub-tab edits the `{placeholder}`
+values (persona name, brand, platform, tone of voice) that uniquify the template per brand.
+The data layer is direct `asyncpg` (no ORM, no migration files): the schema *is*
 `db.init_db()`. See `CLAUDE.md` for the full design and the invariants.
 
 ## Run

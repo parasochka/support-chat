@@ -26,6 +26,7 @@ import metrics
 import openai_client
 import prompts
 import settings as settings_mod
+import translations as translations_mod
 from api.admin_auth import require_admin, require_admin_write, WRITE_ROLES
 
 # Router-level dependency guards every route. Some handlers ALSO declare
@@ -272,6 +273,93 @@ async def kb_set_variable(key: str, body: KBVariableWrite, admin=Depends(require
     )
     await db.log_admin_event(None, "kb_variable_updated", {"key": key})
     return JSONResponse(content={"variable": item})
+
+
+# ---------------------------------------------------------------------------
+# prompt variables — the brand-uniquification values for the prompt template
+#
+# The prompt WORDING stays in prompts.py (the single source of truth, read-only
+# from the admin); these are the {placeholder} values (persona name, brand,
+# platform, tone of voice, …) that uniquify it per brand. Stored under their own
+# app_settings key (like test_profile), hot-reloaded, edited from the Prompt tab.
+# ---------------------------------------------------------------------------
+class PromptVariablesWrite(BaseModel):
+    value: Any = Field(...)
+
+
+@router.get("/prompt-variables")
+async def get_prompt_variables() -> JSONResponse:
+    resolved = settings_mod.prompt_variables()
+    return JSONResponse(content={"variables": [
+        {"key": key, "description": desc, "default": default,
+         "value": resolved.get(key, default)}
+        for key, desc, default in prompts.PROMPT_VARIABLES
+    ]})
+
+
+@router.put("/prompt-variables")
+async def put_prompt_variables(body: PromptVariablesWrite,
+                               admin=Depends(require_admin_write)) -> JSONResponse:
+    try:
+        validated = settings_mod.validate_prompt_variables(body.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.set_setting("prompt_variables", validated,
+                         updated_by=admin.get("email") or admin.get("role"))
+    await settings_mod.reload()  # hot: the next prompt build renders new values
+    await db.log_admin_event(None, "prompt_variables_updated",
+                             {"keys": sorted(validated)})
+    return JSONResponse(content={"variables": [
+        {"key": key, "description": desc, "default": default,
+         "value": settings_mod.prompt_variables().get(key, default)}
+        for key, desc, default in prompts.PROMPT_VARIABLES
+    ]})
+
+
+# ---------------------------------------------------------------------------
+# translations — the user-facing copy registry (widget chrome + server turns)
+#
+# Defaults live in translations.py; the admin stores per-language overrides
+# ({lang: {key: text}}) under their own app_settings key. The widget picks the
+# widget-scope strings up via GET /api/chat/i18n; the server-side copy
+# (escalation card, closing bubble, nudges) resolves through the same registry.
+# ---------------------------------------------------------------------------
+class TranslationsWrite(BaseModel):
+    value: Any = Field(...)
+
+
+@router.get("/translations")
+async def get_translations() -> JSONResponse:
+    codes = language.supported_codes()
+    names = language.all_language_names()
+    return JSONResponse(content={
+        "keys": [{"key": key, "scope": scope, "description": desc}
+                 for key, scope, desc in translations_mod.KEYS],
+        "languages": [{"code": c, "name": names.get(c, c.upper())} for c in codes],
+        # resolved = what the player currently sees; defaults = what an empty
+        # override falls back to (the SPA stores only values that differ).
+        "resolved": translations_mod.resolved(codes),
+        "defaults": translations_mod.defaults_for(codes),
+        "overrides": settings_mod.translations(),
+    })
+
+
+@router.put("/translations")
+async def put_translations(body: TranslationsWrite,
+                           admin=Depends(require_admin_write)) -> JSONResponse:
+    try:
+        validated = settings_mod.validate_translations(body.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.set_setting("translations", validated,
+                         updated_by=admin.get("email") or admin.get("role"))
+    await settings_mod.reload()  # hot: applies to new turns / the next i18n fetch
+    await db.log_admin_event(None, "translations_updated",
+                             {"languages": sorted(validated)})
+    return JSONResponse(content={
+        "resolved": translations_mod.resolved(language.supported_codes()),
+        "overrides": settings_mod.translations(),
+    })
 
 
 # ---------------------------------------------------------------------------

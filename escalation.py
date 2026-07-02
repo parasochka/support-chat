@@ -164,45 +164,25 @@ def decide(*, model_signalled: bool, message_count: int) -> EscalationDecision:
     return EscalationDecision(False)
 
 
-# Localized escalation copy. Falls back to English. House style matches the
-# model's formatting rules: no em dashes, no guillemet quotes.
-_MESSAGES = {
-    "en": "I'll connect you with our support team. They can take it from here.",
-    "ru": "Я передам ваш вопрос в службу поддержки. Они помогут дальше.",
-    "es": "Te conectaré con nuestro equipo de soporte. Ellos continuarán desde aquí.",
-    "tr": "Sizi destek ekibimize bağlayacağım. Buradan itibaren onlar yardımcı olacak.",
-    "pt": "Vou conectar você com nossa equipe de suporte. Eles continuarão a partir daqui.",
-}
-_BUTTON_LABELS = {
-    "en": "Contact support",
-    "ru": "Связаться с поддержкой",
-    "es": "Contactar soporte",
-    "tr": "Desteğe ulaşın",
-    "pt": "Falar com o suporte",
-}
-
-
 def build_payload(lang: str, final: bool = True) -> dict:
     """Return the escalation block for the API response.
 
     `final` mirrors the hard/soft split (module docstring): True closes the
     conversation in the widget (hard hand-off), False shows the contact card but
     keeps the chat usable (soft keyword trigger — a false positive must not kill
-    the conversation). The fallback language and the contact-button URL come from
-    the resolved runtime settings (app_settings > env > default), so the owner
-    tunes them in the admin panel without a redeploy.
+    the conversation). The localized copy comes from the translations registry
+    (admin Translations tab > built-in defaults, falling back through the default
+    language to English); the contact-button URL comes from the resolved runtime
+    settings — both tunable in the admin panel without a redeploy.
     """
-    import language  # lazy to keep this module import-light
-    import settings
-    default = language.default_code()
-    code = lang if lang in _MESSAGES else default
-    code = code if code in _MESSAGES else "en"
+    import settings      # lazy to keep this module import-light
+    import translations  # lazy: same
     return {
         "active": True,
         "final": final,
-        "message": _MESSAGES[code],
+        "message": translations.text("escalation_message", lang),
         "button": {
-            "label": _BUTTON_LABELS[code],
+            "label": translations.text("escalation_button", lang),
             "url": settings.general()["contact_form_url"] or "",
         },
     }

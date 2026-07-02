@@ -59,6 +59,12 @@ textarea.npadmin-input { min-height: 220px; font-family: ui-monospace, Menlo, mo
    misaligned next to the date/search fields. */
 .npadmin-toolbar .npadmin-btn { padding-top: 7px; padding-bottom: 7px; }
 
+/* Sub-tab row under a view heading (Knowledge base: Content | Variables;
+   Prompt: Preview | Prompt variables). The active sub-tab is a solid button,
+   the inactive ones ghosts. */
+.npadmin-subtabs { margin-bottom: 16px; }
+.npadmin-subtabs .npadmin-btn { border-radius: 999px; }
+
 /* "Hide empty" checkbox label in the sessions toolbar. */
 .npadmin-hide-empty { display: inline-flex; align-items: center; gap: 5px;
   font-size: 12px; color: var(--muted); white-space: nowrap; cursor: pointer; }

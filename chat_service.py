@@ -18,6 +18,7 @@ import language
 import openai_client
 import prompts
 import settings
+import translations
 
 
 log = logging.getLogger(__name__)
@@ -26,36 +27,19 @@ log = logging.getLogger(__name__)
 # The system-supplied closing bubble ("issue solved"). The model generates ONLY
 # the guiding questions; this fixed, localized option is appended by the backend
 # whenever guiding bubbles are shown, so its wording is always exact and tapping
-# it reliably ends the chat. House style: no em dashes, no guillemets.
-_CLOSING_SUGGESTIONS = {
-    "en": "Issue solved.",
-    "ru": "Проблема решена.",
-    "es": "Problema resuelto.",
-    "tr": "Sorun çözüldü.",
-    "pt": "Problema resolvido.",
-}
-
-
+# it reliably ends the chat. The copy lives in the translations registry
+# (admin Translations tab > built-in defaults in translations.py).
 def closing_suggestion_for(lang: str) -> str:
-    """The localized closing-bubble text, falling back to English."""
-    return _CLOSING_SUGGESTIONS.get(lang, _CLOSING_SUGGESTIONS["en"])
+    """The localized closing-bubble text (translations registry, EN fallback)."""
+    return translations.text("closing_suggestion", lang)
 
 
 # Model-free reply for a TRANSIENT model failure (all retries + failover
 # exhausted, e.g. an OpenAI outage). The turn is not persisted and the session
 # stays open, so the player can simply resend — a temporary provider blip must
 # never escalate and close a live conversation.
-_MODEL_ERROR_REPLY = {
-    "en": "Sorry, I'm having a brief technical hiccup. Please send your message again in a moment.",
-    "ru": "Извини, у меня небольшие технические неполадки. Пожалуйста, отправь сообщение ещё раз через минуту.",
-    "es": "Perdona, tengo un problema técnico temporal. Por favor, envía tu mensaje de nuevo en un momento.",
-    "tr": "Kusura bakma, geçici bir teknik sorun yaşıyorum. Lütfen mesajını birazdan tekrar gönder.",
-    "pt": "Desculpe, estou com um problema técnico temporário. Por favor, envie sua mensagem novamente em instantes.",
-}
-
-
 def _model_error_reply(lang: str) -> str:
-    return _MODEL_ERROR_REPLY.get(lang, _MODEL_ERROR_REPLY["en"])
+    return translations.text("model_error_reply", lang)
 
 
 @dataclass

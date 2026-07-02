@@ -11,18 +11,22 @@ so multiple front-ends can plug in. The admin dashboard, hot-reloaded tuning, KB
 and the signed front-end handshake are all built (see "Admin / management" below).
 Escalation is a contact-button hand-off (no in-app form, no live agent).
 
-**The prompt lives in one place: the file `prompts.py` (the single source of truth).**
-The Layer-1 core (`SYSTEM_CORE` — Nika's tone-of-voice + the absolute/escalation/
-responsible-gaming/links rules), every behavioural directive (greeting, formatting, KB-grounding,
-escalation restraint, suggestions, finish-chat, lead-forward — STATIC, in Layer 1; language,
-personalization, topic-routing — DYNAMIC, in Layer 3), and the forbidden-topics list are
-constants in that file. The prompt is **not** editable from the admin panel — to change
-it you edit `prompts.py` and redeploy. The admin **Prompt** tab is a **read-only** view of
-the whole assembled prompt (all layers, as sent) so you can always see exactly how it's
-formed. (The per-topic knowledge base — Layer 2 — is the one prompt input that stays
-editable in the admin, since it's answer content, not instructions.) There is no
-system-prompt versioning, no A/B split, and no admin prompt editor — those were removed in
-favour of this single source of truth.
+**The prompt WORDING lives in one place: the file `prompts.py` (the single source of
+truth) — as a DRY TEMPLATE.** The Layer-1 core (`SYSTEM_CORE` — Nika's tone-of-voice + the
+absolute/escalation/responsible-gaming/links rules), every behavioural directive (greeting,
+formatting, KB-grounding, escalation restraint, suggestions, finish-chat, lead-forward —
+STATIC, in Layer 1; language, personalization, topic-routing — DYNAMIC, in Layer 3), and the
+forbidden-topics list are constants in that file. The wording is **not** editable from the
+admin panel — to change it you edit `prompts.py` and redeploy. What IS admin-editable are
+the **prompt variables** (see "Prompt variables" below): the `{placeholder}` values —
+persona name, brand, platform, products, tone of voice, support scope — that uniquify the
+template per brand (the seam for future white-label deployments). The admin **Prompt** tab
+has two sub-tabs: **Preview** (a **read-only** view of the whole assembled prompt, all
+layers as sent, variables substituted) and **Prompt variables** (those values, plus the
+escalation keyword lists and the test player profile as sibling blocks). (The per-topic
+knowledge base — Layer 2 — stays editable in the Knowledge-base tab, since it's answer
+content, not instructions.) There is no system-prompt versioning, no A/B split, and no
+admin prompt editor — those were removed in favour of this single source of truth.
 
 The two source briefs (`CLAUDE_CODE_PROMPT_support_chat*.md`) are the authoritative spec.
 When extending the service, treat them as the contract and keep the invariants below.
@@ -80,7 +84,8 @@ model-facing prompt is written in English** — English is the most token-effici
 the model, and the prompt text never needs to match the player: the language directive makes the
 model **answer in the player's language** regardless, and the KB (Layer 2) can be in any language.
 Only the model-facing prompt is English; user-facing copy (escalation/contact text, the
-low-content nudge, widget chrome) and the user-input detectors (injection / escalation keyword
+low-content nudge, widget chrome — all in the `translations.py` registry, admin-editable per
+language) and the user-input detectors (injection / escalation keyword
 scans) stay multilingual. The Layer-3 directive tells
 the model to **answer in the language of the player's current message** (falling back to the
 session's base language when it's too short/ambiguous) — so the answers follow the player if
@@ -95,8 +100,11 @@ money/dispute/complaint/escalation situations (there she is calm, attentive, car
 highlights the chance to win rewards (bonuses/prizes/tickets) but takes every concrete
 amount/condition/date/name **strictly from the KB** (never invents), never promises a win,
 **uses no emoji**, uses the player's name sparingly, and keeps her character **on every
-language**. The tone rides in the byte-stable core, so it is cached and consistent. To change
-the voice you edit `SYSTEM_CORE` and redeploy.
+language**. The tone rides in the byte-stable core, so it is cached and consistent. The persona
+name, brand/platform names and the tone-of-voice paragraph are **prompt variables**
+(`{persona_name}`, `{brand_name}`, `{tone_of_voice}`, …) editable from the admin Prompt →
+Prompt variables sub-tab; to change the surrounding wording itself you edit `SYSTEM_CORE`
+(the template) and redeploy.
 
 **Responsible gaming (brief, `SYSTEM_CORE`).** Nika never raises addiction herself and never
 moralizes; but if the **player** says they have trouble controlling play or asks to limit/pause
@@ -196,10 +204,54 @@ KB texts may contain `{key}` placeholders (e.g. `{min_deposit}`). The `kb_variab
 one admin-managed `value` (+ description) per key. `kb.kb_block_for_topic` runs
 `kb.render_variables` over the topic's KB before it enters Layer 2, substituting each `{key}` with
 its registry value (unknown placeholders are left **as-is** so missing entries are visible in the
-prompt preview). The admin **Variables** tab (`GET/PUT /admin/kb/variables`) lists + edits them.
+prompt preview). The admin **Knowledge base → Variables** sub-tab (`GET/PUT /admin/kb/variables`)
+lists + edits them (it lives under the KB view because these values belong to the KB texts — the
+old top-level Variables tab was folded in; the legacy `#variables` hash redirects).
 NB: `list_kb_variables`/`set_kb_variable` must return `updated_at` as an **isoformat string**
 (via `db._row_to_kb_variable`) — a raw `datetime` cannot be serialized by `JSONResponse` and 500s
 the tab (the bug that shipped with the feature).
+
+### Prompt variables — the brand-uniquification registry (`prompts.py` + `settings.prompt_variables`)
+The prompt in `prompts.py` is a **dry template**: `SYSTEM_CORE`, `_GUARDRAILS`, the
+forbidden-topics list/refusal and the closing-goodbye directive carry `{placeholder}` tokens
+(`{persona_name}`, `{brand_name}`, `{platform_name}`, `{products}`, `{persona_role}`,
+`{tone_of_voice}`, `{support_scope}`). `prompts.PROMPT_VARIABLES` is the registry — (key,
+description, default) — and `prompts.render_prompt_variables` substitutes registered keys with
+values from `settings.prompt_variables()` (app_settings `prompt_variables` override > the file
+defaults; hot-reloaded like every setting). This is how a future white-label deployment re-brands
+the assistant from the admin without touching the prompt file. Only *registered* keys are
+substituted (a stray `{brace}` stays as-is), rendering is applied **per template string, never
+over player text** (`build_dynamic_prompt` renders `_GUARDRAILS`/forbidden/closing individually,
+so a `{brand_name}` typed by the player reaches the model literally), and `get_system_core()`
+renders from the in-process cache, so Layer 1 stays **byte-stable between requests** — it changes
+only on an admin save, the same accepted cache break as a KB edit. Values are English (the
+model-facing prompt stays English; no per-language uniquification). Edited from the admin
+**Prompt → Prompt variables** sub-tab (`GET/PUT /admin/prompt-variables`,
+`settings.validate_prompt_variables`; empty values fall back to the defaults). That sub-tab also
+hosts two sibling blocks: the **escalation keyword lists** (a friendlier one-per-line editor over
+the existing `escalation` settings group — the multilingual trigger stems stay multilingual, they
+scan the player's raw message, not the prompt) and the **test player profile** (the old Test
+sandbox tab, moved here since it exists to test the prompt's personalization; the legacy `#test`
+hash redirects).
+
+### Translations — the user-facing copy registry (`translations.py`)
+Every string the player sees now resolves through one registry: the widget chrome (header title,
+topic heading, canned greeting, placeholder, buttons, error notes, switch notices, finish copy)
+AND the server-generated turns (the escalation card message/button, the closing "Issue solved."
+bubble, the low-content nudge, the model-error nudge). `translations.KEYS` is the catalogue
+((key, scope `widget`/`server`, description)); `translations.DEFAULTS` holds the shipped copy for
+en/ru/es/tr/pt (the per-module dicts that used to live in `escalation.py` / `chat_service.py` /
+`antispam.py` moved here — those modules now call `translations.text(key, lang)`). Resolution
+chain: admin override[lang] → default[lang] → override/default of the default language → English,
+so a language **added from the admin Language tab starts on English copy and becomes fully
+translatable** via overrides. Overrides live in app_settings `translations` ({lang: {key: text}},
+`settings.validate_translations` — ISO-validated codes, registered keys only, empties dropped),
+edited from the admin **Translations** tab (`GET/PUT /admin/translations`), which also edits the
+per-language **topic titles** (stored on `kb_topics.title` via the existing topic upsert). The
+widget keeps a baked-in copy of the `widget`-scope strings (`widget.js` `I18N`) for an instant
+first paint, then fetches the session-free, cacheable `GET /api/chat/i18n` and merges the
+server-resolved strings over it (`fetchI18n`), so admin copy edits reach the chrome without a
+widget redeploy. The admin panel itself stays English.
 
 ### Atomic turn write (invariant)
 `db.persist_turn` writes the user message, the assistant message, the `ai_interaction_logs`
@@ -522,8 +574,10 @@ localizes to the player's language. Lives in Layer 3 only, so `SYSTEM_CORE` stay
 
 ## Invariants (these break silently — do not violate)
 
-1. The Layer-1 block (`get_system_core()` = `SYSTEM_CORE` + the static directives) is
-   byte-stable; per-request data lives only in the user message (Layer 3).
+1. The Layer-1 block (`get_system_core()` = `SYSTEM_CORE` + the static directives,
+   rendered with the prompt variables from the in-process settings cache) is
+   byte-stable between requests (it changes only on an admin prompt-variables save);
+   per-request data lives only in the user message (Layer 3).
 2. KB is injected per topic from Postgres — never baked into the core.
 3. Persisting a turn is one atomic transaction (messages + counters + AI log).
 4. Every message → `chat_messages`; every OpenAI call → `ai_interaction_logs`; every state
@@ -562,8 +616,8 @@ Map of what lives where:
   test profile, user management); mutating writes record `updated_by` as the account **email**
   (falling back to the role for safety). PBKDF2 verify/hash run in `asyncio.to_thread` so the
   ~100ms CPU burn never blocks the event loop. `GET /admin/me` returns the caller's role/email so
-  the SPA can role-gate its UI (managers lose the Settings / Users / Test-sandbox tabs and all
-  edit controls — cosmetic; the server is authoritative).
+  the SPA can role-gate its UI (managers lose the Settings / Users tabs and all edit controls —
+  cosmetic; the server is authoritative).
 - **User management** (`api/admin.py` `/admin/users*`, the **Users** tab, admins only):
   minimal CRUD over `admin_users` (email + password + role `admin`/`manager`). No email delivery,
   no reset flows — an admin sets passwords directly. A user can't demote/deactivate/delete
@@ -587,8 +641,11 @@ Map of what lives where:
   `injection_hard_block`, and the low-content guard `low_content_block` /
   `min_meaningful_chars`), `model` (OpenAI tuning — see the failover section), and `general`
   (operational knobs with no other home: `session_ttl_hours`, `contact_form_url`,
-  `body_max_bytes`). **The prompt is NOT a settings group** — it lives in `prompts.py` (the
-  single source of truth), not `app_settings`. The goal is that every non-secret *operational*
+  `body_max_bytes`). Three more app_settings keys live OUTSIDE `SETTING_KEYS` (each with its
+  own admin endpoint, so they never appear in the generic Settings editor): `test_profile`,
+  `prompt_variables` and `translations`. **The prompt WORDING is NOT a settings group** — it
+  lives in `prompts.py` (the single source of truth), not `app_settings`; only the
+  prompt-variable VALUES are stored. The goal is that every non-secret *operational*
   knob lives in the admin panel and only true secrets (API keys, JWT secrets, `DATABASE_URL`,
   handshake/reCaptcha secrets) — plus the network-perimeter deploy
   vars (`CORS_ALLOW_ORIGINS`, `TRUSTED_PROXY_COUNT`) — stay in Railway env. There is no seed:
@@ -608,41 +665,54 @@ Map of what lives where:
   mirrors them). **Timestamps render in the viewer's local timezone** — the API returns tz-aware
   ISO strings and the SPA formats them client-side via `fmtDateTime`/`toLocaleString` (a UTC `06:00`
   shows as `09:00` for a UTC+3 admin), so the dashboard always reads in the operator's own time.
-- **Variables tab** (`api/admin.py` `/admin/kb/variables`, the **Variables** view in the SPA):
-  list + edit the admin-managed `{placeholder}` registry (see "KB variables" above). Read returns
-  `updated_at` as an isoformat string so `JSONResponse` can serialize it.
-- **The prompt is the file `prompts.py` (single source of truth, NOT editable from admin).**
-  The Layer-1 core (`SYSTEM_CORE` — Nika's tone-of-voice + the absolute/escalation/
-  responsible-gaming/links rules), the STATIC Layer-1 directives (greeting, formatting,
-  KB-grounding, escalation restraint, suggested questions, finish-chat, lead-forward), the DYNAMIC
-  Layer-3 directives (language, personalization, topic routing) + the recency guardrails, and the
-  forbidden-topics list/refusal are constants in that file. To change the prompt you edit
-  `prompts.py` and redeploy — there is no admin editor, no `prompt_versions` table, no A/B split, no
-  `system_prompt`/`layer3_prompt` settings group. (This replaced an earlier design where the core was
-  versioned in the DB and edited from the panel; it was removed so there's exactly one place the
-  prompt comes from.) **Read-only effective-prompt view** (`api.admin._build_effective_preview` +
-  `GET /admin/effective-prompt`, the **Prompt** tab in the SPA): so the owner can always SEE the
-  whole assembled prompt, this endpoint reuses `prompts.build_messages` with a sample player + a
-  sample specialized topic's KB and returns the complete prompt split into the system message
-  (Layer 1 core + static directives + Layer 2 KB) and the user message (the dynamic Layer-3
-  directives + player context + recency guardrails). The SPA renders it as read-only blocks. It is
-  resilient — if topics/KB can't load it still renders Layer 1 + the Layer-3 block, never breaking
-  the page. (Layer 2, the per-topic KB, is the one prompt input still edited in the admin — in the
-  Knowledge-base tab — because it's answer content, not instructions.)
+- **KB Variables sub-tab** (`api/admin.py` `/admin/kb/variables`, the **Knowledge base →
+  Variables** sub-view in the SPA): list + edit the admin-managed `{placeholder}` registry (see
+  "KB variables" above). Read returns `updated_at` as an isoformat string so `JSONResponse` can
+  serialize it.
+- **The prompt WORDING is the file `prompts.py` (single source of truth, a dry template, NOT
+  editable from admin).** The Layer-1 core (`SYSTEM_CORE` — Nika's tone-of-voice + the
+  absolute/escalation/responsible-gaming/links rules), the STATIC Layer-1 directives (greeting,
+  formatting, KB-grounding, escalation restraint, suggested questions, finish-chat, lead-forward),
+  the DYNAMIC Layer-3 directives (language, personalization, topic routing) + the recency
+  guardrails, and the forbidden-topics list/refusal are constants in that file. To change the
+  wording you edit `prompts.py` and redeploy — there is no admin editor, no `prompt_versions`
+  table, no A/B split, no `system_prompt`/`layer3_prompt` settings group. (This replaced an
+  earlier design where the core was versioned in the DB and edited from the panel; it was removed
+  so there's exactly one place the prompt comes from.) The brand-specific VALUES the template
+  renders with ARE admin-editable — see "Prompt variables" above and the **Prompt → Prompt
+  variables** sub-tab (`GET/PUT /admin/prompt-variables`), which also hosts the escalation
+  keyword lists (over the `escalation` settings group) and the test player profile blocks.
+  **Read-only effective-prompt view** (`api.admin._build_effective_preview` +
+  `GET /admin/effective-prompt`, the **Prompt → Preview** sub-tab in the SPA): so the owner can
+  always SEE the whole assembled prompt, this endpoint reuses `prompts.build_messages` with a
+  sample player + a sample specialized topic's KB and returns the complete prompt split into the
+  system message (Layer 1 core + static directives + Layer 2 KB) and the user message (the
+  dynamic Layer-3 directives + player context + recency guardrails), prompt variables already
+  substituted. The SPA renders it as read-only blocks. It is resilient — if topics/KB can't load
+  it still renders Layer 1 + the Layer-3 block, never breaking the page. (Layer 2, the per-topic
+  KB, is the one prompt input still edited in the admin — in the Knowledge-base tab — because
+  it's answer content, not instructions.)
+- **Translations tab** (`translations.py`, `api/admin.py` `GET/PUT /admin/translations`, public
+  `GET /api/chat/i18n`): per-language editing of every user-facing widget string — chrome copy,
+  server-generated service replies, and the per-language topic titles (via the existing
+  `POST /admin/kb/topics` upsert). See "Translations" above. The admin panel itself stays English.
 - **KB editing** (`db.*` helpers, `api/admin.py` `/admin/kb/*`): **one KB text per topic**,
   single-language. `GET /admin/kb/content?topic_id=` reads it, `PUT /admin/kb/content` sets it
   (updates the topic's active entry in place, or inserts one), `DELETE /admin/kb/content?topic_id=`
   soft-clears it (`active=false`). No versioning, no per-language entries — the Layer-3 language
   directive still makes the model answer in the player's language regardless of the KB language.
-- **Escalation** (`escalation.build_payload`): returns the localized contact-button payload.
-  No ticket snapshot, no Telegram notifier — the hand-off is the contact button only.
+- **Escalation** (`escalation.build_payload`): returns the localized contact-button payload
+  (copy from the translations registry). No ticket snapshot, no Telegram notifier — the
+  hand-off is the contact button only.
 - **Signed handshake** (`auth.sign_handshake`/`verify_handshake`, `api/chat.create_session`):
   with `WIDGET_HANDSHAKE_SECRET` set, only a valid signed blob is trusted for
   `user_context`; raw browser context is ignored. No secret ⇒ dev behaviour. The
   injection sanitizer runs in every mode.
-- **Test sandbox profile** (`settings.test_profile`/`validate_test_profile`,
+- **Test player profile** (`settings.test_profile`/`validate_test_profile`,
   `app_settings['test_profile']`, `api.admin` `GET/PUT /admin/test-profile`, the **Test
-  sandbox** tab in the SPA): in test/dev (**no** `WIDGET_HANDSHAKE_SECRET`) there is no host
+  player** block in the Prompt → Prompt variables sub-tab — the old top-level Test sandbox
+  tab was folded in there, since the profile exists to test the prompt's personalization):
+  in test/dev (**no** `WIDGET_HANDSHAKE_SECRET`) there is no host
   site to sign a handshake, so this stored profile stands in for it at `create_session`. It
   drives the Layer-3 player data the model sees (`id, full_name, email, activation_status,
   country, balance, vip_level, registration_date` — the `prompts._CONTEXT_FIELDS` whitelist) so

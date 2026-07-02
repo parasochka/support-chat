@@ -17,6 +17,7 @@ from typing import Any
 import config
 import db
 import escalation as _escalation
+import prompts as _prompts
 
 # Raw DB values keyed by setting group (e.g. 'antispam' -> {...}). Empty until
 # reload(); an empty cache means every getter falls back to env defaults.
@@ -159,6 +160,36 @@ def test_profile() -> dict[str, Any]:
             if key in db_v:
                 out[key] = db_v[key]
     return out
+
+
+def prompt_variables() -> dict[str, str]:
+    """Resolved prompt variables: admin overrides over the defaults in prompts.py.
+
+    The prompt in prompts.py is a dry template; these values (persona name, brand,
+    platform, tone of voice, …) uniquify it per brand. Stored under its own
+    app_settings key (like test_profile) with its own admin endpoint, so it never
+    appears in the generic settings editor. An empty override falls back to the
+    default, so clearing a field in the admin restores the built-in wording.
+    """
+    db_v = _group("prompt_variables")
+    out = {key: default for key, _desc, default in _prompts.PROMPT_VARIABLES}
+    if isinstance(db_v, dict):
+        for key in out:
+            v = db_v.get(key)
+            if isinstance(v, str) and v.strip():
+                out[key] = v.strip()
+    return out
+
+
+def translations() -> dict[str, Any]:
+    """Raw per-language copy overrides ({lang: {key: text}}), empty by default.
+
+    Defaults live in translations.py; resolution (override > default > English)
+    happens there via translations.text(). Stored under its own app_settings key
+    with its own admin endpoint (the Translations tab).
+    """
+    db_v = _group("translations")
+    return db_v if isinstance(db_v, dict) else {}
 
 
 def general() -> dict[str, Any]:
@@ -318,4 +349,59 @@ def validate_test_profile(value: Any) -> dict[str, Any]:
     for key in out:
         if key in value:
             out[key] = value[key]
+    return out
+
+
+def validate_prompt_variables(value: Any) -> dict[str, str]:
+    """Validate a prompt-variables write. Returns the cleaned map; raises ValueError.
+
+    Only keys registered in prompts.PROMPT_VARIABLES are accepted (the template
+    is the single source of truth for which placeholders exist); values must be
+    strings. Empty strings are dropped so the resolved value falls back to the
+    built-in default. Stored separately from SETTING_KEYS (its own admin endpoint).
+    """
+    if not isinstance(value, dict):
+        raise ValueError("prompt_variables value must be a JSON object")
+    known = {key for key, _desc, _default in _prompts.PROMPT_VARIABLES}
+    out: dict[str, str] = {}
+    for key, v in value.items():
+        if key not in known:
+            raise ValueError(f"unknown prompt variable: {key!r}")
+        if not isinstance(v, str):
+            raise ValueError(f"{key} must be a string")
+        if v.strip():
+            out[key] = v.strip()
+    return out
+
+
+def validate_translations(value: Any) -> dict[str, dict[str, str]]:
+    """Validate a translations write ({lang: {key: text}}); raises ValueError.
+
+    Language codes must be real ISO 639-1 codes; copy keys must be registered in
+    translations.KEYS. Empty strings are dropped so the resolved copy falls back
+    to the built-in default for that language (then English).
+    """
+    import language as _language     # lazy: avoid import cycles at module load
+    import translations as _translations
+
+    if not isinstance(value, dict):
+        raise ValueError("translations value must be a JSON object")
+    known = {key for key, _scope, _desc in _translations.KEYS}
+    out: dict[str, dict[str, str]] = {}
+    for lang, entries in value.items():
+        code = str(lang).strip().lower()
+        if code not in _language.ISO_639_1:
+            raise ValueError(f"{lang!r} is not a valid ISO 639-1 language code")
+        if not isinstance(entries, dict):
+            raise ValueError(f"translations for {code!r} must be a JSON object")
+        clean: dict[str, str] = {}
+        for key, v in entries.items():
+            if key not in known:
+                raise ValueError(f"unknown translation key: {key!r}")
+            if not isinstance(v, str):
+                raise ValueError(f"{code}.{key} must be a string")
+            if v.strip():
+                clean[key] = v
+        if clean:
+            out[code] = clean
     return out

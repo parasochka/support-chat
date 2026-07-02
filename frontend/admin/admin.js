@@ -6,17 +6,26 @@ const TOKEN_KEY = "npadmin_token";
 // ---------------------------------------------------------------------------
 // URL hash routing helpers
 // ---------------------------------------------------------------------------
-// Hash format: #view  or  #sessions/SESSION_ID
+// Hash format: #view  or  #view/PARAM  (a session id under #sessions/…, a
+// sub-tab id under #kb/… and #prompt/…).
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, "");
-  if (!raw) return { view: "overview", sessionId: null };
+  if (!raw) return normalizeRoute("overview", null);
   const slash = raw.indexOf("/");
   return slash === -1
-    ? { view: raw, sessionId: null }
-    : { view: raw.slice(0, slash), sessionId: raw.slice(slash + 1) };
+    ? normalizeRoute(raw, null)
+    : normalizeRoute(raw.slice(0, slash), raw.slice(slash + 1));
 }
-function pushHash(view, sessionId) {
-  const h = sessionId ? `#${view}/${sessionId}` : `#${view}`;
+// Map removed top-level tabs to their new homes so old bookmarks keep working:
+// #variables -> the KB Variables sub-tab, #test -> the Prompt Variables sub-tab
+// (the test player moved there as a block).
+function normalizeRoute(view, param) {
+  if (view === "variables") return { view: "kb", param: "variables" };
+  if (view === "test") return { view: "prompt", param: "variables" };
+  return { view, param };
+}
+function pushHash(view, param) {
+  const h = param ? `#${view}/${param}` : `#${view}`;
   if (location.hash !== h) history.pushState(null, "", h);
 }
 
@@ -32,8 +41,8 @@ function isoDaysAgo(n) {
 // get a read-only support view; the server enforces this regardless of the UI.
 const VIEWS = [
   ["overview", "Overview"], ["sessions", "Sessions"], ["unresolved", "Unresolved"],
-  ["kb", "Knowledge base"], ["variables", "Variables"], ["prompt", "Prompt"],
-  ["settings", "Settings", true], ["users", "Users", true], ["test", "Test sandbox", true],
+  ["kb", "Knowledge base"], ["prompt", "Prompt"], ["translations", "Translations"],
+  ["settings", "Settings", true], ["users", "Users", true],
 ];
 const _VALID_VIEWS = VIEWS.map(([id]) => id);
 const WRITE_ROLES = ["admin"];
@@ -60,6 +69,9 @@ const state = {
   role: _boot.role,
   email: _boot.email,
   view: (() => { const { view } = parseHash(); return _VALID_VIEWS.includes(view) ? view : "overview"; })(),
+  // Sub-route under the view: a sub-tab id for #kb/… and #prompt/… (session ids
+  // under #sessions/… are handled separately by openSession).
+  param: (() => { const { view, param } = parseHash(); return _VALID_VIEWS.includes(view) ? param : null; })(),
   from: isoDaysAgo(30),
   to: isoToday(),
   // Supported languages (loaded once from /admin/meta) for the dropdowns.
@@ -229,6 +241,7 @@ function renderApp() {
     b.dataset.view = id;
     b.addEventListener("click", () => {
       state.view = id;
+      state.param = null;
       pushHash(id);
       syncNavActive();
       closeDrawer();
@@ -247,9 +260,9 @@ function renderApp() {
   root.appendChild(app);
 
   // If the URL points at a specific session, open it directly after the shell is ready.
-  const { view: hv, sessionId: hSid } = parseHash();
-  if (hv === "sessions" && hSid) {
-    openSession(hSid);
+  const { view: hv, param: hParam } = parseHash();
+  if (hv === "sessions" && hParam) {
+    openSession(hParam);
   } else {
     routeView(main);
   }
@@ -272,14 +285,34 @@ function routeView(main) {
   main.innerHTML = "";
   // Guard: managers cannot reach the technical/management views even by URL.
   if (!allowedViews().some(([id]) => id === state.view)) {
-    state.view = "overview"; pushHash("overview"); syncNavActive();
+    state.view = "overview"; state.param = null;
+    pushHash("overview"); syncNavActive();
   }
   const map = {
     overview: viewOverview, sessions: viewSessions, unresolved: viewUnresolved,
-    kb: viewKB, variables: viewVariables, prompt: viewPrompt, settings: viewSettings,
-    users: viewUsers, test: viewTest,
+    kb: viewKB, prompt: viewPrompt, translations: viewTranslations,
+    settings: viewSettings, users: viewUsers,
   };
-  (map[state.view] || viewOverview)(main);
+  (map[state.view] || viewOverview)(main, state.param);
+}
+
+// A row of sub-tab buttons under a view's heading (e.g. Knowledge base:
+// Content | Variables). Clicking one updates the hash (#view/sub) and re-routes.
+function subTabs(main, view, tabs, active) {
+  const bar = el("div", "npadmin-toolbar npadmin-subtabs");
+  for (const [id, label] of tabs) {
+    const isActive = id === active;
+    const b = el("button", "npadmin-btn" + (isActive ? "" : " ghost"), label);
+    if (!isActive) {
+      b.addEventListener("click", () => {
+        state.param = id;
+        pushHash(view, id);
+        routeView(main);
+      });
+    }
+    bar.appendChild(b);
+  }
+  main.appendChild(bar);
 }
 
 // ---------------------------------------------------------------------------
@@ -692,13 +725,19 @@ async function viewUnresolved(main) {
 }
 
 // ---------------------------------------------------------------------------
-// Knowledge base
+// Knowledge base — sub-tabs: Content (per-topic KB texts) | Variables (the
+// {placeholder} registry used inside those texts; it belongs to the KB, so it
+// lives here as a sub-view instead of a top-level tab).
 // ---------------------------------------------------------------------------
-async function viewKB(main) {
+async function viewKB(main, sub) {
   main.appendChild(el("h1", "npadmin-h", "Knowledge base"));
+  const active = sub === "variables" ? "variables" : "content";
+  subTabs(main, "kb", [["content", "Content"], ["variables", "Variables"]], active);
+  if (active === "variables") return kbVariablesView(main);
   main.appendChild(el("div", "npadmin-help",
     "One knowledge-base text per topic, injected into the prompt for that topic. "
-    + "Edit a topic's text below and save."));
+    + "Edit a topic's text below and save. Values for {placeholder} tokens are "
+    + "managed in the Variables sub-tab."));
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
     const data = await api("/kb/topics");
@@ -748,10 +787,9 @@ async function viewKB(main) {
 
 
 // ---------------------------------------------------------------------------
-// Knowledge-base variables
+// Knowledge-base variables (the Variables sub-tab of the Knowledge base view)
 // ---------------------------------------------------------------------------
-async function viewVariables(main) {
-  main.appendChild(el("h1", "npadmin-h", "Variables"));
+async function kbVariablesView(main) {
   main.appendChild(el("div", "npadmin-help",
     "Admin-managed values for placeholders used inside knowledge-base texts. "
     + "When a KB answer contains a token like {min_deposit}, the prompt receives "
@@ -820,27 +858,158 @@ async function viewVariables(main) {
 }
 
 // ---------------------------------------------------------------------------
-// Prompt (read-only)
+// Prompt — sub-tabs: Preview (read-only assembled prompt) | Variables (the
+// brand-uniquification values the prompt template renders with).
 //
-// The prompt is sourced solely from the server file `prompts.py` — the single
-// source of truth — and is NOT editable from the admin. This tab just renders the
-// complete prompt the model receives (all layers) so the owner can see exactly
-// how it's assembled. To change the prompt, edit prompts.py and redeploy.
+// The prompt WORDING is sourced solely from the server file `prompts.py` — the
+// single source of truth — and is NOT editable from the admin; it is a dry
+// template with {placeholders}. The Variables sub-tab edits the values that
+// fill them (persona name, brand, platform, tone of voice), plus the escalation
+// keyword lists and the test player profile (both feed the same "tune the
+// assistant per brand" workflow). To change the wording itself, edit prompts.py
+// and redeploy.
 // ---------------------------------------------------------------------------
-async function viewPrompt(main) {
+async function viewPrompt(main, sub) {
   main.appendChild(el("h1", "npadmin-h", "Prompt"));
+  const active = sub === "variables" ? "variables" : "preview";
+  subTabs(main, "prompt",
+          [["preview", "Preview"], ["variables", "Prompt variables"]], active);
+  if (active === "variables") return promptVariablesView(main);
   main.appendChild(el("div", "npadmin-help",
-    "Read-only. The prompt lives in the server file prompts.py — the single "
-    + "source of truth — and is not editable here. Below is the COMPLETE prompt "
-    + "the model receives, assembled exactly as it's sent. To change it, edit "
-    + "prompts.py and redeploy. (Knowledge-base answers — Layer 2 — are still "
-    + "editable in the Knowledge base tab.)"));
+    "Read-only. The prompt wording lives in the server file prompts.py — the "
+    + "single source of truth — and is not editable here. Below is the COMPLETE "
+    + "prompt the model receives, assembled exactly as it's sent, with the "
+    + "prompt variables already substituted. To change the values (brand, "
+    + "persona, tone of voice), use the Prompt variables sub-tab; to change the "
+    + "wording itself, edit prompts.py and redeploy. (Knowledge-base answers — "
+    + "Layer 2 — are editable in the Knowledge base tab.)"));
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
     const data = await api("/effective-prompt");
     holder.innerHTML = "";
     effectivePreviewBox(holder, data.effective_preview);
   } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
+}
+
+// ---------------------------------------------------------------------------
+// Prompt variables (the Variables sub-tab of the Prompt view)
+//
+// Three blocks: (1) the {placeholder} values that uniquify the prompt template
+// per brand; (2) the escalation keyword lists (pre-model triggers — strings the
+// owner tunes alongside the prompt, mixed languages by design); (3) the test
+// player profile (drives the Layer-3 player data in test/dev — moved here from
+// the removed Test sandbox tab so it doesn't clutter the menu).
+// ---------------------------------------------------------------------------
+async function promptVariablesView(main) {
+  const holder = el("div", null, "Loading…"); main.appendChild(holder);
+  try {
+    const data = await api("/prompt-variables");
+    holder.innerHTML = "";
+    promptVariablesBox(holder, data.variables || []);
+    await escalationKeywordsBox(holder);
+    await testPlayerBox(holder);
+  } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
+}
+
+function promptVariablesBox(holder, variables) {
+  const box = el("div", "npadmin-chart");
+  box.appendChild(el("div", "npadmin-meta", "Prompt variables — brand uniquification"));
+  box.appendChild(el("div", "npadmin-help",
+    "The prompt in prompts.py is a dry template; these values fill its "
+    + "{placeholders} (persona name, brand, platform, tone of voice) so the "
+    + "assistant can be re-branded from here without touching the prompt file. "
+    + "Values are English (the model-facing prompt stays English; the assistant "
+    + "still answers in the player's language). Clear a field to fall back to "
+    + "the built-in default. Applies to new requests immediately."));
+
+  const fields = {};
+  for (const v of variables) {
+    const lab = el("label", "npadmin-field");
+    lab.appendChild(el("span", null, `{${v.key}} — ${v.description}`));
+    const inp = el("textarea", "npadmin-input");
+    inp.value = v.value || "";
+    inp.placeholder = v.default || "";
+    inp.style.minHeight = (v.default || "").length > 120 ? "110px" : "40px";
+    inp.readOnly = !canWrite();
+    fields[v.key] = inp;
+    lab.appendChild(inp);
+    box.appendChild(lab);
+  }
+
+  if (canWrite()) {
+    const err = el("div", "npadmin-err");
+    const save = el("button", "npadmin-btn", "Save prompt variables");
+    save.addEventListener("click", async () => {
+      err.textContent = ""; err.style.color = "";
+      const value = {};
+      for (const [key, inp] of Object.entries(fields)) value[key] = inp.value;
+      if (!confirm("Update the prompt variables now? Applies to new requests immediately.")) return;
+      try {
+        const res = await api("/prompt-variables", { method: "PUT", body: { value } });
+        // Re-fill with the resolved values (an emptied field shows its default again).
+        for (const v of (res.variables || [])) {
+          if (fields[v.key]) fields[v.key].value = v.value || "";
+        }
+        err.style.color = "var(--good)"; err.textContent = "Saved — live";
+      } catch (e) { err.textContent = e.message; }
+    });
+    box.append(save, err);
+  }
+  holder.appendChild(box);
+}
+
+// The escalation keyword lists (soft pre-model triggers). They live in the
+// `escalation` settings group; this block is a friendlier editor for the two
+// lists (one keyword/stem per line) surfaced next to the prompt variables.
+async function escalationKeywordsBox(holder) {
+  const box = el("div", "npadmin-chart");
+  box.appendChild(el("div", "npadmin-meta", "Escalation keywords"));
+  box.appendChild(el("div", "npadmin-help",
+    "Pre-model triggers: a message hitting one of these shows the contact card "
+    + "without calling the model. One keyword, stem or phrase per line; stems "
+    + "match at the start of a word. The lists are multilingual by design (they "
+    + "scan the player's raw message, not the prompt)."));
+  try {
+    const data = await api("/settings");
+    const esc = (data.resolved || {}).escalation || {};
+    const areas = {};
+    for (const [key, label] of [
+      ["high_risk_keywords", "High-risk keywords (fraud / legal — escalate immediately)"],
+      ["human_request_keywords", "Explicit ask-for-a-human keywords"],
+    ]) {
+      const lab = el("label", "npadmin-field");
+      lab.appendChild(el("span", null, label));
+      const ta = el("textarea", "npadmin-input");
+      ta.value = (esc[key] || []).join("\n");
+      ta.style.minHeight = "140px";
+      ta.readOnly = !canWrite();
+      areas[key] = ta;
+      lab.appendChild(ta);
+      box.appendChild(lab);
+    }
+    if (canWrite()) {
+      const err = el("div", "npadmin-err");
+      const save = el("button", "npadmin-btn", "Save escalation keywords");
+      save.addEventListener("click", async () => {
+        err.textContent = ""; err.style.color = "";
+        const toList = (ta) => ta.value.split("\n").map((s) => s.trim()).filter(Boolean);
+        // PUT replaces the stored group, so carry the resolved cap along with
+        // the two lists — otherwise saving keywords would drop a cap override.
+        const value = {
+          max_messages_per_session: esc.max_messages_per_session,
+          high_risk_keywords: toList(areas.high_risk_keywords),
+          human_request_keywords: toList(areas.human_request_keywords),
+        };
+        if (!confirm("Update the escalation keywords now?")) return;
+        try {
+          await api("/settings/escalation", { method: "PUT", body: { value } });
+          err.style.color = "var(--good)"; err.textContent = "Saved — live";
+        } catch (e) { err.textContent = e.message; }
+      });
+      box.append(save, err);
+    }
+  } catch (e) { box.appendChild(errBox(e)); }
+  holder.appendChild(box);
 }
 
 // ---------------------------------------------------------------------------
@@ -1171,7 +1340,7 @@ async function viewUsers(main) {
   main.appendChild(el("div", "npadmin-help",
     "Named login accounts (email + password). Roles: admin can edit everything; "
     + "manager is read-only support access (view sessions, unresolved, knowledge "
-    + "base, variables and the prompt — no edits, no technical settings). Keep at "
+    + "base, prompt and translations — no edits, no technical settings). Keep at "
     + "least two admin accounts — there is no password recovery, so a forgotten "
     + "password could otherwise lock everyone out. No emails are sent — you manage "
     + "passwords here."));
@@ -1284,34 +1453,31 @@ async function viewUsers(main) {
 }
 
 // ---------------------------------------------------------------------------
-// Test sandbox — the stand-in player profile for the test widget (test page /)
+// Test player — the stand-in player profile for the test widget (test page /).
+// Lives as a block in the Prompt variables sub-tab (it exists to test the
+// prompt's personalization, so it belongs with the prompt knobs, not the menu).
 //
 // In production the host site supplies user_context over a signed handshake;
 // in test/dev this stored profile stands in for it. It feeds Layer 3 of the
-// prompt (so the model can greet the player by name) and can pin the answer/UI
-// language for the whole session — handy when the browser locale doesn't match
-// the language you want to test.
+// prompt (so the model can greet the player by name).
 // ---------------------------------------------------------------------------
-async function viewTest(main) {
-  main.appendChild(el("h1", "npadmin-h", "Test sandbox"));
-  main.appendChild(el("div", "npadmin-help",
-    "The player profile used by the test widget (test page at /). In production "
-    + "the host site supplies this over a signed handshake; here it stands in for "
-    + "it. These fields feed Layer 3 of the prompt (the model can address the "
-    + "player by name). The session language always follows the browser."));
-  const holder = el("div", null, "Loading…"); main.appendChild(holder);
+async function testPlayerBox(holder) {
+  const box = el("div", "npadmin-chart");
+  box.appendChild(el("div", "npadmin-meta", "Test player (sandbox)"));
+  box.appendChild(el("div", "npadmin-help",
+    "The player profile used by the test widget (test page at /) to test the "
+    + "prompt — e.g. name personalization. In production the host site supplies "
+    + "this over a signed handshake; here it stands in for it. These fields feed "
+    + "Layer 3 of the prompt. The session language always follows the browser."));
   try {
     const data = await api("/test-profile");
-    holder.innerHTML = "";
     const p = data.profile || {};
 
     if (!data.active) {
-      holder.appendChild(el("div", "npadmin-warnbox",
+      box.appendChild(el("div", "npadmin-warnbox",
         "A handshake secret (WIDGET_HANDSHAKE_SECRET) is configured, so the host "
         + "site is authoritative and this test profile is ignored at session create."));
     }
-
-    const box = el("div", "npadmin-chart");
 
     // enabled toggle
     const enLab = el("label", "npadmin-field");
@@ -1335,35 +1501,189 @@ async function viewTest(main) {
       lab.appendChild(el("span", null, label));
       const inp = el("input", "npadmin-input");
       inp.value = p[key] || "";
+      inp.readOnly = !canWrite();
       fields[key] = inp; lab.appendChild(inp);
       box.appendChild(lab);
     }
-
-    const err = el("div", "npadmin-err");
-    const save = el("button", "npadmin-btn", "Save test profile");
-    save.addEventListener("click", async () => {
-      err.textContent = ""; err.style.color = "";
-      const value = {
-        enabled: en.checked,
-        id: fields.id.value, full_name: fields.full_name.value,
-        email: fields.email.value, activation_status: fields.activation_status.value,
-        country: fields.country.value, balance: fields.balance.value,
-        vip_level: fields.vip_level.value, registration_date: fields.registration_date.value,
-      };
-      try {
-        await api("/test-profile", { method: "PUT", body: { value } });
-        err.style.color = "var(--good)";
-        err.textContent = "Saved — applies to the next chat session (reopen the widget)";
-      } catch (e) { err.textContent = e.message; }
-    });
-
-    const open = el("a", "npadmin-btn ghost", "Open test page ↗");
-    open.href = "/"; open.target = "_blank"; open.style.marginLeft = "8px";
+    en.disabled = !canWrite();
 
     const actions = el("div", "npadmin-toolbar");
-    actions.append(save, open);
+    const err = el("div", "npadmin-err");
+    if (canWrite()) {
+      const save = el("button", "npadmin-btn", "Save test player");
+      save.addEventListener("click", async () => {
+        err.textContent = ""; err.style.color = "";
+        const value = {
+          enabled: en.checked,
+          id: fields.id.value, full_name: fields.full_name.value,
+          email: fields.email.value, activation_status: fields.activation_status.value,
+          country: fields.country.value, balance: fields.balance.value,
+          vip_level: fields.vip_level.value, registration_date: fields.registration_date.value,
+        };
+        try {
+          await api("/test-profile", { method: "PUT", body: { value } });
+          err.style.color = "var(--good)";
+          err.textContent = "Saved — applies to the next chat session (reopen the widget)";
+        } catch (e) { err.textContent = e.message; }
+      });
+      actions.append(save);
+    }
+    const open = el("a", "npadmin-btn ghost", "Open test page ↗");
+    open.href = "/"; open.target = "_blank"; open.style.marginLeft = "8px";
+    actions.append(open);
     box.append(actions, err);
-    holder.appendChild(box);
+  } catch (e) { box.appendChild(errBox(e)); }
+  holder.appendChild(box);
+}
+
+// ---------------------------------------------------------------------------
+// Translations — every user-facing string in the widget, per language
+//
+// The widget chrome (title, greeting, buttons, errors) and the server-generated
+// turns (escalation card, closing bubble, nudges) resolve through the server
+// translations registry: admin overrides here > the built-in defaults. Topic
+// titles (the picker buttons) are stored per-language on the topics themselves,
+// so they are edited here too.
+// ---------------------------------------------------------------------------
+async function viewTranslations(main) {
+  main.appendChild(el("h1", "npadmin-h", "Translations"));
+  main.appendChild(el("div", "npadmin-help",
+    "Everything the player sees in the widget, editable per language: the "
+    + "widget texts (title, greeting, buttons, errors), the assistant's service "
+    + "replies (escalation card, closing option, nudges) and the topic names. "
+    + "Empty fields fall back to the built-in copy (then English). The admin "
+    + "panel itself stays English."));
+  const holder = el("div", null, "Loading…"); main.appendChild(holder);
+  try {
+    const [data, topicsData] = await Promise.all([
+      api("/translations"), api("/kb/topics"),
+    ]);
+    holder.innerHTML = "";
+
+    const languages = data.languages || [];
+    const overrides = data.overrides || {};
+    let lang = (languages.find((l) => l.code === state.defaultLang) || languages[0] || {}).code;
+    if (!lang) { holder.appendChild(el("div", "npadmin-meta", "No supported languages configured.")); return; }
+
+    // Language picker (the supported set; add languages in Settings → language).
+    const bar = el("div", "npadmin-toolbar");
+    bar.appendChild(el("span", "npadmin-meta", "Language"));
+    const sel = el("select", "npadmin-input"); sel.style.width = "auto";
+    for (const l of languages) {
+      const o = el("option", null, `${l.name} (${l.code})`); o.value = l.code;
+      if (l.code === lang) o.selected = true;
+      sel.appendChild(o);
+    }
+    bar.appendChild(sel);
+    holder.appendChild(bar);
+
+    const body = el("div"); holder.appendChild(body);
+
+    function renderLang() {
+      body.innerHTML = "";
+      const resolved = (data.resolved || {})[lang] || {};
+      const defaults = (data.defaults || {})[lang] || {};
+
+      // --- copy strings, grouped by scope --------------------------------
+      const groups = [
+        ["widget", "Widget texts",
+         "Chrome strings rendered by the widget itself."],
+        ["server", "Assistant service replies",
+         "Model-free texts the server sends as part of a turn."],
+      ];
+      const inputs = {};
+      for (const [scope, title, help] of groups) {
+        const box = el("div", "npadmin-chart");
+        box.appendChild(el("div", "npadmin-meta", title));
+        box.appendChild(el("div", "npadmin-help", help));
+        for (const k of (data.keys || [])) {
+          if (k.scope !== scope) continue;
+          const lab = el("label", "npadmin-field");
+          lab.appendChild(el("span", null, k.description));
+          const inp = el("textarea", "npadmin-input");
+          inp.value = resolved[k.key] || "";
+          inp.placeholder = defaults[k.key] || "";
+          inp.style.minHeight = "40px";
+          inp.readOnly = !canWrite();
+          inputs[k.key] = inp;
+          lab.appendChild(inp);
+          box.appendChild(lab);
+        }
+        body.appendChild(box);
+      }
+
+      if (canWrite()) {
+        const err = el("div", "npadmin-err");
+        const save = el("button", "npadmin-btn", `Save texts (${lang})`);
+        save.addEventListener("click", async () => {
+          err.textContent = ""; err.style.color = "";
+          // Store only values that differ from the built-in default — defaults
+          // keep flowing through for everything untouched.
+          const edited = {};
+          for (const [key, inp] of Object.entries(inputs)) {
+            const v = inp.value;
+            if (v.trim() && v !== (defaults[key] || "")) edited[key] = v;
+          }
+          const value = { ...overrides };
+          if (Object.keys(edited).length) value[lang] = edited;
+          else delete value[lang];
+          try {
+            const res = await api("/translations", { method: "PUT", body: { value } });
+            data.resolved = res.resolved || data.resolved;
+            Object.keys(overrides).forEach((k) => delete overrides[k]);
+            Object.assign(overrides, res.overrides || {});
+            err.style.color = "var(--good)"; err.textContent = "Saved — live";
+          } catch (e) { err.textContent = e.message; }
+        });
+        const saveBar = el("div", "npadmin-toolbar");
+        saveBar.append(save, err);
+        body.appendChild(saveBar);
+      }
+
+      // --- topic titles ---------------------------------------------------
+      const tbox = el("div", "npadmin-chart");
+      tbox.appendChild(el("div", "npadmin-meta", "Topic names"));
+      tbox.appendChild(el("div", "npadmin-help",
+        "The topic picker buttons, per language. Stored on the topic itself; "
+        + "a missing translation falls back to English."));
+      for (const topic of (topicsData.topics || [])) {
+        const lab = el("label", "npadmin-field");
+        lab.appendChild(el("span", null,
+          `${topic.slug} (en: ${topic.title.en || "—"})`));
+        const inp = el("input", "npadmin-input");
+        inp.value = topic.title[lang] || "";
+        inp.placeholder = topic.title.en || "";
+        inp.readOnly = !canWrite();
+        lab.appendChild(inp);
+        if (canWrite()) {
+          const row = el("div", "npadmin-toolbar");
+          const status = el("div", "npadmin-err");
+          const save = el("button", "npadmin-btn ghost", "Save");
+          save.addEventListener("click", async () => {
+            status.textContent = ""; status.style.color = "";
+            const title = { ...topic.title };
+            if (inp.value.trim()) title[lang] = inp.value.trim();
+            else delete title[lang];
+            try {
+              await api("/kb/topics", { method: "POST", body: {
+                slug: topic.slug, title,
+                order: topic.display_order || 0,
+                active: topic.active !== false,
+              } });
+              topic.title = title;
+              status.style.color = "var(--good)"; status.textContent = "Saved";
+            } catch (e) { status.textContent = e.message; }
+          });
+          row.append(save, status);
+          lab.appendChild(row);
+        }
+        tbox.appendChild(lab);
+      }
+      body.appendChild(tbox);
+    }
+
+    sel.addEventListener("change", () => { lang = sel.value; renderLang(); });
+    renderLang();
   } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
 }
 
@@ -1434,13 +1754,14 @@ function addRow(t, cells) { return rowEls(t, cells); }
 // Sync view + main content when the user navigates with browser back/forward.
 window.addEventListener("popstate", () => {
   if (!state.token) return;
-  const { view, sessionId } = parseHash();
+  const { view, param } = parseHash();
   const mainEl = document.getElementById("npadmin-main");
   if (!mainEl) return;
-  if (view === "sessions" && sessionId) {
-    openSession(sessionId);   // sets state.view + syncs the nav itself
+  if (view === "sessions" && param) {
+    openSession(param);   // sets state.view + syncs the nav itself
   } else {
     state.view = _VALID_VIEWS.includes(view) ? view : "overview";
+    state.param = _VALID_VIEWS.includes(view) ? param : null;
     syncNavActive();
     routeView(mainEl);
   }
