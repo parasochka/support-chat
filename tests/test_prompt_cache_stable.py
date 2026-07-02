@@ -16,8 +16,12 @@ def test_system_core_is_stable_string():
     assert a == b
     assert isinstance(a, str)
     # The persona core opens the block (Nika, the international guide persona).
+    # SYSTEM_CORE itself is a dry template; get_system_core() renders the prompt
+    # variables (persona/brand/platform/tone) into it.
     assert a.splitlines()[0].startswith("You are Nika")
-    assert a.startswith(prompts.SYSTEM_CORE)
+    assert a.startswith(prompts.render_prompt_variables(prompts.SYSTEM_CORE))
+    assert "{persona_name}" not in a          # every placeholder resolved
+    assert "{brand_name}" not in a
 
 
 def test_system_core_unaffected_by_language_or_context():
@@ -104,7 +108,9 @@ def test_forbidden_topics_directive_in_layer3_only():
     assert "FORBIDDEN TOPICS" in last
     assert "programming" in prompts.FORBIDDEN_TOPICS[0]  # sanity on the source list
     assert prompts.FORBIDDEN_TOPICS[0] in last                # the list is injected
-    assert prompts.FORBIDDEN_TOPICS_REFUSAL in last           # refusal wording injected
+    # The refusal is a template ({brand_name}, {support_scope}); the rendered
+    # wording is what reaches the prompt.
+    assert prompts.render_prompt_variables(prompts.FORBIDDEN_TOPICS_REFUSAL) in last
     # Stays in Layer 3 only; the cached core is untouched.
     assert "FORBIDDEN TOPICS" not in msgs[0]["content"]
     assert msgs[0]["content"].split("=== KNOWLEDGE BASE", 1)[0].rstrip("\n") == core_before
@@ -131,8 +137,9 @@ def test_strip_language_tag():
 
 def test_persona_and_tone_in_core():
     """Nika's tone-of-voice + the responsible-gaming / links rules ride in the
-    byte-stable persona core (SYSTEM_CORE)."""
-    core = prompts.SYSTEM_CORE
+    byte-stable persona core (SYSTEM_CORE is a dry template; check the rendered
+    form with the default prompt variables)."""
+    core = prompts.render_prompt_variables(prompts.SYSTEM_CORE)
     assert "Nika" in core
     assert "international persona" in core          # not a Russia-specific persona
     assert "flirtation" in core                     # playful tone

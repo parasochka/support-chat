@@ -34,7 +34,7 @@ async def test_effective_prompt_renders_all_layers(monkeypatch):
 
     # Layer 1 (the byte-stable core + every STATIC directive) + Layer 2 (the chosen
     # topic's KB) are in the system message; 'other' is skipped for a specialized one.
-    assert prompts.SYSTEM_CORE in pv["system"]
+    assert pv["system"].startswith(prompts.get_system_core())
     assert "KNOWLEDGE BASE" in pv["system"]
     assert "Как пополнить счёт" in pv["system"]  # KB content (data) is whatever lang it's in
     assert pv["example"]["topic"] == "Deposits"  # localized to the default lang
@@ -63,7 +63,7 @@ async def test_effective_prompt_resilient_when_topics_unavailable(monkeypatch):
 
     resp = await admin.get_effective_prompt()
     pv = json.loads(resp.body)["effective_preview"]
-    assert prompts.SYSTEM_CORE in pv["system"]
+    assert pv["system"].startswith(prompts.get_system_core())
     assert pv["example"]["topic"] is None
     # The escalation-restraint directive is static -> always in the Layer-1 system
     # block, even when topics/KB fail to load.

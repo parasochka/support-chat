@@ -28,6 +28,7 @@ import escalation
 import kb
 import language
 import settings
+import translations
 from api.client_ip import client_ip
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -235,6 +236,31 @@ async def list_catalogue(lang: Optional[str] = None,
     )
     # The catalogue changes only on a KB edit; a short browser cache makes
     # re-opens (and quick navigations) instant without going stale for long.
+    resp.headers["Cache-Control"] = "public, max-age=60"
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# GET /api/chat/i18n  -- widget chrome strings (admin Translations > defaults)
+# ---------------------------------------------------------------------------
+@router.get("/i18n")
+async def widget_i18n() -> JSONResponse:
+    """Resolved widget-scope copy for every supported language.
+
+    The widget paints instantly from its baked-in defaults, then fetches this and
+    merges the resolved strings over them — so copy edited in the admin
+    Translations tab (and languages added beyond the built-ins) reaches the
+    chrome without a widget redeploy. Session-free and cacheable like /topics.
+    """
+    codes = language.supported_codes()
+    resp = JSONResponse(
+        status_code=200,
+        content={
+            "languages": codes,
+            "strings": translations.widget_strings(codes),
+        },
+    )
+    # Same short cache as /topics: changes only on an admin edit.
     resp.headers["Cache-Control"] = "public, max-age=60"
     return resp
 
