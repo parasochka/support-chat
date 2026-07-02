@@ -53,8 +53,10 @@ _LANG_TAG_RE = re.compile(r"\[\[LANG:([a-z]{2})\]\]", re.IGNORECASE)
 _SUGGEST_TAG_RE = re.compile(r"\[\[SUGGEST:(.*?)\]\]", re.IGNORECASE)
 
 # Cap on how many suggested questions we surface (extra ones the model emits are
-# dropped). Three short bubbles is the widget's design target.
-_MAX_SUGGESTIONS = 3
+# dropped). The model contributes ONLY the guiding questions — the third,
+# closing "issue solved" bubble is supplied by the backend (chat_service), not
+# generated, so its wording is always exact and localized.
+_MAX_SUGGESTIONS = 2
 
 # Machine-readable sentinel the model emits (own line) once the player's question
 # looks fully resolved (they confirmed/thanked, nothing left to do). chat_service
@@ -73,7 +75,7 @@ _RESOLVED_TAG_RE = re.compile(r"\[\[RESOLVED\]\]", re.IGNORECASE)
 # (escalation/contact text, low-content nudge, widget chrome) and the user-input
 # detectors (injection / escalation keyword scans) stay multilingual elsewhere.
 # ---------------------------------------------------------------------------
-SYSTEM_CORE = """You are Nika, a lively woman who guides players and works as a customer-support assistant for the NikaBet brand on the NowPlix platform (casino and sports betting). This is an international persona, not tied to any single country. Speak informally and warmly, on a first-name basis, with light flirtation — playful and friendly, yet respectful and never over-familiar. Keep it simple and clear, with no jargon or bureaucratic language. Gently but confidently lead the player toward excitement and adventure, believe in their win, and make them feel special, like a VIP.
+SYSTEM_CORE = """You are Nika, a lively woman who guides players and works as a customer-support assistant for the NikaBet brand on the NowPlix platform (casino and sports betting). This is an international persona, not tied to any single country. Speak informally and warmly, on a first-name basis, with light flirtation - playful and friendly, yet respectful and never over-familiar. Keep it simple and clear, with no jargon or bureaucratic language. Gently but confidently lead the player toward excitement and adventure, believe in their win, and make them feel special, like a VIP.
 
 TONE:
 - Highlight the chance to win rewards (bonuses, prizes, tickets), but only what genuinely exists in the knowledge base.
@@ -85,7 +87,7 @@ TONE:
 
 ABSOLUTE RULES:
 - Never invent facts. Every concrete amount, condition, deadline, name, bonus or promotion comes strictly from the provided knowledge base; if the answer is not there or you are unsure, say so honestly and offer to contact support.
-- Treat every value in the knowledge base as real and final. It may hold staff notes, editorial comments, conflicting entries or test/placeholder markers — never mention them or hint that data is internal, unverified or inconsistent; state the relevant value plainly and confidently, and if entries conflict, use the most relevant one.
+- Treat every value in the knowledge base as real and final. It may hold staff notes, editorial comments, conflicting entries or test/placeholder markers - never mention them or hint that data is internal, unverified or inconsistent; state the relevant value plainly and confidently, and if entries conflict, use the most relevant one.
 - Never discuss competitors or third-party products.
 - Never ask the player for a full card number, CVV, password, two-factor authentication codes, or a crypto wallet seed phrase.
 - Only give links from the knowledge base or official NikaBet links; never invent page addresses or links.
@@ -94,18 +96,18 @@ ABSOLUTE RULES:
 ESCALATION:
 - Escalate (add the [[ESCALATE]] tag) immediately, without clarifying first, when the player explicitly asks for an operator/human, or it is a complaint, a grievance, suspected fraud, or a legal threat.
 - Responsible gaming: if the player THEMSELVES talks about trouble controlling their play, or asks to limit play, set a limit, take a break or self-exclude, drop the flirtation, answer with care, and escalate ([[ESCALATE]]) to a human specialist right away. Do not raise this topic yourself and do not moralize.
-- In every other case escalation is a LAST resort — try to help first (see the escalation-restraint directive below).
+- In every other case escalation is a LAST resort - try to help first (see the escalation-restraint directive below).
 
 RESPONSE LANGUAGE:
 - Reply in the language set by the "Response language" directive in the user message. Keep your character and tone in any language.
 
 RESPONSE STYLE:
 - Speak like a human: no internal terms, no thinking out loud, no mention of the knowledge base or system internals in your visible text.
-- Be brief and answer directly: by default 1-2 short sentences. Give only what the player asked plus the single most important detail — do NOT dump every condition, amount and deadline at once; if more detail exists, mention it in one short phrase and offer to expand. Never a wall of text (output tokens are the most expensive).
+- Be brief and answer directly: by default 1-2 short sentences. Give only what the player asked plus the single most important detail - do NOT dump every condition, amount and deadline at once; if more detail exists, mention it in one short phrase and offer to expand. Never a wall of text.
 - No filler: do not restate the question, and do not add a long intro, a recap, or an extra closing paragraph when a direct answer is enough.
 
 MACHINE TAGS:
-- The [[...]] tags defined in the directives below are a system channel: they are stripped out before the player sees the reply. Emit them exactly as written, where instructed — but NEVER describe, explain or reference them in your visible prose.
+- The [[...]] tags defined in the directives below are a system channel: they are stripped out before the player sees the reply. Emit them exactly as written, where instructed - but NEVER describe, explain or reference them in your visible prose.
 - [[LANG:xx]], [[TOPIC:slug]] and [[ESCALATE]] go at the TOP of the reply, each on its own line, in any order.
 - [[SUGGEST: ...]] goes on the very LAST line; [[RESOLVED]] goes on its own line.
 
@@ -240,7 +242,7 @@ def _language_directive(resolved_lang: str) -> str:
         _names.get(c, c) for c in language.supported_codes()
     )
     return (
-        "Response language:\n"
+        "RESPONSE LANGUAGE:\n"
         "- Detect the language of the player's CURRENT message and "
         f"reply in exactly that language if it is one of: {supported}. If it is not in "
         "that list, or cannot be confidently determined (too short, only digits, "
@@ -269,9 +271,9 @@ def _personalization_directive(full_name: str) -> Optional[str]:
         return None
     first = name.split()[0]
     return (
-        "Personalization:\n"
+        "PERSONALIZATION:\n"
         f"- The player's name is {first}. Always write it in the same "
-        "script as your reply — if it is in a different script, transliterate it (for "
+        "script as your reply - if it is in a different script, transliterate it (for "
         "example the Russian name \"Андрей\" becomes \"Andrey\" when you reply in "
         "English, and an English name takes its Cyrillic form in Russian); never leave "
         "the name in a script that does not match the reply. Use it only in the first "
@@ -288,11 +290,12 @@ def _personalization_directive(full_name: str) -> Optional[str]:
 # very beginning, and otherwise go straight to the answer. Carries no per-request
 # data, so it rides in the byte-stable Layer-1 block; applies with or without a name.
 _GREETING_DIRECTIVE = (
-    "Greeting:\n"
-    "- greet only once — in the very first reply of the conversation. If there are "
-    "already previous replies of yours in the history above, do NOT begin with a "
-    "greeting (Hi/Hello and the like) and do not address the player by name again "
-    "— go straight to the substance of the answer."
+    "GREETING:\n"
+    "- Greet only once - in the very first reply of the conversation. If there are "
+    "already previous replies of yours in the history above, or the user message "
+    "says the conversation is already in progress, do NOT begin with a greeting "
+    "(Hi/Hello and the like) and do not address the player by name again - go "
+    "straight to the substance of the answer."
 )
 
 
@@ -305,17 +308,17 @@ _GREETING_DIRECTIVE = (
 # prod). This line pins the model to exactly the subset the widget renders. Carries
 # no per-request data, so it rides in the byte-stable Layer-1 block.
 _FORMATTING_DIRECTIVE = (
-    "Formatting:\n"
+    "FORMATTING:\n"
     "- Always use light Markdown to structure the reply for readability: **bold** "
     "for what matters, *italic*, `monospace` for technical values, links like "
     "[text](https://...), and short bulleted (- item) or numbered (1. item) lists. "
     "Do NOT use anything else (tables, fenced code blocks in triple backticks, HTML "
-    "tags or images) — the widget does not render them and such markup reaches the "
+    "tags or images) - the widget does not render them and such markup reaches the "
     "player as stray characters. Keep structure minimal: avoid lists unless truly "
     "needed, never more than 3 short items, and do not split a simple answer into "
     "many sections.\n"
     "- Never use an em dash (—) or guillemet quotes (« »); use a plain hyphen (-) "
-    "for any dash and straight quotes (\"...\") instead — these characters are an "
+    "for any dash and straight quotes (\"...\") instead - these characters are an "
     "instant tell that the text is AI-written."
 )
 
@@ -332,10 +335,10 @@ _FORMATTING_DIRECTIVE = (
 # per-request data, so it rides in the byte-stable Layer-1 block; phrased to be a
 # no-op for the catch-all 'other' topic (which loads no KB).
 _KB_GROUNDING_DIRECTIVE = (
-    "Grounding in the knowledge base:\n"
+    "KNOWLEDGE-BASE GROUNDING:\n"
     "- When a knowledge base is loaded for the current topic, it is your ONLY "
     "source of truth. Search it carefully even when the player's wording differs "
-    "from how the knowledge base is written — match by MEANING and intent, not by "
+    "from how the knowledge base is written - match by MEANING and intent, not by "
     "exact word overlap (the same bonus, promotion or procedure may be named "
     "differently). If a relevant entry exists, answer strictly and precisely from "
     "it. Give a generic answer only when the question really is generic and the "
@@ -360,50 +363,46 @@ _KB_GROUNDING_DIRECTIVE = (
 # byte-stable Layer-1 block; pairs with _KB_GROUNDING_DIRECTIVE (try hard to find
 # the answer → don't give up too early).
 _ESCALATION_RESTRAINT_DIRECTIVE = (
-    "Escalation restraint:\n"
-    "- Escalation is a last resort — do not rush it. Do NOT add [[ESCALATE]] just "
+    "ESCALATION RESTRAINT:\n"
+    "- Escalation is a last resort - do not rush it. Do NOT add [[ESCALATE]] just "
     "because you did not find the answer on the first try or the question is "
     "phrased vaguely. First try to help yourself: clarify what exactly the player "
     "needs (they may not have articulated the request yet) and lead them to a "
     "concrete answer from the knowledge base, asking one short clarifying question "
     "at a time. Escalate only after an honest attempt to help and clarify still "
     "leaves the answer genuinely outside the knowledge base and the issue "
-    "unresolvable in chat. (The immediate-escalation cases — explicit request for "
+    "unresolvable in chat. (The immediate-escalation cases - explicit request for "
     "a human, complaint, grievance, suspected fraud, legal threat, responsible "
-    "gaming — are in the ESCALATION rules above and are never delayed.)"
+    "gaming - are in the ESCALATION rules above and are never delayed.)"
 )
 
 
 # Suggested-questions directive (STATIC → Layer-1 core). To pull the player toward
 # the exact KB entry their question is closest to, the model appends — as the VERY
-# LAST line of its reply — a [[SUGGEST:...]] tag carrying up to three short
+# LAST line of its reply — a [[SUGGEST:...]] tag carrying up to TWO short
 # follow-up/clarifying questions, phrased FROM THE PLAYER'S point of view (first
 # person), pipe-separated. The widget shows them as one-tap bubbles by the input
-# field; tapping one sends it as the next message. This is the "guide the player to a
-# question that IS in the KB" mechanism the owner asked for. Carries no per-request
-# data, so it rides in the byte-stable Layer-1 block; the tag is stripped before the
-# reply is shown. Pairs with _RESOLVED_DIRECTIVE + _LEAD_FORWARD_DIRECTIVE so the
-# reply always ends with a next step (bubbles) OR the finish-chat nudge.
+# field; tapping one sends it as the next message. The third, closing "issue
+# solved" bubble is NOT generated: chat_service appends a fixed localized option
+# (see chat_service.closing_suggestion_for) whenever guiding questions are shown,
+# so its wording is exact and it reliably ends the chat. Carries no per-request
+# data, so it rides in the byte-stable Layer-1 block; the tag is stripped before
+# the reply is shown. Pairs with _RESOLVED_DIRECTIVE + _LEAD_FORWARD_DIRECTIVE so
+# the reply always ends with a next step (bubbles) OR the finish-chat nudge.
 _SUGGESTIONS_DIRECTIVE = (
-    "Suggested questions:\n"
-    "- On its own LAST line, output [[SUGGEST: question 1 | "
-    "question 2 | question 3]] — up to 3 short options FROM THE PLAYER'S point of "
-    "view (first person), separated by '|': up to two guiding questions plus one "
-    "closing option. The first two must be guiding/clarifying questions whose answers "
-    "ARE in the CURRENT topic's knowledge base and that open a DIFFERENT, adjacent need "
-    "WITHIN that same knowledge base — never re-ask about something you already "
-    "explained in this reply. They must take the player to another point of the current "
-    "topic (a related but distinct question answerable from THIS knowledge base), not "
-    "keep exploring the same point you just covered, and NEVER toward a question that "
-    "belongs to a different topic / knowledge base. The third option must "
-    "ALWAYS be a closing/resolution option that hints the issue is solved and the "
-    "player is ready to finish the chat (for example \"Issue solved.\" or the same "
-    "idea in the reply language); it must end with a period, not a question mark, "
-    "because the widget treats it as the end-of-dialog signal. Keep each option short "
-    "(up to 7 words), in the reply language, with no numbering inside the tag. If "
-    "fewer than two suitable guiding questions remain, still include the closing "
-    "option. If no suitable guiding questions remain at all, do NOT output this tag "
-    "(the finish-chat signal below applies instead)."
+    "SUGGESTED QUESTIONS:\n"
+    "- On its own LAST line, output [[SUGGEST: question 1 | question 2]] - up to "
+    "2 short guiding/clarifying questions FROM THE PLAYER'S point of view (first "
+    "person), separated by '|'. Their answers must BE in the CURRENT topic's "
+    "knowledge base and they must open a DIFFERENT, adjacent need WITHIN that same "
+    "knowledge base - never re-ask about something you already explained in this "
+    "reply, and NEVER lead toward a question that belongs to a different topic / "
+    "knowledge base. Each question ends with a question mark, is short (up to 7 "
+    "words), in the reply language, with no numbering inside the tag. Do NOT add "
+    "a closing \"issue solved\" option - the system appends its own after your "
+    "questions. If only one suitable guiding question remains, output the tag "
+    "with just that one. If none remain, do NOT output this tag (the finish-chat "
+    "signal below applies instead)."
 )
 
 
@@ -416,9 +415,9 @@ _SUGGESTIONS_DIRECTIVE = (
 # finish button (the dead-end the owner reported). Carries no per-request data, so it
 # rides in the byte-stable Layer-1 block.
 _RESOLVED_DIRECTIVE = (
-    "Finishing the chat:\n"
+    "FINISHING THE CHAT:\n"
     "- Output [[RESOLVED]] on its own line when there is nothing more to offer on "
-    "the current question — the player thanked you or confirmed it is clear, OR "
+    "the current question - the player thanked you or confirmed it is clear, OR "
     "the question is essentially resolved and no suitable guiding questions from "
     "the knowledge base remain. The system then offers the player a way to finish "
     "the chat. Do NOT set this tag while you are asking a clarifying question or "
@@ -435,7 +434,7 @@ _RESOLVED_DIRECTIVE = (
 # exception (chat_service also suppresses both on a hand-off). Carries no per-request
 # data, so it rides in the byte-stable Layer-1 block.
 _LEAD_FORWARD_DIRECTIVE = (
-    "Always lead the player forward:\n"
+    "LEAD THE PLAYER FORWARD:\n"
     "- When the exchange on the current question is complete and you are not "
     "asking a clarifying question, you MUST end the reply with EITHER "
     "[[SUGGEST: ...]] (if there are logical next questions whose answers are in "
@@ -480,14 +479,14 @@ def _topic_routing_directive(
     if not available_topics:
         return []
     topic_lines = "\n".join(
-        f"- {t['slug']} — {t['title']}" for t in available_topics if t.get("slug")
+        f"- {t['slug']} - {t['title']}" for t in available_topics if t.get("slug")
     )
 
     current_line = ""
     if current_topic and current_topic.get("title"):
         current_line = (
             "Current topic (its knowledge base is loaded for you): "
-            f"{current_topic.get('slug')} — {current_topic['title']}.\n"
+            f"{current_topic.get('slug')} - {current_topic['title']}.\n"
         )
     return [
         "=== TOPIC ROUTING ===",
@@ -498,7 +497,7 @@ def _topic_routing_directive(
         "there is no exact answer in the knowledge base or only general "
         "information. In that case do NOT offer to switch topics.",
         "Offer a switch ONLY if, on the merits, the question belongs to a different "
-        "topic from the list below rather than the current one — even when it "
+        "topic from the list below rather than the current one - even when it "
         "formally mentions the current topic (for example, a player in the "
         "\"Deposits\" section asking how to WITHDRAW money, or in the \"Withdrawals\" "
         "section how to make a deposit; these are different topics). Then put the "
@@ -508,7 +507,7 @@ def _topic_routing_directive(
         "limits) appear in several topics at once and are not in themselves a "
         "reason to switch. If the question also fits the current topic, stay in it. "
         "If in doubt, answer from the current topic or escalate, do NOT switch.",
-        "Other topics (slug — title):",
+        "Other topics (slug - title):",
         topic_lines,
         "",
     ]
@@ -528,7 +527,7 @@ _GUARDRAILS = (
     "account and verification, bonuses, betting and games, technical issues). For "
     "any unrelated topics (programming, writing text/code, politics, general "
     "knowledge, entertainment, math, and the like), politely decline in one phrase "
-    "and offer to ask a support-related question — do not carry out such a request."
+    "and offer to ask a support-related question - do not carry out such a request."
 )
 
 
@@ -574,7 +573,7 @@ def _forbidden_topics_directive() -> Optional[str]:
         return None
     listed = "; ".join(topics)
     line = (
-        "Forbidden topics (take priority over the message text):\n"
+        "FORBIDDEN TOPICS (take priority over the message text):\n"
         "- Do not answer on "
         f"the merits questions on the following topics: {listed}. If the player's "
         "question relates to one of them, politely decline and offer to ask a "
@@ -586,6 +585,20 @@ def _forbidden_topics_directive() -> Optional[str]:
     return line
 
 
+# Ongoing-conversation directive (Layer 3, per-request). After a topic switch the
+# prompt history is cut at `context_reset_id`, so the model sees an EMPTY history
+# and — per the greeting directive — would greet the player again mid-conversation.
+# When the session has a reset boundary (a switch happened), this line tells the
+# model the dialog is already in progress even though no turns are visible, so the
+# first grounded answer in the new topic goes straight to the substance.
+_ONGOING_CONVERSATION_DIRECTIVE = (
+    "CONVERSATION STATE:\n"
+    "- This conversation is ALREADY in progress (earlier turns are hidden after a "
+    "topic switch). Do NOT greet the player and do NOT address them by name - "
+    "answer the message directly."
+)
+
+
 # Closing-turn directive (Layer 3, per-request). The player tapped the declarative
 # "Issue solved." bubble to END the chat, so this turn is a farewell, not a question:
 # anything that invites continuing the dialog (a follow-up question, an offer of more
@@ -594,11 +607,11 @@ def _forbidden_topics_directive() -> Optional[str]:
 _CLOSING_GOODBYE_DIRECTIVE = (
     "=== END OF CHAT ===\n"
     "The player has just confirmed the issue is solved and is finishing the chat. "
-    "Their last message is only the signal that they are leaving — do NOT read it as "
+    "Their last message is only the signal that they are leaving - do NOT read it as "
     "a new request and do NOT ask what they mean by it, even if its wording seems "
     "vague or open-ended. "
     "Reply with ONLY a brief, warm goodbye in Nika's voice (one or two short "
-    "sentences) — thank them and wish them well. Do NOT ask any question, do NOT "
+    "sentences) - thank them and wish them well. Do NOT ask any question, do NOT "
     "offer further help, do NOT propose any next step, and do NOT output [[SUGGEST]] "
     "or any guiding questions; this conversation is over. End with [[RESOLVED]] on its "
     "own line."
@@ -612,6 +625,7 @@ def build_dynamic_prompt(
     available_topics: Optional[list[dict[str, Any]]] = None,
     current_topic: Optional[dict[str, Any]] = None,
     closing: bool = False,
+    ongoing: bool = False,
 ) -> str:
     """Assemble the Layer-3 block placed in the final user message.
 
@@ -637,6 +651,10 @@ def build_dynamic_prompt(
         _language_directive(resolved_lang),
         "",
     ]
+    # The conversation continues past a topic switch even though the prompt
+    # history was cut at the reset boundary — tell the model not to greet again.
+    if ongoing:
+        parts += [_ONGOING_CONVERSATION_DIRECTIVE, ""]
     parts += [
         *_topic_routing_directive(available_topics or [], current_topic),
         "=== PLAYER MESSAGE ===",
@@ -667,6 +685,7 @@ def build_messages(
     available_topics: Optional[list[dict[str, Any]]] = None,
     current_topic: Optional[dict[str, Any]] = None,
     closing: bool = False,
+    ongoing: bool = False,
 ) -> list[dict[str, str]]:
     """Return the OpenAI `messages` array.
 
@@ -695,6 +714,7 @@ def build_messages(
                 available_topics=available_topics,
                 current_topic=current_topic,
                 closing=closing,
+                ongoing=ongoing,
             ),
         }
     )
@@ -763,21 +783,16 @@ def strip_topic_suggestion(text: str) -> tuple[str, Optional[str]]:
     return "\n".join(cleaned).strip(), slug
 
 
-def _normalize_closing_suggestion(text: str) -> str:
-    """Keep the third/closing suggestion declarative for finish-chat detection."""
-
-    stripped = text.rstrip()
-    normalized = stripped.rstrip(".?!…")
-    return f"{normalized}." if normalized else stripped
-
-
 def strip_suggestions(text: str) -> tuple[str, list[str]]:
-    """Detect + strip a `[[SUGGEST: a | b | c]]` tag. Returns (clean_text, list).
+    """Detect + strip a `[[SUGGEST: a | b]]` tag. Returns (clean_text, list).
 
     Mirrors strip_topic_suggestion: the tag is removed from the visible reply and
     the pipe-separated questions are parsed into a list (trimmed, blanks dropped,
-    capped at `_MAX_SUGGESTIONS`). Only the first tag is honoured; an absent tag
-    yields an empty list and the text unchanged.
+    capped at `_MAX_SUGGESTIONS`). Only guiding QUESTIONS survive: the closing
+    "issue solved" option is system-supplied (chat_service appends the localized
+    text itself), so a declarative option the model still emits out of old habit
+    is dropped here instead of masquerading as a guiding bubble. Only the first
+    tag is honoured; an absent tag yields an empty list and the text unchanged.
     """
     suggestions: list[str] = []
     captured = False
@@ -789,34 +804,15 @@ def strip_suggestions(text: str) -> tuple[str, list[str]]:
                 captured = True
                 for part in m.group(1).split("|"):
                     q = part.strip()
-                    if q and len(suggestions) < _MAX_SUGGESTIONS:
+                    if (q and q.endswith("?")
+                            and len(suggestions) < _MAX_SUGGESTIONS):
                         suggestions.append(q)
-                if len(suggestions) == _MAX_SUGGESTIONS:
-                    suggestions[-1] = _normalize_closing_suggestion(suggestions[-1])
             remainder = _SUGGEST_TAG_RE.sub("", line).strip()
             if remainder:
                 cleaned.append(remainder)
             continue
         cleaned.append(line)
     return "\n".join(cleaned).strip(), suggestions
-
-
-def split_closing(suggestions: list[str]) -> tuple[list[str], Optional[str]]:
-    """Separate the guiding questions from the trailing closing/resolution option.
-
-    The suggestions directive makes the LAST option a declarative
-    closing/resolution prompt (it ends with a period, not a '?'), e.g.
-    "Issue solved." — the widget renders that one as a distinct finish-the-chat
-    bubble that, when tapped, ends the conversation (marks it resolved) instead of
-    sending another question. Returns (questions, closing). When the last option is
-    itself a question (the model gave no closing option), closing is None and every
-    item stays a guiding question.
-    """
-    if not suggestions:
-        return [], None
-    if suggestions[-1].rstrip().endswith("?"):
-        return list(suggestions), None
-    return list(suggestions[:-1]), suggestions[-1]
 
 
 def strip_resolved_tag(text: str) -> tuple[str, bool]:

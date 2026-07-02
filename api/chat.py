@@ -121,13 +121,16 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
     try:
         antispam.check_rate_limit(f"session:{ip}")
     except antispam.AntiSpamError as exc:
-        await db.log_admin_event(None, "rate_limited", {"ip": ip, "scope": "session"})
+        await db.log_admin_event_sampled(None, "rate_limited",
+                                         {"ip": ip, "scope": "session"})
         return _err(exc.status, exc.code, exc.detail)
 
-    # reCaptcha (skips gracefully in dev; logs the skip)
+    # reCaptcha (skips gracefully in dev; logs the skip, sampled — it fires on
+    # EVERY dev session create otherwise)
     captcha = await antispam.verify_recaptcha(body.recaptcha_token, ip)
     if captcha.get("skipped"):
-        await db.log_admin_event(None, "recaptcha_skipped", {"reason": captcha.get("reason")})
+        await db.log_admin_event_sampled(None, "recaptcha_skipped",
+                                         {"reason": captcha.get("reason")})
     elif not captcha.get("ok"):
         await db.log_admin_event(None, "recaptcha_blocked",
                                  {"reason": captcha.get("reason"), "score": captcha.get("score")})
@@ -295,7 +298,7 @@ async def send_message(req: Request, body: MessageSend,
             "chat_message_rate_limited session_id=%s ip=%s code=%s",
             body.session_id, ip, exc.code,
         )
-        await db.log_admin_event(body.session_id, "rate_limited", {"ip": ip})
+        await db.log_admin_event_sampled(body.session_id, "rate_limited", {"ip": ip})
         return _err(exc.status, exc.code, exc.detail)
 
     # 3. cooldown -> 429
@@ -331,8 +334,8 @@ async def send_message(req: Request, body: MessageSend,
             "chat_message_low_content_blocked session_id=%s chars=%s",
             body.session_id, len(body.text or ""),
         )
-        await db.log_admin_event(body.session_id, "low_content_blocked",
-                                 {"sample": body.text[:120]})
+        await db.log_admin_event_sampled(body.session_id, "low_content_blocked",
+                                         {"sample": body.text[:120]})
         return JSONResponse(
             status_code=200,
             content={
@@ -350,9 +353,9 @@ async def send_message(req: Request, body: MessageSend,
             "chat_message_injection_detected session_id=%s hard_block=%s",
             body.session_id, hard_block,
         )
-        await db.log_admin_event(body.session_id, "injection_blocked",
-                                 {"sample": body.text[:120],
-                                  "blocked": hard_block})
+        await db.log_admin_event_sampled(body.session_id, "injection_blocked",
+                                         {"sample": body.text[:120],
+                                          "blocked": hard_block})
         if hard_block:
             return _err(400, "rejected",
                         "Your message looks like an attempt to manipulate the "
@@ -375,8 +378,10 @@ async def send_message(req: Request, body: MessageSend,
             assistant_lang=ans_lang,
             ai_meta=None,
         )
-        if not session.get("escalated", False):
-            await db.mark_escalated(body.session_id)
+        # Always close (idempotent): a session soft-escalated earlier already
+        # has escalated=TRUE but must still be CLOSED when the cap fires.
+        await db.mark_escalated(body.session_id)
+        if session.get("status") != "escalated":
             await db.log_admin_event(body.session_id, "escalation",
                                      {"reason": "message_cap"})
         return JSONResponse(
@@ -461,8 +466,10 @@ async def escalate(body: EscalateReq,
 
     ans_lang = (session.get("conv_lang") or session.get("lang")
                 or language.default_code())
-    if not session.get("escalated", False):
-        await db.mark_escalated(body.session_id)
+    # Always close (idempotent) — an earlier SOFT keyword escalation left the
+    # session open with escalated=TRUE; the explicit tap is a HARD hand-off.
+    await db.mark_escalated(body.session_id)
+    if session.get("status") != "escalated":
         await db.log_admin_event(body.session_id, "escalation", {"reason": "explicit"})
     esc_payload = escalation.build_payload(ans_lang)
 

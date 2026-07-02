@@ -41,56 +41,53 @@ export const CONFIG = {
 // UI string translations. The chat *answers* are in the same (browser) language
 // (handled server-side); these only cover the widget chrome so a Russian
 // browser doesn't see an English shell.
+// House style (matches Nika's own formatting rules): straight quotes only, no
+// guillemets «», no curly quotes, no em dashes.
 const I18N = {
   en: { support: "Support", topics: "What can we help you with?", other: "Other",
         back: "Back to topics",
-        greeting: "Hi! How can I help you today?", placeholder: "Type your message…",
+        greeting: "Hi, I'm Nika! How can I help you?", placeholder: "Type your message…",
         send: "Send", launcher: "Open support chat",
         startError: "Could not start chat. Please try again later.",
         sendError: "Something went wrong. Please try again.",
-        suggest: "It looks like your question is about “{topic}”.",
-        switchTopic: "Switch to “{topic}”",
-        switching: "Looks like your question is about “{topic}” — switching you there…",
+        switching: 'Looks like your question is about "{topic}", switching you there…',
+        switchStuck: "I couldn't settle on the right topic for this question. Please rephrase it in a bit more detail.",
         finish: "End chat", finished: "Chat ended. Thanks for reaching out!" },
   ru: { support: "Поддержка", topics: "Чем мы можем помочь?", other: "Другое",
         back: "К выбору темы",
-        greeting: "Здравствуйте! Чем можем помочь?", placeholder: "Введите сообщение…",
+        greeting: "Привет, я Ника, чем могу тебе помочь?", placeholder: "Введите сообщение…",
         send: "Отправить", launcher: "Открыть чат поддержки",
         startError: "Не удалось начать чат. Попробуйте позже.",
         sendError: "Что-то пошло не так. Попробуйте ещё раз.",
-        suggest: "Похоже, ваш вопрос относится к теме «{topic}».",
-        switchTopic: "Перейти в «{topic}»",
-        switching: "Похоже, ваш вопрос про «{topic}» — переключаю тему…",
+        switching: 'Похоже, твой вопрос про "{topic}", переключаю тему…',
+        switchStuck: "Мне не удалось подобрать подходящую тему для этого вопроса. Пожалуйста, переформулируй его чуть подробнее.",
         finish: "Завершить чат", finished: "Чат завершён. Спасибо за обращение!" },
   es: { support: "Soporte", topics: "¿En qué podemos ayudarte?", other: "Otro",
         back: "Volver a los temas",
-        greeting: "¡Hola! ¿En qué podemos ayudarte hoy?", placeholder: "Escribe tu mensaje…",
+        greeting: "¡Hola, soy Nika! ¿En qué puedo ayudarte?", placeholder: "Escribe tu mensaje…",
         send: "Enviar", launcher: "Abrir chat de soporte",
         startError: "No se pudo iniciar el chat. Inténtalo más tarde.",
         sendError: "Algo salió mal. Inténtalo de nuevo.",
-        suggest: "Parece que tu pregunta es sobre «{topic}».",
-        switchTopic: "Cambiar a «{topic}»",
-        switching: "Parece que tu pregunta es sobre «{topic}» — cambiando de tema…",
+        switching: 'Parece que tu pregunta es sobre "{topic}", cambiando de tema…',
+        switchStuck: "No pude encontrar el tema adecuado para esta pregunta. Por favor, reformúlala con un poco más de detalle.",
         finish: "Finalizar chat", finished: "Chat finalizado. ¡Gracias por contactarnos!" },
   tr: { support: "Destek", topics: "Size nasıl yardımcı olabiliriz?", other: "Diğer",
         back: "Konulara dön",
-        greeting: "Merhaba! Bugün size nasıl yardımcı olabiliriz?",
+        greeting: "Merhaba, ben Nika! Sana nasıl yardımcı olabilirim?",
         placeholder: "Mesajınızı yazın…", send: "Gönder", launcher: "Destek sohbetini aç",
         startError: "Sohbet başlatılamadı. Lütfen daha sonra tekrar deneyin.",
         sendError: "Bir şeyler ters gitti. Lütfen tekrar deneyin.",
-        suggest: "Sorunuz “{topic}” konusuyla ilgili görünüyor.",
-        switchTopic: "“{topic}” konusuna geç",
-        switching: "Görünüşe göre sorunuz “{topic}” ile ilgili — konuyu değiştiriyorum…",
+        switching: 'Görünüşe göre sorunuz "{topic}" ile ilgili, konuyu değiştiriyorum…',
+        switchStuck: "Bu soru için uygun konuyu bulamadım. Lütfen biraz daha ayrıntılı şekilde yeniden yazar mısın?",
         finish: "Sohbeti bitir", finished: "Sohbet sona erdi. Bize ulaştığınız için teşekkürler!" },
   pt: { support: "Suporte", topics: "Como podemos ajudar?", other: "Outro",
         back: "Voltar aos tópicos",
-        greeting: "Olá! Como podemos ajudar hoje?", placeholder: "Digite sua mensagem…",
+        greeting: "Oi, eu sou a Nika! Como posso te ajudar?", placeholder: "Digite sua mensagem…",
         send: "Enviar", launcher: "Abrir chat de suporte",
         startError: "Não foi possível iniciar o chat. Tente novamente mais tarde.",
         sendError: "Algo deu errado. Tente novamente.",
-        suggest: "Parece que sua pergunta é sobre “{topic}”.",
-        switchTopic: "Mudar para “{topic}”",
-        switching: "Parece que sua pergunta é sobre “{topic}” — mudando de tópico…",
+        switching: 'Parece que sua pergunta é sobre "{topic}", mudando de tópico…',
+        switchStuck: "Não consegui encontrar o tópico certo para essa pergunta. Por favor, reformule com um pouco mais de detalhes.",
         finish: "Encerrar chat", finished: "Chat encerrado. Obrigado pelo contato!" },
 };
 
@@ -699,7 +696,7 @@ function addEscalation(esc) {
     wrap.appendChild(a);
   } else if (esc.button) {
     wrap.appendChild(el("div", "npchat-esc-note",
-      "(Contact form URL not configured — set CONTACT_FORM_URL)"));
+      "(Contact form URL not configured - set CONTACT_FORM_URL)"));
   }
   els.messages.appendChild(wrap);
   scrollToBottom();
@@ -797,11 +794,18 @@ function renderSuggestions(list, closing, resolved) {
 // bubbles / finish button.
 function applyTurnExtras(data, originalText, depth = 0) {
   if (data.escalation && data.escalation.active) {
-    // A hand-off ends the bot conversation: show the contact card, then interrupt
-    // all further chatting. The session is now 'escalated' on the backend (it
-    // would reject the next message with 409), so drop the input and the local
-    // credentials — the player can only talk again by starting a NEW conversation.
     addEscalation(data.escalation);
+    // Two strengths of hand-off (escalation.final from the backend):
+    //  - final (default): the session is closed server-side (a next message
+    //    would 409) — hide the composer and drop the local credentials; the
+    //    player can only talk again by starting a NEW conversation.
+    //  - soft (final === false): a keyword trigger showed the contact card but
+    //    the session stays OPEN — keep the composer so a fuzzy keyword false
+    //    positive doesn't kill a live conversation.
+    if (data.escalation.final === false) {
+      scrollToBottom();
+      return;
+    }
     endConversation();
     scrollToBottom();
     return;
@@ -810,19 +814,19 @@ function applyTurnExtras(data, originalText, depth = 0) {
   // there (the backend already suppressed the ungrounded in-place answer, so the
   // reply for THIS turn is empty and the typing bubble was already removed). The
   // depth guard stops a runaway chain of switches.
-  if (data.suggested_topic && depth < MAX_AUTO_SWITCHES) {
-    autoSwitchTopic(data.suggested_topic, originalText, depth);
+  if (data.suggested_topic) {
+    if (depth < MAX_AUTO_SWITCHES) {
+      autoSwitchTopic(data.suggested_topic, originalText, depth);
+      return;
+    }
+    // Auto-switch limit reached and the backend suppressed the in-place answer:
+    // without this fallback the turn would end with NO reply at all and the
+    // chat would look frozen. Ask the player to rephrase instead.
+    addMessage("assistant", t("switchStuck"));
+    scrollToBottom();
     return;
   }
-  // If a topic switch is in flight, do not also show guide bubbles: they would
-  // invite the player to continue in the wrong topic. The backend already strips
-  // them, but keep the widget defensive for older/mixed deployments.
-  const canShowSuggestions = !data.suggested_topic;
-  renderSuggestions(
-    canShowSuggestions ? data.suggestions : [],
-    canShowSuggestions ? data.closing_suggestion : null,
-    canShowSuggestions && data.resolved,
-  );
+  renderSuggestions(data.suggestions, data.closing_suggestion, data.resolved);
   // The follow-up bubbles render AFTER the reply was scrolled into view and sit
   // outside the scroll container, so they shrink the transcript's viewport and
   // would otherwise clip the bottom of the fresh answer. Re-pin once they're in.
@@ -1027,9 +1031,10 @@ async function togglePanel() {
       els.topics.innerHTML = "";
       addMessageToTopics(t("startError"));
     }
-    // Warm up the (slower) reCaptcha + session create in the background so it's
-    // ready by the time the player reads the list and taps a topic.
-    ensureSession().catch(() => { /* surfaced when an action needs the token */ });
+    // NOTE: the session is created LAZILY — only when the player actually picks
+    // a topic (onTopic -> ensureSession). Opening and closing the panel used to
+    // mint a DB session (and burn the per-IP session budget) for visitors who
+    // never engaged; those "zero" sessions no longer exist at all.
   } else {
     // Closing the widget abandons the current chat: drop the session credentials
     // so nothing stale is reused. The next open starts cleanly (above).
@@ -1079,8 +1084,9 @@ async function onTopic(slug) {
 function goBackToTopics() {
   resetToPicker({ abandon: true });
   renderTopics();
-  // Pre-warm the replacement session so the next topic tap is instant.
-  ensureSession().catch(() => { /* surfaced when an action needs the token */ });
+  // No session pre-warm here: like the open handler, the replacement session is
+  // created lazily on the next topic tap, so backing out to the picker and
+  // leaving does not mint an unused DB session.
 }
 
 async function onSend() {

@@ -1207,6 +1207,9 @@ async function viewUsers(main) {
           email: emailInp.value.trim(), password: pwInp.value, role: roleSel.value } });
         cErr.style.color = "var(--good)"; cErr.textContent = "Created";
         emailInp.value = ""; pwInp.value = "";
+        // Re-render from scratch: viewUsers APPENDS to main (routeView normally
+        // clears it first), so without this the whole tab stacks a second copy.
+        main.innerHTML = "";
         viewUsers(main);
       } catch (e) { cErr.textContent = e.message; }
     });
@@ -1265,6 +1268,7 @@ async function viewUsers(main) {
         if (!confirm(`Delete user ${u.email}?`)) return;
         try {
           await api(`/users/${encodeURIComponent(u.email)}`, { method: "DELETE" });
+          main.innerHTML = "";
           viewUsers(main);
         } catch (e) { status.textContent = e.message; }
       });

@@ -101,12 +101,12 @@ def test_forbidden_topics_directive_in_layer3_only():
                                   user_text="что думаешь о выборах?",
                                   resolved_lang="ru")
     last = msgs[-1]["content"]
-    assert "Forbidden topics" in last
+    assert "FORBIDDEN TOPICS" in last
     assert "programming" in prompts.FORBIDDEN_TOPICS[0]  # sanity on the source list
     assert prompts.FORBIDDEN_TOPICS[0] in last                # the list is injected
     assert prompts.FORBIDDEN_TOPICS_REFUSAL in last           # refusal wording injected
     # Stays in Layer 3 only; the cached core is untouched.
-    assert "Forbidden topics" not in msgs[0]["content"]
+    assert "FORBIDDEN TOPICS" not in msgs[0]["content"]
     assert msgs[0]["content"].split("=== KNOWLEDGE BASE", 1)[0].rstrip("\n") == core_before
 
 
@@ -115,7 +115,7 @@ def test_forbidden_topics_can_be_disabled_with_empty_list(monkeypatch):
     monkeypatch.setattr(prompts, "FORBIDDEN_TOPICS", [])
     msgs = prompts.build_messages({"user_context": {}}, kb_block=None, history=[],
                                   user_text="hi", resolved_lang="en")
-    assert "Forbidden topics" not in msgs[-1]["content"]
+    assert "FORBIDDEN TOPICS" not in msgs[-1]["content"]
 
 
 def test_strip_language_tag():
@@ -152,13 +152,13 @@ def test_greeting_directive_in_layer1_core():
     block (get_system_core()), present for every request, and never in the per-turn
     user message."""
     core = prompts.get_system_core()
-    assert "Greeting:" in core
-    assert "greet only once" in core
+    assert "GREETING:" in core
+    assert "Greet only once" in core
 
     msgs = prompts.build_messages({"user_context": {}}, kb_block=None,
                                   history=[], user_text="hi", resolved_lang="en")
-    assert "Greeting:" in msgs[0]["content"]   # system message
-    assert "Greeting:" not in msgs[-1]["content"]  # not the user message
+    assert "GREETING:" in msgs[0]["content"]   # system message
+    assert "GREETING:" not in msgs[-1]["content"]  # not the user message
 
 
 def test_formatting_directive_in_layer1_core():
@@ -166,7 +166,7 @@ def test_formatting_directive_in_layer1_core():
     Layer-1 block (the widget renders only the subset it names — see renderMarkdown
     in widget.js)."""
     core = prompts.get_system_core()
-    assert "Formatting:" in core
+    assert "FORMATTING:" in core
     assert "Markdown" in core
     assert "Always use light Markdown to structure the reply" in core
     assert "Prefer plain text over structure" not in core
@@ -175,8 +175,8 @@ def test_formatting_directive_in_layer1_core():
 
     msgs = prompts.build_messages({"user_context": {}}, kb_block=None,
                                   history=[], user_text="hi", resolved_lang="en")
-    assert "Formatting:" in msgs[0]["content"]
-    assert "Formatting:" not in msgs[-1]["content"]
+    assert "FORMATTING:" in msgs[0]["content"]
+    assert "FORMATTING:" not in msgs[-1]["content"]
 
 
 def test_escalation_restraint_directive_in_layer1_core():

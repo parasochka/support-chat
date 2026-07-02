@@ -152,6 +152,7 @@ async def test_empty_truncated_reply_retries_with_larger_budget(monkeypatch):
     kc = openai_client._KeyClient.__new__(openai_client._KeyClient)
     kc.name = "primary"
     kc._sem = asyncio.Semaphore(1)
+    kc._pending_extra_usage = {}
     kc.client = fake_client
 
     resp = await kc.call([{"role": "user", "content": "x"}])
@@ -160,6 +161,15 @@ async def test_empty_truncated_reply_retries_with_larger_budget(monkeypatch):
     assert len(budgets) == 2
     assert budgets[0] == 700
     assert budgets[1] >= openai_client._MIN_RETRY_OUTPUT_TOKENS
+
+    # The discarded first attempt still billed its tokens (700 of hidden
+    # reasoning): _result must fold them into the returned usage so cost
+    # accounting covers BOTH calls.
+    client = openai_client.OpenAIClient.__new__(openai_client.OpenAIClient)
+    res = client._result(resp, kc, started=0.0)
+    assert res.tokens_out == 120 + 700
+    assert res.tokens_in == 10 + 10
+    assert kc._pending_extra_usage == {}  # consumed exactly once
 
 
 @pytest.mark.asyncio
@@ -184,6 +194,7 @@ async def test_non_empty_reply_does_not_retry(monkeypatch):
     kc = openai_client._KeyClient.__new__(openai_client._KeyClient)
     kc.name = "primary"
     kc._sem = asyncio.Semaphore(1)
+    kc._pending_extra_usage = {}
     kc.client = fake_client
 
     resp = await kc.call([{"role": "user", "content": "x"}])
