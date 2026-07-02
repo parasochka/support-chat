@@ -280,7 +280,7 @@ async def kb_set_variable(key: str, body: KBVariableWrite, admin=Depends(require
 #
 # The prompt WORDING stays in prompts.py (the single source of truth, read-only
 # from the admin); these are the {placeholder} values (persona name, brand,
-# platform, tone of voice, …) that uniquify it per brand. Stored under their own
+# products, tone of voice, …) that uniquify it per brand. Stored under their own
 # app_settings key (like test_profile), hot-reloaded, edited from the Prompt tab.
 # ---------------------------------------------------------------------------
 class PromptVariablesWrite(BaseModel):

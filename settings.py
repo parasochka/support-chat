@@ -166,7 +166,7 @@ def prompt_variables() -> dict[str, str]:
     """Resolved prompt variables: admin overrides over the defaults in prompts.py.
 
     The prompt in prompts.py is a dry template; these values (persona name, brand,
-    platform, tone of voice, …) uniquify it per brand. Stored under its own
+    products, tone of voice, …) uniquify it per brand. Stored under its own
     app_settings key (like test_profile) with its own admin endpoint, so it never
     appears in the generic settings editor. An empty override falls back to the
     default, so clearing a field in the admin restores the built-in wording.

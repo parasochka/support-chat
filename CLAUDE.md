@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A standalone FastAPI microservice serving an AI customer-support chat for **NikaBet**
-(casino + sportsbook on the NowPlix B2B platform). It is API-isolated: other modules
+(casino + sportsbook). It is API-isolated: other modules
 talk to it over HTTP/JSON by `session_id` (UUID), and the contract is consumer-agnostic
 so multiple front-ends can plug in. The admin dashboard, hot-reloaded tuning, KB editing,
 and the signed front-end handshake are all built (see "Admin / management" below).
@@ -19,7 +19,7 @@ STATIC, in Layer 1; language, personalization, topic-routing — DYNAMIC, in Lay
 forbidden-topics list are constants in that file. The wording is **not** editable from the
 admin panel — to change it you edit `prompts.py` and redeploy. What IS admin-editable are
 the **prompt variables** (see "Prompt variables" below): the `{placeholder}` values —
-persona name, brand, platform, products, tone of voice, support scope — that uniquify the
+persona name, brand, products, tone of voice, support scope — that uniquify the
 template per brand (the seam for future white-label deployments). The admin **Prompt** tab
 has two sub-tabs: **Preview** (a **read-only** view of the whole assembled prompt, all
 layers as sent, variables substituted) and **Prompt variables** (those values, plus the
@@ -101,7 +101,7 @@ highlights the chance to win rewards (bonuses/prizes/tickets) but takes every co
 amount/condition/date/name **strictly from the KB** (never invents), never promises a win,
 **uses no emoji**, uses the player's name sparingly, and keeps her character **on every
 language**. The tone rides in the byte-stable core, so it is cached and consistent. The persona
-name, brand/platform names and the tone-of-voice paragraph are **prompt variables**
+name, the brand name and the tone-of-voice paragraph are **prompt variables**
 (`{persona_name}`, `{brand_name}`, `{tone_of_voice}`, …) editable from the admin Prompt →
 Prompt variables sub-tab; to change the surrounding wording itself you edit `SYSTEM_CORE`
 (the template) and redeploy.
@@ -214,8 +214,11 @@ the tab (the bug that shipped with the feature).
 ### Prompt variables — the brand-uniquification registry (`prompts.py` + `settings.prompt_variables`)
 The prompt in `prompts.py` is a **dry template**: `SYSTEM_CORE`, `_GUARDRAILS`, the
 forbidden-topics list/refusal and the closing-goodbye directive carry `{placeholder}` tokens
-(`{persona_name}`, `{brand_name}`, `{platform_name}`, `{products}`, `{persona_role}`,
-`{tone_of_voice}`, `{support_scope}`). `prompts.PROMPT_VARIABLES` is the registry — (key,
+(`{persona_name}`, `{brand_name}`, `{products}`, `{persona_role}`,
+`{tone_of_voice}`, `{support_scope}`). The B2B platform the brand runs on is deliberately
+**absent** — the prompt names only the brand and its products; anything platform-related is
+KB content (Layer 2), managed from the Knowledge-base tab, never prompt material.
+`prompts.PROMPT_VARIABLES` is the registry — (key,
 description, default) — and `prompts.render_prompt_variables` substitutes registered keys with
 values from `settings.prompt_variables()` (app_settings `prompt_variables` override > the file
 defaults; hot-reloaded like every setting). This is how a future white-label deployment re-brands
