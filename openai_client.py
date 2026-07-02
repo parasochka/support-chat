@@ -117,6 +117,13 @@ class _KeyClient:
     def __init__(self, name: str, api_key: str):
         self.name = name
         self.api_key = api_key
+        # Token usage of DISCARDED truncated first attempts, keyed by id() of the
+        # retry response they were replaced with. _result() pops the entry and
+        # folds it into the returned counts, so the tokens the first call burned
+        # (the whole budget, billed by OpenAI) are not silently dropped from cost
+        # accounting. Entries whose response never reaches _result (a cancelled
+        # race loser) are cleared by the size guard below.
+        self._pending_extra_usage: dict[int, tuple[int, int, int]] = {}
         # Concurrency + client timeout are bound at construction; a change to
         # them is picked up via openai_client.reset() (called on settings write).
         m = settings.model()
@@ -175,9 +182,20 @@ class _KeyClient:
                     "max_output_tokens to avoid this retry)",
                     self.name, budget, bumped,
                 )
+                # The discarded first attempt still billed its tokens (the whole
+                # output budget went to hidden reasoning) — remember its usage so
+                # _result() can fold it into the returned counts.
+                _, first_in, first_out, first_cached = _extract(resp)
                 kwargs["max_completion_tokens"] = bumped
                 async with self._sem:
                     resp = await self.client.chat.completions.create(**kwargs)
+                if len(self._pending_extra_usage) > 32:
+                    # Orphaned entries (responses that never reached _result,
+                    # e.g. a cancelled race loser) must not accumulate forever.
+                    self._pending_extra_usage.clear()
+                self._pending_extra_usage[id(resp)] = (
+                    first_in, first_out, first_cached
+                )
         return resp
 
 
@@ -356,7 +374,16 @@ class OpenAIClient:
                     winner = self.primary if task is primary_task else self.fallback
                     loser = fallback_task if task is primary_task else primary_task
                     loser.cancel()
-                    log.info("openai_complete_race_won key=%s", winner.name if winner else None)
+                    # NB: if the losing request had already been processed
+                    # server-side, its tokens are billed by OpenAI but cannot be
+                    # accounted here — the usage rides in a response we never
+                    # receive. Rare (only after a switch-timeout race) and
+                    # bounded to one request; flagged for transparency.
+                    log.info(
+                        "openai_complete_race_won key=%s "
+                        "(loser cancelled; its usage, if any, is unaccounted)",
+                        winner.name if winner else None,
+                    )
                     return self._result(task.result(), winner, started)
         # Both failed: re-raise the primary's error for clarity.
         log.error("openai_complete_race_failed")
@@ -372,6 +399,15 @@ class OpenAIClient:
 
     def _result(self, resp: Any, kc: _KeyClient, started: float) -> ChatResult:
         text, tokens_in, tokens_out, cached_in = _extract(resp)
+        # Fold in the usage of a discarded truncated first attempt (see
+        # _KeyClient.call) so cost accounting covers BOTH billed calls.
+        extra = getattr(kc, "_pending_extra_usage", None)
+        if extra:
+            first = extra.pop(id(resp), None)
+            if first:
+                tokens_in += first[0]
+                tokens_out += first[1]
+                cached_in += first[2]
         latency_ms = int((time.monotonic() - started) * 1000)
         return ChatResult(
             text=text,

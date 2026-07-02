@@ -2,7 +2,7 @@
 
 The model may route a question that belongs to a different topic (whose KB isn't
 loaded) by prepending [[TOPIC:slug]]. The tag is stripped from the visible reply,
-the slug is captured, and the available-topics list lives in Layer 3 only — the
+the slug is captured, and the available-topics list lives in Layer 3 only - the
 cached SYSTEM_CORE prefix must stay byte-identical.
 """
 from __future__ import annotations
@@ -49,8 +49,8 @@ def test_available_topics_listed_in_layer3_user_message():
         resolved_lang="en", available_topics=_TOPICS,
     )
     last_user = msgs[-1]["content"]
-    assert "bonuses — Bonuses & promotions" in last_user
-    assert "withdrawals — Withdrawals" in last_user
+    assert "bonuses - Bonuses & promotions" in last_user
+    assert "withdrawals - Withdrawals" in last_user
     assert "[[TOPIC:slug]]" in last_user  # the routing instruction
 
 
@@ -66,17 +66,17 @@ def test_current_topic_named_in_layer3():
         current_topic={"slug": "deposits", "title": "Депозиты"},
     )
     last_user = msgs[-1]["content"]
-    assert "deposits — Депозиты" in last_user
+    assert "deposits - Депозиты" in last_user
     # Conservative instruction: only switch when clearly NOT the current topic.
     assert "ONLY" in last_user
     # The current-topic line must stay in Layer 3, never in the cached prefix.
-    assert "deposits — Депозиты" not in msgs[0]["content"]
+    assert "deposits - Депозиты" not in msgs[0]["content"]
 
 
 def test_other_topic_uses_the_same_regime_as_specialized():
     """«Другое» (slug 'other') is a normal player-selectable topic with its own KB,
     so it is routed EXACTLY like the specialized topics: answer from the loaded KB,
-    switch only on a genuine mismatch — no separate active-routing mode (the bug
+    switch only on a genuine mismatch - no separate active-routing mode (the bug
     where a question answerable from the general KB, e.g. changing the language, was
     force-routed to a topic that didn't have the answer)."""
     session = {"user_context": {}}
@@ -86,7 +86,7 @@ def test_other_topic_uses_the_same_regime_as_specialized():
         current_topic={"slug": "other", "title": "Другое"},
     )[-1]["content"]
     # The current topic is named with the standard "knowledge base is loaded" anchor.
-    assert "other — Другое" in last_user
+    assert "other - Другое" in last_user
     assert "knowledge base is loaded for you" in last_user
     # Standard conservative regime: answer from current KB, switch only on mismatch.
     assert "ONLY" in last_user
@@ -95,14 +95,14 @@ def test_other_topic_uses_the_same_regime_as_specialized():
     assert "general section" not in last_user
     # The catalogue is still offered so a genuine mismatch can route onward.
     assert "[[TOPIC:slug]]" in last_user
-    assert "bonuses — Bonuses & promotions" in last_user
+    assert "bonuses - Bonuses & promotions" in last_user
     # Routing copy must stay in Layer 3, never in the cached prefix.
     msgs = prompts.build_messages(
         session, kb_block="KB", history=[], user_text="как сменить язык?",
         resolved_lang="ru", available_topics=_TOPICS,
         current_topic={"slug": "other", "title": "Другое"},
     )
-    assert "other — Другое" not in msgs[0]["content"]
+    assert "other - Другое" not in msgs[0]["content"]
 
 
 def test_specialized_topic_routes_on_intent_not_keywords():
@@ -131,7 +131,7 @@ def test_no_current_topic_line_when_absent():
         resolved_lang="en", available_topics=_TOPICS,
     )[-1]["content"]
     assert "Current topic" not in last_user
-    assert "withdrawals — Withdrawals" in last_user
+    assert "withdrawals - Withdrawals" in last_user
 
 
 def test_topic_catalogue_stays_out_of_system_core():
@@ -145,9 +145,9 @@ def test_topic_catalogue_stays_out_of_system_core():
     system = msgs[0]["content"]
     # The dynamic catalogue line + the routing block must not leak into the prefix.
     # (The byte-stable MACHINE TAGS block in SYSTEM_CORE names [[TOPIC:slug]] once as
-    # a static placement rule, so we check the dynamic routing instruction — which
-    # carries the per-request offer — rather than the bare tag literal.)
-    assert "bonuses — Bonuses & promotions" not in system
+    # a static placement rule, so we check the dynamic routing instruction - which
+    # carries the per-request offer - rather than the bare tag literal.)
+    assert "bonuses - Bonuses & promotions" not in system
     assert "offer to switch" not in system
     assert "TOPIC ROUTING" not in system
     # prefix up to the KB separator is unchanged

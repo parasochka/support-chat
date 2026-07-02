@@ -98,3 +98,27 @@ async def test_no_boundary_keeps_full_history(monkeypatch):
     roles = [m["role"] for m in captured["messages"]]
     # system + prior user/assistant pair + new user turn
     assert roles == ["system", "user", "assistant", "user"]
+
+
+async def test_switch_boundary_adds_ongoing_state_so_model_does_not_regreet(monkeypatch):
+    """After a topic switch the prompt history is empty, so without the Layer-3
+    CONVERSATION STATE line the model would treat the turn as a brand-new chat
+    and greet the player again mid-conversation."""
+    captured: dict = {}
+    _wire(monkeypatch, captured=captured)
+
+    session = {
+        "id": "sess-3", "topic_id": 2, "context_reset_id": 9,
+        "user_context": {}, "message_count": 2, "lang": "ru",
+    }
+    await chat_service.handle_message(session, "как вывести деньги?")
+    last_user = captured["messages"][-1]["content"]
+    assert "CONVERSATION STATE:" in last_user
+    assert "ALREADY in progress" in last_user
+
+    # …and a normal, unswitched session carries no such line.
+    captured.clear()
+    _wire(monkeypatch, captured=captured)
+    session["context_reset_id"] = 0
+    await chat_service.handle_message(session, "как вывести деньги?")
+    assert "CONVERSATION STATE:" not in captured["messages"][-1]["content"]

@@ -23,6 +23,41 @@ import settings
 log = logging.getLogger(__name__)
 
 
+# The system-supplied closing bubble ("issue solved"). The model generates ONLY
+# the guiding questions; this fixed, localized option is appended by the backend
+# whenever guiding bubbles are shown, so its wording is always exact and tapping
+# it reliably ends the chat. House style: no em dashes, no guillemets.
+_CLOSING_SUGGESTIONS = {
+    "en": "Issue solved.",
+    "ru": "Проблема решена.",
+    "es": "Problema resuelto.",
+    "tr": "Sorun çözüldü.",
+    "pt": "Problema resolvido.",
+}
+
+
+def closing_suggestion_for(lang: str) -> str:
+    """The localized closing-bubble text, falling back to English."""
+    return _CLOSING_SUGGESTIONS.get(lang, _CLOSING_SUGGESTIONS["en"])
+
+
+# Model-free reply for a TRANSIENT model failure (all retries + failover
+# exhausted, e.g. an OpenAI outage). The turn is not persisted and the session
+# stays open, so the player can simply resend — a temporary provider blip must
+# never escalate and close a live conversation.
+_MODEL_ERROR_REPLY = {
+    "en": "Sorry, I'm having a brief technical hiccup. Please send your message again in a moment.",
+    "ru": "Извини, у меня небольшие технические неполадки. Пожалуйста, отправь сообщение ещё раз через минуту.",
+    "es": "Perdona, tengo un problema técnico temporal. Por favor, envía tu mensaje de nuevo en un momento.",
+    "tr": "Kusura bakma, geçici bir teknik sorun yaşıyorum. Lütfen mesajını birazdan tekrar gönder.",
+    "pt": "Desculpe, estou com um problema técnico temporário. Por favor, envie sua mensagem novamente em instantes.",
+}
+
+
+def _model_error_reply(lang: str) -> str:
+    return _MODEL_ERROR_REPLY.get(lang, _MODEL_ERROR_REPLY["en"])
+
+
 @dataclass
 class ChatReply:
     reply: str
@@ -67,13 +102,6 @@ async def handle_message(
         session_id, session.get("topic_id"),
         session.get("message_count", 0), len(user_text),
     )
-    topic_id = session.get("topic_id")
-    topic_slug = None
-    topic = None
-    if topic_id is not None:
-        topic = await db.get_topic_by_id(topic_id)
-        topic_slug = topic["slug"] if topic else None
-
     # --- language resolution -------------------------------------------------
     # The conversation language FOLLOWS the player. The BASE/fallback is the
     # session's sticky `conv_lang` (the language the player previously switched
@@ -89,8 +117,54 @@ async def handle_message(
     )
     resolved = base_lang
 
-    # --- audit: injection scan on the user message ---------------------------
-    # (handled in api layer too; safe to re-scan is avoided — api owns it)
+    # --- pre-model keyword escalation (SOFT, saves the model call) ----------
+    # High-risk (fraud/legal) stems and explicit asks for a human don't depend
+    # on the model, so they are decided BEFORE the OpenAI call: the hand-off
+    # turn burns no tokens. The escalation is SOFT — the contact card is shown
+    # and the session is flagged for the metrics/queue, but it stays OPEN so a
+    # fuzzy keyword false positive ("судя по всему...") can't kill a live chat.
+    keyword_reason = escalation.keyword_trigger(user_text)
+    if keyword_reason:
+        log.info(
+            "chat_keyword_escalation session_id=%s reason=%s",
+            session_id, keyword_reason,
+        )
+        esc_payload = escalation.build_payload(base_lang, final=False)
+        new_count = await db.persist_turn(
+            session_id=session_id,
+            user_text=user_text,
+            user_lang=None,
+            assistant_text=esc_payload["message"],
+            assistant_lang=base_lang,
+            ai_meta=None,  # no OpenAI call happened
+        )
+        if not session.get("escalated", False):
+            await db.mark_escalated_soft(session_id)
+            await db.log_admin_event(
+                session_id, "escalation",
+                {"reason": keyword_reason, "mode": "soft"},
+            )
+        return ChatReply(
+            # The hand-off copy rides in the escalation card (the widget renders
+            # message + button there); an identical chat bubble on top of it
+            # would duplicate the text. The transcript still has it — the turn
+            # was persisted with the copy as the assistant text.
+            reply="",
+            lang=base_lang,
+            escalation=esc_payload,
+            message_count=new_count,
+            suggested_topic=None,
+            suggestions=[],
+            closing_suggestion=None,
+            resolved=False,
+        )
+
+    topic_id = session.get("topic_id")
+    topic_slug = None
+    topic = None
+    if topic_id is not None:
+        topic = await db.get_topic_by_id(topic_id)
+        topic_slug = topic["slug"] if topic else None
 
     # --- build prompt --------------------------------------------------------
     # The other support topics (current one + 'other' excluded) are offered to
@@ -117,8 +191,9 @@ async def handle_message(
     # switch `context_reset_id` marks the boundary, so the previous topic's
     # transcript can't re-trigger a [[TOPIC:...]] suggestion back to it (the
     # switch loop). 0 (default) means the whole transcript.
+    context_reset_id = session.get("context_reset_id", 0) or 0
     history = await db.get_history(
-        session_id, limit=20, after_id=session.get("context_reset_id", 0) or 0
+        session_id, limit=20, after_id=context_reset_id
     )
     messages = prompts.build_messages(
         session=session,
@@ -131,6 +206,10 @@ async def handle_message(
         # The player tapped the "Issue solved." closing bubble: this turn is a
         # farewell, so the prompt asks for a pure goodbye with no continuation.
         closing=closing,
+        # After a topic switch the prompt history is cut at the reset boundary,
+        # so the model would otherwise treat the next turn as a brand-new chat
+        # and greet again mid-conversation.
+        ongoing=context_reset_id > 0,
     )
     log.info(
         "chat_prompt_built session_id=%s topic_slug=%s history_turns=%s kb_chars=%s messages=%s",
@@ -152,15 +231,31 @@ async def handle_message(
             result.tokens_in, result.tokens_out, result.cached_in, len(raw_text or ""),
         )
     except Exception as exc:  # noqa: BLE001
-        # Model failure: log it, fall back to a graceful escalation reply.
+        # TRANSIENT model failure (retries + failover exhausted, e.g. an OpenAI
+        # outage). Do NOT escalate and do NOT close the session — a provider
+        # blip must not kill a live conversation. Return a localized "try again
+        # in a moment" nudge; the turn is not persisted (no answer exists, the
+        # player simply resends), but the failed call is logged for accounting
+        # (invariant §4) and surfaced as an admin event so outages are visible.
         error = f"{exc.__class__.__name__}: {exc}"
-        ok = False
-        result = openai_client.ChatResult(
-            text="", lang=None, tokens_in=0, tokens_out=0, cached_in=0,
-            model=settings.model()["model"], key_used="none", latency_ms=0,
-        )
-        raw_text = ""
         log.exception("chat_model_failed session_id=%s error=%s", session_id, error)
+        await db.log_ai_interaction(
+            session_id, settings.model()["model"], "none",
+            0, 0, 0, 0.0, 0, False, error,
+        )
+        await db.log_admin_event_sampled(
+            session_id, "model_error", {"error": error[:300]}
+        )
+        return ChatReply(
+            reply=_model_error_reply(base_lang),
+            lang=base_lang,
+            escalation=escalation.inactive_payload(),
+            message_count=session.get("message_count", 0),
+            suggested_topic=None,
+            suggestions=[],
+            closing_suggestion=None,
+            resolved=False,
+        )
 
     # --- strip control sentinels (escalation + topic + language + suggest) --
     model_signalled = False
@@ -175,9 +270,6 @@ async def handle_message(
         clean_text, suggested_slug = prompts.strip_topic_suggestion(clean_text)
         clean_text, detected_lang = prompts.strip_language_tag(clean_text)
         clean_text, suggestions = prompts.strip_suggestions(clean_text)
-        # Split the trailing declarative "Issue solved."-style option out of the
-        # guiding questions; the widget renders it as a finish-the-chat bubble.
-        suggestions, closing_suggestion = prompts.split_closing(suggestions)
         clean_text, resolved = prompts.strip_resolved_tag(clean_text)
     # Only trust a [[LANG:xx]] code the model can actually answer in.
     if detected_lang and detected_lang not in language.supported_codes():
@@ -227,14 +319,14 @@ async def handle_message(
         result.model, result.tokens_in, result.tokens_out, result.cached_in
     )
 
-    # --- escalation decision -------------------------------------------------
-    # message_count after this turn (current + 1) drives the cap check.
+    # --- escalation decision (post-model HARD triggers) ----------------------
+    # message_count after this turn (current + 1) drives the cap check. The
+    # keyword triggers were already handled pre-model (SOFT path above), and a
+    # soft-escalated session keeps chatting — no "already escalated" re-trigger.
     prospective_count = session.get("message_count", 0) + 1
     decision = escalation.decide(
-        user_text=user_text,
-        model_signalled=model_signalled or not ok,
+        model_signalled=model_signalled,
         message_count=prospective_count,
-        already_escalated=session.get("escalated", False),
     )
 
     # --- cross-topic auto-switch: routing-only turn (answer suppressed) ------
@@ -297,7 +389,7 @@ async def handle_message(
             session_id, ok, decision.active, len(raw_text or ""),
         )
 
-    if not clean_text and (not ok or decision.active):
+    if not clean_text and decision.active:
         # The model may return only the [[ESCALATE]] control tag, which strips to
         # an empty answer. Persist and return the localized hand-off copy instead
         # of leaving the widget to render a blank assistant bubble before the
@@ -315,6 +407,13 @@ async def handle_message(
             "chat_empty_reply_fallback session_id=%s answer_lang=%s",
             session_id, answer_lang,
         )
+
+    # The closing "issue solved" bubble is SYSTEM-supplied (the model only
+    # generates the guiding questions): whenever guiding bubbles are shown,
+    # append the fixed localized option so the player can end a quickly-solved
+    # chat in one tap. (When the model set [[RESOLVED]] instead, the widget
+    # shows the green finish button and ignores this field.)
+    closing_suggestion = closing_suggestion_for(answer_lang) if suggestions else None
 
     # On a hand-off the player is being routed to a human, so the guide-to-KB
     # bubbles and the "finish chat" nudge are out of place — drop both. (The
@@ -364,8 +463,11 @@ async def handle_message(
 
     # --- apply escalation side effects --------------------------------------
     if decision.active:
-        if not session.get("escalated", False):
-            await db.mark_escalated(session_id)
+        # Always set the HARD state (idempotent) — a session that was earlier
+        # soft-escalated (escalated=TRUE, status still 'open') must still be
+        # CLOSED when the model itself signals the hand-off or the cap fires.
+        await db.mark_escalated(session_id)
+        if session.get("status") != "escalated":
             await db.log_admin_event(
                 session_id, "escalation", {"reason": decision.reason}
             )

@@ -120,7 +120,12 @@ in a running chat. Since the conversation history is in the prompt, the model ca
 chat has already started; the directive tells it to greet exactly once — in the first reply — and
 otherwise skip the greeting (and the leading name) and go straight to the answer. The *when* to
 greet lives here; `_personalization_directive` (Layer 3) only supplies the name and the "use it
-sparingly" rule.
+sparingly" rule. **After a topic switch** the prompt history is cut at `context_reset_id`, so the
+model would see an empty history and greet again mid-conversation — `chat_service` passes
+`ongoing=True` and Layer 3 gets `_ONGOING_CONVERSATION_DIRECTIVE` ("CONVERSATION STATE: already in
+progress, do not greet"), which the greeting directive explicitly defers to. (The widget's canned
+first bubble — «Привет, я Ника, чем могу тебе помочь?» in the chrome language — is client-side
+only and never persisted, so the model's own first reply still greets per the directive.)
 
 **Formatting hygiene** is another STATIC Layer-1 directive (`prompts._FORMATTING_DIRECTIVE`), and `SYSTEM_CORE` must not contradict it by asking for plain text only:
 the model reaches for Markdown on its own (`**bold**`, lists, links), and the widget now renders a
@@ -157,8 +162,9 @@ complaint/grievance, suspected fraud, legal threat) so genuine hand-offs are nev
 else escalates only after an honest attempt to help and clarify still leaves nothing answerable in the
 KB. Applies in **every** topic, including the catch-all `other`. Pairs with `_KB_GROUNDING_DIRECTIVE`
 (try hard to find the answer → don't give up too early). Rides in the byte-stable Layer-1 block; the
-`escalation.decide()` triggers (keyword/cap/`[[ESCALATE]]`) are unchanged — this only makes the model
-emit the sentinel more deliberately.
+backend escalation triggers are unchanged — this only makes the model emit the sentinel more
+deliberately. (The keyword triggers run pre-model in `chat_service` and never reach the model at
+all — see "Escalation" below.)
 
 ### Request flow
 `api/chat.py` (thin HTTP handlers + gate ordering) → `chat_service.handle_message`
@@ -232,7 +238,11 @@ silently die and the widget looks frozen. When `call` detects this (empty conten
 finish), it **retries the same request once** with a larger budget (`max(budget*3, 2000)`, capped
 at 8000) so the answer + tags fit; same messages, so the prefix cache stays warm. It logs
 `openai_empty_truncated_retry` (raise the `model` group's `max_output_tokens` to avoid the extra
-call). `chat_service` keeps a backstop: if the reply is still empty and it's neither an escalation
+call). **The discarded first attempt's token usage is NOT lost:** `call` stashes it
+(`_pending_extra_usage`, keyed by the retry response) and `_result` folds it into the returned
+counts, so `compute_cost`/`ai_interaction_logs` cover BOTH billed calls (a cancelled failover-race
+loser remains the one unaccountable case — its usage rides in a response that is never received;
+flagged in the `openai_complete_race_won` log line). `chat_service` keeps a backstop: if the reply is still empty and it's neither an escalation
 nor a topic switch, it returns the localized low-content nudge (`chat_empty_reply_fallback`) so the
 widget never renders a blank bubble. This was the bug behind "a new chat in the wrong topic just
 hangs" — at `max_output_tokens=700` the wrong-topic routing reasoning ate the whole budget, so the
@@ -252,10 +262,18 @@ secrets in env.
 **open-session check (409 `session_closed` if resolved/escalated)** → IP rate-limit (429 + log)
 → cooldown (429) → input length (400) → **low-content guard** → injection scan (always audits;
 **hard-blocks with 400 by default**, settings-gated via `injection_hard_block`) → message-cap
-fast path (forces an escalation response with no model call) → build/call/persist. Rate-limit
-and cooldown use **in-memory dicts** — fine for Phase 1 but they do not span multiple instances.
-reCaptcha is verified at session create and skips gracefully (logged) when `RECAPTCHA_SECRET`
-is unset.
+fast path (forces an escalation response with no model call) → **pre-model keyword-escalation
+gate in `chat_service`** (soft hand-off, no model call — see "Escalation") → build/call/persist.
+Rate-limit and cooldown use **in-memory dicts** — fine for Phase 1 but they do not span multiple
+instances. reCaptcha is verified at session create and skips gracefully (logged) when
+`RECAPTCHA_SECRET` is unset. **High-volume block events are SAMPLED**
+(`db.log_admin_event_sampled`: `rate_limited`, `injection_blocked`, `low_content_blocked`,
+`recaptcha_skipped`, `model_error` — max 20 per type per 5 min, in-memory): each rejected request
+used to insert an `admin_events` row, so a hammering attacker grew the table without bound even
+while being 429'd. Security-critical singular events (escalation, failover, login failures) stay
+unsampled. The **request-body cap** middleware (main.py) also rejects chunked bodies
+(no `Content-Length` + `Transfer-Encoding` ⇒ 411) — a chunked request would otherwise bypass the
+declared-length check entirely and still be buffered whole by the JSON parser.
 
 The **IP key** comes from `api/client_ip.py` `client_ip()`, which trusts `X-Forwarded-For` **only**
 when the immediate socket peer (the TCP source, which a public client cannot forge) is in
@@ -265,6 +283,12 @@ PaaS the real client IP resolves correctly out of the box without trusting spoof
 attacker on the public internet has a public peer IP and is never trusted. This is a
 **network-perimeter deploy var → Railway env, not the admin panel** (like `CORS_ALLOW_ORIGINS` /
 `TRUSTED_PROXY_COUNT`): a compromised admin must not be able to disable spoofing protection.
+
+**Sessions are created lazily by the widget.** `POST /session` (reCaptcha + token + DB row) fires
+only when the player actually picks a topic (`onTopic` → `ensureSession`), NOT on panel open — the
+old open-time warm-up minted a DB session (and burned the per-IP `session:` budget) for every
+visitor who opened and closed the widget without engaging. The topic picker still paints instantly
+from the session-free cached `GET /topics`.
 
 The **low-content guard** (`antispam.check_low_content`) stops messages with nothing to
 answer — a lone character, symbol/emoji-only spam, or one character mashed over and over
@@ -316,33 +340,51 @@ drifts to another supported language. Async responses (`/topics`, `/session`) st
 `state.lang` and never redefine it. The set of supported languages still comes from the
 hot-reloaded `language` settings group (`default` + `supported`).
 
-### Escalation (`escalation.py`)
+### Escalation (`escalation.py`) — two strengths: HARD closes, SOFT keeps chatting
 Escalation returns a contact-button payload only (no form, no live agent, no ticket/Telegram
-notifier). `decide()` triggers on: high-risk keywords (fraud/legal), explicit human requests,
-message cap, or the model's `[[ESCALATE]]` sentinel — checked in that order. The two keyword
-scans run on a normalized copy of the message (NFKC + zero-width strip, via
-`antispam._normalize_for_scan`) so obfuscation can't hide a trigger; the keyword lists are
-stems (`поддержк`, `мошенн`, …) so inflected forms still match. Both lists are tunable live from
-the admin `escalation` settings group — `high_risk_keywords` and `human_request_keywords`; the
-constants in `escalation.py` (`_HIGHRISK_KEYWORDS` / `_HUMAN_KEYWORDS`) are only the built-in
-defaults used until the owner overrides them. The cap fires on the turn whose
-prospective count (current + 1) reaches `max_messages_per_session`; the model-free fast path in
-`api/chat.py` is the cheap belt-and-suspenders for a session already at/over the cap (e.g. after
-the owner lowers it mid-session) — complementary, not a duplicate. (There is **no**
-`unresolved_turns_before_escalate` knob: the catch-all `other` is routed like every other topic,
-so it escalates on the same triggers — the old per-`other` turn threshold was removed with that
-redesign.) On escalation, `chat_sessions.status=
-'escalated'` and an `admin_events('escalation')` row is written, and `build_payload(lang)`
-returns the localized message + contact button. The button URL is `CONTACT_FORM_URL`
-(via the `general` settings group).
+notifier). The payload carries a **`final`** flag mirroring the split:
+- **HARD (`final=true`)** — the model's `[[ESCALATE]]` sentinel, the message cap, or the explicit
+  `/escalate` tap. `db.mark_escalated` sets `status='escalated'` (+ `escalated=TRUE`), the widget
+  ends the conversation, and further turns 409. `decide()` covers exactly these post-model
+  triggers (cap first, then `model_signalled`); the old `already_escalated` auto-trigger branch is
+  **gone** — a soft-escalated session keeps chatting normally.
+- **SOFT (`final=false`)** — the keyword triggers (high-risk fraud/legal stems, explicit ask for a
+  human), checked by `escalation.keyword_trigger()` in `chat_service` **BEFORE the model call**
+  (they don't depend on the model, so the hand-off turn burns **no tokens**; the turn is persisted
+  with `ai_meta=None` and the reply text rides only in the escalation card, `reply=""`).
+  `db.mark_escalated_soft` sets only `escalated=TRUE` — the session **stays `open`** and the widget
+  keeps the composer, so a fuzzy stem false positive can never kill a live conversation. Metrics
+  and the Unresolved queue still see it (they key on the `escalated` flag / open status). A later
+  hard trigger upgrades it: the hard paths call `mark_escalated` **unconditionally** (idempotent)
+  and guard the duplicate `admin_events('escalation')` row on `status != 'escalated'`, not on the
+  `escalated` flag.
 
-**A hand-off ends the bot conversation.** Once a session is `escalated` (or `resolved`),
-`api/chat.py` `_ensure_open_session` rejects further mutating turns (`/message`, `/topic`,
-`/escalate`) with **HTTP 409 `session_closed`** — only an `open` session is chatable. The
-widget mirrors this: on an `escalation.active` turn it shows the contact card and then calls
-`endConversation()` (hides the composer, drops the local session credentials), so the player
-can only chat again by starting a **new** conversation. (This means the old `already_escalated`
-branch in `decide()` is now reachable only on the resume edge, not via fresh `/message` calls.)
+The keyword scans run on a normalized copy of the message (NFKC + zero-width strip, via
+`antispam._normalize_for_scan`) so obfuscation can't hide a trigger. Matching is **word-boundary
+aware** (`_matches_keywords`), not raw substring: a phrase (with a space) matches as a substring; a
+stem matches only at the **start of a word** (`поддержк` → «поддержку», never mid-word); a **short
+stem (≤3 chars) must equal a whole word** — so «судя по всему»/«судьба»/«рассудите» no longer trip
+the `суд` stem (the substring matcher used to escalate-and-close on those). Both lists are tunable
+live from the admin `escalation` settings group — `high_risk_keywords` and
+`human_request_keywords`; the constants in `escalation.py` are only the built-in defaults. The cap
+fires on the turn whose prospective count (current + 1) reaches `max_messages_per_session`; the
+model-free fast path in `api/chat.py` is the cheap belt-and-suspenders for a session already
+at/over the cap — complementary, not a duplicate. The button URL is `CONTACT_FORM_URL` (via the
+`general` settings group).
+
+**A transient model failure does NOT escalate.** When the OpenAI call fails outright (retries +
+failover exhausted — e.g. a provider outage), `chat_service` returns a localized model-free
+"technical hiccup, please resend" nudge (`_MODEL_ERROR_REPLY`), persists **no** turn (the player
+just resends), logs the failed call to `ai_interaction_logs` (invariant §4) and a sampled
+`model_error` admin event. Previously this path escalated AND closed the session — an OpenAI blip
+killed every live conversation.
+
+**A HARD hand-off ends the bot conversation.** Once a session is `status='escalated'` (or
+`resolved`), `api/chat.py` `_ensure_open_session` rejects further mutating turns (`/message`,
+`/topic`, `/escalate`) with **HTTP 409 `session_closed`** — only an `open` session is chatable.
+The widget mirrors this: on an `escalation.active` turn with `final !== false` it shows the
+contact card and then calls `endConversation()` (hides the composer, drops the local session
+credentials); on a soft card (`final === false`) it shows the card and keeps the composer.
 
 ### Topic routing (`[[TOPIC:slug]]` sentinel)
 Only the selected topic's KB is loaded (Layer 2), so a question that belongs to a *different*
@@ -372,7 +414,9 @@ the transcript (informational, **no button** — it stays as the record of the h
 `POST /api/chat/topic`, and after a short legibility pause (`SWITCH_NOTE_MS`) **re-asks** the player's
 original question against the new KB — that second `/message` is the grounded answer the player sees.
 `applyTurnExtras` carries a `depth` guard (`MAX_AUTO_SWITCHES`) so a misbehaving model can't bounce the
-player across topics forever. (This replaced the earlier flow where the wrong-KB answer + a one-tap
+player across topics forever; when the guard trips, the widget shows a localized "couldn't settle on a
+topic, please rephrase" fallback (`switchStuck`) instead of ending the turn with no reply at all (the
+routing-only response is empty, so without the fallback the chat looked frozen). (This replaced the earlier flow where the wrong-KB answer + a one-tap
 "switch topic" button were both shown and the player had to tap to proceed.) Net token cost is unchanged
 vs. that flow — still one detect call + one grounded answer call — but no ungrounded text is ever shown.
 
@@ -408,19 +452,24 @@ transcript is untouched — resume (`GET /session/{id}`) and the admin session v
 To pull the player toward the exact KB entry their question is closest to, the model emits — along
 with its answer — two sentinels (mirroring the `[[TOPIC:slug]]` machinery), both **stripped** before
 the reply is shown. Their directives are STATIC, so they ride in the byte-stable Layer-1 block:
-- **`[[SUGGEST: q1 | q2 | q3]]`** (own LAST line) — **three** options phrased **from the player's
-  point of view** (first person), pipe-separated. The first **two** are short follow-up/clarifying
-  *questions* whose answers ARE in the KB; the **third is a declarative closing/resolution option**
-  ("Issue solved.") ending with a **period, not a `?`** — that period is the machine signal that marks
-  it as the closing option. `chat_service` (`prompts.strip_suggestions`) parses + caps at
-  `prompts._MAX_SUGGESTIONS` = 3 and normalizes the closing option to end with a period, then
-  `prompts.split_closing` peels the declarative last item off into a separate field: the `/message`
-  response carries `suggestions:[…]` (the ≤2 guiding questions) **plus** `closing_suggestion` (the
-  closing option, or `null`). The widget renders the guiding questions as one-tap **bubbles**
-  (`submitText`) and the closing option as a distinct soft-green **closing bubble**: tapping it sends a
-  goodbye turn (Nika still generates a warm reply), then marks the session **resolved**
-  (`POST /api/chat/resolve`) and ends the conversation — and crucially does **not** then show the green
-  finish button (the player already chose to finish). Stale bubbles clear the moment a new turn starts.
+- **`[[SUGGEST: q1 | q2]]`** (own LAST line) — up to **two** short follow-up/clarifying *questions*
+  phrased **from the player's point of view** (first person), pipe-separated, whose answers ARE in
+  the KB. **The closing option is NOT generated by the model**: `chat_service` appends its own
+  fixed, localized `closing_suggestion` (`chat_service.closing_suggestion_for` — "Issue solved." /
+  «Проблема решена.» / …) whenever guiding questions are shown, so its wording is always exact and
+  it reliably ends the chat. `prompts.strip_suggestions` parses + caps at
+  `prompts._MAX_SUGGESTIONS` = 2 and keeps only items ending with `?` — a declarative option the
+  model still emits out of old habit is **dropped** (an earlier design had the model generate the
+  closing option as a third item and normalized the last item to end with a period; that turned a
+  third *question* from a non-compliant model into a chat-ending button, so it was replaced by the
+  system-supplied option and `prompts.split_closing` was removed). The `/message` response carries
+  `suggestions:[…]` (the ≤2 guiding questions) **plus** `closing_suggestion` (the system option, or
+  `null` when there are no guiding questions / on escalation / topic switch). The widget renders
+  the guiding questions as one-tap **bubbles** (`submitText`) and the closing option as a distinct
+  soft-green **closing bubble**: tapping it sends a goodbye turn (Nika still generates a warm
+  reply), then marks the session **resolved** (`POST /api/chat/resolve`) and ends the conversation
+  — and crucially does **not** then show the green finish button (the player already chose to
+  finish). Stale bubbles clear the moment a new turn starts.
 - **`[[RESOLVED]]`** (own line) — set when there is nothing more to offer on the current question.
   The trigger is deliberately **broad** (`prompts._RESOLVED_DIRECTIVE`): not only an explicit
   thanks/confirmation, but also when the question is essentially answered and **no suitable KB
@@ -504,11 +553,17 @@ Map of what lives where:
   `admin` may write; `manager` is **read-only**. The dashboard is no longer gated by an env switch
   — it is always mounted and protected by named-user login (an empty `admin_users` means nobody can
   log in, so there is **no bootstrap path** — seed the first account against a live DB).
-  `require_admin` guards every `/admin/*` route (any valid token); **`require_admin_write`** (role
-  in `WRITE_ROLES = ("admin",)`, else **403**) guards every mutating route (KB, settings, variables,
-  test profile, user management). `GET /admin/me` returns the caller's role/email so the SPA can
-  role-gate its UI (managers lose the Settings / Users / Test-sandbox tabs and all edit controls —
-  cosmetic; the server is authoritative).
+  `require_admin` guards every `/admin/*` route: it verifies the JWT **and re-checks the named
+  account against `admin_users` on every request** (a JWT has no revocation, so without this a
+  deactivated/deleted admin kept full access until token expiry — up to `ADMIN_TOKEN_TTL_MIN`);
+  the DB `role` is authoritative over the token's role claim, so a demotion applies immediately,
+  and a token without an `email` claim is rejected. **`require_admin_write`** (role in
+  `WRITE_ROLES = ("admin",)`, else **403**) guards every mutating route (KB, settings, variables,
+  test profile, user management); mutating writes record `updated_by` as the account **email**
+  (falling back to the role for safety). PBKDF2 verify/hash run in `asyncio.to_thread` so the
+  ~100ms CPU burn never blocks the event loop. `GET /admin/me` returns the caller's role/email so
+  the SPA can role-gate its UI (managers lose the Settings / Users / Test-sandbox tabs and all
+  edit controls — cosmetic; the server is authoritative).
 - **User management** (`api/admin.py` `/admin/users*`, the **Users** tab, admins only):
   minimal CRUD over `admin_users` (email + password + role `admin`/`manager`). No email delivery,
   no reset flows — an admin sets passwords directly. A user can't demote/deactivate/delete

@@ -54,8 +54,12 @@ def test_control_only_escalation_gets_visible_handoff_copy(monkeypatch):
         "user_context": {}, "message_count": 0, "lang": "ru",
     }
 
-    reply = asyncio.run(chat_service.handle_message(session, "как связаться с поддержкой?"))
+    # NB: deliberately keyword-free text — a support/human keyword would now
+    # SOFT-escalate BEFORE the model call, while this test exercises the
+    # model-signalled ([[ESCALATE]]) hard path.
+    reply = asyncio.run(chat_service.handle_message(session, "мой вопрос никак не решается"))
 
     assert reply.escalation["active"] is True
-    assert reply.reply == "Я передам ваш вопрос в службу поддержки — они помогут дальше."
+    assert reply.escalation["final"] is True  # a model hand-off closes the chat
+    assert reply.reply == "Я передам ваш вопрос в службу поддержки. Они помогут дальше."
     assert captured["assistant_text"] == reply.reply

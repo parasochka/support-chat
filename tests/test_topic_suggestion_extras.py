@@ -85,7 +85,7 @@ def test_topic_suggestion_is_routing_only_and_suppresses_answer(monkeypatch):
     assert "cost_usd" in calls["events"][0][1]
 
 
-def test_normal_turn_splits_closing_suggestion(monkeypatch):
+def test_normal_turn_appends_system_closing_suggestion(monkeypatch):
     async def _get_topic(tid):
         return {"slug": "deposits", "id": tid, "title": {"ru": "Депозиты"}}
 
@@ -131,5 +131,7 @@ def test_normal_turn_splits_closing_suggestion(monkeypatch):
     reply = asyncio.run(chat_service.handle_message(session, "как пополнить счёт?"))
 
     assert reply.suggestions == ["Какой минимальный депозит?", "Есть ли комиссия?"]
-    assert reply.closing_suggestion == "Всё понятно, спасибо."
+    # The declarative option the model emitted is dropped; the closing bubble is
+    # SYSTEM-supplied with fixed localized wording.
+    assert reply.closing_suggestion == "Проблема решена."
     assert reply.suggested_topic is None

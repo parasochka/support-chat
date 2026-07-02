@@ -5,9 +5,11 @@ destructive action writes an `admin_events` audit row (invariant §15.5).
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import re
+import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -141,10 +143,29 @@ async def sessions(from_: Optional[str] = Query(default=None, alias="from"),
 
 @router.get("/session/{session_id}")
 async def session(session_id: str) -> JSONResponse:
+    # Validate up front: a non-UUID path segment would otherwise hit the UUID
+    # column and bubble out of asyncpg as a 500 (the chat API never gets here
+    # because its session tokens only ever carry real UUIDs).
+    try:
+        _uuid.UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Session not found.")
     detail = await db.session_detail(session_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="Session not found.")
     return JSONResponse(content=detail)
+
+
+def _csv_safe(value: str) -> str:
+    """Neutralize spreadsheet formula injection in player-controlled CSV cells.
+
+    A message starting with '=', '+', '-', '@' (or a tab/CR) becomes a live
+    formula when the export is opened in Excel/Sheets — classic CSV injection.
+    Prefixing a single quote makes the cell render as literal text.
+    """
+    if value and value[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
 
 
 @router.get("/unresolved")
@@ -162,7 +183,7 @@ async def unresolved(from_: Optional[str] = Query(default=None, alias="from"),
                 w.writerow([g["topic"], s["session_id"], s.get("lang"), s.get("status"),
                             s.get("escalated"), s["message_count"],
                             s.get("cost_usd_total"),
-                            (s["first_message"] or "").replace("\n", " "),
+                            _csv_safe((s["first_message"] or "").replace("\n", " ")),
                             s["created_at"]])
         return PlainTextResponse(content=buf.getvalue(), media_type="text/csv")
     return JSONResponse(content={"groups": groups})
@@ -246,7 +267,8 @@ async def kb_set_variable(key: str, body: KBVariableWrite, admin=Depends(require
         key=key,
         description=body.description.strip(),
         value=body.value.strip(),
-        updated_by=admin.get("role"),
+        # The audit trail records WHO acted — the named account, not its role.
+        updated_by=admin.get("email") or admin.get("role"),
     )
     await db.log_admin_event(None, "kb_variable_updated", {"key": key})
     return JSONResponse(content={"variable": item})
@@ -276,7 +298,8 @@ async def put_setting(key: str, body: SettingWrite, admin=Depends(require_admin_
         validated = settings_mod.validate_setting(key, body.value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    await db.set_setting(key, validated, updated_by=admin.get("role"))
+    await db.set_setting(key, validated,
+                         updated_by=admin.get("email") or admin.get("role"))
     await settings_mod.reload()  # hot: invalidate + repopulate cache
     if key == "model":
         # request_timeout + per-key concurrency are bound at client build time;
@@ -318,7 +341,8 @@ async def put_test_profile(body: TestProfileWrite,
         validated = settings_mod.validate_test_profile(body.value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    await db.set_setting("test_profile", validated, updated_by=admin.get("role"))
+    await db.set_setting("test_profile", validated,
+                         updated_by=admin.get("email") or admin.get("role"))
     await settings_mod.reload()  # hot: applies to the next session created
     await db.log_admin_event(None, "test_profile_updated", {})
     return JSONResponse(content={"profile": settings_mod.test_profile()})
@@ -393,7 +417,9 @@ async def create_user(body: UserCreate,
     role = _validate_role(body.role)
     if await db.get_admin_user(email):
         raise HTTPException(status_code=409, detail="A user with that email already exists.")
-    user = await db.create_admin_user(email, auth.hash_password(body.password), role)
+    # PBKDF2 hashing is CPU-bound — keep it off the event loop.
+    pw_hash = await asyncio.to_thread(auth.hash_password, body.password)
+    user = await db.create_admin_user(email, pw_hash, role)
     await db.log_admin_event(None, "admin_user_created",
                              {"email": email, "role": role, "by": admin.get("email")})
     return JSONResponse(content={"user": user})
@@ -410,7 +436,7 @@ async def update_user(email: str, body: UserUpdate,
     pw_hash = None
     if body.password is not None:
         _validate_password(body.password)
-        pw_hash = auth.hash_password(body.password)
+        pw_hash = await asyncio.to_thread(auth.hash_password, body.password)
     # Guard against self-lockout: an account cannot demote or deactivate itself
     # in the same session. With no owner password recovery path, keep at least a
     # second admin account so a forgotten password never locks everyone out.
@@ -459,7 +485,7 @@ async def delete_user(email: str,
 # Nothing here is sent to the model — it's a faithful rendering of the live
 # assembly so "how is the prompt formed?" has one answer in one place.
 # ---------------------------------------------------------------------------
-_PREVIEW_USER_TEXT = "«…the player's current message will appear here…»"
+_PREVIEW_USER_TEXT = "\"...the player's current message will appear here...\""
 
 
 def _preview_context() -> dict[str, Any]:

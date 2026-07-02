@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections import deque as _deque
 from typing import Any, Optional
 
 import asyncpg
@@ -527,6 +528,22 @@ async def mark_escalated(session_id: str) -> None:
     )
 
 
+async def mark_escalated_soft(session_id: str) -> None:
+    """Flag a SOFT (keyword-triggered) escalation without closing the session.
+
+    Sets only `escalated = TRUE` so the metrics and the Unresolved queue see the
+    hand-off, but `status` stays 'open' and the player can keep chatting — a
+    fuzzy keyword false positive must never kill a live conversation. A later
+    HARD escalation (model [[ESCALATE]], cap, explicit) still closes it via
+    mark_escalated.
+    """
+    await _pool.execute(
+        "UPDATE chat_sessions SET escalated = TRUE, updated_at = now() "
+        "WHERE id = $1",
+        session_id,
+    )
+
+
 async def mark_resolved(session_id: str) -> None:
     """Close a session the player ended via the 'finish chat' nudge.
 
@@ -643,6 +660,33 @@ async def log_admin_event(session_id: Optional[str], type_: str,
         "INSERT INTO admin_events (session_id, type, payload) VALUES ($1, $2, $3::jsonb)",
         session_id, type_, json.dumps(payload or {}),
     )
+
+
+# High-volume event types (rate-limit blocks, injection blocks, low-content
+# nudges, dev recaptcha skips) fire once per REJECTED request, so an attacker
+# hammering a 429'd endpoint would otherwise grow admin_events without bound —
+# the rate limiter rejects the request but never stopped the logging. The
+# sampled writer keeps a small in-memory budget per event type and silently
+# drops the excess: the dashboard still sees that the blocking happened (the
+# first N events per window), the table stays bounded. In-memory like the rate
+# limiter itself — per instance, reset on restart, which is fine for sampling.
+_EVENT_SAMPLE_WINDOW_SEC = 300.0
+_EVENT_SAMPLE_MAX_PER_WINDOW = 20
+_event_sample_hits: dict[str, "_deque[float]"] = {}
+
+
+async def log_admin_event_sampled(session_id: Optional[str], type_: str,
+                                  payload: Optional[dict[str, Any]] = None) -> None:
+    """log_admin_event with a per-type budget; excess events are dropped."""
+    import time as _time
+    now = _time.monotonic()
+    hits = _event_sample_hits.setdefault(type_, _deque())
+    while hits and now - hits[0] > _EVENT_SAMPLE_WINDOW_SEC:
+        hits.popleft()
+    if len(hits) >= _EVENT_SAMPLE_MAX_PER_WINDOW:
+        return
+    hits.append(now)
+    await log_admin_event(session_id, type_, payload)
 
 
 async def record_rate_hit(ip: str) -> None:

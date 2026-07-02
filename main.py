@@ -91,6 +91,17 @@ async def body_size_cap(request: Request, call_next):
                 )
         except ValueError:
             pass
+    elif "transfer-encoding" in request.headers:
+        # A chunked request carries no Content-Length, so it would sail past the
+        # cap above and the whole body would still be buffered by the JSON
+        # parser. No legitimate client of this JSON API streams chunked bodies —
+        # require a declared length instead of buffering blind.
+        return JSONResponse(
+            status_code=411,
+            content={"error": "length_required",
+                     "detail": "Chunked request bodies are not accepted; "
+                               "send a Content-Length header."},
+        )
     return await call_next(request)
 
 
@@ -153,18 +164,28 @@ if os.path.isdir(_ADMIN_DIR):
     app.mount("/admin-static", StaticFiles(directory=_ADMIN_DIR), name="admin-static")
 
 
+# The widget files are served at fixed URLs with no build step, so without an
+# explicit Cache-Control browsers apply heuristic caching and can keep serving
+# a stale widget.js for days after a redeploy (the admin SPA already solves
+# this with mtime-stamped URLs). `no-cache` = revalidate each load; the files
+# are small and the 304 path keeps repeat loads cheap.
+_WIDGET_CACHE = {"Cache-Control": "no-cache"}
+
+
 @app.get("/widget.js")
 async def widget_js() -> FileResponse:
     return FileResponse(os.path.join(_FRONTEND_DIR, "widget.js"),
-                        media_type="application/javascript")
+                        media_type="application/javascript",
+                        headers=_WIDGET_CACHE)
 
 
 @app.get("/widget.css")
 async def widget_css() -> FileResponse:
     return FileResponse(os.path.join(_FRONTEND_DIR, "widget.css"),
-                        media_type="text/css")
+                        media_type="text/css", headers=_WIDGET_CACHE)
 
 
 @app.get("/test.html", response_class=HTMLResponse)
 async def test_html() -> FileResponse:
-    return FileResponse(_TEST_PAGE, media_type="text/html")
+    return FileResponse(_TEST_PAGE, media_type="text/html",
+                        headers=_WIDGET_CACHE)

@@ -1,16 +1,19 @@
 """Suggested follow-up questions + the resolved/close signal.
 
 Along with its answer the model emits:
-  - [[SUGGEST: q1 | q2 | q3]] — up to three short guide-to-KB follow-up questions
-    (player's POV), with the third option nudging toward chat completion, that the
-    widget renders as one-tap bubbles by the input field, and
-  - [[RESOLVED]] — once the question looks fully resolved, so the widget can offer
-    a "finish chat" button.
-Both tags are stripped from the visible reply and their directives live in Layer
-3 only — the cached SYSTEM_CORE prefix must stay byte-identical.
+  - [[SUGGEST: q1 | q2]] — up to TWO short guide-to-KB follow-up questions
+    (player's POV) that the widget renders as one-tap bubbles by the input
+    field. The closing "issue solved" bubble is NOT generated: chat_service
+    appends a fixed localized option itself, so a declarative item the model
+    still emits out of old habit is dropped by the parser.
+  - [[RESOLVED]] — once the question looks fully resolved, so the widget can
+    offer a "finish chat" button.
+Both tags are stripped from the visible reply; their directives are STATIC and
+ride in the byte-stable Layer-1 core.
 """
 from __future__ import annotations
 
+import chat_service
 import prompts
 
 
@@ -20,13 +23,12 @@ import prompts
 def test_strip_suggestions_parses_pipe_list_and_cleans_text():
     raw = (
         "Вот как пополнить счёт картой.\n"
-        "[[SUGGEST: Какие лимиты на депозит? | Как пополнить криптой? | Где найти бонус?]]"
+        "[[SUGGEST: Какие лимиты на депозит? | Как пополнить криптой?]]"
     )
     clean, sugg = prompts.strip_suggestions(raw)
     assert sugg == [
         "Какие лимиты на депозит?",
         "Как пополнить криптой?",
-        "Где найти бонус.",
     ]
     assert "[[SUGGEST" not in clean
     assert clean == "Вот как пополнить счёт картой."
@@ -38,10 +40,10 @@ def test_strip_suggestions_none_when_absent():
     assert clean == "Обычный ответ без тега."
 
 
-def test_strip_suggestions_caps_at_three_and_drops_blanks():
-    raw = "[[SUGGEST: a | b |  | c | d ]]"
+def test_strip_suggestions_caps_at_two_and_drops_blanks():
+    raw = "[[SUGGEST: а? | б? |  | в? | г? ]]"
     clean, sugg = prompts.strip_suggestions(raw)
-    assert sugg == ["a", "b", "c."]  # blanks dropped, capped at 3; closing option is declarative
+    assert sugg == ["а?", "б?"]  # blanks dropped, capped at 2
     assert clean == ""
 
 
@@ -52,33 +54,19 @@ def test_strip_suggestions_keeps_inline_remainder():
     assert clean == "Готово."
 
 
-def test_strip_suggestions_normalizes_third_closing_option_to_period():
-    raw = "[[SUGGEST: Где кнопка пополнения? | Какой минимум? | Всё ясно, закрыть?]]"
-
+def test_strip_suggestions_drops_declarative_closing_option():
+    # The closing option is system-supplied now; a declarative item the model
+    # still emits out of old habit must not masquerade as a guiding bubble.
+    raw = "[[SUGGEST: Какой минимум? | Всё понятно, спасибо.]]"
     _, sugg = prompts.strip_suggestions(raw)
-
-    assert sugg == ["Где кнопка пополнения?", "Какой минимум?", "Всё ясно, закрыть."]
-
-
-# ---------------------------------------------------------------------------
-# split_closing — the trailing declarative option becomes the finish-chat bubble
-# ---------------------------------------------------------------------------
-def test_split_closing_separates_declarative_last_option():
-    questions, closing = prompts.split_closing(
-        ["Какие лимиты на депозит?", "Как пополнить криптой?", "Всё ясно, закрыть."]
-    )
-    assert questions == ["Какие лимиты на депозит?", "Как пополнить криптой?"]
-    assert closing == "Всё ясно, закрыть."
+    assert sugg == ["Какой минимум?"]
 
 
-def test_split_closing_none_when_last_is_a_question():
-    questions, closing = prompts.split_closing(["Вопрос один?", "Вопрос два?"])
-    assert questions == ["Вопрос один?", "Вопрос два?"]
-    assert closing is None
-
-
-def test_split_closing_empty():
-    assert prompts.split_closing([]) == ([], None)
+def test_closing_suggestion_is_localized_with_english_fallback():
+    assert chat_service.closing_suggestion_for("ru") == "Проблема решена."
+    assert chat_service.closing_suggestion_for("en") == "Issue solved."
+    # Unknown / admin-added languages fall back to English.
+    assert chat_service.closing_suggestion_for("de") == "Issue solved."
 
 
 # ---------------------------------------------------------------------------
@@ -109,28 +97,28 @@ def test_strip_resolved_tag_inline_keeps_remainder():
 # ---------------------------------------------------------------------------
 def test_suggestions_directive_in_layer1_core():
     core = prompts.get_system_core()
-    assert "Suggested questions:" in core
+    assert "SUGGESTED QUESTIONS:" in core
     assert "[[SUGGEST:" in core
-    assert "third option must ALWAYS be a closing/resolution option" in core
-    assert "must end with a period, not a question mark" in core
+    # The model must NOT generate the closing option — the system supplies it.
+    assert "the system appends its own" in core
     msgs = prompts.build_messages(
         {"user_context": {}}, kb_block="KB", history=[], user_text="hi",
         resolved_lang="en",
     )
-    assert "Suggested questions:" in msgs[0]["content"]
-    assert "Suggested questions:" not in msgs[-1]["content"]
+    assert "SUGGESTED QUESTIONS:" in msgs[0]["content"]
+    assert "SUGGESTED QUESTIONS:" not in msgs[-1]["content"]
 
 
 def test_resolved_directive_in_layer1_core():
     core = prompts.get_system_core()
-    assert "Finishing the chat:" in core
+    assert "FINISHING THE CHAT:" in core
     assert "[[RESOLVED]]" in core
     msgs = prompts.build_messages(
         {"user_context": {}}, kb_block=None, history=[], user_text="hi",
         resolved_lang="en",
     )
-    assert "Finishing the chat:" in msgs[0]["content"]
-    assert "Finishing the chat:" not in msgs[-1]["content"]
+    assert "FINISHING THE CHAT:" in msgs[0]["content"]
+    assert "FINISHING THE CHAT:" not in msgs[-1]["content"]
 
 
 def test_lead_forward_directive_ties_suggest_and_resolved():

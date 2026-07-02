@@ -187,7 +187,7 @@ def check_low_content(text: str) -> None:
 # player gets a gentle "ask a real question" reply instead of a hard error.
 _LOW_CONTENT_REPLY = {
     "en": "Could you describe your question in a sentence or two? I didn't catch a question I can help with.",
-    "ru": "Опишите, пожалуйста, ваш вопрос в одном-двух предложениях — я не увидел вопроса, с которым могу помочь.",
+    "ru": "Опиши, пожалуйста, свой вопрос в одном-двух предложениях: я не увидел вопроса, с которым могу помочь.",
     "es": "¿Podrías describir tu pregunta en una o dos frases? No detecté una consulta con la que pueda ayudarte.",
     "tr": "Sorununuzu bir iki cümleyle yazar mısınız? Yardımcı olabileceğim bir soru göremedim.",
     "pt": "Você poderia descrever sua dúvida em uma ou duas frases? Não identifiquei uma pergunta com a qual eu possa ajudar.",

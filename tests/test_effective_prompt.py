@@ -39,15 +39,15 @@ async def test_effective_prompt_renders_all_layers(monkeypatch):
     assert "Как пополнить счёт" in pv["system"]  # KB content (data) is whatever lang it's in
     assert pv["example"]["topic"] == "Deposits"  # localized to the default lang
     # Static behavioural directives ride in the cached Layer-1 system block.
-    assert "Formatting:" in pv["system"]                      # formatting directive
-    assert "Grounding in the knowledge base:" in pv["system"]  # KB-grounding directive
+    assert "FORMATTING:" in pv["system"]                      # formatting directive
+    assert "KNOWLEDGE-BASE GROUNDING:" in pv["system"]  # KB-grounding directive
     assert "Escalation is a last resort" in pv["system"]       # escalation restraint
-    assert "Suggested questions:" in pv["system"]              # suggested questions
+    assert "SUGGESTED QUESTIONS:" in pv["system"]              # suggested questions
 
     # Per-request (dynamic) directives + recency guardrails live in the user message.
     user = pv["user"]
     assert "TOPIC ROUTING" in user               # topic routing
-    assert "Forbidden topics" in user            # forbidden topics (from the file)
+    assert "FORBIDDEN TOPICS" in user            # forbidden topics (from the file)
     # The preview player comes from the Test-sandbox profile (the single source of
     # the test player), not a separate hard-coded preview user. With an empty
     # settings cache that resolves to the default profile ("Test Player").
@@ -117,7 +117,7 @@ async def test_effective_prompt_anonymous_when_sandbox_disabled(monkeypatch):
     resp = await admin.get_effective_prompt()
     user = json.loads(resp.body)["effective_preview"]["user"]
     assert "Sandbox" not in user          # disabled -> name not used
-    assert "Personalization" not in user  # no personalization for an anon session
+    assert "PERSONALIZATION" not in user  # no personalization for an anon session
     settings.invalidate()
 
 

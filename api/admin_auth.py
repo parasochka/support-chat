@@ -7,6 +7,7 @@ more, only named accounts created from the Users tab.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -38,12 +39,29 @@ def _client_ip(request: Request) -> str:
 
 
 async def require_admin(authorization: Optional[str] = Header(default=None)) -> dict:
-    """FastAPI dependency: verify the admin JWT or raise 401. Guards /admin/* data."""
+    """FastAPI dependency: verify the admin JWT or raise 401. Guards /admin/* data.
+
+    Beyond the signature/expiry check, the named account is re-checked against
+    `admin_users` on every request: a JWT has no revocation, so without this a
+    deactivated (or deleted) admin would keep full access until the token
+    expired (up to ADMIN_TOKEN_TTL_MIN). The DB role is authoritative too, so a
+    demotion applies immediately instead of riding out the old token.
+    """
     try:
         token = auth.extract_bearer(authorization)
-        return auth.verify_admin_token(token)
+        payload = auth.verify_admin_token(token)
     except auth.TokenError as exc:
         raise HTTPException(status_code=401, detail=str(exc))
+    email = payload.get("email")
+    if not email:
+        # Every token minted by /admin/login carries the account email; a token
+        # without one cannot be re-validated against admin_users — reject it.
+        raise HTTPException(status_code=401, detail="token missing account email")
+    user = await db.get_admin_user(email)
+    if not user or not user.get("active", False):
+        raise HTTPException(status_code=401, detail="account disabled")
+    payload["role"] = user.get("role") or payload.get("role")
+    return payload
 
 
 async def require_admin_write(admin: dict = Depends(require_admin)) -> dict:
@@ -81,8 +99,13 @@ async def login(req: Request, body: AdminLogin) -> JSONResponse:
     # hash. A missing/disabled user and a bad password are indistinguishable to
     # the client (no account enumeration).
     user = await db.get_admin_user(email)
-    ok = bool(user) and user.get("active", False) \
-        and auth.verify_password(body.password, user["password_hash"])
+    ok = False
+    if user and user.get("active", False):
+        # PBKDF2 (200k iterations) is CPU-bound and would block the event loop
+        # for ~100ms per attempt — run it in a worker thread.
+        ok = await asyncio.to_thread(
+            auth.verify_password, body.password, user["password_hash"]
+        )
     if not ok:
         await db.log_admin_event(None, "admin_login_failed",
                                  {"ip": ip, "reason": "bad_user_credentials",
