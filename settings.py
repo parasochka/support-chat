@@ -125,10 +125,13 @@ def model() -> dict[str, Any]:
 
 
 def escalation() -> dict[str, Any]:
+    """The pre-model keyword-trigger lists — edited from the admin Prompt →
+    Prompt variables sub-tab (content tuning, alongside the prompt), NOT from
+    the Settings tab. The technical message cap moved to the `general` group
+    (general() reads a legacy `escalation.max_messages_per_session` override
+    as a fallback, so old stored rows keep working)."""
     db_v = _group("escalation")
     return {
-        "max_messages_per_session": db_v.get("max_messages_per_session",
-                                             config.MAX_MESSAGES_PER_SESSION),
         "high_risk_keywords": db_v.get("high_risk_keywords",
                                        list(_escalation._HIGHRISK_KEYWORDS)),
         "human_request_keywords": db_v.get("human_request_keywords",
@@ -193,12 +196,31 @@ def translations() -> dict[str, Any]:
 
 
 def general() -> dict[str, Any]:
-    """Resolved operational knobs that don't belong to another group:
-    session lifetime, the escalation contact-button URL, and the request body cap.
+    """Resolved operational knobs that don't belong to another group: session
+    and admin-token lifetimes, the per-session message cap, the prompt history
+    window, and the request body cap.
+
+    `max_messages_per_session` used to live in the `escalation` group (its UI
+    home was the raw Settings JSON editor); it is a technical limit, so it now
+    resolves here — with the legacy `escalation` override still honoured so an
+    existing DB row keeps working until the owner re-saves.
+
+    `contact_form_url` is a LEGACY fallback only (not shown in the Settings UI):
+    the per-language contact-button URL is edited in the admin Translations tab
+    (the `contact_url` key); escalation.build_payload falls back to this value
+    (old DB override → env CONTACT_FORM_URL) when no per-language URL is set.
     """
     db_v = _group("general")
+    legacy_esc = _group("escalation")
     return {
         "session_ttl_hours": db_v.get("session_ttl_hours", config.SESSION_TTL_HOURS),
+        "admin_token_ttl_min": db_v.get("admin_token_ttl_min",
+                                        config.ADMIN_TOKEN_TTL_MIN),
+        "max_messages_per_session": db_v.get(
+            "max_messages_per_session",
+            legacy_esc.get("max_messages_per_session",
+                           config.MAX_MESSAGES_PER_SESSION)),
+        "history_max_turns": db_v.get("history_max_turns", config.HISTORY_MAX_TURNS),
         "contact_form_url": db_v.get("contact_form_url", config.CONTACT_FORM_URL),
         "body_max_bytes": db_v.get("body_max_bytes", config.BODY_MAX_BYTES),
     }
@@ -298,12 +320,19 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "max_concurrent_per_key", 1, 1_000)
     elif key == "general":
         _require_int(value, "session_ttl_hours", 1, 8_760)        # <= 1 year
+        _require_int(value, "admin_token_ttl_min", 5, 10_080)     # 5 min..1 week
+        _require_int(value, "max_messages_per_session", 1, 10_000)
+        _require_int(value, "history_max_turns", 1, 200)
         _require_int(value, "body_max_bytes", 1_024, 104_857_600)  # 1 KiB..100 MiB
+        # Legacy: the per-language contact URL now lives in translations
+        # (`contact_url`); this field is still accepted so old writes don't 400.
         if "contact_form_url" in value:
             v = value["contact_form_url"]
             if v is not None and not isinstance(v, str):
                 raise ValueError("contact_form_url must be a string or null")
     elif key == "escalation":
+        # Legacy: the cap moved to `general`; still accepted (and honoured as a
+        # fallback in general()) so an old stored row / client doesn't break.
         _require_int(value, "max_messages_per_session", 1, 10_000)
         _require_str_list(value, "high_risk_keywords")
         _require_str_list(value, "human_request_keywords")
@@ -400,6 +429,12 @@ def validate_translations(value: Any) -> dict[str, dict[str, str]]:
                 raise ValueError(f"unknown translation key: {key!r}")
             if not isinstance(v, str):
                 raise ValueError(f"{code}.{key} must be a string")
+            # The contact-button URL must actually be a link — a typo here
+            # would ship a dead button to every player in that language.
+            if key == "contact_url" and v.strip() and \
+                    not v.strip().startswith(("http://", "https://")):
+                raise ValueError(
+                    f"{code}.contact_url must be an http(s) URL")
             if v.strip():
                 clean[key] = v
         if clean:

@@ -968,7 +968,9 @@ async function escalationKeywordsBox(holder) {
     "Pre-model triggers: a message hitting one of these shows the contact card "
     + "without calling the model. One keyword, stem or phrase per line; stems "
     + "match at the start of a word. The lists are multilingual by design (they "
-    + "scan the player's raw message, not the prompt)."));
+    + "scan the player's raw message, not the prompt). Related knobs elsewhere: "
+    + "the per-session message cap is in Settings → general; the contact button "
+    + "URL and copy are per-language in Translations."));
   try {
     const data = await api("/settings");
     const esc = (data.resolved || {}).escalation || {};
@@ -993,10 +995,9 @@ async function escalationKeywordsBox(holder) {
       save.addEventListener("click", async () => {
         err.textContent = ""; err.style.color = "";
         const toList = (ta) => ta.value.split("\n").map((s) => s.trim()).filter(Boolean);
-        // PUT replaces the stored group, so carry the resolved cap along with
-        // the two lists — otherwise saving keywords would drop a cap override.
+        // The group holds only the two lists now — the technical message cap
+        // lives in Settings → general.
         const value = {
-          max_messages_per_session: esc.max_messages_per_session,
           high_risk_keywords: toList(areas.high_risk_keywords),
           human_request_keywords: toList(areas.human_request_keywords),
         };
@@ -1025,6 +1026,11 @@ async function viewSettings(main) {
     holder.innerHTML = "";
     const data = await api("/settings");
     for (const key of data.keys) {
+      // The escalation keyword lists are content tuning, not technical
+      // settings — they are edited in Prompt → Prompt variables (the technical
+      // message cap lives in the `general` box below). No editor here, so the
+      // same knob is never editable from two places.
+      if (key === "escalation") continue;
       if (key === "language") { languageSettingsBox(holder, data.resolved.language || {}); continue; }
       if (key === "model") { modelSettingsBox(holder, data.resolved.model || {}); continue; }
       if (key === "general") { generalSettingsBox(holder, data.resolved.general || {}); continue; }
@@ -1273,27 +1279,25 @@ function modelSettingsBox(holder, current) {
   holder.appendChild(box);
 }
 
-// Dedicated "general" operational editor: session lifetime, the escalation
-// contact-button URL, and the request body cap. These used to live in Railway
-// env (SESSION_TTL_HOURS, CONTACT_FORM_URL, BODY_MAX_BYTES); now they're tuned
-// here and apply without a redeploy.
+// Dedicated "general" operational editor: session/admin-token lifetimes, the
+// per-session message cap, the prompt history window, and the request body
+// cap. These override the matching Railway env vars (SESSION_TTL_HOURS,
+// ADMIN_TOKEN_TTL_MIN, MAX_MESSAGES_PER_SESSION, HISTORY_MAX_TURNS,
+// BODY_MAX_BYTES) and apply without a redeploy. The escalation contact-button
+// URL is NOT here any more — it's per-language now, edited in Translations.
 function generalSettingsBox(holder, current) {
   const box = el("div", "npadmin-chart");
   box.appendChild(el("div", "npadmin-meta", "general — operational"));
   box.appendChild(el("div", "npadmin-help",
-    "Session lifetime, the escalation contact button URL, and the max request "
-    + "body size. Overrides the matching Railway env vars; applies live."));
-
-  const urlLab = el("label", "npadmin-field");
-  urlLab.appendChild(el("span", null, "Contact form URL (escalation button)"));
-  const urlInp = el("input", "npadmin-input");
-  urlInp.type = "text"; urlInp.value = current.contact_form_url || "";
-  urlInp.placeholder = "https://nikabet.example/support";
-  urlLab.appendChild(urlInp);
-  box.appendChild(urlLab);
+    "Technical limits and lifetimes. Overrides the matching Railway env vars; "
+    + "applies live. (The escalation contact button URL is per-language — edit "
+    + "it in the Translations tab.)"));
 
   const NUM = [
     ["session_ttl_hours", "Session TTL (hours)", "1"],
+    ["admin_token_ttl_min", "Admin login TTL (minutes)", "5"],
+    ["max_messages_per_session", "Max messages per session (then hand-off)", "1"],
+    ["history_max_turns", "Prompt history window (turns sent to the model)", "1"],
     ["body_max_bytes", "Max request body (bytes)", "1024"],
   ];
   const fields = {};
@@ -1312,7 +1316,11 @@ function generalSettingsBox(holder, current) {
   const save = el("button", "npadmin-btn", "Save general settings");
   save.addEventListener("click", async () => {
     err.textContent = ""; err.style.color = "";
-    const value = { contact_form_url: urlInp.value.trim() };
+    // PUT replaces the stored group; carry the legacy contact_form_url along
+    // (it's the fallback for languages without a Translations contact_url), so
+    // saving these knobs can't silently drop a previously stored URL.
+    const value = current.contact_form_url
+      ? { contact_form_url: current.contact_form_url } : {};
     for (const [key, label] of NUM) {
       value[key] = parseInt(fields[key].value, 10);
       if (Number.isNaN(value[key])) { err.textContent = `${label}: enter a number`; return; }
@@ -1550,9 +1558,10 @@ async function viewTranslations(main) {
   main.appendChild(el("div", "npadmin-help",
     "Everything the player sees in the widget, editable per language: the "
     + "widget texts (title, greeting, buttons, errors), the assistant's service "
-    + "replies (escalation card, closing option, nudges) and the topic names. "
-    + "Empty fields fall back to the built-in copy (then English). The admin "
-    + "panel itself stays English."));
+    + "replies (escalation card, its contact button URL, closing option, "
+    + "nudges) and the topic names. Empty fields fall back to the built-in "
+    + "copy (then English; the contact URL falls back to the deploy default). "
+    + "The admin panel itself stays English."));
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
     const [data, topicsData] = await Promise.all([

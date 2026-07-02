@@ -388,7 +388,7 @@ async def send_message(req: Request, body: MessageSend,
                         "assistant. Please ask a product-support question.")
 
     # 5. message cap reached -> force escalation response (no model call)
-    if session.get("message_count", 0) >= settings.escalation()["max_messages_per_session"]:
+    if session.get("message_count", 0) >= settings.general()["max_messages_per_session"]:
         log.info(
             "chat_message_cap_reached session_id=%s count=%s",
             body.session_id, session.get("message_count", 0),
