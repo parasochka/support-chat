@@ -94,6 +94,45 @@ def test_personalization_skipped_when_name_is_injection():
     assert "PERSONALIZATION" not in out
 
 
+def test_first_turn_carries_explicit_greeting_imperative():
+    # Empty history + not ongoing -> the Layer-3 personalization block carries a
+    # direct "open THIS reply with a by-name greeting" order, so the model never
+    # has to infer "is this my first reply?" from the empty history.
+    session = {"user_context": {"full_name": "Anna Smith", "id": "1"}}
+    msgs = prompts.build_messages(session, kb_block="KB", history=[],
+                                  user_text="how do I deposit?",
+                                  resolved_lang="en")
+    user = msgs[-1]["content"]
+    assert "VERY FIRST reply" in user
+    assert "MUST open" in user
+    assert "do NOT greet again" not in user
+
+
+def test_later_turns_suppress_greeting_and_name():
+    session = {"user_context": {"full_name": "Anna Smith", "id": "1"}}
+    history = [{"role": "user", "content": "hi"},
+               {"role": "assistant", "content": "Hi, Anna!"}]
+    msgs = prompts.build_messages(session, kb_block="KB", history=history,
+                                  user_text="and the limits?",
+                                  resolved_lang="en")
+    user = msgs[-1]["content"]
+    assert "MUST open" not in user
+    assert "do NOT greet again" in user
+
+
+def test_post_switch_turn_is_not_first_even_with_empty_history():
+    # After a topic switch the history is cut at the reset boundary (ongoing=True):
+    # the model must NOT be told to greet, even though it sees no prior turns.
+    session = {"user_context": {"full_name": "Anna Smith", "id": "1"}}
+    msgs = prompts.build_messages(session, kb_block="KB", history=[],
+                                  user_text="how do I withdraw?",
+                                  resolved_lang="en", ongoing=True)
+    user = msgs[-1]["content"]
+    assert "MUST open" not in user
+    assert "do NOT greet again" in user
+    assert "ALREADY in progress" in user  # the ongoing directive still rides along
+
+
 def test_personalization_does_not_touch_system_core():
     session = {"user_context": {"full_name": "Anna", "id": "1"}}
     msgs = prompts.build_messages(session, kb_block="KB", history=[],

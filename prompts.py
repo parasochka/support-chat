@@ -318,7 +318,8 @@ def _language_directive(resolved_lang: str) -> str:
     )
 
 
-def _personalization_directive(full_name: str) -> Optional[str]:
+def _personalization_directive(full_name: str,
+                               first_turn: bool = False) -> Optional[str]:
     """Layer-3 line telling the model to address the player by name, when known.
 
     Personalization lives in Layer 3 (the per-request user message), never in
@@ -328,27 +329,41 @@ def _personalization_directive(full_name: str) -> Optional[str]:
     when no usable name is present (anonymous session), so the prompt is
     unchanged in that case.
 
-    Note: the *when* (a by-name greeting at the start of the FIRST reply only;
-    never a self-introduction — the widget's canned bubble already did that) is
-    governed by `_GREETING_DIRECTIVE`; here we establish the name itself and that
-    it is never reused afterwards.
+    `first_turn` (empty prompt history, not a post-switch continuation) makes the
+    by-name opener an explicit per-turn imperative instead of leaving the model
+    to infer "is this my first reply?" from the empty history: a reasoning model
+    reliably weighed the static no-filler/never-introduce-yourself rules over the
+    conditional greeting rule and skipped the greeting entirely. On later turns
+    the directive flips to the suppression wording (the greeting already
+    happened; don't reuse the name). The static `_GREETING_DIRECTIVE` still
+    carries the always-true rules (never self-introduce, never re-greet).
     """
     name = (full_name or "").strip()
     if not name:
         return None
     first = name.split()[0]
-    return (
+    base = (
         "PERSONALIZATION:\n"
-        f"- The player's name is {first}. Greet them by this name at the start "
-        "of your VERY FIRST reply of the conversation (see the Greeting "
-        "directive). Always write the name in the same script as your reply - if "
-        "it is in a different script, transliterate it (for example the Russian "
-        "name \"Андрей\" becomes \"Andrey\" when you reply in English, and an "
-        "English name takes its Cyrillic form in Russian); never leave the name "
-        "in a script that does not match the reply. After that first greeting do "
-        "NOT use the name again, except rarely when there is a real reason (for "
-        "example to reassure during a complaint or a sensitive issue). When in "
-        "doubt, leave the name out."
+        f"- The player's name is {first}. Always write the name in the same "
+        "script as your reply - if it is in a different script, transliterate it "
+        "(for example the Russian name \"Андрей\" becomes \"Andrey\" when you "
+        "reply in English, and an English name takes its Cyrillic form in "
+        "Russian); never leave the name in a script that does not match the "
+        "reply.\n"
+    )
+    if first_turn:
+        return base + (
+            "- This is your VERY FIRST reply of this conversation: you MUST open "
+            f"it with a short greeting addressed to the player by name (for "
+            f"example \"Привет, {first}!\" when replying in Russian) and then "
+            "answer. This greeting is required - the brevity and no-filler style "
+            "rules do NOT drop it. Do not use the name again later in the reply."
+        )
+    return base + (
+        "- The first-reply greeting has already been given: do NOT greet again "
+        "and do NOT use the name again, except rarely when there is a real "
+        "reason (for example to reassure during a complaint or a sensitive "
+        "issue). When in doubt, leave the name out."
     )
 
 
@@ -372,8 +387,9 @@ _GREETING_DIRECTIVE = (
     "- If a PERSONALIZATION block in the user message gives you the player's "
     "name, open your VERY FIRST reply of the conversation with a short greeting "
     "addressed to them by name (for example \"Hi, Andrey!\" in the reply "
-    "language) and then answer. If no name is known, do not greet at all - go "
-    "straight to the substance of the answer.\n"
+    "language) and then answer. This by-name opener is REQUIRED and is not "
+    "filler - the brevity rules never drop it. If no name is known, do not "
+    "greet at all - go straight to the substance of the answer.\n"
     "- Never greet in any reply after the first one - even when the conversation "
     "switches to another language (that is NOT a new conversation). If the "
     "player's message is only a greeting, warmly ask what they need - without "
@@ -705,6 +721,7 @@ def build_dynamic_prompt(
     current_topic: Optional[dict[str, Any]] = None,
     closing: bool = False,
     ongoing: bool = False,
+    first_turn: bool = False,
 ) -> str:
     """Assemble the Layer-3 block placed in the final user message.
 
@@ -723,7 +740,8 @@ def build_dynamic_prompt(
         ctx_lines,
         "",
     ]
-    personalization = _personalization_directive(ctx.get("full_name", ""))
+    personalization = _personalization_directive(ctx.get("full_name", ""),
+                                                 first_turn=first_turn)
     if personalization:
         parts += [personalization, ""]
     parts += [
@@ -785,6 +803,12 @@ def build_messages(
     for m in convo:
         messages.append({"role": m["role"], "content": m["content"]})
 
+    # The genuinely first turn of the conversation: no prior turns AND not a
+    # post-topic-switch continuation (there the history is merely cut at the
+    # reset boundary). Drives the explicit by-name-greeting imperative in the
+    # personalization directive.
+    first_turn = not convo and not ongoing and not closing
+
     messages.append(
         {
             "role": "user",
@@ -796,6 +820,7 @@ def build_messages(
                 current_topic=current_topic,
                 closing=closing,
                 ongoing=ongoing,
+                first_turn=first_turn,
             ),
         }
     )

@@ -196,9 +196,16 @@ the VERY FIRST reply opens with a short by-name greeting («Привет, Анд
 with no name there is no greeting at all; no reply ever contains a self-introduction; and no
 reply after the first one greets — a language switch is NOT a new conversation (a greeting-only
 player message gets a warm "what do you need?" — still without re-greeting).
-`_personalization_directive` (Layer 3) supplies the name, the transliteration rule, and "never
-reuse the name after the first greeting" (rare reassurance in a complaint/sensitive case
-excepted). **After a topic switch** the prompt history is cut at `context_reset_id`, so the model
+`_personalization_directive` (Layer 3) supplies the name, the transliteration rule, and — the
+part that makes the greeting actually happen — an explicit per-turn imperative:
+`build_messages` computes `first_turn` (empty prompt history AND not ongoing/closing), and on
+that genuinely first turn the block orders "you MUST open THIS reply with a short by-name
+greeting; the brevity/no-filler rules do NOT drop it", while every later turn gets the
+suppression wording ("the greeting already happened — do not greet or reuse the name", rare
+reassurance in a complaint/sensitive case excepted). Leaving the model to *infer* "is this my
+first reply?" from the empty history did not work: the reasoning model weighed the static
+no-filler / never-introduce-yourself rules over the conditional greeting rule and skipped the
+greeting entirely. **After a topic switch** the prompt history is cut at `context_reset_id`, so the model
 sees an empty history — `chat_service` passes `ongoing=True` and Layer 3 gets
 `_ONGOING_CONVERSATION_DIRECTIVE` ("CONVERSATION STATE: already in progress, do not greet"),
 so the by-name greeting is never repeated across the boundary.
