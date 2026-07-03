@@ -4,12 +4,73 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A standalone FastAPI microservice serving an AI customer-support chat for **NikaBet**
-(casino + sportsbook). It is API-isolated: other modules
-talk to it over HTTP/JSON by `session_id` (UUID), and the contract is consumer-agnostic
-so multiple front-ends can plug in. The admin dashboard, hot-reloaded tuning, KB editing,
-and the signed front-end handshake are all built (see "Admin / management" below).
-Escalation is a contact-button hand-off (no in-app form, no live agent).
+A standalone FastAPI microservice serving an AI customer-support chat for casino/
+sportsbook brands (the original single tenant was **NikaBet**). It is API-isolated:
+other modules talk to it over HTTP/JSON by `session_id` (UUID), and the contract is
+consumer-agnostic so multiple front-ends can plug in. The admin dashboard,
+hot-reloaded tuning, KB editing, and the signed front-end handshake are all built
+(see "Admin / management" below). Escalation is a contact-button hand-off (no
+in-app form, no live agent).
+
+## MULTI-TENANCY (partners → products) — the commercial-product backbone
+
+The service is **multi-tenant**: **partners** own casino **products**, and nearly
+everything resolves per product. This is the central organizing principle — keep it
+in mind for every change:
+
+- **Data model** (`db.py`): `partners` → `products` (+ `admin_memberships`,
+  `product_settings`). `kb_topics`, `kb_variables`, `chat_sessions`,
+  `ai_interaction_logs`, `admin_events` all carry `product_id`. Boot
+  (`db._migrate_tenancy`, idempotent, every start) seeds a `default` partner +
+  `default` product, adopts pre-tenancy rows into it, and gives legacy
+  `admin_users` accounts a global membership — an old deployment upgrades in place.
+- **Request scope** (`tenancy.py`): the acting product rides in a **ContextVar**,
+  set once at the API boundary (widget key on public chat routes, the session row
+  on per-session routes, the admin's selected `product_id` on `/admin/*`). The sync
+  `settings.*()` getters read it transparently, so per-product resolution needed no
+  signature churn. `None` scope = global-only resolution (pre-tenancy behaviour;
+  tests unaffected).
+- **Settings resolution** is now four layers, merged field-by-field:
+  `product_settings` → `app_settings` → env → built-in default. Prompt variables,
+  translations and the test profile are stored per product too (`product_settings`
+  keys; admin writes with a `product_id` land there); translations merge **per
+  language** (a product override of one key keeps the global override of a sibling
+  key). Layer 1 of the prompt renders per product (each casino gets its own brand/
+  persona) and stays byte-stable *within* a product scope — the cache-invariant
+  holds per tenant.
+- **Widget identity**: each product has a public, rotatable `widget_key`
+  (`wk_…`). The embed snippet passes it (`data-widget-key`); `POST /api/chat/session`,
+  `GET /topics`, `GET /i18n` resolve the product from it (absent key → the default
+  product, so single-product deployments keep working). Unknown/inactive key → 403.
+  The session row stores `product_id`; every later turn re-enters that scope.
+- **Per-product secrets**: OpenAI keys (1–2, same two-key failover) and the
+  handshake secret live on the product row, **encrypted at rest** via
+  `secretbox.py` (stdlib HMAC-CTR keystream + encrypt-then-MAC; master key =
+  `SECRETS_MASTER_KEY` env, falling back to `SESSION_JWT_SECRET` with a startup
+  warning). They are write-only through the API (`PUT /admin/products/{id}/secrets`
+  → only `has_*` flags come back); `db.get_product_openai_keys` /
+  `get_product_handshake_secret` are the only decrypting readers. A product without
+  its own keys falls back to the deploy env keys
+  (`openai_client.client_for_product`, cached per product + key fingerprint).
+- **Authorization** (`api/admin_auth.py`): accounts (`admin_users`) get roles via
+  `admin_memberships` — one role per scope: `global`, `partner` (all its products)
+  or `product`; role `admin` writes within the scope, `manager` reads. All checks
+  go through `require_admin` (loads memberships per request) + the scope helpers
+  (`role_for_product`, `accessible_product_ids`, `resolve_scope_filter`,
+  `require_product_write`, `require_global_write`). Dashboard queries take a
+  `product_ids` filter; `None` = all, empty list = match nothing. User management
+  reach: an admin touches only accounts whose ENTIRE membership set lies inside
+  its own admin scopes.
+- **Admin surface**: a **Partner → Product switcher block in the header** of the
+  SPA re-scopes every tab; the **Structure** tab manages partners/products, widget
+  keys (+ copyable embed snippet), and product secrets; the **Users** tab manages
+  accounts + memberships. `GET /admin/structure` feeds the switcher.
+- **Integration docs**: `GET /integration` serves a public, self-contained HTML
+  guide (Russian) for partner/CMS dev teams — embed contract, handshake signing
+  samples, chat + admin API reference. Update it when the public contract changes.
+- **The prompt template stays the one shared, deploy-level artifact** — brands
+  differ only via prompt variables + KB + translations + settings, never per-tenant
+  prompt forks.
 
 **The prompt WORDING lives in one place: the file `prompts.py` (the single source of
 truth) — as a DRY TEMPLATE.** The Layer-1 core (`SYSTEM_CORE` — Nika's tone-of-voice + the
@@ -585,13 +646,17 @@ localizes to the player's language. Lives in Layer 3 only, so `SYSTEM_CORE` stay
 
 1. The Layer-1 block (`get_system_core()` = `SYSTEM_CORE` + the static directives,
    rendered with the prompt variables from the in-process settings cache) is
-   byte-stable between requests (it changes only on an admin prompt-variables save);
+   byte-stable between requests WITHIN a product scope (it changes only on an admin
+   prompt-variables save; different products legitimately render different brands);
    per-request data lives only in the user message (Layer 3).
-2. KB is injected per topic from Postgres — never baked into the core.
+2. KB is injected per topic (within the session's product) from Postgres — never
+   baked into the core.
 3. Persisting a turn is one atomic transaction (messages + counters + AI log).
 4. Every message → `chat_messages`; every OpenAI call → `ai_interaction_logs`; every state
-   transition (escalation, failover, rate-limit, injection) → `admin_events`.
+   transition (escalation, failover, rate-limit, injection) → `admin_events`. Per-turn/
+   per-session rows carry the session's `product_id` (per-product dashboards depend on it).
 5. Two-key failover races the fallback after the switch timeout; log every failover.
+   The keys are the PRODUCT's own (encrypted at rest) when set, else the deploy env keys.
 6. No ORM, no migrations: schema is `init_db()`; new columns via guarded `ALTER`; all DB
    access through `db.*` helpers.
 7. Model-facing prompt is English (token-efficient); KB may be in any language; answers
@@ -747,25 +812,26 @@ Map of what lives where:
 host-site button only; admin auth = named `admin_users` accounts only (email + password,
 role-driven; no password-only owner login).
 
-### Future multi-tenancy (planned — not built; keep the seams clean)
-The service is single-tenant today, but the roadmap is a multi-user system of **projects**
-containing **products**, each with its own user set plus shared/global admins. Nothing is
-implemented yet — but the admin surface is deliberately organized so that tenanting later is a
-scoping change, not a redesign. The seams to preserve when extending:
-- **Everything brand/product-specific already lives in exactly three admin-editable stores**,
-  each a candidate for a per-product scope key: `prompt_variables` (persona/brand wording),
-  `translations` (all player-facing copy incl. the per-language `contact_url`), and the KB
-  (topics + texts + `kb_variables`). Don't scatter new brand-specific values outside these.
-- **Technical/operational knobs stay in the settings groups** (`general`, `antispam`, `model`,
-  `language`) — per-deployment today, per-project or per-product later. When adding a knob,
-  put it in the group it belongs to (or `general`), never hard-code it, so a future tenant
-  override has a place to land.
-- **`admin_users` is flat (email + global role)**; multi-tenancy will add a membership/scoping
-  layer (user ↔ project/product ↔ role) on top. Keep authorization decisions going through
-  `require_admin`/`require_admin_write` (single choke points) so scope checks slot in there.
-- The **prompt template** (`prompts.py`) stays the one shared, deploy-level artifact — brands
-  differ only via prompt variables + KB + translations, which is what makes white-label/
-  multi-product reuse possible without per-tenant prompt forks.
+### Multi-tenancy rules of thumb (see the "MULTI-TENANCY" section at the top)
+The tenanting is BUILT — partners → products, membership authorization, per-product
+settings/secrets/KB/copy, the header switcher. When extending, keep these rules:
+- **Everything brand/product-specific lives in the product-scoped stores**:
+  `prompt_variables`, `translations` (incl. the per-language `contact_url`), the KB
+  (topics + texts + `kb_variables`) — all keyed by product. Don't scatter new
+  brand-specific values outside these.
+- **Technical/operational knobs stay in the settings groups** (`general`, `antispam`,
+  `model`, `language`) — resolvable at both the global and the product layer. When
+  adding a knob, put it in the group it belongs to (or `general`), never hard-code
+  it, so both layers keep working.
+- **Authorization decisions go through the `api/admin_auth.py` choke points**
+  (`require_admin` + the scope helpers). A new admin route must authorize against
+  the product/partner it touches — never trust a bare "is admin somewhere" check
+  (`require_admin_write` alone is only the coarse pre-filter).
+- **New per-turn/per-session data must carry `product_id`** (copy it from the
+  session, like `ai_interaction_logs` does) so per-product dashboards stay whole.
+- The **prompt template** (`prompts.py`) stays the one shared, deploy-level
+  artifact — brands differ only via prompt variables + KB + translations, which is
+  what makes white-label/multi-product reuse possible without per-tenant prompt forks.
 
 ## Conventions
 

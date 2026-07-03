@@ -163,13 +163,18 @@ def verify_admin_token(token: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Signed front-end handshake (Phase 2 §9) — HMAC over a base64url payload + exp
 # ---------------------------------------------------------------------------
-def sign_handshake(context: dict[str, Any], ttl_sec: int = 300) -> str:
+def sign_handshake(context: dict[str, Any], ttl_sec: int = 300,
+                   secret: Optional[str] = None) -> str:
     """Build a signed user_context blob (host-backend helper / test aid).
 
     Format: b64url(payload_json).b64url(hmac). The payload carries the trusted
-    user_context fields plus `iat`/`exp`. Signed with WIDGET_HANDSHAKE_SECRET.
+    user_context fields plus `iat`/`exp`. Signed with the PRODUCT's handshake
+    secret when given (multi-tenancy: each casino's CMS signs with its own
+    secret from the admin Structure tab), else the deploy-level
+    WIDGET_HANDSHAKE_SECRET.
     """
-    if not config.WIDGET_HANDSHAKE_SECRET:
+    key = secret or config.WIDGET_HANDSHAKE_SECRET
+    if not key:
         raise TokenError("WIDGET_HANDSHAKE_SECRET is not configured")
     now = int(time.time())
     payload = dict(context)
@@ -179,24 +184,27 @@ def sign_handshake(context: dict[str, Any], ttl_sec: int = 300) -> str:
         json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
     )
     sig_b64 = _b64url_encode(
-        _sign_with(config.WIDGET_HANDSHAKE_SECRET, payload_b64.encode("ascii"))
+        _sign_with(key, payload_b64.encode("ascii"))
     )
     return f"{payload_b64}.{sig_b64}"
 
 
-def verify_handshake(blob: str) -> dict[str, Any]:
+def verify_handshake(blob: str, secret: Optional[str] = None) -> dict[str, Any]:
     """Verify a signed handshake blob; return the payload or raise TokenError.
 
     Checks: configured secret, structural validity, HMAC, `exp`, and that the
     token is not older than WIDGET_HANDSHAKE_MAX_AGE_SEC (anti-replay window).
+    `secret` is the per-product handshake secret when the product has one;
+    without it the deploy-level WIDGET_HANDSHAKE_SECRET applies.
     """
-    if not config.WIDGET_HANDSHAKE_SECRET:
+    key = secret or config.WIDGET_HANDSHAKE_SECRET
+    if not key:
         raise TokenError("handshake secret not configured")
     if not blob or blob.count(".") != 1:
         raise TokenError("malformed handshake")
     payload_b64, sig_b64 = blob.split(".")
     try:
-        expected = _sign_with(config.WIDGET_HANDSHAKE_SECRET, payload_b64.encode("ascii"))
+        expected = _sign_with(key, payload_b64.encode("ascii"))
         provided = _b64url_decode(sig_b64)
     except Exception as exc:  # noqa: BLE001
         raise TokenError("bad handshake signature encoding") from exc

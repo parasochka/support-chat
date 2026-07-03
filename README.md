@@ -1,15 +1,31 @@
-# NikaBet Support Chat
+# Support Chat (multi-tenant)
 
-A standalone FastAPI microservice serving an AI customer-support chat for **NikaBet**
-(casino + sportsbook). It is API-isolated: other modules
-talk to it over HTTP/JSON by `session_id` (UUID), so multiple front-ends can plug in.
+A standalone FastAPI microservice serving an AI customer-support chat for casino /
+sportsbook brands. It is API-isolated: other modules talk to it over HTTP/JSON by
+`session_id` (UUID), so multiple front-ends can plug in.
 
 > Developer/agent guidance lives in **[`CLAUDE.md`](./CLAUDE.md)** — architecture,
 > invariants, and conventions. This README is the human-facing overview.
+> Integration guide for partner/CMS dev teams is served by the app itself at
+> **`/integration`** (embed contract, handshake signing, API reference).
+
+## Multi-tenancy
+
+The service is a commercial multi-tenant product: **partners** own casino
+**products**, and each product is a fully separate tenant — its own knowledge
+base, prompt persona/brand values, translations, settings, **own OpenAI keys**
+(1–2, with the same failover) and handshake secret (both stored encrypted).
+A product is identified by its public **widget key** (`wk_…`, issued and rotatable
+in the admin **Structure** tab); the embed snippet passes it via
+`data-widget-key`. Admin access is scoped by **memberships**: a role
+(`admin`/`manager`) per scope — global, per partner, or per product — and the
+admin panel header carries a **Partner → Product switcher** that re-scopes every
+tab. On first boot after the upgrade, existing single-tenant data is adopted into
+a `default` partner/product automatically.
 
 ## What it does
 
-- **AI support chat** for NikaBet, answering from a per-topic knowledge base (KB).
+- **AI support chat** per casino product, answering from a per-topic knowledge base (KB).
 - **Follows the player's language** automatically each turn; the widget chrome starts
   in the browser language and re-localizes as the conversation drifts.
 - **Topic routing** — routes a question to the right topic, **suggests follow-up
@@ -26,8 +42,11 @@ talk to it over HTTP/JSON by `session_id` (UUID), so multiple front-ends can plu
   sub-tab for the `{placeholder}` values injected into KB answers), a **Prompt** view
   (read-only assembled prompt + a **Prompt variables** sub-tab that re-brands the prompt
   template — persona/brand/products/tone — and hosts the escalation keyword lists and the
-  test player profile), and a **Translations** tab for every user-facing widget string
-  (chrome, service replies, topic names) per language.
+  test player profile), a **Translations** tab for every user-facing widget string
+  (chrome, service replies, topic names) per language, a **Structure** tab
+  (partners/products, widget keys + embed snippets, per-product OpenAI/handshake
+  secrets), and a **Users** tab with per-scope memberships. Everything is edited
+  per product via the header switcher.
 
 ## Architecture in one paragraph
 
@@ -74,9 +93,10 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `DATABASE_URL` | yes | — | Postgres DSN (`postgres://` is normalised to `postgresql://`). |
 | `OPENAI_API_KEY` | yes | — | Primary OpenAI key. |
 | `SESSION_JWT_SECRET` | yes | — | Signs front-end session tokens. |
-| `OPENAI_API_KEY_FALLBACK` | no | — | Second key for the two-key failover. |
+| `OPENAI_API_KEY_FALLBACK` | no | — | Second key for the two-key failover. Both env keys are the deploy-level fallback for products without their own keys (set per product in Structure). |
 | `ADMIN_JWT_SECRET` | no | `SESSION_JWT_SECRET` | Signs admin tokens; set a distinct value in prod. |
-| `WIDGET_HANDSHAKE_SECRET` | no | — | HMAC secret for signed host-site `user_context`. Unset ⇒ dev mode. |
+| `SECRETS_MASTER_KEY` | no | `SESSION_JWT_SECRET` | Master key encrypting per-product secrets (OpenAI keys, handshake secrets) at rest. Set a distinct strong value in prod; rotating it invalidates stored product secrets (re-enter them in the admin). |
+| `WIDGET_HANDSHAKE_SECRET` | no | — | Deploy-level HMAC secret for signed host-site `user_context`. A product's own handshake secret (Structure tab) takes precedence. Neither set ⇒ dev mode. |
 | `RECAPTCHA_SECRET` | no | — | Enables reCaptcha v3 at session create; unset ⇒ skipped. |
 | `CONTACT_FORM_URL` | no | — | Default URL behind the escalation contact button. Per-language URLs are set in the admin Translations tab (`contact_url`); this is the fallback. |
 | `DEFAULT_LANGUAGE` / `SUPPORTED_LANGUAGES` | no | `en` / `en,es,ru,tr,pt` | Language defaults. |

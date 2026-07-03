@@ -1,7 +1,11 @@
-"""KB load helpers + topic catalogue access.
+"""KB load helpers + topic catalogue access (product-scoped).
 
 Thin layer over db.* so chat_service / api never reach into tables directly.
 KB content is stored in Russian (source language) and injected as Layer 2.
+Every helper resolves the PRODUCT from the request's tenancy scope (set by the
+API layer from the widget key / session / admin selection) unless the caller
+passes `product_id` explicitly, so each casino sees only its own topics, KB
+texts and {placeholder} variables.
 """
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ import re
 from typing import Any, Optional
 
 import db
+import tenancy
 
 _VARIABLE_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 
@@ -16,9 +21,14 @@ _VARIABLE_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 OTHER_SLUG = "other"
 
 
-async def catalogue(lang: str = "en") -> list[dict[str, str]]:
+def _pid(product_id: Optional[int]) -> Optional[int]:
+    return product_id if product_id is not None else tenancy.current_product_id()
+
+
+async def catalogue(lang: str = "en",
+                    product_id: Optional[int] = None) -> list[dict[str, str]]:
     """Visible topic picker for the widget: [{slug, title}], 'other' excluded."""
-    topics = await db.list_topics(include_hidden=False)
+    topics = await db.list_topics(_pid(product_id), include_hidden=False)
     out: list[dict[str, str]] = []
     for t in topics:
         title = t["title"]
@@ -37,11 +47,13 @@ def localize_title(title: Any, lang: str = "en") -> str:
     return _pick_title(title, lang)
 
 
-async def topic_by_slug(slug: str) -> Optional[dict[str, Any]]:
-    return await db.get_topic_by_slug(slug)
+async def topic_by_slug(slug: str,
+                        product_id: Optional[int] = None) -> Optional[dict[str, Any]]:
+    return await db.get_topic_by_slug(_pid(product_id), slug)
 
 
-async def kb_block_for_topic(topic_id: Optional[int]) -> Optional[str]:
+async def kb_block_for_topic(topic_id: Optional[int],
+                             product_id: Optional[int] = None) -> Optional[str]:
     """Return the KB chunk for the selected topic (Layer 2), or None.
 
     Variables like ``{min_deposit}`` are resolved from the admin-managed
@@ -55,12 +67,12 @@ async def kb_block_for_topic(topic_id: Optional[int]) -> Optional[str]:
     content = await db.get_kb_content(topic_id)
     if not content:
         return content
-    return await render_variables(content)
+    return await render_variables(content, product_id=product_id)
 
 
-async def render_variables(text: str) -> str:
+async def render_variables(text: str, product_id: Optional[int] = None) -> str:
     """Replace ``{variable}`` placeholders with admin-managed values."""
-    variables = await db.get_kb_variables_map()
+    variables = await db.get_kb_variables_map(_pid(product_id))
 
     def repl(match: re.Match[str]) -> str:
         key = match.group(1)
@@ -70,7 +82,8 @@ async def render_variables(text: str) -> str:
 
 
 async def suggestable_topics(
-    exclude_topic_id: Optional[int] = None, lang: str = "en"
+    exclude_topic_id: Optional[int] = None, lang: str = "en",
+    product_id: Optional[int] = None
 ) -> list[dict[str, str]]:
     """Topics the model may route the player to: [{slug, title}].
 
@@ -78,7 +91,7 @@ async def suggestable_topics(
     by db.list_topics). Used to build the Layer-3 routing list and to resolve a
     suggested slug back to a localized title for the front-end payload.
     """
-    topics = await db.list_topics(include_hidden=False)
+    topics = await db.list_topics(_pid(product_id), include_hidden=False)
     out: list[dict[str, str]] = []
     for t in topics:
         if exclude_topic_id is not None and t["id"] == exclude_topic_id:

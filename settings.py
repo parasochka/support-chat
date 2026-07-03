@@ -1,27 +1,39 @@
-"""Runtime-tunable settings with precedence: app_settings (DB) > env > default.
+"""Runtime-tunable settings with precedence:
+product_settings (per product) > app_settings (global) > env > default.
 
 Phase 1 read knobs straight from `config`. Phase 2 layers an `app_settings`
-table on top so the owner can tune behaviour live (no redeploy). Resolved values
-are read through the sync getters below, which merge the in-process DB cache over
-the env-backed defaults from `config`. The cache is populated at startup
-(`reload()`) and re-populated whenever the admin writes a setting, so edits are
-hot.
+table on top so the owner can tune behaviour live (no redeploy). Multi-tenancy
+adds a third layer: per-product overrides in `product_settings`, resolved for
+the request's product (the `tenancy` contextvar, set by the API layer). Resolved
+values are read through the sync getters below, which merge the in-process DB
+caches over the env-backed defaults from `config`, field by field. The caches
+are populated at startup (`reload()`) and re-populated whenever the admin writes
+a setting, so edits are hot.
+
+With no tenancy scope set (tests, scripts, global admin views) resolution stops
+at the global layer — exactly the pre-tenancy behaviour.
 
 Reading env defaults at call time (not import time) keeps tests that monkeypatch
 `config` working, and means an empty cache transparently falls back to env.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 import config
 import db
 import escalation as _escalation
 import prompts as _prompts
+import tenancy
 
 # Raw DB values keyed by setting group (e.g. 'antispam' -> {...}). Empty until
 # reload(); an empty cache means every getter falls back to env defaults.
 _cache: dict[str, Any] = {}
+
+# Per-product overrides: product_id -> {group key -> {...}}. Populated together
+# with _cache in reload(); consulted only when the request carries a product
+# scope (tenancy.current_product_id()).
+_product_cache: dict[int, dict[str, Any]] = {}
 
 # The settings groups the admin may write, and which validator guards each.
 # `model` carries the OpenAI tuning knobs (model name, sampling, timeouts,
@@ -62,18 +74,33 @@ _TEST_PROFILE_STR_FIELDS = (
 
 
 async def reload() -> None:
-    """(Re)load all settings from the DB into the in-process cache."""
-    global _cache
+    """(Re)load all settings (global + per-product) into the in-process caches."""
+    global _cache, _product_cache
     _cache = await db.get_all_settings()
+    _product_cache = await db.get_all_product_settings()
 
 
 def invalidate() -> None:
     _cache.clear()
+    _product_cache.clear()
 
 
-def _group(key: str) -> dict[str, Any]:
+def _group(key: str, product_id: Optional[int] = None) -> dict[str, Any]:
+    """The stored override object for a group: product layer merged over global.
+
+    The merge is FIELD-level ({**global, **product}), so a product only shadows
+    the knobs it actually stores and inherits the rest from the deploy-wide
+    override (which in turn falls back to env/defaults in the getters below).
+    `product_id` defaults to the request's tenancy scope; None ⇒ global only.
+    """
     val = _cache.get(key)
-    return val if isinstance(val, dict) else {}
+    out = dict(val) if isinstance(val, dict) else {}
+    pid = product_id if product_id is not None else tenancy.current_product_id()
+    if pid is not None:
+        prod = (_product_cache.get(pid) or {}).get(key)
+        if isinstance(prod, dict):
+            out.update(prod)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -188,11 +215,33 @@ def translations() -> dict[str, Any]:
     """Raw per-language copy overrides ({lang: {key: text}}), empty by default.
 
     Defaults live in translations.py; resolution (override > default > English)
-    happens there via translations.text(). Stored under its own app_settings key
-    with its own admin endpoint (the Translations tab).
+    happens there via translations.text(). Stored under its own app_settings /
+    product_settings key with its own admin endpoint (the Translations tab).
+
+    Unlike the flat groups, the product layer merges PER LANGUAGE: a product
+    that overrides only `ru.greeting` still inherits the global `ru.support`
+    override — a plain object spread would silently drop it.
     """
-    db_v = _group("translations")
-    return db_v if isinstance(db_v, dict) else {}
+    glob = _cache.get("translations")
+    glob = glob if isinstance(glob, dict) else {}
+    pid = tenancy.current_product_id()
+    prod: dict[str, Any] = {}
+    if pid is not None:
+        p = (_product_cache.get(pid) or {}).get("translations")
+        prod = p if isinstance(p, dict) else {}
+    if not prod:
+        return glob
+    out: dict[str, Any] = {k: dict(v) if isinstance(v, dict) else v
+                           for k, v in glob.items()}
+    for lang, entries in prod.items():
+        if isinstance(entries, dict):
+            merged = out.get(lang)
+            merged = dict(merged) if isinstance(merged, dict) else {}
+            merged.update(entries)
+            out[lang] = merged
+        else:
+            out[lang] = entries
+    return out
 
 
 def general() -> dict[str, Any]:

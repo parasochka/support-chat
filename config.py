@@ -167,9 +167,21 @@ ADMIN_JWT_SECRET: str = _env_opt("ADMIN_JWT_SECRET") or SESSION_JWT_SECRET
 ADMIN_JWT_SECRET_IS_FALLBACK: bool = _env_opt("ADMIN_JWT_SECRET") is None
 ADMIN_TOKEN_TTL_MIN: int = _env_int("ADMIN_TOKEN_TTL_MIN", 480)
 
+# --- Secrets encryption master key (multi-tenancy) ---------------------------
+# Encrypts per-product secrets at rest (OpenAI keys, handshake secrets) via
+# secretbox.py, so a DB dump alone never reveals a client's keys. Falls back to
+# SESSION_JWT_SECRET only so dev runs work without extra config — set a distinct
+# strong value in production (flagged at startup like ADMIN_JWT_SECRET).
+# NB: changing this value makes previously stored product secrets undecryptable
+# (they must be re-entered from the admin panel).
+SECRETS_MASTER_KEY: str = _env_opt("SECRETS_MASTER_KEY") or SESSION_JWT_SECRET
+SECRETS_MASTER_KEY_IS_FALLBACK: bool = _env_opt("SECRETS_MASTER_KEY") is None
+
 # --- Secure front-end handshake (Phase 2) -----------------------------------
 # HMAC secret used to verify signed user_context blobs from real host sites.
-# When unset, signed mode is unavailable and unsigned context is zeroed.
+# Deploy-level DEFAULT: a product with its own handshake secret (admin
+# Structure tab, stored encrypted) uses that instead. When neither is set,
+# signed mode is unavailable and unsigned context is zeroed.
 WIDGET_HANDSHAKE_SECRET: str | None = _env_opt("WIDGET_HANDSHAKE_SECRET")
 # Max age (seconds) tolerated between a handshake's `iat`/`exp` — defence in
 # depth alongside the explicit `exp` in the signed payload.

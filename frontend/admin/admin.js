@@ -42,10 +42,12 @@ function isoDaysAgo(n) {
 const VIEWS = [
   ["overview", "Overview"], ["sessions", "Sessions"], ["unresolved", "Unresolved"],
   ["kb", "Knowledge base"], ["prompt", "Prompt"], ["translations", "Translations"],
-  ["settings", "Settings", true], ["users", "Users", true],
+  ["structure", "Structure", true], ["settings", "Settings", true],
+  ["users", "Users", true],
 ];
 const _VALID_VIEWS = VIEWS.map(([id]) => id);
 const WRITE_ROLES = ["admin"];
+const SCOPE_KEY = "npadmin_scope";
 
 // Decode role/email out of the admin JWT payload (no verification — the server
 // is authoritative; this only drives which tabs/controls the SPA shows).
@@ -79,7 +81,57 @@ const state = {
   supported: null,
   isoCatalog: null,
   defaultLang: "ru",
+  // Multi-tenancy: the partner→product tree the account may see (loaded from
+  // /admin/structure) + the caller's scope info (/admin/me), and the SELECTED
+  // scope for the header switcher. productId=null + partnerId=null = "all I
+  // can see"; content tabs then act on the default product (global accounts).
+  structure: null,          // [{id, slug, name, products: [...], role}, ...]
+  globalRole: null,         // 'admin' | 'manager' | null
+  memberships: [],
+  scope: (() => {           // restored synchronously so a reload keeps the scope
+    try { return JSON.parse(localStorage.getItem(SCOPE_KEY)) || { partnerId: null, productId: null }; }
+    catch (_) { return { partnerId: null, productId: null }; }
+  })(),
 };
+
+// --- tenancy scope helpers ---------------------------------------------------
+function saveScope() {
+  try { localStorage.setItem(SCOPE_KEY, JSON.stringify(state.scope)); } catch (_) {}
+}
+// Query-string fragment for DASHBOARD endpoints (product beats partner).
+function scopeQS() {
+  if (state.scope.productId) return `&product_id=${state.scope.productId}`;
+  if (state.scope.partnerId) return `&partner_id=${state.scope.partnerId}`;
+  return "";
+}
+// Query string for PRODUCT-scoped content endpoints. Empty when no product is
+// selected — the server then falls back to the default product.
+function productQS(first) {
+  if (!state.scope.productId) return "";
+  return `${first ? "?" : "&"}product_id=${state.scope.productId}`;
+}
+function allProducts() {
+  const out = [];
+  for (const pa of (state.structure || [])) for (const pr of (pa.products || [])) out.push(pr);
+  return out;
+}
+function currentProduct() {
+  return allProducts().find((p) => p.id === state.scope.productId) || null;
+}
+// The product a content tab is editing right now: the selected one, else the
+// boot-seeded default (which is what the server falls back to).
+function editedProduct() {
+  return currentProduct()
+    || allProducts().find((p) => p.slug === "default")
+    || null;
+}
+// A small hint line for content tabs naming the product being edited.
+function scopeHint() {
+  const p = editedProduct();
+  const label = p ? `${p.name} (${p.slug})` : "default product";
+  return el("div", "npadmin-scopehint",
+    `Editing product: ${label} — switch partner/product in the header.`);
+}
 
 // Write permission for the current role. Managers are read-only; admins write.
 function canWrite() { return WRITE_ROLES.includes(state.role); }
@@ -106,14 +158,45 @@ async function api(path, { method = "GET", body = null, raw = false, form = null
   return data;
 }
 
-function q() { return `?from=${state.from}&to=${state.to}`; }
+function q() { return `?from=${state.from}&to=${state.to}${scopeQS()}`; }
+
+// Load the caller's scope info + the visible partner→product tree (once per
+// session; re-fetched after structure edits via refreshStructure()).
+async function ensureStructure(force = false) {
+  if (state.structure && !force) return;
+  try {
+    const [me, st] = await Promise.all([api("/me"), api("/structure")]);
+    state.globalRole = me.global_role || null;
+    state.memberships = me.memberships || [];
+    state.structure = st.partners || [];
+  } catch (_) {
+    state.structure = state.structure || [];
+  }
+  // Validate the restored scope against what this account can actually see;
+  // a non-global account with nothing selected lands on its first product.
+  const products = allProducts();
+  if (state.scope.productId && !products.some((p) => p.id === state.scope.productId)) {
+    state.scope.productId = null;
+  }
+  if (state.scope.partnerId
+      && !(state.structure || []).some((pa) => pa.id === state.scope.partnerId)) {
+    state.scope.partnerId = null;
+  }
+  if (!state.globalRole && !state.scope.productId && !state.scope.partnerId) {
+    if (products.length) {
+      state.scope.productId = products[0].id;
+      state.scope.partnerId = products[0].partner_id;
+    }
+  }
+  saveScope();
+}
 
 // Load the supported-language list once (for the language dropdowns). Falls
 // back to a sane default set if the meta call fails so the UI still works.
 async function ensureMeta() {
   if (state.languages) return;
   try {
-    const m = await api("/meta");
+    const m = await api(`/meta${productQS(true)}`);
     state.languages = m.languages || [];
     state.supported = m.supported || (m.languages || []).map((l) => l.code);
     state.isoCatalog = m.iso_catalog || [];
@@ -256,8 +339,26 @@ function renderApp() {
 
   const main = el("div", "npadmin-main");
   main.id = "npadmin-main";
-  app.append(topbar, scrim, side, main);
+
+  // The tenancy header: a persistent Partner → Product switcher block sitting
+  // above the content ("в шапке"). Every data call carries the selection, so
+  // switching re-scopes the whole panel — dashboard, KB, prompt, translations,
+  // settings — to that casino.
+  const maincol = el("div", "npadmin-maincol");
+  const scopebar = el("div", "npadmin-scopebar");
+  scopebar.id = "npadmin-scopebar";
+  maincol.append(scopebar, main);
+  app.append(topbar, scrim, side, maincol);
   root.appendChild(app);
+
+  ensureStructure().then(() => {
+    renderScopeBar(scopebar, main);
+    // The initial route may have raced ahead of the structure load; a
+    // non-global account may have just been snapped onto its first product —
+    // re-route so the visible data matches the resolved scope.
+    const { view: v2, param: p2 } = parseHash();
+    if (!(v2 === "sessions" && p2)) routeView(main);
+  });
 
   // If the URL points at a specific session, open it directly after the shell is ready.
   const { view: hv, param: hParam } = parseHash();
@@ -266,6 +367,62 @@ function renderApp() {
   } else {
     routeView(main);
   }
+}
+
+// The Partner → Product selects in the header block. "All" options collapse the
+// scope upward: product=All shows the partner aggregate, partner=All shows
+// everything the account may see (global accounts).
+function renderScopeBar(bar, main) {
+  bar.innerHTML = "";
+  const partners = state.structure || [];
+  const label = el("span", "npadmin-scopelabel", "Scope");
+  const paSel = el("select", "npadmin-input"); paSel.style.width = "auto";
+  const prSel = el("select", "npadmin-input"); prSel.style.width = "auto";
+
+  const paAll = el("option", null, state.globalRole ? "All partners" : "My partners");
+  paAll.value = ""; paSel.appendChild(paAll);
+  for (const pa of partners) {
+    const o = el("option", null, pa.name + (pa.active === false ? " (off)" : ""));
+    o.value = String(pa.id);
+    if (pa.id === state.scope.partnerId) o.selected = true;
+    paSel.appendChild(o);
+  }
+
+  function fillProducts() {
+    prSel.innerHTML = "";
+    const prAll = el("option", null, "All products");
+    prAll.value = ""; prSel.appendChild(prAll);
+    const pool = state.scope.partnerId
+      ? (partners.find((pa) => pa.id === state.scope.partnerId) || {}).products || []
+      : allProducts();
+    for (const pr of pool) {
+      const o = el("option", null, pr.name + (pr.active === false ? " (off)" : ""));
+      o.value = String(pr.id);
+      if (pr.id === state.scope.productId) o.selected = true;
+      prSel.appendChild(o);
+    }
+  }
+  fillProducts();
+
+  paSel.addEventListener("change", () => {
+    state.scope.partnerId = paSel.value ? parseInt(paSel.value, 10) : null;
+    state.scope.productId = null;
+    state.languages = null;   // language set can differ per product — refetch
+    fillProducts(); saveScope(); routeView(main);
+  });
+  prSel.addEventListener("change", () => {
+    state.scope.productId = prSel.value ? parseInt(prSel.value, 10) : null;
+    const p = currentProduct();
+    if (p) { state.scope.partnerId = p.partner_id; paSel.value = String(p.partner_id); }
+    state.languages = null;
+    saveScope(); routeView(main);
+  });
+
+  bar.append(label, el("span", "npadmin-scopelabel", "Partner"), paSel,
+             el("span", "npadmin-scopelabel", "Product"), prSel);
+  const who = el("span", "npadmin-scopewho",
+    state.email ? `${state.email}${state.globalRole ? " · global " + state.globalRole : ""}` : "");
+  bar.appendChild(who);
 }
 
 function dateToolbar(onChange) {
@@ -291,7 +448,7 @@ function routeView(main) {
   const map = {
     overview: viewOverview, sessions: viewSessions, unresolved: viewUnresolved,
     kb: viewKB, prompt: viewPrompt, translations: viewTranslations,
-    settings: viewSettings, users: viewUsers,
+    structure: viewStructure, settings: viewSettings, users: viewUsers,
   };
   (map[state.view] || viewOverview)(main, state.param);
 }
@@ -585,11 +742,19 @@ async function viewSessions(main) {
     try {
       const data = await api(url);
       holder.innerHTML = "";
-      const t = table(["Created", "Topic", "Lang", "Status", "Msgs", "Cost", ""]);
+      // The Product column matters only when several products are in view.
+      const showProduct = !state.scope.productId;
+      const heads = ["Created"];
+      if (showProduct) heads.push("Product");
+      heads.push("Topic", "Lang", "Status", "Msgs", "Cost", "");
+      const t = table(heads);
       for (const s of data.items) {
-        const tr = addRow(t, [fmtDateTime(s.created_at),
-          s.topic || "—", s.lang || "—",
-          s.escalated ? "escalated" : s.status, s.message_count, fmtUsd(s.cost_usd_total || 0), "view →"]);
+        const cells = [fmtDateTime(s.created_at)];
+        if (showProduct) cells.push(s.product_name || "—");
+        cells.push(s.topic || "—", s.lang || "—",
+          s.escalated ? "escalated" : s.status, s.message_count,
+          fmtUsd(s.cost_usd_total || 0), "view →");
+        const tr = addRow(t, cells);
         tr.classList.add("click");
         tr.addEventListener("click", () => openSession(s.id));
       }
@@ -733,6 +898,7 @@ async function viewKB(main, sub) {
   main.appendChild(el("h1", "npadmin-h", "Knowledge base"));
   const active = sub === "variables" ? "variables" : "content";
   subTabs(main, "kb", [["content", "Content"], ["variables", "Variables"]], active);
+  main.appendChild(scopeHint());
   if (active === "variables") return kbVariablesView(main);
   main.appendChild(el("div", "npadmin-help",
     "One knowledge-base text per topic, injected into the prompt for that topic. "
@@ -740,7 +906,7 @@ async function viewKB(main, sub) {
     + "managed in the Variables sub-tab."));
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
-    const data = await api("/kb/topics");
+    const data = await api(`/kb/topics${productQS(true)}`);
     holder.innerHTML = "";
 
     for (const topic of data.topics) {
@@ -796,7 +962,7 @@ async function kbVariablesView(main) {
     + "the value from this registry. Current defaults come from the TEST column."));
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
-    const data = await api("/kb/variables");
+    const data = await api(`/kb/variables${productQS(true)}`);
     holder.innerHTML = "";
     const filter = el("input", "npadmin-input");
     filter.placeholder = "Filter by variable, description, or value…";
@@ -833,7 +999,8 @@ async function kbVariablesView(main) {
         save.addEventListener("click", async () => {
           status.textContent = ""; status.style.color = "";
           try {
-            const res = await api(`/kb/variables/${encodeURIComponent(v.key)}`, {
+            const res = await api(
+              `/kb/variables/${encodeURIComponent(v.key)}${productQS(true)}`, {
               method: "PUT",
               body: { key: v.key, description: v.description || "", value: valueInput.value },
             });
@@ -874,6 +1041,7 @@ async function viewPrompt(main, sub) {
   const active = sub === "variables" ? "variables" : "preview";
   subTabs(main, "prompt",
           [["preview", "Preview"], ["variables", "Prompt variables"]], active);
+  main.appendChild(scopeHint());
   if (active === "variables") return promptVariablesView(main);
   main.appendChild(el("div", "npadmin-help",
     "Read-only. The prompt wording lives in the server file prompts.py — the "
@@ -885,7 +1053,7 @@ async function viewPrompt(main, sub) {
     + "Layer 2 — are editable in the Knowledge base tab.)"));
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
-    const data = await api("/effective-prompt");
+    const data = await api(`/effective-prompt${productQS(true)}`);
     holder.innerHTML = "";
     effectivePreviewBox(holder, data.effective_preview);
   } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
@@ -903,7 +1071,7 @@ async function viewPrompt(main, sub) {
 async function promptVariablesView(main) {
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
-    const data = await api("/prompt-variables");
+    const data = await api(`/prompt-variables${productQS(true)}`);
     holder.innerHTML = "";
     promptVariablesBox(holder, data.variables || []);
     await escalationKeywordsBox(holder);
@@ -945,7 +1113,8 @@ function promptVariablesBox(holder, variables) {
       for (const [key, inp] of Object.entries(fields)) value[key] = inp.value;
       if (!confirm("Update the prompt variables now? Applies to new requests immediately.")) return;
       try {
-        const res = await api("/prompt-variables", { method: "PUT", body: { value } });
+        const res = await api(`/prompt-variables${productQS(true)}`,
+                              { method: "PUT", body: { value } });
         // Re-fill with the resolved values (an emptied field shows its default again).
         for (const v of (res.variables || [])) {
           if (fields[v.key]) fields[v.key].value = v.value || "";
@@ -972,7 +1141,7 @@ async function escalationKeywordsBox(holder) {
     + "the per-session message cap is in Settings → general; the contact button "
     + "URL and copy are per-language in Translations."));
   try {
-    const data = await api("/settings");
+    const data = await api(`/settings${productQS(true)}`);
     const esc = (data.resolved || {}).escalation || {};
     const areas = {};
     for (const [key, label] of [
@@ -1003,7 +1172,8 @@ async function escalationKeywordsBox(holder) {
         };
         if (!confirm("Update the escalation keywords now?")) return;
         try {
-          await api("/settings/escalation", { method: "PUT", body: { value } });
+          await api(`/settings/escalation${productQS(true)}`,
+                    { method: "PUT", body: { value } });
           err.style.color = "var(--good)"; err.textContent = "Saved — live";
         } catch (e) { err.textContent = e.message; }
       });
@@ -1018,13 +1188,19 @@ async function escalationKeywordsBox(holder) {
 // ---------------------------------------------------------------------------
 async function viewSettings(main) {
   main.appendChild(el("h1", "npadmin-h", "Settings"));
-  main.appendChild(el("div", "npadmin-help",
-    "Precedence: these overrides win over env defaults. Saved values apply immediately."));
+  const productScoped = !!state.scope.productId;
+  main.appendChild(el("div", "npadmin-help", productScoped
+    ? "Per-PRODUCT overrides for the selected casino. Precedence: product > "
+      + "global defaults > env. Saved values apply immediately."
+    : "GLOBAL deploy defaults every product inherits (global admins only). "
+      + "Select a product in the header to edit that casino's own overrides. "
+      + "Saved values apply immediately."));
+  if (productScoped) main.appendChild(scopeHint());
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
     await ensureMeta();
     holder.innerHTML = "";
-    const data = await api("/settings");
+    const data = await api(`/settings${productQS(true)}`);
     for (const key of data.keys) {
       // The escalation keyword lists are content tuning, not technical
       // settings — they are edited in Prompt → Prompt variables (the technical
@@ -1047,7 +1223,8 @@ async function viewSettings(main) {
         catch (_) { err.textContent = "Invalid JSON"; return; }
         if (!confirm(`Update '${key}' settings now?`)) return;
         try {
-          await api(`/settings/${key}`, { method: "PUT", body: { value: val } });
+          await api(`/settings/${key}${productQS(true)}`,
+                    { method: "PUT", body: { value: val } });
           err.style.color = "var(--good)"; err.textContent = "Saved";
         } catch (e) { err.textContent = e.message; }
       });
@@ -1177,7 +1354,7 @@ function languageSettingsBox(holder, current) {
     if (!sup.includes(defSel.value)) { err.textContent = "Default must be a supported language"; return; }
     if (!confirm("Update 'language' settings now?")) return;
     try {
-      await api("/settings/language", { method: "PUT",
+      await api(`/settings/language${productQS(true)}`, { method: "PUT",
         body: { value: { default: defSel.value, supported: sup, names: customNames } } });
       err.style.color = "var(--good)"; err.textContent = "Saved";
       state.languages = null; await ensureMeta();   // refresh the cached catalogue
@@ -1271,7 +1448,7 @@ function modelSettingsBox(holder, current) {
     }
     if (!confirm("Update 'model' settings now? Applies to new requests immediately.")) return;
     try {
-      await api("/settings/model", { method: "PUT", body: { value } });
+      await api(`/settings/model${productQS(true)}`, { method: "PUT", body: { value } });
       err.style.color = "var(--good)"; err.textContent = "Saved — live";
     } catch (e) { err.textContent = e.message; }
   });
@@ -1327,7 +1504,7 @@ function generalSettingsBox(holder, current) {
     }
     if (!confirm("Update 'general' settings now?")) return;
     try {
-      await api("/settings/general", { method: "PUT", body: { value } });
+      await api(`/settings/general${productQS(true)}`, { method: "PUT", body: { value } });
       err.style.color = "var(--good)"; err.textContent = "Saved — live";
     } catch (e) { err.textContent = e.message; }
   });
@@ -1336,24 +1513,287 @@ function generalSettingsBox(holder, current) {
 }
 
 // ---------------------------------------------------------------------------
-// Users — named admin/manager accounts (admins only)
+// Structure — partners & their casino products (the multi-tenancy tree)
 //
-// Every admin signs in here; there is no password-only owner login. An admin
-// creates accounts with an email + password and a role: admin (full write) or
-// manager (read-only support access — sessions/unresolved/KB/variables/prompt,
-// no edits).
+// Global admins create partners; partner admins add products (casinos) under
+// their partner. Each product card shows its widget key + embed snippet and a
+// write-only secrets form (OpenAI keys, handshake secret) — the server stores
+// them encrypted and only ever reports has_* presence flags back.
 // ---------------------------------------------------------------------------
+async function viewStructure(main) {
+  main.appendChild(el("h1", "npadmin-h", "Structure"));
+  main.appendChild(el("div", "npadmin-help",
+    "Partners own casino products. Each product is a fully separate tenant: its "
+    + "own widget key, knowledge base, prompt variables, translations, settings "
+    + "and OpenAI keys. Use the header switcher to work inside one product."));
+  const holder = el("div", null, "Loading…"); main.appendChild(holder);
+  try {
+    await ensureStructure(true);
+    holder.innerHTML = "";
+    const isGlobalAdmin = state.globalRole === "admin";
+
+    // --- create partner (global admins) ---------------------------------
+    if (isGlobalAdmin) {
+      const box = el("div", "npadmin-chart");
+      box.appendChild(el("div", "npadmin-meta", "Add partner"));
+      const slugInp = el("input", "npadmin-input"); slugInp.placeholder = "slug (a-z, 0-9, -)";
+      const nameInp = el("input", "npadmin-input"); nameInp.placeholder = "Partner name";
+      const err = el("div", "npadmin-err");
+      const btn = el("button", "npadmin-btn", "Create partner");
+      btn.addEventListener("click", async () => {
+        err.textContent = "";
+        try {
+          await api("/partners", { method: "POST",
+            body: { slug: slugInp.value.trim(), name: nameInp.value.trim() } });
+          main.innerHTML = ""; viewStructure(main);
+        } catch (e) { err.textContent = e.message; }
+      });
+      const row = el("div", "npadmin-toolbar");
+      row.append(slugInp, nameInp, btn);
+      box.append(row, err);
+      holder.appendChild(box);
+    }
+
+    for (const pa of (state.structure || [])) {
+      const pbox = el("div", "npadmin-chart");
+      const head = el("div", "npadmin-meta",
+        `Partner: ${pa.name} (${pa.slug})${pa.active === false ? " — inactive" : ""}`);
+      pbox.appendChild(head);
+      const partnerAdmin = isGlobalAdmin || pa.role === "admin";
+
+      if (isGlobalAdmin) {
+        const row = el("div", "npadmin-toolbar");
+        const nameInp = el("input", "npadmin-input"); nameInp.value = pa.name;
+        nameInp.style.width = "auto";
+        const actCb = document.createElement("input"); actCb.type = "checkbox";
+        actCb.checked = pa.active !== false;
+        const actLbl = el("label", "npadmin-hide-empty");
+        actLbl.append(actCb, document.createTextNode(" Active"));
+        const st = el("div", "npadmin-err");
+        const save = el("button", "npadmin-btn ghost", "Save partner");
+        save.addEventListener("click", async () => {
+          st.textContent = ""; st.style.color = "";
+          try {
+            await api(`/partners/${pa.id}`, { method: "PUT",
+              body: { name: nameInp.value.trim(), active: actCb.checked } });
+            st.style.color = "var(--good)"; st.textContent = "Saved";
+          } catch (e) { st.textContent = e.message; }
+        });
+        row.append(nameInp, actLbl, save, st);
+        pbox.appendChild(row);
+      }
+
+      // --- products of this partner --------------------------------------
+      for (const pr of (pa.products || [])) {
+        pbox.appendChild(productCard(pr, main));
+      }
+
+      // --- add product (partner/global admins) ----------------------------
+      if (partnerAdmin) {
+        const row = el("div", "npadmin-toolbar");
+        const slugInp = el("input", "npadmin-input"); slugInp.placeholder = "slug";
+        slugInp.style.width = "auto";
+        const nameInp = el("input", "npadmin-input"); nameInp.placeholder = "Casino name";
+        nameInp.style.width = "auto";
+        const err = el("div", "npadmin-err");
+        const btn = el("button", "npadmin-btn ghost", "+ Add product");
+        btn.addEventListener("click", async () => {
+          err.textContent = "";
+          try {
+            await api("/products", { method: "POST", body: {
+              partner_id: pa.id, slug: slugInp.value.trim(), name: nameInp.value.trim() } });
+            main.innerHTML = ""; viewStructure(main);
+          } catch (e) { err.textContent = e.message; }
+        });
+        row.append(slugInp, nameInp, btn, err);
+        pbox.appendChild(row);
+      }
+      holder.appendChild(pbox);
+    }
+  } catch (e) { holder.innerHTML = ""; holder.appendChild(errBox(e)); }
+}
+
+// One product card: name/active, widget key + embed snippet, secrets form.
+function productCard(pr, main) {
+  const card = el("div", "npadmin-productcard");
+  card.appendChild(el("div", "npadmin-meta",
+    `Product: ${pr.name} (${pr.slug})${pr.active === false ? " — inactive" : ""}`));
+
+  const st = el("div", "npadmin-err");
+
+  const row = el("div", "npadmin-toolbar");
+  const nameInp = el("input", "npadmin-input"); nameInp.value = pr.name;
+  nameInp.style.width = "auto";
+  const actCb = document.createElement("input"); actCb.type = "checkbox";
+  actCb.checked = pr.active !== false;
+  const actLbl = el("label", "npadmin-hide-empty");
+  actLbl.append(actCb, document.createTextNode(" Active"));
+  const save = el("button", "npadmin-btn ghost", "Save");
+  save.addEventListener("click", async () => {
+    st.textContent = ""; st.style.color = "";
+    try {
+      await api(`/products/${pr.id}`, { method: "PUT",
+        body: { name: nameInp.value.trim(), active: actCb.checked } });
+      st.style.color = "var(--good)"; st.textContent = "Saved";
+    } catch (e) { st.textContent = e.message; }
+  });
+  const openBtn = el("button", "npadmin-btn ghost", "Work in this product →");
+  openBtn.addEventListener("click", () => {
+    state.scope.partnerId = pr.partner_id; state.scope.productId = pr.id;
+    state.languages = null; saveScope();
+    const bar = document.getElementById("npadmin-scopebar");
+    if (bar) renderScopeBar(bar, main);
+    state.view = "kb"; state.param = null; pushHash("kb"); syncNavActive();
+    routeView(main);
+  });
+  row.append(nameInp, actLbl, save, openBtn);
+  card.appendChild(row);
+
+  // Widget key + embed snippet: what the casino's site needs to connect.
+  const keyLab = el("label", "npadmin-field");
+  keyLab.appendChild(el("span", null, "Widget key (public product identifier)"));
+  const keyRow = el("div", "npadmin-toolbar");
+  const keyInp = el("input", "npadmin-input"); keyInp.readOnly = true;
+  keyInp.value = pr.widget_key || ""; keyInp.style.width = "auto";
+  keyInp.style.minWidth = "260px";
+  const copy = el("button", "npadmin-btn ghost", "Copy embed snippet");
+  copy.addEventListener("click", () => {
+    const origin = location.origin;
+    const snippet =
+      `<link rel="stylesheet" href="${origin}/widget.css">\n` +
+      `<script type="module" src="${origin}/widget.js" ` +
+      `data-widget-key="${pr.widget_key}"></script>`;
+    navigator.clipboard.writeText(snippet).then(
+      () => { st.style.color = "var(--good)"; st.textContent = "Embed snippet copied"; },
+      () => { st.textContent = "Copy failed — copy the key manually"; });
+  });
+  const rotate = el("button", "npadmin-btn ghost", "Rotate key");
+  rotate.addEventListener("click", async () => {
+    if (!confirm("Rotate the widget key? Sites using the OLD key stop working "
+                 + "until they embed the new one.")) return;
+    st.textContent = ""; st.style.color = "";
+    try {
+      const res = await api(`/products/${pr.id}/widget-key`, { method: "POST" });
+      keyInp.value = res.widget_key; pr.widget_key = res.widget_key;
+      st.style.color = "var(--good)"; st.textContent = "Widget key rotated";
+    } catch (e) { st.textContent = e.message; }
+  });
+  keyRow.append(keyInp, copy, rotate);
+  keyLab.appendChild(keyRow);
+  card.appendChild(keyLab);
+
+  // Write-only secrets: OpenAI keys + handshake secret (stored encrypted).
+  const secLab = el("label", "npadmin-field");
+  secLab.appendChild(el("span", null,
+    "Product secrets (write-only; stored encrypted). Empty deploy falls back "
+    + "to the global env keys."));
+  const secRow = el("div", "npadmin-toolbar");
+  const mk = (ph, has) => {
+    const i = el("input", "npadmin-input"); i.type = "password";
+    i.placeholder = `${ph}${has ? " — set ✓ (enter to replace, space+clear to remove)" : " — not set"}`;
+    i.autocomplete = "new-password"; i.style.width = "auto"; i.style.minWidth = "200px";
+    return i;
+  };
+  const k1 = mk("OpenAI key (primary)", pr.has_openai_key);
+  const k2 = mk("OpenAI key (fallback)", pr.has_openai_key_fallback);
+  const hs = mk("Handshake secret", pr.has_handshake_secret);
+  const saveSec = el("button", "npadmin-btn ghost", "Save secrets");
+  saveSec.addEventListener("click", async () => {
+    st.textContent = ""; st.style.color = "";
+    const body = {};
+    // Only touched fields are sent; a single space means "clear this secret".
+    for (const [field, inp] of [["openai_key_primary", k1],
+                                ["openai_key_fallback", k2],
+                                ["handshake_secret", hs]]) {
+      if (inp.value !== "") body[field] = inp.value === " " ? "" : inp.value;
+    }
+    if (!Object.keys(body).length) { st.textContent = "Nothing entered"; return; }
+    try {
+      const res = await api(`/products/${pr.id}/secrets`, { method: "PUT", body });
+      Object.assign(pr, res.product || {});
+      k1.value = ""; k2.value = ""; hs.value = "";
+      st.style.color = "var(--good)"; st.textContent = "Secrets saved (encrypted)";
+    } catch (e) { st.textContent = e.message; }
+  });
+  secRow.append(k1, k2, hs, saveSec);
+  secLab.appendChild(secRow);
+  card.appendChild(secLab);
+
+  card.appendChild(st);
+  return card;
+}
+
+// ---------------------------------------------------------------------------
+// Users — named accounts + scope memberships (admins only)
+//
+// Every admin signs in here; there is no password-only owner login. An account
+// gets one role per SCOPE (global / partner / product): admin writes within the
+// scope, manager is read-only. The server enforces reach — an admin only sees
+// and manages accounts inside its own scopes.
+// ---------------------------------------------------------------------------
+// A scope + role selector (used by the create form and the grant form).
+// Returns { node, spec() } where spec() -> {scope_type, partner_id, product_id, role}.
+function scopeRoleSelector() {
+  const wrap = el("div", "npadmin-toolbar");
+  const scopeSel = el("select", "npadmin-input"); scopeSel.style.width = "auto";
+  const scopes = [];
+  if (state.globalRole === "admin") scopes.push(["global", "Global (whole hub)"]);
+  scopes.push(["partner", "Partner (all its products)"]);
+  scopes.push(["product", "Product (one casino)"]);
+  for (const [v, l] of scopes) {
+    const o = el("option", null, l); o.value = v; scopeSel.appendChild(o);
+  }
+  const paSel = el("select", "npadmin-input"); paSel.style.width = "auto";
+  for (const pa of (state.structure || [])) {
+    const o = el("option", null, pa.name); o.value = String(pa.id); paSel.appendChild(o);
+  }
+  const prSel = el("select", "npadmin-input"); prSel.style.width = "auto";
+  for (const pr of allProducts()) {
+    const o = el("option", null, pr.name); o.value = String(pr.id); prSel.appendChild(o);
+  }
+  const roleSel = el("select", "npadmin-input"); roleSel.style.width = "auto";
+  for (const r of ["manager", "admin"]) {
+    const o = el("option", null, r); o.value = r; roleSel.appendChild(o);
+  }
+  function sync() {
+    paSel.style.display = scopeSel.value === "partner" ? "" : "none";
+    prSel.style.display = scopeSel.value === "product" ? "" : "none";
+  }
+  scopeSel.addEventListener("change", sync);
+  scopeSel.value = scopes[0][0]; sync();
+  wrap.append(scopeSel, paSel, prSel, roleSel);
+  return {
+    node: wrap,
+    spec() {
+      return {
+        scope_type: scopeSel.value,
+        partner_id: scopeSel.value === "partner" ? parseInt(paSel.value, 10) : null,
+        product_id: scopeSel.value === "product" ? parseInt(prSel.value, 10) : null,
+        role: roleSel.value,
+      };
+    },
+  };
+}
+
+function membershipLabel(m) {
+  if (m.scope_type === "global") return `global · ${m.role}`;
+  if (m.scope_type === "partner")
+    return `partner ${m.partner_name || m.partner_id} · ${m.role}`;
+  return `product ${m.product_name || m.product_id} · ${m.role}`;
+}
+
 async function viewUsers(main) {
   main.appendChild(el("h1", "npadmin-h", "Users"));
   main.appendChild(el("div", "npadmin-help",
-    "Named login accounts (email + password). Roles: admin can edit everything; "
-    + "manager is read-only support access (view sessions, unresolved, knowledge "
-    + "base, prompt and translations — no edits, no technical settings). Keep at "
-    + "least two admin accounts — there is no password recovery, so a forgotten "
-    + "password could otherwise lock everyone out. No emails are sent — you manage "
-    + "passwords here."));
+    "Named login accounts (email + password) with one role per SCOPE: global "
+    + "(the whole hub), a partner (all its casinos) or a single product. Admin "
+    + "writes within the scope; manager is read-only there. You only see and "
+    + "manage accounts inside your own reach. Keep at least two global admin "
+    + "accounts — there is no password recovery. No emails are sent — you "
+    + "manage passwords here."));
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
+    await ensureStructure();
     const data = await api("/users");
     holder.innerHTML = "";
 
@@ -1368,20 +1808,20 @@ async function viewUsers(main) {
     pwLab.appendChild(el("span", null, "Password (min 8 characters)"));
     const pwInp = el("input", "npadmin-input"); pwInp.type = "text";
     pwInp.placeholder = "Set an initial password"; pwLab.appendChild(pwInp);
-    const roleLab = el("label", "npadmin-field");
-    roleLab.appendChild(el("span", null, "Role"));
-    const roleSel = el("select", "npadmin-input"); roleSel.style.width = "auto";
-    for (const r of ["manager", "admin"]) {
-      const o = el("option", null, r); o.value = r; roleSel.appendChild(o);
-    }
-    roleLab.appendChild(roleSel);
+    const scopeLab = el("label", "npadmin-field");
+    scopeLab.appendChild(el("span", null, "Initial access (scope + role)"));
+    const scopeSel = scopeRoleSelector();
+    scopeLab.appendChild(scopeSel.node);
     const cErr = el("div", "npadmin-err");
     const createBtn = el("button", "npadmin-btn", "Create user");
     createBtn.addEventListener("click", async () => {
       cErr.textContent = ""; cErr.style.color = "";
+      const spec = scopeSel.spec();
       try {
         await api("/users", { method: "POST", body: {
-          email: emailInp.value.trim(), password: pwInp.value, role: roleSel.value } });
+          email: emailInp.value.trim(), password: pwInp.value,
+          role: spec.role, scope_type: spec.scope_type,
+          partner_id: spec.partner_id, product_id: spec.product_id } });
         cErr.style.color = "var(--good)"; cErr.textContent = "Created";
         emailInp.value = ""; pwInp.value = "";
         // Re-render from scratch: viewUsers APPENDS to main (routeView normally
@@ -1390,7 +1830,7 @@ async function viewUsers(main) {
         viewUsers(main);
       } catch (e) { cErr.textContent = e.message; }
     });
-    createBox.append(emailLab, pwLab, roleLab, createBtn, cErr);
+    createBox.append(emailLab, pwLab, scopeLab, createBtn, cErr);
     holder.appendChild(createBox);
 
     // Existing users
@@ -1400,35 +1840,69 @@ async function viewUsers(main) {
       listBox.appendChild(el("div", "npadmin-meta",
         "No users yet."));
     }
-    const t = table(["Email", "Role", "Active", "Created", "Actions"]);
+    const t = table(["Email", "Access", "Active", "Created", "Actions"]);
     for (const u of (data.users || [])) {
+      const isSelf = u.email === state.email;
       const tr = el("tr");
-      tr.appendChild(el("td", null, u.email));
-      // role select
-      const roleTd = el("td");
-      const rSel = el("select", "npadmin-input"); rSel.style.width = "auto";
-      for (const r of ["manager", "admin"]) {
-        const o = el("option", null, r); o.value = r;
-        if (u.role === r) o.selected = true; rSel.appendChild(o);
+      tr.appendChild(el("td", null, u.email + (isSelf ? " (you)" : "")));
+      const status = el("div", "npadmin-err");
+
+      // memberships: chips with revoke + a grant row
+      const memTd = el("td");
+      const chips = el("div", "npadmin-toolbar");
+      chips.style.marginBottom = "4px";
+      for (const m of (u.memberships || [])) {
+        const chip = el("span", "npadmin-chipm", membershipLabel(m));
+        if (!isSelf) {
+          const x = el("button", "npadmin-chipx", "×");
+          x.title = "Revoke this access";
+          x.addEventListener("click", async () => {
+            if (!confirm(`Revoke "${membershipLabel(m)}" from ${u.email}?`)) return;
+            status.textContent = ""; status.style.color = "";
+            try {
+              await api(`/users/${encodeURIComponent(u.email)}/memberships/${m.id}`,
+                        { method: "DELETE" });
+              main.innerHTML = ""; viewUsers(main);
+            } catch (e) { status.textContent = e.message; }
+          });
+          chip.appendChild(x);
+        }
+        chips.appendChild(chip);
       }
-      roleTd.appendChild(rSel); tr.appendChild(roleTd);
+      memTd.appendChild(chips);
+      if (!isSelf) {
+        const grant = scopeRoleSelector();
+        const gBtn = el("button", "npadmin-btn ghost", "Grant");
+        gBtn.addEventListener("click", async () => {
+          status.textContent = ""; status.style.color = "";
+          try {
+            await api(`/users/${encodeURIComponent(u.email)}/memberships`,
+                      { method: "POST", body: grant.spec() });
+            main.innerHTML = ""; viewUsers(main);
+          } catch (e) { status.textContent = e.message; }
+        });
+        grant.node.appendChild(gBtn);
+        memTd.appendChild(grant.node);
+      }
+      tr.appendChild(memTd);
+
       // active toggle
       const actTd = el("td");
       const actCb = document.createElement("input"); actCb.type = "checkbox";
-      actCb.checked = u.active !== false; actTd.appendChild(actCb); tr.appendChild(actTd);
-      tr.appendChild(el("td", null, fmtDateTime(u.created_at)));
-      // actions
-      const opTd = el("td");
-      const status = el("div", "npadmin-err");
-      const saveB = el("button", "npadmin-btn", "Save");
-      saveB.addEventListener("click", async () => {
+      actCb.checked = u.active !== false;
+      actCb.addEventListener("change", async () => {
         status.textContent = ""; status.style.color = "";
         try {
           await api(`/users/${encodeURIComponent(u.email)}`, { method: "PUT",
-            body: { role: rSel.value, active: actCb.checked } });
+            body: { active: actCb.checked } });
           status.style.color = "var(--good)"; status.textContent = "Saved";
-        } catch (e) { status.textContent = e.message; }
+        } catch (e) { status.textContent = e.message; actCb.checked = !actCb.checked; }
       });
+      actTd.appendChild(actCb); tr.appendChild(actTd);
+      tr.appendChild(el("td", null, fmtDateTime(u.created_at)));
+
+      // actions
+      const opTd = el("td");
       const pwB = el("button", "npadmin-btn ghost", "Set password");
       pwB.addEventListener("click", async () => {
         const np = prompt(`New password for ${u.email} (min 8 characters):`);
@@ -1450,7 +1924,7 @@ async function viewUsers(main) {
         } catch (e) { status.textContent = e.message; }
       });
       const ops = el("div", "npadmin-toolbar");
-      ops.append(saveB, pwB, delB);
+      ops.append(pwB, delB);
       opTd.append(ops, status); tr.appendChild(opTd);
       t.querySelector("tbody").appendChild(tr);
     }
@@ -1478,13 +1952,14 @@ async function testPlayerBox(holder) {
     + "this over a signed handshake; here it stands in for it. These fields feed "
     + "Layer 3 of the prompt. The session language always follows the browser."));
   try {
-    const data = await api("/test-profile");
+    const data = await api(`/test-profile${productQS(true)}`);
     const p = data.profile || {};
 
     if (!data.active) {
       box.appendChild(el("div", "npadmin-warnbox",
-        "A handshake secret (WIDGET_HANDSHAKE_SECRET) is configured, so the host "
-        + "site is authoritative and this test profile is ignored at session create."));
+        "A handshake secret is configured (for this product or deploy-wide), so "
+        + "the host site is authoritative and this test profile is ignored at "
+        + "session create."));
     }
 
     // enabled toggle
@@ -1529,7 +2004,7 @@ async function testPlayerBox(holder) {
           vip_level: fields.vip_level.value, registration_date: fields.registration_date.value,
         };
         try {
-          await api("/test-profile", { method: "PUT", body: { value } });
+          await api(`/test-profile${productQS(true)}`, { method: "PUT", body: { value } });
           err.style.color = "var(--good)";
           err.textContent = "Saved — applies to the next chat session (reopen the widget)";
         } catch (e) { err.textContent = e.message; }
@@ -1562,10 +2037,11 @@ async function viewTranslations(main) {
     + "nudges) and the topic names. Empty fields fall back to the built-in "
     + "copy (then English; the contact URL falls back to the deploy default). "
     + "The admin panel itself stays English."));
+  main.appendChild(scopeHint());
   const holder = el("div", null, "Loading…"); main.appendChild(holder);
   try {
     const [data, topicsData] = await Promise.all([
-      api("/translations"), api("/kb/topics"),
+      api(`/translations${productQS(true)}`), api(`/kb/topics${productQS(true)}`),
     ]);
     holder.innerHTML = "";
 
@@ -1637,7 +2113,8 @@ async function viewTranslations(main) {
           if (Object.keys(edited).length) value[lang] = edited;
           else delete value[lang];
           try {
-            const res = await api("/translations", { method: "PUT", body: { value } });
+            const res = await api(`/translations${productQS(true)}`,
+                                  { method: "PUT", body: { value } });
             data.resolved = res.resolved || data.resolved;
             Object.keys(overrides).forEach((k) => delete overrides[k]);
             Object.assign(overrides, res.overrides || {});
@@ -1678,6 +2155,7 @@ async function viewTranslations(main) {
                 slug: topic.slug, title,
                 order: topic.display_order || 0,
                 active: topic.active !== false,
+                product_id: state.scope.productId || topic.product_id || null,
               } });
               topic.title = title;
               status.style.color = "var(--good)"; status.textContent = "Saved";
