@@ -442,18 +442,20 @@ async def get_topic_by_id(topic_id: int) -> Optional[dict[str, Any]]:
     return _row_to_topic(row) if row else None
 
 
-async def list_topics(product_id: int,
-                      include_hidden: bool = False) -> list[dict[str, Any]]:
-    """Visible catalogue for the widget. `other` is hidden from the picker."""
+async def list_topics(product_id: int) -> list[dict[str, Any]]:
+    """Full topic catalogue for a product — no topic is ever hidden.
+
+    `other` is a normal, player-selectable topic like any other; the only
+    special treatment it gets is ordering — as the always-available escape
+    hatch it sorts last in the picker regardless of display_order.
+    """
     rows = await _pool.fetch(
         "SELECT id, product_id, slug, title, display_order, active FROM kb_topics "
-        "WHERE product_id = $1 AND active ORDER BY display_order, id",
+        "WHERE product_id = $1 AND active "
+        "ORDER BY (slug = 'other'), display_order, id",
         product_id,
     )
-    topics = [_row_to_topic(r) for r in rows]
-    if not include_hidden:
-        topics = [t for t in topics if t["slug"] != "other"]
-    return topics
+    return [_row_to_topic(r) for r in rows]
 
 
 async def get_kb_content(topic_id: int) -> Optional[str]:

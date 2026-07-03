@@ -268,8 +268,8 @@ async def handle_message(
         detected_lang = None
 
     # Resolve a suggested slug to a real, switchable topic (must be one we just
-    # offered: valid, not the current topic, not the hidden 'other'). Anything
-    # else the model invents is dropped silently.
+    # offered: valid, not the current topic, not 'other' — a visible topic but
+    # never a routing target). Anything else the model invents is dropped silently.
     suggested_topic: Optional[dict] = None
     if suggested_slug:
         log.info(

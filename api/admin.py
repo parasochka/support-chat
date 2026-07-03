@@ -1084,7 +1084,7 @@ async def _build_effective_preview(product_id: Optional[int] = None
     suggestable: list[dict[str, Any]] = []
     example_topic: Optional[str] = None
     try:
-        topics = await db.list_topics(product_id, include_hidden=False)
+        topics = await db.list_topics(product_id)
         # Prefer a specialized topic (the common case) so the KB-grounding +
         # anchored routing directives are the ones shown.
         chosen = next((t for t in topics if t["slug"] != kb.OTHER_SLUG), None)

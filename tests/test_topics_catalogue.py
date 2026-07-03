@@ -16,6 +16,8 @@ _PRODUCT = {"id": 1, "slug": "default", "name": "Default product", "active": Tru
 _TOPICS = [
     {"id": 1, "slug": "deposits", "title": {"en": "Deposits", "ru": "Депозиты"}},
     {"id": 2, "slug": "withdrawals", "title": {"en": "Withdrawals", "ru": "Выводы"}},
+    # 'other' is a normal, never-hidden topic; db.list_topics sorts it last.
+    {"id": 3, "slug": "other", "title": {"en": "Other", "ru": "Другое"}},
 ]
 
 
@@ -30,9 +32,7 @@ def _stub_tenancy(monkeypatch, expected_product_id=1):
     async def fake_by_key(key):
         return dict(_PRODUCT) if key == "wk_test" else None
 
-    async def fake_list_topics(product_id, include_hidden=False):
-        # 'other' is hidden by db.list_topics; mirror that here.
-        assert include_hidden is False
+    async def fake_list_topics(product_id):
         assert product_id == expected_product_id
         return _TOPICS
 
@@ -41,14 +41,16 @@ def _stub_tenancy(monkeypatch, expected_product_id=1):
     monkeypatch.setattr(db, "list_topics", fake_list_topics)
 
 
-async def test_catalogue_localizes_and_excludes_other(monkeypatch):
+async def test_catalogue_localizes_and_includes_other(monkeypatch):
     _stub_tenancy(monkeypatch)
 
     resp = await chat_api.list_catalogue(lang="ru")
     data = _payload(resp)
     assert data["lang"] == "ru"
-    assert [t["slug"] for t in data["topics"]] == ["deposits", "withdrawals"]
+    # The full catalogue is served — 'other' included, last (never hidden).
+    assert [t["slug"] for t in data["topics"]] == ["deposits", "withdrawals", "other"]
     assert data["topics"][0]["title"] == "Депозиты"
+    assert data["topics"][-1]["title"] == "Другое"
     assert data["languages"] == config.SUPPORTED_LANGUAGES
 
 

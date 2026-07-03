@@ -24,8 +24,9 @@ from __future__ import annotations
 
 # ---------------------------------------------------------------------------
 # Starter topics: (slug, {lang: title}, kb_text). Order = display order.
-# `other` is the hidden catch-all (filtered from the widget picker by
-# db.list_topics) but still carries its own KB, like every topic.
+# Seven topics, mirroring the live picker layout: six specialized ones plus
+# `other` — the always-available catch-all, a NORMAL visible topic like the
+# rest (no topic is ever hidden) that sorts last and carries its own KB.
 # ---------------------------------------------------------------------------
 
 _DEPOSITS = """\
@@ -187,7 +188,8 @@ can be combined is defined in each promotion's terms.
 """
 
 _ACCOUNT = """\
-This topic covers registration, login, password, profile and account safety.
+This topic covers registration, login, password, profile, account safety and
+identity verification (KYC).
 
 Q: How do I register?
 A: Press the sign-up button, fill in the registration form and confirm your
@@ -233,10 +235,6 @@ Q: Why is my account blocked?
 A: Accounts can be restricted during verification checks or for terms
 violations. The specific reason for a block can only be clarified by a human
 operator — the player should contact support.
-"""
-
-_VERIFICATION = """\
-This topic covers identity verification (KYC) and document checks.
 
 Q: What is verification and why is it required?
 A: Identity verification (KYC) confirms your identity, age and payment
@@ -280,7 +278,7 @@ processed under the privacy policy published on the site.
 """
 
 _GAMES = """\
-This topic covers casino games, live tables, betting basics and game issues.
+This topic covers betting, casino games, live tables and game issues.
 
 Q: A game won't load. What can I try?
 A: Refresh the page, clear the browser cache, try another browser or
@@ -371,9 +369,9 @@ _OTHER = """\
 This is the general topic for questions that don't fit a specialized one.
 
 Q: What can this support chat help with?
-A: Deposits and withdrawals, bonuses and promotions, account and login,
-identity verification, games and betting, and technical problems. Pick a
-topic or just describe the question — the chat routes it to the right place.
+A: Deposits and withdrawals, account and verification, bonuses and
+promotions, betting and games, and technical problems. Pick a topic or just
+describe the question — the chat routes it to the right place.
 
 Q: How do I talk to a human?
 A: Ask for a human operator at any time and the chat hands the conversation
@@ -416,24 +414,20 @@ STARTER_TOPICS: tuple[tuple[str, dict[str, str], str], ...] = (
         "en": "Withdrawals", "ru": "Вывод средств", "es": "Retiros",
         "tr": "Para çekme", "pt": "Saques",
     }, _WITHDRAWALS),
+    ("account_kyc", {
+        "en": "Account & verification", "ru": "Аккаунт и верификация",
+        "es": "Cuenta y verificación", "tr": "Hesap ve doğrulama",
+        "pt": "Conta e verificação",
+    }, _ACCOUNT),
     ("bonuses", {
         "en": "Bonuses & promotions", "ru": "Бонусы и акции",
         "es": "Bonos y promociones", "tr": "Bonuslar ve promosyonlar",
         "pt": "Bônus e promoções",
     }, _BONUSES),
-    ("account", {
-        "en": "Account & login", "ru": "Аккаунт и вход",
-        "es": "Cuenta y acceso", "tr": "Hesap ve giriş", "pt": "Conta e login",
-    }, _ACCOUNT),
-    ("verification", {
-        "en": "Verification (KYC)", "ru": "Верификация (KYC)",
-        "es": "Verificación (KYC)", "tr": "Doğrulama (KYC)",
-        "pt": "Verificação (KYC)",
-    }, _VERIFICATION),
-    ("games", {
-        "en": "Games & betting", "ru": "Игры и ставки",
-        "es": "Juegos y apuestas", "tr": "Oyunlar ve bahisler",
-        "pt": "Jogos e apostas",
+    ("betting_games", {
+        "en": "Betting & games", "ru": "Ставки и игры",
+        "es": "Apuestas y juegos", "tr": "Bahisler ve oyunlar",
+        "pt": "Apostas e jogos",
     }, _GAMES),
     ("technical", {
         "en": "Technical issues", "ru": "Технические вопросы",

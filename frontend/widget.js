@@ -109,8 +109,8 @@ const I18N = {
 
 // Per-topic emoji so each menu item reads at a glance. Keyed by the backend
 // topic slug; unknown slugs fall back to a neutral bubble so a newly-added
-// topic still renders something. "other" is special-cased in
-// renderTopics() with an AI-associated icon (it's the "ask anything" catch-all).
+// topic still renders something. "other" is a normal catalogue topic (served
+// last by the backend); renderTopics() only gives it its distinct styling.
 const TOPIC_EMOJI = {
   deposits: "💳",
   withdrawals: "💸",
@@ -541,13 +541,22 @@ function renderTopics() {
   els.topics.innerHTML = "";
   const heading = el("div", "npchat-topics-h", t("topics"));
   els.topics.appendChild(heading);
+  // The catalogue is served complete — "Other" is a normal topic (the server
+  // sorts it last), with its own per-language title like every other topic.
+  // It is the always-available escape hatch, so it keeps its distinct styling
+  // (purple outline + AI icon) and never blends into the list above.
+  let hasOther = false;
   for (const topic of state.topics) {
-    els.topics.appendChild(topicButton(topic.slug, topic.title));
+    const isOther = topic.slug === "other";
+    if (isOther) hasOther = true;
+    els.topics.appendChild(topicButton(
+      topic.slug, topic.title, isOther ? "npchat-topic-other" : null));
   }
-  // "Other" is the always-available escape hatch: if the player didn't find
-  // their topic they can still ask anything here, so make it visually distinct
-  // (purple outline + AI icon) and never let it blend into the list above.
-  els.topics.appendChild(topicButton("other", t("other"), "npchat-topic-other"));
+  // Safety net: a catalogue without its own "other" row (should not happen —
+  // every product ships one) still gets the escape hatch, localized client-side.
+  if (!hasOther) {
+    els.topics.appendChild(topicButton("other", t("other"), "npchat-topic-other"));
+  }
 }
 
 // Build a topic button as an emoji badge + label so the icon and text align

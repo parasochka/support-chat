@@ -22,11 +22,12 @@ in the admin **Structure** tab); the embed snippet passes it via
 admin panel header carries a **Partner → Product switcher** that re-scopes every
 tab. On first boot after the upgrade, existing single-tenant data is adopted into
 a `default` partner/product automatically. A newly created product starts with a
-**brand-neutral starter knowledge base** (generic casino topics: deposits,
-withdrawals, bonuses, account, verification, games, technical + the catch-all)
-and baseline prompt variables (`brand_name` = the product's name), so its chat
-works immediately — the owner then translates and uniquifies the content per
-brand from the admin panel.
+**brand-neutral starter knowledge base** — seven generic casino topics: deposits,
+withdrawals, account & verification, bonuses, betting & games, technical + «Other»
+(a normal, never-hidden topic that closes the picker) — and baseline prompt
+variables (`brand_name` = the product's name), so its chat works immediately;
+the owner then translates and uniquifies the content per brand from the admin
+panel.
 
 ## What it does
 

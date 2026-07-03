@@ -17,7 +17,9 @@ import tenancy
 
 _VARIABLE_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 
-# The hidden free-text topic that routes to high escalation priority.
+# The always-available catch-all topic. A NORMAL, visible topic like any other
+# (nothing is ever hidden from the picker); it is only excluded as a routing
+# TARGET in suggestable_topics — the model may route out of it, never into it.
 OTHER_SLUG = "other"
 
 
@@ -27,8 +29,9 @@ def _pid(product_id: Optional[int]) -> Optional[int]:
 
 async def catalogue(lang: str = "en",
                     product_id: Optional[int] = None) -> list[dict[str, str]]:
-    """Visible topic picker for the widget: [{slug, title}], 'other' excluded."""
-    topics = await db.list_topics(_pid(product_id), include_hidden=False)
+    """Topic picker for the widget: [{slug, title}] — the full catalogue,
+    'other' included (it sorts last; no topic is hidden)."""
+    topics = await db.list_topics(_pid(product_id))
     out: list[dict[str, str]] = []
     for t in topics:
         title = t["title"]
@@ -87,13 +90,17 @@ async def suggestable_topics(
 ) -> list[dict[str, str]]:
     """Topics the model may route the player to: [{slug, title}].
 
-    The visible catalogue minus the current topic (and 'other', already hidden
-    by db.list_topics). Used to build the Layer-3 routing list and to resolve a
-    suggested slug back to a localized title for the front-end payload.
+    The catalogue minus the current topic and minus 'other' — 'other' is a
+    normal visible topic in the picker, but it is never offered as a routing
+    TARGET (the model may route out of it, never dump a player into it). Used
+    to build the Layer-3 routing list and to resolve a suggested slug back to
+    a localized title for the front-end payload.
     """
-    topics = await db.list_topics(_pid(product_id), include_hidden=False)
+    topics = await db.list_topics(_pid(product_id))
     out: list[dict[str, str]] = []
     for t in topics:
+        if t["slug"] == OTHER_SLUG:
+            continue
         if exclude_topic_id is not None and t["id"] == exclude_topic_id:
             continue
         out.append({"slug": t["slug"], "title": _pick_title(t["title"], lang)})

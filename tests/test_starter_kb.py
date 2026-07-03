@@ -19,8 +19,10 @@ _LANGS = ("en", "ru", "es", "tr", "pt")
 
 def test_starter_topics_structure():
     slugs = [slug for slug, _titles, _content in starter_kb.STARTER_TOPICS]
-    assert len(slugs) == len(set(slugs)), "topic slugs must be unique"
-    assert "other" in slugs, "the catch-all topic must be seeded too"
+    # Seven topics mirroring the live picker (same slugs as the widget's
+    # TOPIC_EMOJI map); `other` is a normal (never hidden) topic and comes last.
+    assert slugs == ["deposits", "withdrawals", "account_kyc", "bonuses",
+                     "betting_games", "technical", "other"]
     for slug, titles, content in starter_kb.STARTER_TOPICS:
         assert re.fullmatch(r"[a-z0-9_-]+", slug)
         for lang in _LANGS:
