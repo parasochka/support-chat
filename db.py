@@ -364,6 +364,9 @@ async def _migrate_tenancy(conn: asyncpg.Connection) -> int:
     product_id = await conn.fetchval(
         "SELECT id FROM products WHERE slug = $1", tenancy.DEFAULT_PRODUCT_SLUG
     )
+    # Record the default product for sync "is this the default scope?" checks
+    # (deploy-level env fallbacks apply to the default product only).
+    tenancy.set_default_product_id(product_id)
 
     await conn.execute(
         "UPDATE kb_topics SET product_id = $1 WHERE product_id IS NULL", product_id
@@ -393,6 +396,70 @@ async def _migrate_tenancy(conn: asyncpg.Connection) -> int:
     return product_id
 
 
+async def _migrate_legacy_contact_url(conn, default_product_id: int) -> None:
+    """One-time move of the legacy hidden contact URL into its admin-visible home.
+
+    Early builds edited `general.contact_form_url` from the Settings tab; the
+    field later left the UI, but a value already stored in `app_settings` kept
+    feeding the escalation contact button — a link the owner could no longer see
+    or edit anywhere in the admin ("where is this URL coming from?"). This moves
+    that stored value into the DEFAULT product's per-product translations as the
+    English `contact_url` (the resolution chain ends at English, so every
+    language without its own URL still reaches it, exactly like the old
+    fallback) and then deletes the legacy key — so the URL lives in exactly one,
+    admin-visible place: the Translations tab. Product-scoped on purpose: a
+    global translations override would leak the default brand's link into every
+    other product.
+
+    Runs on every boot but is one-time by construction: after the move there is
+    no legacy key left, so it no-ops. If ANY contact_url override already exists
+    (global or default-product), the owner has already adopted the new home —
+    the legacy key is dead weight and is dropped without copying.
+    """
+    row = await conn.fetchrow(
+        "SELECT value FROM app_settings WHERE key = 'general'")
+    general = _json_value(row["value"]) if row else None
+    if not isinstance(general, dict) or "contact_form_url" not in general:
+        return
+    url = general.get("contact_form_url")
+    url = url.strip() if isinstance(url, str) else ""
+
+    prow = await conn.fetchrow(
+        "SELECT value FROM product_settings "
+        "WHERE product_id = $1 AND key = 'translations'", default_product_id)
+    prod_trans = _json_value(prow["value"]) if prow else None
+    prod_trans = prod_trans if isinstance(prod_trans, dict) else {}
+    grow = await conn.fetchrow(
+        "SELECT value FROM app_settings WHERE key = 'translations'")
+    glob_trans = _json_value(grow["value"]) if grow else None
+    glob_trans = glob_trans if isinstance(glob_trans, dict) else {}
+
+    def _has_contact_url(trans: dict) -> bool:
+        return any(isinstance(v, dict) and str(v.get("contact_url") or "").strip()
+                   for v in trans.values())
+
+    if url and not _has_contact_url(prod_trans) and not _has_contact_url(glob_trans):
+        en = prod_trans.get("en")
+        en = dict(en) if isinstance(en, dict) else {}
+        en["contact_url"] = url
+        prod_trans["en"] = en
+        await conn.execute(
+            "INSERT INTO product_settings (product_id, key, value, updated_at, updated_by) "
+            "VALUES ($1, 'translations', $2::jsonb, now(), 'migration') "
+            "ON CONFLICT (product_id, key) DO UPDATE "
+            "  SET value = EXCLUDED.value, updated_at = now(), "
+            "      updated_by = EXCLUDED.updated_by",
+            default_product_id, json.dumps(prod_trans),
+        )
+
+    del general["contact_form_url"]
+    await conn.execute(
+        "UPDATE app_settings SET value = $1::jsonb, updated_at = now(), "
+        "updated_by = 'migration' WHERE key = 'general'",
+        json.dumps(general),
+    )
+
+
 async def init_db() -> None:
     """Create the pool, then create tables, run column guards + tenancy adoption."""
     await connect()
@@ -402,6 +469,7 @@ async def init_db() -> None:
             await _ensure_columns(conn)
             default_product_id = await _migrate_tenancy(conn)
             await seed_kb_variables(conn, default_product_id)
+            await _migrate_legacy_contact_url(conn, default_product_id)
 
 
 # ---------------------------------------------------------------------------

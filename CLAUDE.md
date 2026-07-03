@@ -184,17 +184,24 @@ activation_status, country, balance, vip_level, registration_date`) — anything
 `user_context` is dropped, so adding a model-visible field is a deliberate edit to that list.
 
 **Greeting hygiene** is a STATIC directive in the Layer-1 core (`prompts._GREETING_DIRECTIVE`):
-models otherwise open *every* reply with "Привет, <имя>!" / "Здравствуйте!", which reads robotic
-in a running chat. Since the conversation history is in the prompt, the model can tell whether the
-chat has already started; the directive tells it to greet exactly once — in the first reply — and
-otherwise skip the greeting (and the leading name) and go straight to the answer. The *when* to
-greet lives here; `_personalization_directive` (Layer 3) only supplies the name and the "use it
-sparingly" rule. **After a topic switch** the prompt history is cut at `context_reset_id`, so the
-model would see an empty history and greet again mid-conversation — `chat_service` passes
-`ongoing=True` and Layer 3 gets `_ONGOING_CONVERSATION_DIRECTIVE` ("CONVERSATION STATE: already in
-progress, do not greet"), which the greeting directive explicitly defers to. (The widget's canned
-first bubble — «Привет, я Ника, чем могу тебе помочь?» in the chrome language — is client-side
-only and never persisted, so the model's own first reply still greets per the directive.)
+**the model never introduces itself, and the one greeting it gives is the by-name opener in the
+first reply.** The widget always paints its canned greeting bubble («Привет, я Ника, чем могу
+тебе помочь?» in the chrome language — client-side only, never persisted) the moment the player
+picks a topic, BEFORE their first message, so Nika has already said hello and introduced herself.
+The earlier "greet exactly once, in the first reply" rule therefore produced a DOUBLE
+self-introduction (the canned bubble immediately followed by the model's own "Привет, я Ника…"
+opener — and another re-greet after a mid-chat language switch, which the model treated as a
+fresh start). The rule now: when the player's name is known (the Layer-3 PERSONALIZATION block),
+the VERY FIRST reply opens with a short by-name greeting («Привет, Андрей!») and then answers;
+with no name there is no greeting at all; no reply ever contains a self-introduction; and no
+reply after the first one greets — a language switch is NOT a new conversation (a greeting-only
+player message gets a warm "what do you need?" — still without re-greeting).
+`_personalization_directive` (Layer 3) supplies the name, the transliteration rule, and "never
+reuse the name after the first greeting" (rare reassurance in a complaint/sensitive case
+excepted). **After a topic switch** the prompt history is cut at `context_reset_id`, so the model
+sees an empty history — `chat_service` passes `ongoing=True` and Layer 3 gets
+`_ONGOING_CONVERSATION_DIRECTIVE` ("CONVERSATION STATE: already in progress, do not greet"),
+so the by-name greeting is never repeated across the boundary.
 
 **Formatting hygiene** is another STATIC Layer-1 directive (`prompts._FORMATTING_DIRECTIVE`), and `SYSTEM_CORE` must not contradict it by asking for plain text only:
 the model reaches for Markdown on its own (`**bold**`, lists, links), and the widget now renders a
@@ -420,11 +427,19 @@ attacker on the public internet has a public peer IP and is never trusted. This 
 **network-perimeter deploy var → Railway env, not the admin panel** (like `CORS_ALLOW_ORIGINS` /
 `TRUSTED_PROXY_COUNT`): a compromised admin must not be able to disable spoofing protection.
 
-**Sessions are created lazily by the widget.** `POST /session` (reCaptcha + token + DB row) fires
-only when the player actually picks a topic (`onTopic` → `ensureSession`), NOT on panel open — the
-old open-time warm-up minted a DB session (and burned the per-IP `session:` budget) for every
-visitor who opened and closed the widget without engaging. The topic picker still paints instantly
-from the session-free cached `GET /topics`.
+**Sessions are created lazily by the widget — and the topic tap paints the chat INSTANTLY.**
+`POST /session` (reCaptcha + token + DB row) fires only when the player actually picks a topic
+(`onTopic`), NOT on panel open — the old open-time warm-up minted a DB session (and burned the
+per-IP `session:` budget) for every visitor who opened and closed the widget without engaging.
+The topic picker still paints instantly from the session-free cached `GET /topics`. The tap
+itself is **optimistic**: `onTopic` shows the conversation view + the canned greeting bubble
+immediately (both are client-side) and runs the slow setup — reCaptcha token + `POST /session` +
+`POST /topic` — in the background (`state.setupPromise`); the player's first `sendMessage` awaits
+that promise, so the send transparently waits for the token instead of failing (it used to await
+the whole session create BEFORE showing the chat, freezing the picker for seconds after the tap).
+A failed setup returns the player to the picker with the localized start error. The reCaptcha
+script itself is pre-loaded at widget mount (`loadRecaptcha` in `buildUI`) — it's a third-party
+fetch and was the slowest piece of the tap-time setup.
 
 The **low-content guard** (`antispam.check_low_content`) stops messages with nothing to
 answer — a lone character, symbol/emoji-only spam, or one character mashed over and over
@@ -511,8 +526,16 @@ technical limit that lives in the **`general`** settings group (the legacy
 model-free fast path in `api/chat.py` is the cheap belt-and-suspenders for a session already
 at/over the cap — complementary, not a duplicate. The button URL is **per-language**: the
 `contact_url` key in the translations registry (admin Translations tab — each language can point
-at its own contact form), falling back to the deploy default (`CONTACT_FORM_URL` env / the legacy
-`general.contact_form_url` override) when no per-language URL is set.
+at its own contact form) — **the ONE home for the URL**. A legacy hidden value stored by early
+builds in `app_settings.general.contact_form_url` (the old Settings tab wrote it; the field then
+left the UI, leaving a link the owner could not see or edit anywhere) is **auto-migrated on
+boot** (`db._migrate_legacy_contact_url`, one-time) into the default product's Translations as
+`en.contact_url` and the legacy key is deleted. The `CONTACT_FORM_URL` env var remains only as a
+deploy-level default that applies **only to the boot-seeded default product**
+(`tenancy.is_default_scope()`, gated in `escalation.build_payload`) — a deploy/DB fallback must
+never leak one brand's contact link into another partner's product, so every non-default product
+gets its URL exclusively from its own admin Translations tab (empty until set; the widget then
+renders the card without a button link).
 
 **A transient model failure does NOT escalate.** When the OpenAI call fails outright (retries +
 failover exhausted — e.g. a provider outage), `chat_service` returns a localized model-free
@@ -746,9 +769,10 @@ Map of what lives where:
   — the admin login lifetime, env `ADMIN_TOKEN_TTL_MIN` as default —, `max_messages_per_session`,
   `history_max_turns` — how many recent turns feed the model's prompt history, env
   `HISTORY_MAX_TURNS`/20 default; the full transcript is always persisted —, and
-  `body_max_bytes`. `contact_form_url` is still resolved by `settings.general()` but only as a
-  LEGACY fallback for the per-language `contact_url` translation key — it is no longer shown in
-  the Settings UI). Three more app_settings keys live OUTSIDE `SETTING_KEYS` (each with its
+  `body_max_bytes`. `contact_form_url` is a dead legacy field: a value stored by old builds is
+  auto-migrated on boot into the default product's Translations (`db._migrate_legacy_contact_url`)
+  and deleted; `settings.general()` still resolves the key, but only the `CONTACT_FORM_URL` env
+  default can feed it now — used solely as the default product's contact-button fallback). Three more app_settings keys live OUTSIDE `SETTING_KEYS` (each with its
   own admin endpoint, so they never appear in the generic Settings editor): `test_profile`,
   `prompt_variables` and `translations`. **The prompt WORDING is NOT a settings group** — it
   lives in `prompts.py` (the single source of truth), not `app_settings`; only the
@@ -802,7 +826,8 @@ Map of what lives where:
 - **Translations tab** (`translations.py`, `api/admin.py` `GET/PUT /admin/translations`, public
   `GET /api/chat/i18n`): per-language editing of every user-facing widget string — chrome copy,
   server-generated service replies, the per-language escalation contact-button URL (the
-  `contact_url` key, http(s)-validated; empty falls back to the deploy default), and the
+  `contact_url` key, http(s)-validated; empty = no button link — only the default product
+  falls back to the `CONTACT_FORM_URL` env default), and the
   per-language topic titles (via the existing
   `POST /admin/kb/topics` upsert). See "Translations" above. The admin panel itself stays English.
 - **KB editing** (`db.*` helpers, `api/admin.py` `/admin/kb/*`): **one KB text per topic**,

@@ -162,6 +162,11 @@ const state = {
   // background on open so it never blocks the first paint. ensureSession() awaits
   // it lazily before any action that actually needs a token.
   sessionPromise: null,
+  // In-flight promise for the whole background conversation setup started by a
+  // topic tap (session create + topic select). The chat view and the greeting
+  // paint IMMEDIATELY on tap; sendMessage() awaits this so the player's first
+  // message transparently waits for the setup instead of failing without a token.
+  setupPromise: null,
   // The widget chrome language. Starts at the browser locale and may later
   // follow the conversation if the player switches language (maybeSwitchLang).
   lang: resolveLang(),
@@ -290,6 +295,7 @@ function resetSessionState() {
   state.sessionId = null;
   state.token = null;
   state.sessionPromise = null;
+  state.setupPromise = null;
   state.topicChosen = false;
   state.topicSelecting = false;
   state.greetingEl = null;
@@ -358,6 +364,12 @@ async function selectTopic(slug) {
 }
 
 async function sendMessage(text, closing = false) {
+  // The conversation setup (session create + topic select) runs in the
+  // background after the topic tap so the chat opens instantly; the first
+  // message just waits for it here (usually already settled by the time the
+  // player finishes typing). A failed setup rejects through to the caller's
+  // error handling.
+  if (state.setupPromise) await state.setupPromise;
   const { ok, data, status } = await api("/api/chat/message", {
     auth: true,
     body: { session_id: state.sessionId, text, closing },
@@ -493,6 +505,11 @@ function buildUI() {
   fetchTopics().catch(() => { /* the open handler retries if this missed */ });
   // Merge the admin-edited chrome copy over the baked-in defaults (non-fatal).
   fetchI18n().catch(() => { /* baked-in copy stands */ });
+  // Pre-load the reCaptcha script too: it's the slowest piece of the session
+  // create (a third-party script fetch), and without this it only started
+  // loading when the player tapped a topic — adding seconds before the first
+  // message could be sent. Loading it at mount costs nothing when unused.
+  loadRecaptcha(CONFIG.RECAPTCHA_SITE_KEY);
 }
 
 // Re-apply chrome strings. Idempotent, and re-run whenever the language changes
@@ -749,7 +766,8 @@ function addEscalation(esc) {
     wrap.appendChild(a);
   } else if (esc.button) {
     wrap.appendChild(el("div", "npchat-esc-note",
-      "(Contact form URL not configured - set CONTACT_FORM_URL)"));
+      "(Contact form URL not configured - set contact_url in the admin " +
+      "Translations tab)"));
   }
   els.messages.appendChild(wrap);
   scrollToBottom();
@@ -1100,33 +1118,44 @@ function addMessageToTopics(text) {
 }
 
 async function onTopic(slug) {
-  // Ignore repeat taps while the first selection is still in flight: the session
-  // (token) may still be warming up below, and without this guard a second tap
-  // during that await mints a duplicate greeting bubble (and double-handshakes).
+  // Ignore repeat taps (the flags are set synchronously below, so a double tap
+  // can no longer mint a duplicate greeting bubble).
   if (state.topicSelecting || state.topicChosen) return;
   state.topicSelecting = true;
-  // The session (token) may still be warming up in the background — wait for it
-  // here, the one place its absence would actually break the next request. A
-  // failed session create is fatal (no token = no chat), so surface it.
-  try {
-    await ensureSession();
-  } catch (e) {
-    state.topicSelecting = false;
-    els.topics.innerHTML = "";
-    addMessageToTopics(t("startError"));
-    return;
-  }
-  try {
-    await selectTopic(slug);
-  } catch (_) { /* non-fatal: still allow chatting */ }
-  state.topicSelecting = false;
   state.topicChosen = true;
+  // Paint the conversation view IMMEDIATELY — the greeting bubble is canned and
+  // client-side, so nothing about it needs the network. The slow parts
+  // (reCaptcha + session create + topic select) run in the background below;
+  // the player can already read the greeting and start typing, and their first
+  // send just awaits the setup (sendMessage). Previously this whole function
+  // awaited the session create FIRST, so tapping a category left the picker
+  // frozen for seconds before the chat appeared.
   els.topics.classList.add("npchat-hidden");
   els.messages.classList.remove("npchat-hidden");
   els.inputRow.classList.remove("npchat-hidden");
   els.back.classList.remove("npchat-hidden");
   state.greetingEl = addMessage("assistant", t("greeting"));
   els.input.focus();
+  const setup = (async () => {
+    // A failed session create is fatal (no token = no chat) and propagates; a
+    // failed topic select is non-fatal (the chat still works, untopiced).
+    await ensureSession();
+    try {
+      await selectTopic(slug);
+    } catch (_) { /* non-fatal: still allow chatting */ }
+  })();
+  state.setupPromise = setup;
+  try {
+    await setup;
+    state.topicSelecting = false;
+  } catch (e) {
+    // Surface the failure only if the player is still in THIS conversation
+    // attempt (they may have gone back / closed while the setup was in flight).
+    if (state.setupPromise !== setup) return;
+    resetToPicker({ abandon: true });
+    els.topics.innerHTML = "";
+    addMessageToTopics(t("startError"));
+  }
 }
 
 // Return to the topic picker from inside a conversation. Tapping "back" ABANDONS

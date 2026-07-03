@@ -155,12 +155,17 @@ def test_persona_and_tone_in_core():
 
 
 def test_greeting_directive_in_layer1_core():
-    """The 'greet once' directive is STATIC, so it rides in the byte-stable Layer-1
-    block (get_system_core()), present for every request, and never in the per-turn
-    user message."""
+    """The greeting directive is STATIC, so it rides in the byte-stable Layer-1
+    block (get_system_core()), present for every request, and never in the
+    per-turn user message. The widget's canned bubble already introduces the
+    persona, so the model never re-introduces itself (the double "Привет, я
+    Ника" bug); the one greeting it gives is the by-name opener in the FIRST
+    reply when the player's name is known."""
     core = prompts.get_system_core()
     assert "GREETING:" in core
-    assert "Greet only once" in core
+    assert "NEVER introduce yourself by name" in core
+    assert "VERY FIRST reply" in core
+    assert "Never greet in any reply after the first one" in core
 
     msgs = prompts.build_messages({"user_context": {}}, kb_block=None,
                                   history=[], user_text="hi", resolved_lang="en")
