@@ -191,6 +191,7 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
     # The injection sanitizer (prompts.sanitize_user_context) runs regardless.
     product_handshake = await db.get_product_handshake_secret(product["id"])
     user_context: dict[str, Any] = {}
+    context_source = "anonymous"
     if body.signed_context:
         try:
             payload = auth.verify_handshake(body.signed_context,
@@ -199,17 +200,20 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
             await db.log_admin_event(None, "handshake_rejected", {"reason": str(exc)})
             return _err(401, "bad_handshake", str(exc))
         user_context = {k: v for k, v in payload.items() if k not in ("iat", "exp")}
+        context_source = "signed_handshake"
     elif product_handshake or config.WIDGET_HANDSHAKE_SECRET:
         if body.user_context:
             await db.log_admin_event(None, "unsigned_context_ignored",
                                      {"ip": ip})
         user_context = {}
+        context_source = "zeroed_handshake_required"
     else:
         # Dev/test: no host site to sign a handshake. The admin "Test sandbox"
         # profile (app_settings) stands in for it so the owner can drive the
         # Layer-3 player data and pin the language for end-to-end testing.
         tp = settings.test_profile()
         if tp.get("enabled"):
+            context_source = "test_profile"
             user_context = {
                 "id": tp.get("id") or None,
                 "full_name": tp.get("full_name") or None,
@@ -222,6 +226,14 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
             }
         else:
             user_context = body.user_context or {}
+            context_source = "widget_context" if user_context else "anonymous"
+
+    # Which source fed the player context and whether the by-name greeting has a
+    # name to work with — the first thing to check when personalization looks off.
+    log.info(
+        "chat_session_context source=%s has_name=%s",
+        context_source, bool((user_context or {}).get("full_name")),
+    )
 
     # The session's one language is the browser language (navigator.language),
     # mapped to a supported code; unknown locales fall back to the service
