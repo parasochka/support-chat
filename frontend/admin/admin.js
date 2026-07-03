@@ -1562,7 +1562,7 @@ async function viewStructure(main) {
           main.innerHTML = ""; viewStructure(main);
         } catch (e) { err.textContent = e.message; }
       });
-      const row = el("div", "npadmin-toolbar");
+      const row = el("div", "npadmin-formrow");
       row.append(slugInp, nameInp, btn);
       box.append(row, err);
       holder.appendChild(box);
@@ -1576,9 +1576,8 @@ async function viewStructure(main) {
       const partnerAdmin = isGlobalAdmin || pa.role === "admin";
 
       if (isGlobalAdmin) {
-        const row = el("div", "npadmin-toolbar");
+        const row = el("div", "npadmin-formrow");
         const nameInp = el("input", "npadmin-input"); nameInp.value = pa.name;
-        nameInp.style.width = "auto";
         const actCb = document.createElement("input"); actCb.type = "checkbox";
         actCb.checked = pa.active !== false;
         const actLbl = el("label", "npadmin-hide-empty");
@@ -1604,11 +1603,9 @@ async function viewStructure(main) {
 
       // --- add product (partner/global admins) ----------------------------
       if (partnerAdmin) {
-        const row = el("div", "npadmin-toolbar");
+        const row = el("div", "npadmin-formrow");
         const slugInp = el("input", "npadmin-input"); slugInp.placeholder = "slug";
-        slugInp.style.width = "auto";
         const nameInp = el("input", "npadmin-input"); nameInp.placeholder = "Casino name";
-        nameInp.style.width = "auto";
         const err = el("div", "npadmin-err");
         const btn = el("button", "npadmin-btn ghost", "+ Add product");
         btn.addEventListener("click", async () => {
@@ -1635,9 +1632,8 @@ function productCard(pr, main) {
 
   const st = el("div", "npadmin-err");
 
-  const row = el("div", "npadmin-toolbar");
+  const row = el("div", "npadmin-formrow");
   const nameInp = el("input", "npadmin-input"); nameInp.value = pr.name;
-  nameInp.style.width = "auto";
   const actCb = document.createElement("input"); actCb.type = "checkbox";
   actCb.checked = pr.active !== false;
   const actLbl = el("label", "npadmin-hide-empty");
@@ -1666,10 +1662,9 @@ function productCard(pr, main) {
   // Widget key + embed snippet: what the casino's site needs to connect.
   const keyLab = el("label", "npadmin-field");
   keyLab.appendChild(el("span", null, "Widget key (public product identifier)"));
-  const keyRow = el("div", "npadmin-toolbar");
+  const keyRow = el("div", "npadmin-formrow");
   const keyInp = el("input", "npadmin-input"); keyInp.readOnly = true;
-  keyInp.value = pr.widget_key || ""; keyInp.style.width = "auto";
-  keyInp.style.minWidth = "260px";
+  keyInp.value = pr.widget_key || "";
   const copy = el("button", "npadmin-btn ghost", "Copy embed snippet");
   copy.addEventListener("click", () => {
     const origin = location.origin;
@@ -1696,42 +1691,87 @@ function productCard(pr, main) {
   keyLab.appendChild(keyRow);
   card.appendChild(keyLab);
 
-  // Write-only secrets: OpenAI keys + handshake secret (stored encrypted).
-  const secLab = el("label", "npadmin-field");
-  secLab.appendChild(el("span", null,
-    "Product secrets (write-only; stored encrypted). Empty deploy falls back "
-    + "to the global env keys."));
-  const secRow = el("div", "npadmin-toolbar");
-  const mk = (ph, has) => {
-    const i = el("input", "npadmin-input"); i.type = "password";
-    i.placeholder = `${ph}${has ? " — set ✓ (enter to replace, space+clear to remove)" : " — not set"}`;
-    i.autocomplete = "new-password"; i.style.width = "auto"; i.style.minWidth = "200px";
-    return i;
+  // Write-only secrets: OpenAI keys + handshake secret (stored encrypted). The
+  // server never returns the values (only has_* presence flags), so each secret
+  // shows a persistent "currently set / not set" status — visible even while you
+  // type a replacement — and an explicit "Clear" toggle, instead of the old
+  // hidden "type a space to wipe" gesture. Leaving a field blank keeps it as-is.
+  const secHead = el("div", "npadmin-field");
+  secHead.appendChild(el("span", null,
+    "Product secrets (write-only; stored encrypted). Leave a field blank to keep "
+    + "its current value; empty deploy falls back to the global env keys."));
+  card.appendChild(secHead);
+
+  const secrets = [];
+  const mkSecret = (field, label, has) => {
+    let isSet = has;
+    const lab = el("label", "npadmin-field");
+    const status = el("span");
+    const setStatus = (on) => {
+      status.textContent = label + " — ";
+      status.appendChild(el("span", "npadmin-fieldstatus" + (on ? " set" : ""),
+        on ? "currently set ✓" : "not set"));
+    };
+    setStatus(isSet);
+    lab.appendChild(status);
+
+    const rowEl = el("div", "npadmin-formrow");
+    const inp = el("input", "npadmin-input"); inp.type = "password";
+    inp.autocomplete = "new-password";
+    inp.placeholder = isSet ? "Enter a new value to replace" : "Enter a value to set";
+    const clrLbl = el("label", "npadmin-clearbox");
+    const clr = document.createElement("input"); clr.type = "checkbox";
+    clrLbl.append(clr, document.createTextNode(" Clear"));
+    clrLbl.style.display = isSet ? "" : "none";   // nothing to clear until it's set
+    clr.addEventListener("change", () => {
+      inp.disabled = clr.checked;
+      if (clr.checked) inp.value = "";
+      inp.placeholder = clr.checked ? "Will be cleared on save"
+        : (isSet ? "Enter a new value to replace" : "Enter a value to set");
+    });
+    rowEl.append(inp, clrLbl);
+    lab.appendChild(rowEl);
+
+    secrets.push({
+      field,
+      // A ticked Clear wipes the secret (sends ""); a typed value replaces it;
+      // an untouched, empty field is left out so it keeps its current value.
+      collect(body) {
+        if (clr.checked) body[field] = "";
+        else if (inp.value !== "") body[field] = inp.value;
+      },
+      refresh(nowSet) {
+        isSet = nowSet; setStatus(nowSet);
+        clr.checked = false; inp.disabled = false; inp.value = "";
+        clrLbl.style.display = nowSet ? "" : "none";
+        inp.placeholder = nowSet ? "Enter a new value to replace" : "Enter a value to set";
+      },
+    });
+    return lab;
   };
-  const k1 = mk("OpenAI key (primary)", pr.has_openai_key);
-  const k2 = mk("OpenAI key (fallback)", pr.has_openai_key_fallback);
-  const hs = mk("Handshake secret", pr.has_handshake_secret);
+
+  card.appendChild(mkSecret("openai_key_primary", "OpenAI key (primary)", pr.has_openai_key));
+  card.appendChild(mkSecret("openai_key_fallback", "OpenAI key (fallback)", pr.has_openai_key_fallback));
+  card.appendChild(mkSecret("handshake_secret", "Handshake secret", pr.has_handshake_secret));
+
   const saveSec = el("button", "npadmin-btn ghost", "Save secrets");
   saveSec.addEventListener("click", async () => {
     st.textContent = ""; st.style.color = "";
     const body = {};
-    // Only touched fields are sent; a single space means "clear this secret".
-    for (const [field, inp] of [["openai_key_primary", k1],
-                                ["openai_key_fallback", k2],
-                                ["handshake_secret", hs]]) {
-      if (inp.value !== "") body[field] = inp.value === " " ? "" : inp.value;
-    }
-    if (!Object.keys(body).length) { st.textContent = "Nothing entered"; return; }
+    for (const s of secrets) s.collect(body);
+    if (!Object.keys(body).length) { st.textContent = "Nothing to change"; return; }
     try {
       const res = await api(`/products/${pr.id}/secrets`, { method: "PUT", body });
       Object.assign(pr, res.product || {});
-      k1.value = ""; k2.value = ""; hs.value = "";
+      // Reflect exactly what was just saved: a cleared field is now unset, a
+      // replaced one is set; untouched secrets keep their status.
+      for (const s of secrets) {
+        if (s.field in body) s.refresh(body[s.field] !== "");
+      }
       st.style.color = "var(--good)"; st.textContent = "Secrets saved (encrypted)";
     } catch (e) { st.textContent = e.message; }
   });
-  secRow.append(k1, k2, hs, saveSec);
-  secLab.appendChild(secRow);
-  card.appendChild(secLab);
+  card.appendChild(saveSec);
 
   card.appendChild(st);
   return card;
@@ -1748,8 +1788,8 @@ function productCard(pr, main) {
 // A scope + role selector (used by the create form and the grant form).
 // Returns { node, spec() } where spec() -> {scope_type, partner_id, product_id, role}.
 function scopeRoleSelector() {
-  const wrap = el("div", "npadmin-toolbar");
-  const scopeSel = el("select", "npadmin-input"); scopeSel.style.width = "auto";
+  const wrap = el("div", "npadmin-formrow");
+  const scopeSel = el("select", "npadmin-input");
   const scopes = [];
   if (state.globalRole === "admin") scopes.push(["global", "Global (whole hub)"]);
   scopes.push(["partner", "Partner (all its products)"]);
@@ -1757,15 +1797,15 @@ function scopeRoleSelector() {
   for (const [v, l] of scopes) {
     const o = el("option", null, l); o.value = v; scopeSel.appendChild(o);
   }
-  const paSel = el("select", "npadmin-input"); paSel.style.width = "auto";
+  const paSel = el("select", "npadmin-input");
   for (const pa of (state.structure || [])) {
     const o = el("option", null, pa.name); o.value = String(pa.id); paSel.appendChild(o);
   }
-  const prSel = el("select", "npadmin-input"); prSel.style.width = "auto";
+  const prSel = el("select", "npadmin-input");
   for (const pr of allProducts()) {
     const o = el("option", null, pr.name); o.value = String(pr.id); prSel.appendChild(o);
   }
-  const roleSel = el("select", "npadmin-input"); roleSel.style.width = "auto";
+  const roleSel = el("select", "npadmin-input");
   for (const r of ["manager", "admin"]) {
     const o = el("option", null, r); o.value = r; roleSel.appendChild(o);
   }
