@@ -143,7 +143,15 @@ table.npadmin-table { width: 100%; border-collapse: collapse; }
   .npadmin-app.drawer-open .npadmin-scrim { opacity: 1; pointer-events: auto; }
   .npadmin-main { padding: 14px 15px; }
   .npadmin-toolbar { gap: 6px; }
-}
+
+  /* 16px inputs stop iOS from zooming the page in on focus — the single
+     biggest mobile-usability win for typing into these fields. */
+  .npadmin-input { font-size: 16px; }
+  /* Give every editable field the full row width on a phone, so long values
+     (widget keys, secrets, names) aren't squeezed into a narrow box. */
+  .npadmin-formrow > .npadmin-input,
+  .npadmin-formrow > select.npadmin-input { flex-basis: 100%; }
+  .npadmin-formrow > .npadmin-btn { flex: 1 1 auto; }
 .npadmin-chart { background: var(--panel); border: 1px solid var(--line);
   border-radius: 9px; padding: 12px 14px; margin-bottom: 14px; }
 .npadmin-chartgrid .npadmin-chart { margin-bottom: 0; }
@@ -181,6 +189,25 @@ table.npadmin-table { width: 100%; border-collapse: collapse; }
 .npadmin-help { color: var(--muted); font-size: 12px; margin: 4px 0 10px; }
 label.npadmin-field { display: block; margin: 10px 0; }
 label.npadmin-field span { display: block; color: var(--muted); margin-bottom: 4px; }
+
+/* Editable form rows: unlike .npadmin-toolbar (used for the dashboard date/search
+   controls, which stay at their natural width), the inputs here GROW to fill the
+   row and wrap to their own full-width line on narrow screens — so a value you
+   type into them is roomy and readable instead of cramped into the browser's tiny
+   default input width. Buttons/checkboxes keep their natural size. */
+.npadmin-formrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  margin: 8px 0; }
+.npadmin-formrow > .npadmin-input { flex: 1 1 240px; min-width: 0; width: auto; }
+.npadmin-formrow > select.npadmin-input { flex: 1 1 180px; }
+.npadmin-formrow > .npadmin-btn { flex: 0 0 auto; }
+/* Persistent "currently set / not set" status line for a write-only secret,
+   so the field's state is visible even after you start typing a replacement. */
+.npadmin-fieldstatus { color: var(--muted); font-weight: 400; }
+.npadmin-fieldstatus.set { color: var(--good); }
+/* Inline "Clear" checkbox that sits next to a secret input. */
+.npadmin-clearbox { display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.npadmin-clearbox input { margin: 0; }
 .npadmin-code { background: var(--panel2); border: 1px solid var(--line);
   border-radius: 8px; padding: 10px 12px; margin: 0; max-height: 360px; overflow: auto;
   white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.5; }
