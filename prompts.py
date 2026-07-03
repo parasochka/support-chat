@@ -328,9 +328,10 @@ def _personalization_directive(full_name: str) -> Optional[str]:
     when no usable name is present (anonymous session), so the prompt is
     unchanged in that case.
 
-    Note: the *when* (the model never greets — the widget's canned bubble already
-    did) is governed by `_GREETING_DIRECTIVE`; here we only establish the name and
-    that it must not be used obtrusively.
+    Note: the *when* (a by-name greeting at the start of the FIRST reply only;
+    never a self-introduction — the widget's canned bubble already did that) is
+    governed by `_GREETING_DIRECTIVE`; here we establish the name itself and that
+    it is never reused afterwards.
     """
     name = (full_name or "").strip()
     if not name:
@@ -338,39 +339,45 @@ def _personalization_directive(full_name: str) -> Optional[str]:
     first = name.split()[0]
     return (
         "PERSONALIZATION:\n"
-        f"- The player's name is {first}. Always write it in the same "
-        "script as your reply - if it is in a different script, transliterate it (for "
-        "example the Russian name \"Андрей\" becomes \"Andrey\" when you reply in "
-        "English, and an English name takes its Cyrillic form in Russian); never leave "
-        "the name in a script that does not match the reply. You may weave it in AT "
-        "MOST once, naturally, in your first reply - never as part of a greeting (see "
-        "the Greeting directive); afterwards omit it, except rarely when there is a "
-        "real reason (for example to reassure during a complaint or a sensitive "
-        "issue). When in doubt, leave the name out."
+        f"- The player's name is {first}. Greet them by this name at the start "
+        "of your VERY FIRST reply of the conversation (see the Greeting "
+        "directive). Always write the name in the same script as your reply - if "
+        "it is in a different script, transliterate it (for example the Russian "
+        "name \"Андрей\" becomes \"Andrey\" when you reply in English, and an "
+        "English name takes its Cyrillic form in Russian); never leave the name "
+        "in a script that does not match the reply. After that first greeting do "
+        "NOT use the name again, except rarely when there is a real reason (for "
+        "example to reassure during a complaint or a sensitive issue). When in "
+        "doubt, leave the name out."
     )
 
 
 # Greeting hygiene (STATIC → Layer-1 core). The chat widget ALWAYS paints a
 # canned greeting bubble from the persona ("Hi, I'm {persona_name}! How can I
 # help you?", localized, client-side) the moment the player picks a topic —
-# BEFORE their first message. So from the player's point of view the assistant
-# has already greeted them and introduced itself; when the model then opened its
-# first real reply with "Hi, I'm Nika…" the player saw the greeting TWICE in a
-# row (and again after a mid-chat language switch, where the model treated the
-# new language as a fresh start). The rule is therefore: NEVER greet, never
-# introduce yourself — in any reply, in any language — just answer. Carries no
-# per-request data, so it rides in the byte-stable Layer-1 block; applies with
-# or without a name.
+# BEFORE their first message. So the assistant has already introduced itself;
+# when the model then opened its first real reply with "Hi, I'm Nika…" the
+# player saw the self-introduction TWICE in a row (and again after a mid-chat
+# language switch, which the model treated as a fresh start). The rule:
+# NEVER introduce yourself. The one greeting the model DOES give is personal —
+# when the player's name is known (the Layer-3 PERSONALIZATION block), the
+# FIRST reply opens with a short by-name greeting ("Привет, Андрей!") and then
+# answers; with no name there is no greeting at all. Later replies never greet.
+# Carries no per-request data, so it rides in the byte-stable Layer-1 block.
 _GREETING_DIRECTIVE = (
     "GREETING:\n"
-    "- The chat window has ALREADY shown the player your greeting (\"Hi, I'm "
-    "{persona_name}! How can I help you?\") before their first message. So never "
-    "greet again: do NOT open any reply with a greeting (Hi / Hello and the "
-    "like) and do NOT introduce yourself by name - not in your first reply, not "
-    "after the conversation switches to another language, not ever. Go straight "
-    "to the substance of the answer. If the player's message is ONLY a greeting, "
-    "warmly ask what they need - still without re-greeting or introducing "
-    "yourself."
+    "- The chat window has ALREADY shown the player your canned greeting (\"Hi, "
+    "I'm {persona_name}! How can I help you?\") before their first message, so "
+    "NEVER introduce yourself by name in any reply.\n"
+    "- If a PERSONALIZATION block in the user message gives you the player's "
+    "name, open your VERY FIRST reply of the conversation with a short greeting "
+    "addressed to them by name (for example \"Hi, Andrey!\" in the reply "
+    "language) and then answer. If no name is known, do not greet at all - go "
+    "straight to the substance of the answer.\n"
+    "- Never greet in any reply after the first one - even when the conversation "
+    "switches to another language (that is NOT a new conversation). If the "
+    "player's message is only a greeting, warmly ask what they need - without "
+    "re-greeting or introducing yourself."
 )
 
 

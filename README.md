@@ -104,7 +104,7 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `SECRETS_MASTER_KEY` | no | `SESSION_JWT_SECRET` | Master key encrypting per-product secrets (OpenAI keys, handshake secrets) at rest. Set a distinct strong value in prod; rotating it invalidates stored product secrets (re-enter them in the admin). |
 | `WIDGET_HANDSHAKE_SECRET` | no | — | Deploy-level HMAC secret for signed host-site `user_context`. A product's own handshake secret (Structure tab) takes precedence. Neither set ⇒ dev mode. |
 | `RECAPTCHA_SECRET` | no | — | Enables reCaptcha v3 at session create; unset ⇒ skipped. |
-| `CONTACT_FORM_URL` | no | — | Legacy single-tenant fallback URL behind the escalation contact button — applies to the **default product only**, never to other products. Per-product/per-language URLs are set in the admin Translations tab (`contact_url`). |
+| `CONTACT_FORM_URL` | no | — | Optional deploy-level fallback URL behind the escalation contact button — applies to the **default product only**, never to other products. The URL's real home is the admin Translations tab (`contact_url`, per product/per language); a value stored by old builds in the DB is auto-migrated there on boot. |
 | `DEFAULT_LANGUAGE` / `SUPPORTED_LANGUAGES` | no | `en` / `en,es,ru,tr,pt` | Language defaults. |
 | `CORS_ALLOW_ORIGINS` | no | `*` | Comma-separated allowed origins (restrict in prod). |
 | `TRUSTED_PROXY_COUNT` | no | `1` | Trusted proxy hops to read from the right of `X-Forwarded-For`. |
