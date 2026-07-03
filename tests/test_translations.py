@@ -71,7 +71,8 @@ def test_server_consumers_read_the_registry():
 def test_contact_url_is_per_language_with_general_fallback(monkeypatch):
     import config
     # No per-language URL configured -> the deploy-level default (legacy
-    # general.contact_form_url override, then env CONTACT_FORM_URL).
+    # general.contact_form_url override, then env CONTACT_FORM_URL). Applies
+    # here because there is no product scope (= the default/pre-tenancy scope).
     monkeypatch.setattr(config, "CONTACT_FORM_URL", "https://x/default")
     assert escalation.build_payload("en")["button"]["url"] == "https://x/default"
     # Per-language URLs from the Translations registry win.
@@ -85,6 +86,35 @@ def test_contact_url_is_per_language_with_general_fallback(monkeypatch):
     # (default language in tests is ru -> no override -> en override).
     assert escalation.build_payload("tr")["button"]["url"] in (
         "https://x/en", "https://x/default")
+
+
+def test_contact_url_env_fallback_is_default_product_only(monkeypatch):
+    """The deploy-level CONTACT_FORM_URL default is a single-tenant-era knob: it
+    must apply ONLY to the boot-seeded default product, never leak into another
+    partner's product (their players would get the wrong brand's contact link).
+    """
+    import config
+    import tenancy
+
+    monkeypatch.setattr(config, "CONTACT_FORM_URL", "https://x/default")
+    token = tenancy.set_current_product(None)
+    try:
+        tenancy.set_default_product_id(1)
+        # Default product scope -> the deploy fallback applies.
+        tenancy.set_current_product(1)
+        assert escalation.build_payload("en")["button"]["url"] == "https://x/default"
+        # ANOTHER product -> no deploy fallback; empty until its admin sets
+        # contact_url in the Translations tab.
+        tenancy.set_current_product(2)
+        assert escalation.build_payload("en")["button"]["url"] == ""
+        # A per-product contact_url still wins, of course.
+        settings._product_cache[2] = {
+            "translations": {"en": {"contact_url": "https://brand2/contact"}}}
+        assert escalation.build_payload("en")["button"]["url"] == \
+            "https://brand2/contact"
+    finally:
+        tenancy.set_default_product_id(None)
+        tenancy._current_product_id.reset(token)
 
 
 def test_contact_url_validation():

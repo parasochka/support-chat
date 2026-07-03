@@ -175,14 +175,19 @@ def build_payload(lang: str, final: bool = True) -> dict:
     the translations registry (admin Translations tab > built-in defaults,
     falling back through the default language to English) — the URL is
     per-language (`contact_url`) so each language can point at its own contact
-    form; when no per-language URL is configured it falls back to the
-    deploy-level default (the legacy general.contact_form_url override, then
-    the CONTACT_FORM_URL env var). All tunable in the admin without a redeploy.
+    form. When no per-language URL is configured, the deploy-level default (the
+    legacy general.contact_form_url override, then the CONTACT_FORM_URL env var)
+    applies to the DEFAULT product only: it is a single-tenant-era deploy knob,
+    and letting it leak into other partners' products would silently ship one
+    brand's contact link to another brand's players. Non-default products get
+    their URL exclusively from their own admin Translations tab.
     """
     import settings      # lazy to keep this module import-light
+    import tenancy       # lazy: same
     import translations  # lazy: same
-    url = translations.text("contact_url", lang).strip() \
-        or settings.general()["contact_form_url"] or ""
+    url = translations.text("contact_url", lang).strip()
+    if not url and tenancy.is_default_scope():
+        url = settings.general()["contact_form_url"] or ""
     return {
         "active": True,
         "final": final,

@@ -364,6 +364,9 @@ async def _migrate_tenancy(conn: asyncpg.Connection) -> int:
     product_id = await conn.fetchval(
         "SELECT id FROM products WHERE slug = $1", tenancy.DEFAULT_PRODUCT_SLUG
     )
+    # Record the default product for sync "is this the default scope?" checks
+    # (deploy-level env fallbacks apply to the default product only).
+    tenancy.set_default_product_id(product_id)
 
     await conn.execute(
         "UPDATE kb_topics SET product_id = $1 WHERE product_id IS NULL", product_id

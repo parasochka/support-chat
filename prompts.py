@@ -328,8 +328,8 @@ def _personalization_directive(full_name: str) -> Optional[str]:
     when no usable name is present (anonymous session), so the prompt is
     unchanged in that case.
 
-    Note: the *when* to use the name (only at the start, not every reply) is
-    governed by `_GREETING_DIRECTIVE` below; here we only establish the name and
+    Note: the *when* (the model never greets — the widget's canned bubble already
+    did) is governed by `_GREETING_DIRECTIVE`; here we only establish the name and
     that it must not be used obtrusively.
     """
     name = (full_name or "").strip()
@@ -342,26 +342,35 @@ def _personalization_directive(full_name: str) -> Optional[str]:
         "script as your reply - if it is in a different script, transliterate it (for "
         "example the Russian name \"Андрей\" becomes \"Andrey\" when you reply in "
         "English, and an English name takes its Cyrillic form in Russian); never leave "
-        "the name in a script that does not match the reply. Use it only in the first "
-        "greeting (see the Greeting directive); afterwards omit it, except rarely when "
-        "there is a real reason (for example to reassure during a complaint or a "
-        "sensitive issue). When in doubt, leave the name out."
+        "the name in a script that does not match the reply. You may weave it in AT "
+        "MOST once, naturally, in your first reply - never as part of a greeting (see "
+        "the Greeting directive); afterwards omit it, except rarely when there is a "
+        "real reason (for example to reassure during a complaint or a sensitive "
+        "issue). When in doubt, leave the name out."
     )
 
 
-# Greeting hygiene (STATIC → Layer-1 core). Models tend to open EVERY reply with
-# "Привет, <имя>!" / "Здравствуйте!", which reads robotic in a running chat.
-# The history is in the prompt, so the model can tell whether the conversation
-# has already started; this directive tells it to greet exactly once, at the
-# very beginning, and otherwise go straight to the answer. Carries no per-request
-# data, so it rides in the byte-stable Layer-1 block; applies with or without a name.
+# Greeting hygiene (STATIC → Layer-1 core). The chat widget ALWAYS paints a
+# canned greeting bubble from the persona ("Hi, I'm {persona_name}! How can I
+# help you?", localized, client-side) the moment the player picks a topic —
+# BEFORE their first message. So from the player's point of view the assistant
+# has already greeted them and introduced itself; when the model then opened its
+# first real reply with "Hi, I'm Nika…" the player saw the greeting TWICE in a
+# row (and again after a mid-chat language switch, where the model treated the
+# new language as a fresh start). The rule is therefore: NEVER greet, never
+# introduce yourself — in any reply, in any language — just answer. Carries no
+# per-request data, so it rides in the byte-stable Layer-1 block; applies with
+# or without a name.
 _GREETING_DIRECTIVE = (
     "GREETING:\n"
-    "- Greet only once - in the very first reply of the conversation. If there are "
-    "already previous replies of yours in the history above, or the user message "
-    "says the conversation is already in progress, do NOT begin with a greeting "
-    "(Hi/Hello and the like) and do not address the player by name again - go "
-    "straight to the substance of the answer."
+    "- The chat window has ALREADY shown the player your greeting (\"Hi, I'm "
+    "{persona_name}! How can I help you?\") before their first message. So never "
+    "greet again: do NOT open any reply with a greeting (Hi / Hello and the "
+    "like) and do NOT introduce yourself by name - not in your first reply, not "
+    "after the conversation switches to another language, not ever. Go straight "
+    "to the substance of the answer. If the player's message is ONLY a greeting, "
+    "warmly ask what they need - still without re-greeting or introducing "
+    "yourself."
 )
 
 

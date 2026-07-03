@@ -40,3 +40,29 @@ def set_current_product(product_id: Optional[int]):
 
 def current_product_id() -> Optional[int]:
     return _current_product_id.get()
+
+
+# The boot-seeded default product's id, recorded once at startup (db.init_db →
+# _migrate_tenancy). Lets sync code ask "is this request acting on the default
+# product?" without a DB round-trip — used to keep deploy-level env fallbacks
+# (e.g. CONTACT_FORM_URL) from leaking into OTHER products.
+_default_product_id: Optional[int] = None
+
+
+def set_default_product_id(product_id: Optional[int]) -> None:
+    global _default_product_id
+    _default_product_id = product_id
+
+
+def is_default_scope() -> bool:
+    """True when the request acts on the boot-seeded default product.
+
+    No product scope at all (tests, scripts, pre-tenancy code paths) also counts
+    as default — that is exactly the single-product/pre-tenancy behaviour. A
+    non-default product scope returns False, so deploy-level env fallbacks never
+    leak into another partner's casino.
+    """
+    pid = _current_product_id.get()
+    if pid is None:
+        return True
+    return _default_product_id is not None and pid == _default_product_id

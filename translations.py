@@ -44,8 +44,9 @@ KEYS: tuple[tuple[str, str, str], ...] = (
     ("escalation_message", "server", "Escalation card message (hand-off to a human)"),
     ("escalation_button", "server", "Escalation card contact-button label"),
     ("contact_url", "server",
-     "Escalation contact-button URL for this language (http(s) link; empty = "
-     "the default URL from CONTACT_FORM_URL)"),
+     "Escalation contact-button URL for this language (http(s) link). Empty = "
+     "no button link for this product; only the boot-seeded default product "
+     "then falls back to the deploy-level CONTACT_FORM_URL env default"),
     ("closing_suggestion", "server", "The declarative closing bubble (\"Issue solved.\")"),
     ("low_content_reply", "server", "Nudge for a message with nothing to answer"),
     ("model_error_reply", "server", "Nudge shown on a transient model failure"),
@@ -75,8 +76,10 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "escalation_button": "Contact support",
         # No built-in URL: an empty resolution makes escalation.build_payload
         # fall back to the deploy-level default (CONTACT_FORM_URL / the legacy
-        # general.contact_form_url override). Only "en" carries the key — other
-        # languages resolve through the default-language/English chain.
+        # general.contact_form_url override) — for the DEFAULT product only;
+        # other products must set their own contact_url in the admin. Only "en"
+        # carries the key — other languages resolve through the
+        # default-language/English chain.
         "contact_url": "",
         "closing_suggestion": "Issue solved.",
         "low_content_reply": "Could you describe your question in a sentence or two? I didn't catch a question I can help with.",
