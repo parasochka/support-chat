@@ -33,7 +33,7 @@ def _stub_product(monkeypatch):
 
 
 async def test_effective_prompt_renders_all_layers(monkeypatch):
-    async def _list_topics(product_id, include_hidden=False):
+    async def _list_topics(product_id):
         return [
             {"id": 1, "slug": "other", "title": {"ru": "Другое", "en": "Other"}},
             {"id": 2, "slug": "deposits", "title": {"ru": "Депозиты", "en": "Deposits"}},
@@ -96,7 +96,7 @@ async def test_effective_prompt_resilient_when_topics_unavailable(monkeypatch):
 async def test_effective_prompt_uses_test_sandbox_player(monkeypatch):
     # The preview player is the admin Test-sandbox profile — the SAME player the
     # chat would use — not a separate hard-coded preview user.
-    async def _list_topics(product_id, include_hidden=False):
+    async def _list_topics(product_id):
         return [{"id": 2, "slug": "deposits", "title": {"en": "Deposits"}}]
 
     async def _kb_content(topic_id, lang="ru"):
@@ -123,7 +123,7 @@ async def test_effective_prompt_uses_test_sandbox_player(monkeypatch):
 
 async def test_effective_prompt_anonymous_when_sandbox_disabled(monkeypatch):
     # Sandbox off -> no invented player data anywhere (anonymous session).
-    async def _list_topics(product_id, include_hidden=False):
+    async def _list_topics(product_id):
         return [{"id": 2, "slug": "deposits", "title": {"en": "Deposits"}}]
 
     async def _kb_content(topic_id, lang="ru"):

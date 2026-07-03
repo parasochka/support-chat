@@ -258,7 +258,27 @@ overrides a knob in the admin. The DB is the source of truth for KB + settings o
 nothing on boot mutates existing rows. (The **prompt** is not stored at all — it lives in
 `prompts.py`.) **The one seeded table is `kb_variables`** (`db.seed_kb_variables`, run in
 `init_db`): it inserts the default `{placeholder}` registry with `ON CONFLICT (key) DO NOTHING`,
-so it never overwrites an admin-edited value — boot only fills keys that don't exist yet.
+so it never overwrites an admin-edited value — boot only fills keys that don't exist yet. The
+registry's default VALUES are **brand-neutral** (no brand names/URLs — `{{PLACEHOLDER}}` marks
+per-brand-only values), because the same registry seeds every product.
+
+**Exception — NEW products get a starter baseline (`starter_kb.py`).** `db.create_product`
+(the admin "add product" path, NOT boot) seeds the new casino so its chat works out of the box
+before the owner translates/uniquifies: (1) the kb_variables registry; (2) the generic starter
+topics + KB texts from `starter_kb.STARTER_TOPICS` — brand-neutral, English, Q&A-style casino
+support content, **seven topics** mirroring the live picker (deposits, withdrawals, account &
+verification, bonuses, betting & games, technical + `other` last) that asserts **no**
+brand-specific facts (no names, URLs, amounts, timeframes — it
+points the player at the cashier/terms/game-info UI instead) and deliberately copies nothing
+from any live product's KB; (3) the FULL `prompt_variables` set into `product_settings`
+(template defaults, `brand_name` = the product's name, via
+`starter_kb.starter_prompt_variables`) so a new product never inherits another brand's
+**global** prompt-variable overrides (the API endpoint calls `settings.reload()` after the
+seed so it applies immediately). `db.seed_starter_kb` is idempotent-safe: it inserts only
+topics the product doesn't have and writes a KB entry only for a topic it just created — it
+can never overwrite existing content. The boot-seeded default product is untouched (it goes
+through `_migrate_tenancy`, not `create_product`). Tests in `tests/test_starter_kb.py` pin
+the no-brand-leak contract.
 
 ### KB variables — `{placeholder}` registry (`db.py` + `kb.render_variables`)
 KB texts may contain `{key}` placeholders (e.g. `{min_deposit}`). The `kb_variables` table holds
@@ -511,7 +531,8 @@ credentials); on a soft card (`final === false`) it shows the card and keeps the
 ### Topic routing (`[[TOPIC:slug]]` sentinel)
 Only the selected topic's KB is loaded (Layer 2), so a question that belongs to a *different*
 topic can't be answered well. To bridge this, Layer 3 lists the other topics (`kb.suggestable_topics`,
-current topic + hidden `other` excluded) and instructs the model to prepend `[[TOPIC:slug]]` on its
+current topic + `other` excluded — `other` is a visible topic but never a routing *target*) and
+instructs the model to prepend `[[TOPIC:slug]]` on its
 own first line when the question plainly belongs to one of them. `chat_service` strips the tag
 (`prompts.strip_topic_suggestion`, mirrors the `[[ESCALATE]]` strip), validates the slug against the
 offered list, and returns `suggested_topic:{slug,title}` in the `/message` response. The topic list is
@@ -550,16 +571,20 @@ on a genuine mismatch. The decision keys on the player's **intent**, not isolate
 verification, limits) that also fits the current topic does **not** trigger a switch. This keeps
 cross-topic tracking active without ping-pong.
 
-`other` is **not special**. It is a normal, player-selectable topic (the always-available escape hatch
-in the picker — added client-side in `widget.js`, since `db.list_topics` filters its slug out of the
-dynamic catalogue) with its **own** ~50-entry KB, so it answers from that KB exactly like the others. In
+`other` is **not special** — and it is **never hidden** (there are no hidden topics at all). It is a
+normal, player-selectable topic in the server catalogue: `db.list_topics` returns the FULL topic list
+with `other` sorted last (its one special treatment — as the always-available escape hatch it closes the
+picker), and the widget renders the catalogue as served, only keeping the distinct purple styling for
+the `other` slug (plus a client-side fallback button if a catalogue ever arrives without an `other`
+row). It has its **own** ~50-entry KB, so it answers from that KB exactly like the others. In
 practice it sends players onward to a specialized topic more often (it is the general entry point), but
 that falls out of the same intent test, not a separate "route actively / don't answer from your own KB"
 mode. An earlier design treated `other` as a thin KB-less catch-all and force-routed everything off it —
 that **reversed** the anchor and broke any question whose answer actually lived in the `other` KB (e.g.
 "how do I change the language?" was force-routed to Technical, which had no such entry, dead-ending the
-chat). That special branch was removed. (`other` is still excluded from `suggestable_topics`, so it is
-never offered as a switch *target* — the model can route *out of* it but not dump a player *into* it.)
+chat). That special branch was removed. (`other` IS excluded from `suggestable_topics` — a routing
+decision, not visibility: it is never offered as a switch *target*, so the model can route *out of* it
+but not dump a player *into* it.)
 
 **Switch boundary (anti-ping-pong):** `set_session_topic` snapshots the current max `chat_messages.id`
 into `chat_sessions.context_reset_id`, and prompt-building history (`db.get_history(..., after_id=...)`

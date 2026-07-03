@@ -954,6 +954,10 @@ async def create_product(body: ProductCreate,
     product = await db.create_product(body.partner_id, slug, name)
     if product is None:
         raise HTTPException(status_code=409, detail="That slug is already taken.")
+    # create_product seeded the product's baseline prompt_variables into
+    # product_settings — pull them into the in-process cache so the new
+    # casino's very first prompt renders its own brand, not a stale scope.
+    await settings_mod.reload()
     await db.log_admin_event(None, "product_created",
                              {"id": product["id"], "slug": slug,
                               "partner_id": body.partner_id,
@@ -1080,7 +1084,7 @@ async def _build_effective_preview(product_id: Optional[int] = None
     suggestable: list[dict[str, Any]] = []
     example_topic: Optional[str] = None
     try:
-        topics = await db.list_topics(product_id, include_hidden=False)
+        topics = await db.list_topics(product_id)
         # Prefer a specialized topic (the common case) so the KB-grounding +
         # anchored routing directives are the ones shown.
         chosen = next((t for t in topics if t["slug"] != kb.OTHER_SLUG), None)
