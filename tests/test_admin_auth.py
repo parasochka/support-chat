@@ -37,8 +37,18 @@ def _setup(monkeypatch):
     async def _get_user(email):
         return users.get(email)
 
+    async def _memberships(email):
+        # Mirror the boot migration: a legacy account carries one GLOBAL
+        # membership with its old role.
+        user = users.get(email)
+        if not user:
+            return []
+        return [{"id": 1, "email": email, "scope_type": "global",
+                 "partner_id": None, "product_id": None, "role": user["role"]}]
+
     monkeypatch.setattr(db, "log_admin_event", _log)
     monkeypatch.setattr(db, "get_admin_user", _get_user)
+    monkeypatch.setattr(db, "memberships_for", _memberships)
     return logged
 
 

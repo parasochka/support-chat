@@ -12,6 +12,18 @@ a { color: var(--accent); }
 
 /* layout */
 .npadmin-app { display: grid; grid-template-columns: 176px 1fr; min-height: 100vh; }
+/* Multi-tenancy header: the Partner → Product switcher block above the content. */
+.npadmin-maincol { display: flex; flex-direction: column; min-width: 0; }
+.npadmin-scopebar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  padding: 10px 22px; border-bottom: 1px solid var(--line);
+  background: var(--panel); position: sticky; top: 0; z-index: 20; }
+.npadmin-scopelabel { color: var(--muted); font-size: 12px; }
+.npadmin-scopewho { margin-left: auto; color: var(--muted); font-size: 12px; }
+.npadmin-scopehint { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+.npadmin-productcard { border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; margin: 10px 0; background: var(--panel2); }
+.npadmin-chipx { background: none; border: none; color: inherit; cursor: pointer;
+  margin-left: 4px; font-size: 12px; line-height: 1; padding: 0 2px; }
 .npadmin-side { background: var(--panel); border-right: 1px solid var(--line);
   padding: 14px 0; }
 .npadmin-brand { font-weight: 700; padding: 0 16px 14px; font-size: 14px;

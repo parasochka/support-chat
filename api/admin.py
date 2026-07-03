@@ -26,7 +26,9 @@ import metrics
 import openai_client
 import prompts
 import settings as settings_mod
+import tenancy
 import translations as translations_mod
+from api import admin_auth
 from api.admin_auth import require_admin, require_admin_write, WRITE_ROLES
 
 # Router-level dependency guards every route. Some handlers ALSO declare
@@ -35,16 +37,44 @@ from api.admin_auth import require_admin, require_admin_write, WRITE_ROLES
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
 
+async def _resolve_admin_product(admin: dict, product_id: Optional[int],
+                                 *, write: bool) -> int:
+    """Resolve + authorize the product an admin route acts on.
+
+    No explicit product -> the boot-seeded default product (single-product
+    back-compat: the pre-tenancy SPA and API clients keep working). The scope
+    check (read or write) runs against the resolved product, and the request's
+    tenancy scope is bound so every settings/KB/translations read below
+    resolves for that product.
+    """
+    if product_id is None:
+        product = await db.get_default_product()
+        if product is None:
+            raise HTTPException(status_code=404,
+                                detail="No default product configured.")
+        product_id = product["id"]
+    if write:
+        await admin_auth.require_product_write(admin, product_id)
+    else:
+        await admin_auth.require_product_read(admin, product_id)
+    tenancy.set_current_product(product_id)
+    return product_id
+
+
 # ---------------------------------------------------------------------------
 # static metadata (supported languages, defaults) for the admin SPA
 # ---------------------------------------------------------------------------
 @router.get("/meta")
-async def meta() -> JSONResponse:
+async def meta(product_id: Optional[int] = None,
+               admin=Depends(require_admin)) -> JSONResponse:
     """Static config the admin UI needs to build pickers (e.g. language dropdowns).
 
-    Keeps the SPA in sync with the env-configured `SUPPORTED_LANGUAGES` instead
-    of hard-coding the list in JS.
+    Keeps the SPA in sync with the configured languages instead of hard-coding
+    the list in JS. With a product selected the language set/default resolve
+    for that product (its `language` settings override).
     """
+    if product_id is not None:
+        await _resolve_admin_product(admin, product_id, write=False)
     # `languages` is the SELECTABLE catalogue (built-ins + admin-added + currently
     # supported) so the language tab can render a checkbox per known language, not
     # only the ones already enabled. `iso_catalog` is the full ISO 639-1 list that
@@ -99,33 +129,52 @@ def _range(from_: Optional[str], to: Optional[str]) -> tuple[datetime, datetime]
 # ---------------------------------------------------------------------------
 @router.get("/overview")
 async def overview(from_: Optional[str] = Query(default=None, alias="from"),
-                   to: Optional[str] = None) -> JSONResponse:
+                   to: Optional[str] = None,
+                   product_id: Optional[int] = None,
+                   partner_id: Optional[int] = None,
+                   admin=Depends(require_admin)) -> JSONResponse:
     dt_from, dt_to = _range(from_, to)
-    raw = await db.overview_aggregates(dt_from, dt_to)
+    scope = await admin_auth.resolve_scope_filter(admin, product_id, partner_id)
+    raw = await db.overview_aggregates(dt_from, dt_to, product_ids=scope)
     return JSONResponse(content=metrics.overview(raw))
 
 
 @router.get("/timeseries")
 async def timeseries(metric: str = "sessions", bucket: str = "day",
                      from_: Optional[str] = Query(default=None, alias="from"),
-                     to: Optional[str] = None) -> JSONResponse:
+                     to: Optional[str] = None,
+                     product_id: Optional[int] = None,
+                     partner_id: Optional[int] = None,
+                     admin=Depends(require_admin)) -> JSONResponse:
     dt_from, dt_to = _range(from_, to)
-    series = await db.timeseries(metric, dt_from, dt_to, bucket=bucket)
+    scope = await admin_auth.resolve_scope_filter(admin, product_id, partner_id)
+    series = await db.timeseries(metric, dt_from, dt_to, bucket=bucket,
+                                 product_ids=scope)
     return JSONResponse(content={"metric": metric, "bucket": bucket, "series": series})
 
 
 @router.get("/by-topic")
 async def by_topic(from_: Optional[str] = Query(default=None, alias="from"),
-                   to: Optional[str] = None) -> JSONResponse:
+                   to: Optional[str] = None,
+                   product_id: Optional[int] = None,
+                   partner_id: Optional[int] = None,
+                   admin=Depends(require_admin)) -> JSONResponse:
     dt_from, dt_to = _range(from_, to)
-    return JSONResponse(content={"topics": await db.by_topic(dt_from, dt_to)})
+    scope = await admin_auth.resolve_scope_filter(admin, product_id, partner_id)
+    return JSONResponse(content={"topics": await db.by_topic(dt_from, dt_to,
+                                                             product_ids=scope)})
 
 
 @router.get("/by-language")
 async def by_language(from_: Optional[str] = Query(default=None, alias="from"),
-                      to: Optional[str] = None) -> JSONResponse:
+                      to: Optional[str] = None,
+                      product_id: Optional[int] = None,
+                      partner_id: Optional[int] = None,
+                      admin=Depends(require_admin)) -> JSONResponse:
     dt_from, dt_to = _range(from_, to)
-    return JSONResponse(content={"languages": await db.by_language(dt_from, dt_to)})
+    scope = await admin_auth.resolve_scope_filter(admin, product_id, partner_id)
+    return JSONResponse(content={"languages": await db.by_language(
+        dt_from, dt_to, product_ids=scope)})
 
 
 @router.get("/sessions")
@@ -134,16 +183,21 @@ async def sessions(from_: Optional[str] = Query(default=None, alias="from"),
                    lang: Optional[str] = None, status: Optional[str] = None,
                    escalated: Optional[bool] = None, q: Optional[str] = None,
                    min_messages: Optional[int] = None,
-                   page: int = 1) -> JSONResponse:
+                   product_id: Optional[int] = None,
+                   partner_id: Optional[int] = None,
+                   page: int = 1,
+                   admin=Depends(require_admin)) -> JSONResponse:
     dt_from, dt_to = _range(from_, to)
+    scope = await admin_auth.resolve_scope_filter(admin, product_id, partner_id)
     res = await db.list_sessions(dt_from, dt_to, topic=topic, lang=lang,
                                  status=status, escalated=escalated, q=q,
-                                 min_messages=min_messages, page=page)
+                                 min_messages=min_messages, product_ids=scope,
+                                 page=page)
     return JSONResponse(content=res)
 
 
 @router.get("/session/{session_id}")
-async def session(session_id: str) -> JSONResponse:
+async def session(session_id: str, admin=Depends(require_admin)) -> JSONResponse:
     # Validate up front: a non-UUID path segment would otherwise hit the UUID
     # column and bubble out of asyncpg as a 500 (the chat API never gets here
     # because its session tokens only ever carry real UUIDs).
@@ -154,6 +208,13 @@ async def session(session_id: str) -> JSONResponse:
     detail = await db.session_detail(session_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="Session not found.")
+    # Scope check: a session belongs to a product; only accounts with reach
+    # over that product may open its transcript.
+    sess_product = (detail.get("session") or {}).get("product_id")
+    if sess_product is not None:
+        await admin_auth.require_product_read(admin, sess_product)
+    elif admin_auth.global_role(admin) is None:
+        raise HTTPException(status_code=403, detail="No access to this session.")
     return JSONResponse(content=detail)
 
 
@@ -171,9 +232,13 @@ def _csv_safe(value: str) -> str:
 
 @router.get("/unresolved")
 async def unresolved(from_: Optional[str] = Query(default=None, alias="from"),
-                     to: Optional[str] = None, format: str = "json") -> Any:
+                     to: Optional[str] = None, format: str = "json",
+                     product_id: Optional[int] = None,
+                     partner_id: Optional[int] = None,
+                     admin=Depends(require_admin)) -> Any:
     dt_from, dt_to = _range(from_, to)
-    groups = await db.unresolved_by_topic(dt_from, dt_to)
+    scope = await admin_auth.resolve_scope_filter(admin, product_id, partner_id)
+    groups = await db.unresolved_by_topic(dt_from, dt_to, product_ids=scope)
     if format == "csv":
         buf = io.StringIO()
         w = csv.writer(buf)
@@ -191,13 +256,14 @@ async def unresolved(from_: Optional[str] = Query(default=None, alias="from"),
 
 
 # ---------------------------------------------------------------------------
-# KB management
+# KB management (product-scoped)
 # ---------------------------------------------------------------------------
 class TopicUpsert(BaseModel):
     slug: str
     title: dict[str, str]
     order: int = 0
     active: bool = True
+    product_id: Optional[int] = None
 
 
 class KBContentWrite(BaseModel):
@@ -205,23 +271,39 @@ class KBContentWrite(BaseModel):
     content: str
 
 
+async def _topic_for_write(admin: dict, topic_id: int) -> dict:
+    """Load a topic and authorize a WRITE on its owning product."""
+    topic = await db.get_topic_by_id(topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail="Topic not found.")
+    await _resolve_admin_product(admin, topic.get("product_id"), write=True)
+    return topic
+
+
 @router.get("/kb/topics")
-async def kb_topics() -> JSONResponse:
-    return JSONResponse(content={"topics": await db.list_topics_with_counts()})
+async def kb_topics(product_id: Optional[int] = None,
+                    admin=Depends(require_admin)) -> JSONResponse:
+    pid = await _resolve_admin_product(admin, product_id, write=False)
+    return JSONResponse(content={"topics": await db.list_topics_with_counts(pid)})
 
 
 @router.post("/kb/topics")
 async def kb_upsert_topic(body: TopicUpsert,
                           admin=Depends(require_admin_write)) -> JSONResponse:
-    tid = await db.upsert_topic(slug=body.slug, title=body.title,
+    pid = await _resolve_admin_product(admin, body.product_id, write=True)
+    tid = await db.upsert_topic(product_id=pid, slug=body.slug, title=body.title,
                                 display_order=body.order, active=body.active)
     await db.log_admin_event(None, "kb_topic_upserted", {"id": tid, "slug": body.slug})
     return JSONResponse(content=await db.get_topic_by_id(tid))
 
 
 @router.get("/kb/content")
-async def kb_content(topic_id: int) -> JSONResponse:
+async def kb_content(topic_id: int, admin=Depends(require_admin)) -> JSONResponse:
     """The topic's single KB text (one entry per topic), or null when empty."""
+    topic = await db.get_topic_by_id(topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail="Topic not found.")
+    await _resolve_admin_product(admin, topic.get("product_id"), write=False)
     entry = await db.get_kb_entry(topic_id)
     return JSONResponse(content={"content": entry["content"] if entry else None})
 
@@ -229,6 +311,7 @@ async def kb_content(topic_id: int) -> JSONResponse:
 @router.put("/kb/content")
 async def kb_set_content(body: KBContentWrite,
                          admin=Depends(require_admin_write)) -> JSONResponse:
+    await _topic_for_write(admin, body.topic_id)
     eid = await db.set_kb_content(body.topic_id, body.content)
     await db.log_admin_event(None, "kb_content_updated", {"topic_id": body.topic_id})
     return JSONResponse(content={"id": eid})
@@ -237,6 +320,7 @@ async def kb_set_content(body: KBContentWrite,
 @router.delete("/kb/content")
 async def kb_clear_content(topic_id: int,
                            admin=Depends(require_admin_write)) -> JSONResponse:
+    await _topic_for_write(admin, topic_id)
     ok = await db.clear_kb_content(topic_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Topic has no KB to clear.")
@@ -256,15 +340,21 @@ class KBVariableWrite(BaseModel):
 
 
 @router.get("/kb/variables")
-async def kb_variables() -> JSONResponse:
-    return JSONResponse(content={"variables": await db.list_kb_variables()})
+async def kb_variables(product_id: Optional[int] = None,
+                       admin=Depends(require_admin)) -> JSONResponse:
+    pid = await _resolve_admin_product(admin, product_id, write=False)
+    return JSONResponse(content={"variables": await db.list_kb_variables(pid)})
 
 
 @router.put("/kb/variables/{key}")
-async def kb_set_variable(key: str, body: KBVariableWrite, admin=Depends(require_admin_write)) -> JSONResponse:
+async def kb_set_variable(key: str, body: KBVariableWrite,
+                          product_id: Optional[int] = None,
+                          admin=Depends(require_admin_write)) -> JSONResponse:
     if body.key != key:
         raise HTTPException(status_code=400, detail="Path key and body key must match.")
+    pid = await _resolve_admin_product(admin, product_id, write=True)
     item = await db.set_kb_variable(
+        product_id=pid,
         key=key,
         description=body.description.strip(),
         value=body.value.strip(),
@@ -288,7 +378,9 @@ class PromptVariablesWrite(BaseModel):
 
 
 @router.get("/prompt-variables")
-async def get_prompt_variables() -> JSONResponse:
+async def get_prompt_variables(product_id: Optional[int] = None,
+                               admin=Depends(require_admin)) -> JSONResponse:
+    await _resolve_admin_product(admin, product_id, write=False)
     resolved = settings_mod.prompt_variables()
     return JSONResponse(content={"variables": [
         {"key": key, "description": desc, "default": default,
@@ -299,13 +391,19 @@ async def get_prompt_variables() -> JSONResponse:
 
 @router.put("/prompt-variables")
 async def put_prompt_variables(body: PromptVariablesWrite,
+                               product_id: Optional[int] = None,
                                admin=Depends(require_admin_write)) -> JSONResponse:
+    pid = await _resolve_admin_product(admin, product_id, write=True)
     try:
         validated = settings_mod.validate_prompt_variables(body.value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    await db.set_setting("prompt_variables", validated,
-                         updated_by=admin.get("email") or admin.get("role"))
+    # Multi-tenancy: the persona/brand values are the per-casino uniquification
+    # seam, so they are stored on the PRODUCT (product_settings), never in the
+    # global app_settings — each casino renders the shared prompt template with
+    # its own brand.
+    await db.set_product_setting(pid, "prompt_variables", validated,
+                                 updated_by=admin.get("email") or admin.get("role"))
     await settings_mod.reload()  # hot: the next prompt build renders new values
     await db.log_admin_event(None, "prompt_variables_updated",
                              {"keys": sorted(validated)})
@@ -329,7 +427,9 @@ class TranslationsWrite(BaseModel):
 
 
 @router.get("/translations")
-async def get_translations() -> JSONResponse:
+async def get_translations(product_id: Optional[int] = None,
+                           admin=Depends(require_admin)) -> JSONResponse:
+    await _resolve_admin_product(admin, product_id, write=False)
     codes = language.supported_codes()
     names = language.all_language_names()
     return JSONResponse(content={
@@ -346,13 +446,18 @@ async def get_translations() -> JSONResponse:
 
 @router.put("/translations")
 async def put_translations(body: TranslationsWrite,
+                           product_id: Optional[int] = None,
                            admin=Depends(require_admin_write)) -> JSONResponse:
+    pid = await _resolve_admin_product(admin, product_id, write=True)
     try:
         validated = settings_mod.validate_translations(body.value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    await db.set_setting("translations", validated,
-                         updated_by=admin.get("email") or admin.get("role"))
+    # Player-facing copy is brand material -> stored on the PRODUCT, like the
+    # prompt variables. Legacy global overrides (app_settings) keep resolving
+    # underneath until a product override shadows them.
+    await db.set_product_setting(pid, "translations", validated,
+                                 updated_by=admin.get("email") or admin.get("role"))
     await settings_mod.reload()  # hot: applies to new turns / the next i18n fetch
     await db.log_admin_event(None, "translations_updated",
                              {"languages": sorted(validated)})
@@ -370,24 +475,48 @@ class SettingWrite(BaseModel):
 
 
 @router.get("/settings")
-async def get_settings() -> JSONResponse:
-    # Resolved (effective) values plus the raw DB overrides currently stored.
+async def get_settings(product_id: Optional[int] = None,
+                       admin=Depends(require_admin)) -> JSONResponse:
+    """Resolved (effective) values plus the raw overrides of the EDITED layer.
+
+    With a product selected: resolved = product > global > env > default, and
+    `overrides` is the product's own stored layer (what the editor round-trips).
+    Without one: the global layer, as before (global scope required — the
+    deploy-wide defaults are the hub owner's knobs).
+    """
+    if product_id is not None:
+        pid = await _resolve_admin_product(admin, product_id, write=False)
+        overrides = await db.get_product_settings(pid)
+    else:
+        if admin_auth.global_role(admin) is None:
+            raise HTTPException(status_code=403,
+                                detail="Global settings need a global account.")
+        overrides = await db.get_all_settings()
     return JSONResponse(content={
         "resolved": settings_mod.resolved_all(),
-        "overrides": await db.get_all_settings(),
+        "overrides": overrides,
         "keys": list(settings_mod.SETTING_KEYS),
     })
 
 
 @router.put("/settings/{key}")
-async def put_setting(key: str, body: SettingWrite, admin=Depends(require_admin_write)
-                      ) -> JSONResponse:
+async def put_setting(key: str, body: SettingWrite,
+                      product_id: Optional[int] = None,
+                      admin=Depends(require_admin_write)) -> JSONResponse:
     try:
         validated = settings_mod.validate_setting(key, body.value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    await db.set_setting(key, validated,
-                         updated_by=admin.get("email") or admin.get("role"))
+    if product_id is not None:
+        # Per-product operational knobs (the casino owner's layer).
+        pid = await _resolve_admin_product(admin, product_id, write=True)
+        await db.set_product_setting(pid, key, validated,
+                                     updated_by=admin.get("email") or admin.get("role"))
+    else:
+        # Deploy-wide defaults every product inherits — global admins only.
+        admin_auth.require_global_write(admin)
+        await db.set_setting(key, validated,
+                             updated_by=admin.get("email") or admin.get("role"))
     await settings_mod.reload()  # hot: invalidate + repopulate cache
     if key == "model":
         # request_timeout + per-key concurrency are bound at client build time;
@@ -411,26 +540,32 @@ class TestProfileWrite(BaseModel):
 
 
 @router.get("/test-profile")
-async def get_test_profile() -> JSONResponse:
+async def get_test_profile(product_id: Optional[int] = None,
+                           admin=Depends(require_admin)) -> JSONResponse:
+    pid = await _resolve_admin_product(admin, product_id, write=False)
+    product_handshake = await db.get_product_handshake_secret(pid)
     return JSONResponse(content={
         "profile": settings_mod.test_profile(),
         "languages": [{"code": c, "name": language.LANG_NAMES.get(c, c.upper())}
                       for c in language.supported_codes()],
-        # When a handshake secret is set the host site is authoritative and this
-        # profile is ignored at session create — surface that so the UI can warn.
-        "active": not bool(config.WIDGET_HANDSHAKE_SECRET),
+        # When a handshake secret is set (product or deploy) the host site is
+        # authoritative and this profile is ignored at session create — surface
+        # that so the UI can warn.
+        "active": not bool(product_handshake or config.WIDGET_HANDSHAKE_SECRET),
     })
 
 
 @router.put("/test-profile")
 async def put_test_profile(body: TestProfileWrite,
+                           product_id: Optional[int] = None,
                            admin=Depends(require_admin_write)) -> JSONResponse:
+    pid = await _resolve_admin_product(admin, product_id, write=True)
     try:
         validated = settings_mod.validate_test_profile(body.value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    await db.set_setting("test_profile", validated,
-                         updated_by=admin.get("email") or admin.get("role"))
+    await db.set_product_setting(pid, "test_profile", validated,
+                                 updated_by=admin.get("email") or admin.get("role"))
     await settings_mod.reload()  # hot: applies to the next session created
     await db.log_admin_event(None, "test_profile_updated", {})
     return JSONResponse(content={"profile": settings_mod.test_profile()})
@@ -445,29 +580,49 @@ async def me(admin=Depends(require_admin)) -> JSONResponse:
         "role": admin.get("role"),
         "email": admin.get("email"),
         "can_write": admin.get("role") in WRITE_ROLES,
+        # Scope info for the SPA: the header switcher + per-tab gating derive
+        # from these (the server stays authoritative on every request).
+        "memberships": admin.get("memberships", []),
+        "global_role": admin_auth.global_role(admin),
     })
 
 
 # ---------------------------------------------------------------------------
-# User management — named admin/manager accounts (owner/admin only)
+# User management — named accounts + scope memberships (multi-tenancy)
 #
-# Minimal by design: an owner/admin creates accounts with an email + password and
-# a role (admin = full write, manager = read-only). No email delivery, no reset
-# flows, no enumeration — all lifecycle is here. Passwords are stored only as a
-# salted PBKDF2 hash (auth.hash_password); the hash never leaves db.py.
+# An account is an email + password; WHAT it may touch is its memberships
+# (global / partner / product, each with role admin|manager). An admin manages
+# users strictly within its own reach: it may grant/revoke memberships only for
+# scopes it holds an admin role over, and may edit/delete only accounts whose
+# ENTIRE membership set lies inside that reach (so a product admin can never
+# touch a global account). No email delivery, no reset flows, no enumeration.
+# Passwords are stored only as a salted PBKDF2 hash; it never leaves db.py.
 # ---------------------------------------------------------------------------
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _USER_ROLES = ("admin", "manager")
 
 
+class MembershipSpec(BaseModel):
+    scope_type: str = "global"
+    partner_id: Optional[int] = None
+    product_id: Optional[int] = None
+    role: str = "manager"
+
+
 class UserCreate(BaseModel):
     email: str
     password: str
+    # Initial membership. The flat `role` alone (old API shape) still works and
+    # means "global <role>", so pre-tenancy clients keep functioning.
     role: str = "manager"
+    scope_type: str = "global"
+    partner_id: Optional[int] = None
+    product_id: Optional[int] = None
 
 
 class UserUpdate(BaseModel):
     password: Optional[str] = None
+    # Legacy shape: a bare role update means the GLOBAL membership's role.
     role: Optional[str] = None
     active: Optional[bool] = None
 
@@ -492,9 +647,74 @@ def _validate_role(role: str) -> str:
     return role
 
 
+async def _validate_scope(spec: MembershipSpec) -> tuple[str, Optional[int], Optional[int]]:
+    """Normalize + verify a membership scope (type/ids consistent, targets exist)."""
+    scope = (spec.scope_type or "global").strip().lower()
+    if scope not in admin_auth.SCOPE_TYPES:
+        raise HTTPException(status_code=400,
+                            detail=f"scope_type must be one of: "
+                                   f"{', '.join(admin_auth.SCOPE_TYPES)}.")
+    partner_id = spec.partner_id if scope == "partner" else None
+    product_id = spec.product_id if scope == "product" else None
+    if scope == "partner":
+        if not partner_id or await db.get_partner(partner_id) is None:
+            raise HTTPException(status_code=400, detail="Unknown partner.")
+    if scope == "product":
+        if not product_id or await db.get_product(product_id) is None:
+            raise HTTPException(status_code=400, detail="Unknown product.")
+    return scope, partner_id, product_id
+
+
+async def _require_scope_admin(admin: dict, scope: str,
+                               partner_id: Optional[int],
+                               product_id: Optional[int]) -> None:
+    """The caller must hold an ADMIN role over the scope being granted/revoked."""
+    if scope == "global":
+        admin_auth.require_global_write(admin)
+    elif scope == "partner":
+        if admin_auth.role_for_partner(admin, partner_id) not in WRITE_ROLES:
+            raise HTTPException(status_code=403,
+                                detail="This action requires an administrator "
+                                       "role over this partner.")
+    else:
+        await admin_auth.require_product_write(admin, product_id)
+
+
+async def _can_manage_user(admin: dict, target_memberships: list[dict]) -> bool:
+    """True when every scope the target holds is inside the caller's admin reach.
+
+    An account with NO memberships is manageable only globally (otherwise any
+    product admin could take over orphan accounts).
+    """
+    if admin_auth.global_role(admin) in WRITE_ROLES:
+        return True
+    if not target_memberships:
+        return False
+    for m in target_memberships:
+        if m["scope_type"] == "global":
+            return False
+        if m["scope_type"] == "partner":
+            if admin_auth.role_for_partner(admin, m["partner_id"]) not in WRITE_ROLES:
+                return False
+        elif (await admin_auth.role_for_product(admin, m["product_id"])) not in WRITE_ROLES:
+            return False
+    return True
+
+
 @router.get("/users")
 async def list_users(admin=Depends(require_admin_write)) -> JSONResponse:
-    return JSONResponse(content={"users": await db.list_admin_users()})
+    """Accounts within the caller's reach, each with its memberships attached."""
+    users = await db.list_admin_users()
+    all_memberships = await db.list_all_memberships()
+    by_email: dict[str, list] = {}
+    for m in all_memberships:
+        by_email.setdefault(m["email"], []).append(m)
+    out = []
+    for u in users:
+        ms = by_email.get(u["email"], [])
+        if u["email"] == admin.get("email") or await _can_manage_user(admin, ms):
+            out.append({**u, "memberships": ms})
+    return JSONResponse(content={"users": out})
 
 
 @router.post("/users")
@@ -503,14 +723,61 @@ async def create_user(body: UserCreate,
     email = _validate_email(body.email)
     _validate_password(body.password)
     role = _validate_role(body.role)
+    scope, partner_id, product_id = await _validate_scope(MembershipSpec(
+        scope_type=body.scope_type, partner_id=body.partner_id,
+        product_id=body.product_id, role=role))
+    await _require_scope_admin(admin, scope, partner_id, product_id)
     if await db.get_admin_user(email):
         raise HTTPException(status_code=409, detail="A user with that email already exists.")
     # PBKDF2 hashing is CPU-bound — keep it off the event loop.
     pw_hash = await asyncio.to_thread(auth.hash_password, body.password)
     user = await db.create_admin_user(email, pw_hash, role)
+    membership = await db.add_membership(email, scope, partner_id, product_id, role)
     await db.log_admin_event(None, "admin_user_created",
-                             {"email": email, "role": role, "by": admin.get("email")})
-    return JSONResponse(content={"user": user})
+                             {"email": email, "role": role, "scope": scope,
+                              "by": admin.get("email")})
+    return JSONResponse(content={"user": {**user, "memberships": [membership]}})
+
+
+@router.post("/users/{email}/memberships")
+async def grant_membership(email: str, body: MembershipSpec,
+                           admin=Depends(require_admin_write)) -> JSONResponse:
+    target = _validate_email(email)
+    if not await db.get_admin_user(target):
+        raise HTTPException(status_code=404, detail="User not found.")
+    if admin.get("email") == target:
+        raise HTTPException(status_code=400,
+                            detail="You cannot change your own memberships.")
+    role = _validate_role(body.role)
+    scope, partner_id, product_id = await _validate_scope(body)
+    await _require_scope_admin(admin, scope, partner_id, product_id)
+    membership = await db.add_membership(target, scope, partner_id, product_id, role)
+    await db.log_admin_event(None, "admin_membership_granted",
+                             {"email": target, "scope": scope, "role": role,
+                              "by": admin.get("email")})
+    return JSONResponse(content={"membership": membership,
+                                 "memberships": await db.memberships_for(target)})
+
+
+@router.delete("/users/{email}/memberships/{membership_id}")
+async def revoke_membership(email: str, membership_id: int,
+                            admin=Depends(require_admin_write)) -> JSONResponse:
+    target = _validate_email(email)
+    if admin.get("email") == target:
+        raise HTTPException(status_code=400,
+                            detail="You cannot change your own memberships.")
+    membership = await db.get_membership(membership_id)
+    if membership is None or membership.get("email") != target:
+        raise HTTPException(status_code=404, detail="Membership not found.")
+    await _require_scope_admin(admin, membership["scope_type"],
+                               membership.get("partner_id"),
+                               membership.get("product_id"))
+    await db.delete_membership(membership_id)
+    await db.log_admin_event(None, "admin_membership_revoked",
+                             {"email": target, "scope": membership["scope_type"],
+                              "by": admin.get("email")})
+    return JSONResponse(content={"ok": True,
+                                 "memberships": await db.memberships_for(target)})
 
 
 @router.put("/users/{email}")
@@ -520,6 +787,11 @@ async def update_user(email: str, body: UserUpdate,
     existing = await db.get_admin_user(target)
     if not existing:
         raise HTTPException(status_code=404, detail="User not found.")
+    target_memberships = await db.memberships_for(target)
+    if admin.get("email") != target and \
+            not await _can_manage_user(admin, target_memberships):
+        raise HTTPException(status_code=403,
+                            detail="No administrator reach over this account.")
     role = _validate_role(body.role) if body.role is not None else None
     pw_hash = None
     if body.password is not None:
@@ -535,9 +807,15 @@ async def update_user(email: str, body: UserUpdate,
             raise HTTPException(status_code=400, detail="You cannot deactivate your own account.")
     user = await db.update_admin_user(target, role=role, active=body.active,
                                       password_hash=pw_hash)
+    if role is not None:
+        # Legacy shape: a flat role update targets the GLOBAL membership.
+        if admin.get("email") != target:
+            admin_auth.require_global_write(admin)
+        await db.add_membership(target, "global", None, None, role)
     await db.log_admin_event(None, "admin_user_updated",
                              {"email": target, "by": admin.get("email")})
-    return JSONResponse(content={"user": user})
+    return JSONResponse(content={"user": {**(user or {}),
+                                          "memberships": await db.memberships_for(target)}})
 
 
 @router.delete("/users/{email}")
@@ -546,12 +824,202 @@ async def delete_user(email: str,
     target = _validate_email(email)
     if admin.get("email") == target:
         raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+    if not await _can_manage_user(admin, await db.memberships_for(target)):
+        raise HTTPException(status_code=403,
+                            detail="No administrator reach over this account.")
     ok = await db.delete_admin_user(target)
     if not ok:
         raise HTTPException(status_code=404, detail="User not found.")
     await db.log_admin_event(None, "admin_user_deleted",
                              {"email": target, "by": admin.get("email")})
     return JSONResponse(content={"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Structure — partners & products (the multi-tenancy tree + the header switcher)
+#
+# GET /structure feeds the Partner -> Product switcher in the admin header: it
+# returns only what the caller can see. Partner lifecycle is global-admin-only;
+# products are managed by global admins and the owning partner's admins.
+# Per-product secrets (OpenAI keys, handshake secret) are WRITE-ONLY: the API
+# accepts them, stores them encrypted, and ever after reports only has_* flags.
+# ---------------------------------------------------------------------------
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,39}$")
+
+
+class PartnerCreate(BaseModel):
+    slug: str
+    name: str
+
+
+class PartnerUpdate(BaseModel):
+    name: Optional[str] = None
+    active: Optional[bool] = None
+
+
+class ProductCreate(BaseModel):
+    partner_id: int
+    slug: str
+    name: str
+
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    active: Optional[bool] = None
+
+
+class ProductSecretsWrite(BaseModel):
+    # Absent field = leave unchanged; empty string = clear (fall back to env).
+    openai_key_primary: Optional[str] = None
+    openai_key_fallback: Optional[str] = None
+    handshake_secret: Optional[str] = None
+
+
+def _validate_slug(slug: str) -> str:
+    s = (slug or "").strip().lower()
+    if not _SLUG_RE.match(s):
+        raise HTTPException(status_code=400,
+                            detail="Slug must be 2-40 chars: a-z, 0-9, '-'.")
+    return s
+
+
+@router.get("/structure")
+async def structure(admin=Depends(require_admin)) -> JSONResponse:
+    """The partner -> products tree the caller may see (for the header switcher)."""
+    accessible = await admin_auth.accessible_product_ids(admin)  # None = all
+    partners = await db.list_partners()
+    products = await db.list_products(product_ids=accessible)
+    by_partner: dict[int, list] = {}
+    for p in products:
+        by_partner.setdefault(p["partner_id"], []).append(p)
+    out = []
+    for pa in partners:
+        visible_products = by_partner.get(pa["id"], [])
+        partner_role = admin_auth.role_for_partner(admin, pa["id"])
+        # A partner appears when the caller has partner/global scope over it or
+        # can see at least one of its products.
+        if partner_role is None and not visible_products:
+            continue
+        out.append({**pa, "products": visible_products, "role": partner_role})
+    return JSONResponse(content={
+        "partners": out,
+        "global_role": admin_auth.global_role(admin),
+    })
+
+
+@router.post("/partners")
+async def create_partner(body: PartnerCreate,
+                         admin=Depends(require_admin_write)) -> JSONResponse:
+    admin_auth.require_global_write(admin)
+    slug = _validate_slug(body.slug)
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Partner name is required.")
+    partner = await db.create_partner(slug, name)
+    if partner is None:
+        raise HTTPException(status_code=409, detail="That slug is already taken.")
+    await db.log_admin_event(None, "partner_created",
+                             {"id": partner["id"], "slug": slug,
+                              "by": admin.get("email")})
+    return JSONResponse(content={"partner": partner})
+
+
+@router.put("/partners/{partner_id}")
+async def update_partner(partner_id: int, body: PartnerUpdate,
+                         admin=Depends(require_admin_write)) -> JSONResponse:
+    admin_auth.require_global_write(admin)
+    partner = await db.update_partner(partner_id, name=(body.name or "").strip() or None,
+                                      active=body.active)
+    if partner is None:
+        raise HTTPException(status_code=404, detail="Partner not found.")
+    await db.log_admin_event(None, "partner_updated",
+                             {"id": partner_id, "by": admin.get("email")})
+    return JSONResponse(content={"partner": partner})
+
+
+@router.post("/products")
+async def create_product(body: ProductCreate,
+                         admin=Depends(require_admin_write)) -> JSONResponse:
+    if await db.get_partner(body.partner_id) is None:
+        raise HTTPException(status_code=404, detail="Partner not found.")
+    # Global admins and the owning partner's admins may add casinos to it.
+    if admin_auth.role_for_partner(admin, body.partner_id) not in WRITE_ROLES:
+        raise HTTPException(status_code=403,
+                            detail="This action requires an administrator "
+                                   "role over this partner.")
+    slug = _validate_slug(body.slug)
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Product name is required.")
+    product = await db.create_product(body.partner_id, slug, name)
+    if product is None:
+        raise HTTPException(status_code=409, detail="That slug is already taken.")
+    await db.log_admin_event(None, "product_created",
+                             {"id": product["id"], "slug": slug,
+                              "partner_id": body.partner_id,
+                              "by": admin.get("email")},
+                             product_id=product["id"])
+    return JSONResponse(content={"product": product})
+
+
+@router.put("/products/{product_id}")
+async def update_product(product_id: int, body: ProductUpdate,
+                         admin=Depends(require_admin_write)) -> JSONResponse:
+    await admin_auth.require_product_write(admin, product_id)
+    product = await db.update_product(product_id,
+                                      name=(body.name or "").strip() or None,
+                                      active=body.active)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    await db.log_admin_event(None, "product_updated",
+                             {"id": product_id, "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"product": product})
+
+
+@router.put("/products/{product_id}/secrets")
+async def put_product_secrets(product_id: int, body: ProductSecretsWrite,
+                              admin=Depends(require_admin_write)) -> JSONResponse:
+    """Set/clear the product's OpenAI keys and handshake secret (encrypted at rest).
+
+    Write-only by design: the plaintext is never echoed back, logged, or listed —
+    the response (and every later read) carries only has_* presence flags.
+    """
+    await admin_auth.require_product_write(admin, product_id)
+    fields: dict[str, Any] = {}
+    if body.openai_key_primary is not None:
+        fields["openai_key_primary"] = body.openai_key_primary
+    if body.openai_key_fallback is not None:
+        fields["openai_key_fallback"] = body.openai_key_fallback
+    if body.handshake_secret is not None:
+        fields["handshake_secret"] = body.handshake_secret
+    if not fields:
+        raise HTTPException(status_code=400, detail="Nothing to update.")
+    ok = await db.set_product_secrets(product_id, **fields)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    # Product clients bind keys at construction — rebuild so a rotated key
+    # takes effect on the next turn.
+    openai_client.reset()
+    await db.log_admin_event(None, "product_secrets_updated",
+                             {"id": product_id, "fields": sorted(fields),
+                              "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"product": await db.get_product(product_id)})
+
+
+@router.post("/products/{product_id}/widget-key")
+async def rotate_widget_key(product_id: int,
+                            admin=Depends(require_admin_write)) -> JSONResponse:
+    """Rotate the public widget key. Old embeds stop resolving immediately."""
+    await admin_auth.require_product_write(admin, product_id)
+    new_key = await db.rotate_widget_key(product_id)
+    if new_key is None:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    await db.log_admin_event(None, "widget_key_rotated",
+                             {"id": product_id, "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"widget_key": new_key})
 
 
 # ---------------------------------------------------------------------------
@@ -592,22 +1060,27 @@ def _preview_context() -> dict[str, Any]:
             for field in prompts._CONTEXT_FIELDS}
 
 
-async def _build_effective_preview() -> dict[str, Any]:
+async def _build_effective_preview(product_id: Optional[int] = None
+                                   ) -> dict[str, Any]:
     """Assemble the full prompt exactly as chat_service would, using the Test
     sandbox player.
 
     Returns the system message (Layer 1 SYSTEM_CORE + Layer 2 KB block) and the
     Layer-3 user message, plus a note of which example topic/language were used.
     Resilient by design: if topics/KB can't be loaded the preview still renders
-    Layer 1 + the Layer-3 directives, so the page never breaks.
+    Layer 1 + the Layer-3 directives, so the page never breaks. The prompt
+    variables / KB / language resolve for the request's product scope (set by
+    the caller), so each casino previews ITS assembled prompt.
     """
+    if product_id is None:
+        product_id = tenancy.current_product_id()
     lang = language.default_code()
     current_topic: Optional[dict[str, Any]] = None
     kb_block: Optional[str] = None
     suggestable: list[dict[str, Any]] = []
     example_topic: Optional[str] = None
     try:
-        topics = await db.list_topics(include_hidden=False)
+        topics = await db.list_topics(product_id, include_hidden=False)
         # Prefer a specialized topic (the common case) so the KB-grounding +
         # anchored routing directives are the ones shown.
         chosen = next((t for t in topics if t["slug"] != kb.OTHER_SLUG), None)
@@ -644,6 +1117,9 @@ async def _build_effective_preview() -> dict[str, Any]:
 
 
 @router.get("/effective-prompt")
-async def get_effective_prompt() -> JSONResponse:
+async def get_effective_prompt(product_id: Optional[int] = None,
+                               admin=Depends(require_admin)) -> JSONResponse:
     """Read-only: the whole prompt as assembled from prompts.py (the source of truth)."""
-    return JSONResponse(content={"effective_preview": await _build_effective_preview()})
+    pid = await _resolve_admin_product(admin, product_id, write=False)
+    return JSONResponse(content={
+        "effective_preview": await _build_effective_preview(pid)})

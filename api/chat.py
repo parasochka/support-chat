@@ -28,6 +28,7 @@ import escalation
 import kb
 import language
 import settings
+import tenancy
 import translations
 from api.client_ip import client_ip
 
@@ -42,14 +43,18 @@ class SessionCreate(BaseModel):
     consumer: Optional[str] = "web"
     player_id: Optional[str] = None
     user_context: dict[str, Any] = Field(default_factory=dict)
-    # Signed handshake blob (HMAC) from the host backend. When the service is
-    # configured with WIDGET_HANDSHAKE_SECRET this is the ONLY trusted source of
-    # user_context; unsigned context is ignored.
+    # Signed handshake blob (HMAC) from the host backend. When the product (or
+    # the deploy) is configured with a handshake secret this is the ONLY trusted
+    # source of user_context; unsigned context is ignored.
     signed_context: Optional[str] = None
     # Browser language (navigator.language); the single source for the session's
     # answer + chrome language.
     locale: Optional[str] = None
     recaptcha_token: Optional[str] = None
+    # Public product identifier (multi-tenancy): tells the service WHICH casino
+    # this widget belongs to. Absent -> the boot-seeded default product, so a
+    # single-product deployment keeps working without an embed change.
+    widget_key: Optional[str] = None
 
 
 class TopicSelect(BaseModel):
@@ -98,7 +103,11 @@ def _ensure_open_session(session: dict) -> Optional[JSONResponse]:
 
 async def _auth_session(authorization: Optional[str], session_id: str
                         ) -> tuple[Optional[dict], Optional[JSONResponse]]:
-    """Verify bearer token bound to session_id, then load the session row."""
+    """Verify bearer token bound to session_id, then load the session row.
+
+    Also binds the request to the session's PRODUCT (tenancy scope), so every
+    downstream settings/KB/translations read resolves for the right casino.
+    """
     try:
         token = auth.extract_bearer(authorization)
         auth.verify_session_token(token, session_id)
@@ -107,7 +116,30 @@ async def _auth_session(authorization: Optional[str], session_id: str
     session = await db.get_session(session_id)
     if session is None:
         return None, _err(404, "not_found", "Session not found.")
+    tenancy.set_current_product(session.get("product_id"))
     return session, None
+
+
+async def _resolve_product(widget_key: Optional[str]
+                           ) -> tuple[Optional[dict], Optional[JSONResponse]]:
+    """Map a widget key to its product (multi-tenancy entry point).
+
+    No key -> the boot-seeded default product (single-product back-compat).
+    An unknown or inactive key is rejected: it either means a stale embed
+    (rotated key) or a third party probing another tenant's chat.
+    """
+    key = (widget_key or "").strip()
+    if key:
+        product = await db.get_product_by_widget_key(key)
+        if product is None or not product.get("active"):
+            return None, _err(403, "bad_widget_key",
+                              "Unknown or inactive widget key.")
+        return product, None
+    product = await db.get_default_product()
+    if product is None or not product.get("active"):
+        return None, _err(403, "no_product",
+                          "No active product is configured for this widget.")
+    return product, None
 
 
 # ---------------------------------------------------------------------------
@@ -137,23 +169,37 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
                                  {"reason": captcha.get("reason"), "score": captcha.get("score")})
         return _err(403, "recaptcha_failed", "reCaptcha verification failed.")
 
+    # --- resolve the product (multi-tenancy) ---------------------------------
+    # The widget key names the casino; everything below (handshake secret, test
+    # profile, language set, topic catalogue) resolves for that product.
+    product, err = await _resolve_product(body.widget_key)
+    if err:
+        await db.log_admin_event(None, "widget_key_rejected", {"ip": ip})
+        return err
+    tenancy.set_current_product(product["id"])
+
     # --- resolve trusted user_context (signed handshake §9) -----------------
     # Precedence of trust:
-    #   1. signed_context present -> verify HMAC + expiry; trust that payload only.
-    #   2. WIDGET_HANDSHAKE_SECRET configured but no signature -> production mode:
-    #      do NOT trust browser-supplied context; zero it (anonymous session OK).
-    #   3. No secret configured -> dev/test: the admin-configured test profile
+    #   1. signed_context present -> verify HMAC + expiry; trust that payload
+    #      only. The signature is checked against the PRODUCT's own handshake
+    #      secret when it has one, else the deploy-level env secret.
+    #   2. A handshake secret configured (product or env) but no signature ->
+    #      production mode: do NOT trust browser-supplied context; zero it
+    #      (anonymous session OK).
+    #   3. No secret anywhere -> dev/test: the admin-configured test profile
     #      stands in for the host site (or the raw widget context if disabled).
     # The injection sanitizer (prompts.sanitize_user_context) runs regardless.
+    product_handshake = await db.get_product_handshake_secret(product["id"])
     user_context: dict[str, Any] = {}
     if body.signed_context:
         try:
-            payload = auth.verify_handshake(body.signed_context)
+            payload = auth.verify_handshake(body.signed_context,
+                                            secret=product_handshake)
         except auth.TokenError as exc:
             await db.log_admin_event(None, "handshake_rejected", {"reason": str(exc)})
             return _err(401, "bad_handshake", str(exc))
         user_context = {k: v for k, v in payload.items() if k not in ("iat", "exp")}
-    elif config.WIDGET_HANDSHAKE_SECRET:
+    elif product_handshake or config.WIDGET_HANDSHAKE_SECRET:
         if body.user_context:
             await db.log_admin_event(None, "unsigned_context_ignored",
                                      {"ip": ip})
@@ -190,9 +236,11 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
         lang=session_lang,
         user_context=user_context,
         session_id=new_id,
+        product_id=product["id"],
     )
     token = auth.issue_session_token(session_id)
-    topics = await kb.catalogue(lang=session_lang or language.default_code())
+    topics = await kb.catalogue(lang=session_lang or language.default_code(),
+                                product_id=product["id"])
 
     return JSONResponse(
         status_code=200,
@@ -211,7 +259,8 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
 # ---------------------------------------------------------------------------
 @router.get("/topics")
 async def list_catalogue(lang: Optional[str] = None,
-                         locale: Optional[str] = None) -> JSONResponse:
+                         locale: Optional[str] = None,
+                         widget_key: Optional[str] = None) -> JSONResponse:
     """Return the topic picker without a session, token, reCaptcha, or DB write.
 
     The category buttons are static, language-derivable data, yet in POST
@@ -222,10 +271,16 @@ async def list_catalogue(lang: Optional[str] = None,
     language is the browser language — the widget passes the code it already
     resolved as `lang` (or the raw `locale`); both map to the same base code as
     create_session, so the titles match the session from the first paint.
+    `widget_key` picks the product whose catalogue (and language set) to serve;
+    it is part of the URL, so the browser cache stays per product.
     """
+    product, err = await _resolve_product(widget_key)
+    if err:
+        return err
+    tenancy.set_current_product(product["id"])
     resolved = language.resolve(locale=lang or locale)
     answer_lang = language.default_code() if resolved == language.AUTO else resolved
-    topics = await kb.catalogue(lang=answer_lang)
+    topics = await kb.catalogue(lang=answer_lang, product_id=product["id"])
     resp = JSONResponse(
         status_code=200,
         content={
@@ -244,14 +299,19 @@ async def list_catalogue(lang: Optional[str] = None,
 # GET /api/chat/i18n  -- widget chrome strings (admin Translations > defaults)
 # ---------------------------------------------------------------------------
 @router.get("/i18n")
-async def widget_i18n() -> JSONResponse:
+async def widget_i18n(widget_key: Optional[str] = None) -> JSONResponse:
     """Resolved widget-scope copy for every supported language.
 
     The widget paints instantly from its baked-in defaults, then fetches this and
     merges the resolved strings over them — so copy edited in the admin
     Translations tab (and languages added beyond the built-ins) reaches the
     chrome without a widget redeploy. Session-free and cacheable like /topics.
+    `widget_key` scopes the copy (and the language set) to the product.
     """
+    product, err = await _resolve_product(widget_key)
+    if err:
+        return err
+    tenancy.set_current_product(product["id"])
     codes = language.supported_codes()
     resp = JSONResponse(
         status_code=200,
@@ -403,6 +463,7 @@ async def send_message(req: Request, body: MessageSend,
             assistant_text=esc_payload["message"],
             assistant_lang=ans_lang,
             ai_meta=None,
+            product_id=session.get("product_id"),
         )
         # Always close (idempotent): a session soft-escalated earlier already
         # has escalated=TRUE but must still be CLOSED when the cap fires.

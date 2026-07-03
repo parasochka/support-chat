@@ -299,11 +299,23 @@ def _extract(resp: Any) -> tuple[str, int, int, int]:
 
 
 class OpenAIClient:
-    def __init__(self) -> None:
-        self.primary = _KeyClient("primary", config.OPENAI_API_KEY)
+    # Class-level default so directly-constructed test doubles (built via
+    # __new__ without __init__) still carry a label for the log lines.
+    key_source = "env"
+
+    def __init__(self, primary_key: Optional[str] = None,
+                 fallback_key: Optional[str] = None,
+                 key_source: str = "env") -> None:
+        """Two-key client. With no explicit keys it binds the deploy env keys
+        (the pre-tenancy behaviour); `client_for_product` passes a product's own
+        decrypted keys instead. `key_source` only labels log lines."""
+        self.key_source = key_source
+        primary = primary_key or config.OPENAI_API_KEY
+        fallback = fallback_key if primary_key else config.OPENAI_API_KEY_FALLBACK
+        self.primary = _KeyClient("primary", primary)
         self.fallback: Optional[_KeyClient] = None
-        if config.OPENAI_API_KEY_FALLBACK:
-            self.fallback = _KeyClient("fallback", config.OPENAI_API_KEY_FALLBACK)
+        if fallback:
+            self.fallback = _KeyClient("fallback", fallback)
 
     async def complete(
         self,
@@ -318,8 +330,8 @@ class OpenAIClient:
         """
         started = time.monotonic()
         log.info(
-            "openai_complete_started session_id=%s fallback_configured=%s",
-            session_id, self.fallback is not None,
+            "openai_complete_started session_id=%s fallback_configured=%s key_source=%s",
+            session_id, self.fallback is not None, self.key_source,
         )
 
         # No fallback configured -> just the primary with backoff.
@@ -421,8 +433,12 @@ class OpenAIClient:
         )
 
 
-# Lazily-instantiated module singleton.
+# Lazily-instantiated clients. The env-keyed singleton keeps the pre-tenancy
+# entry point working; the registry caches one client per product whose OWN
+# keys are configured (keyed by product id + a key fingerprint, so a rotated
+# key rebuilds the client instead of serving the stale one).
 _client: Optional[OpenAIClient] = None
+_product_clients: dict[tuple[int, str], OpenAIClient] = {}
 
 
 def get_client() -> OpenAIClient:
@@ -432,14 +448,51 @@ def get_client() -> OpenAIClient:
     return _client
 
 
+def _fingerprint(*keys: Optional[str]) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    for k in keys:
+        h.update((k or "").encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()[:16]
+
+
+async def client_for_product(product_id: Optional[int]) -> OpenAIClient:
+    """The client for a product: its own (decrypted) keys, else the env keys.
+
+    Per the commercial model each casino brings its own OpenAI key(s), entered
+    in the admin Structure tab and stored encrypted; a product without keys
+    falls back to the deploy env keys (dev/transition mode). The two-key
+    failover machinery is identical either way.
+    """
+    if product_id is not None:
+        import db  # lazy: keep module importable without the app wired up
+        keys = await db.get_product_openai_keys(product_id)
+        if keys and keys.get("primary"):
+            cache_key = (product_id, _fingerprint(keys["primary"], keys.get("fallback")))
+            client = _product_clients.get(cache_key)
+            if client is None:
+                # Drop stale entries for the same product (rotated keys).
+                for k in [k for k in _product_clients if k[0] == product_id]:
+                    _product_clients.pop(k, None)
+                client = OpenAIClient(primary_key=keys["primary"],
+                                      fallback_key=keys.get("fallback"),
+                                      key_source=f"product:{product_id}")
+                _product_clients[cache_key] = client
+            return client
+    return get_client()
+
+
 def reset() -> None:
-    """Drop the singleton so the next call rebuilds it with fresh settings.
+    """Drop the cached clients so the next call rebuilds them with fresh settings.
 
     The model name, sampling, switch timeout and attempt count are read live on
     every call, but the per-key concurrency semaphore and the SDK client's
     base timeout are bound at construction — so when those change in the admin
-    panel the client must be rebuilt. The admin settings handler calls this on a
-    `model` write. (No effect on the OpenAI-side prefix cache.)
+    panel the clients must be rebuilt. The admin settings handler calls this on
+    a `model` write and on a product-keys write. (No effect on the OpenAI-side
+    prefix cache.)
     """
     global _client
     _client = None
+    _product_clients.clear()

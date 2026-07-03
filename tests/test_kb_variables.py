@@ -29,7 +29,7 @@ def test_row_to_kb_variable_handles_null_updated_at():
 
 
 def test_render_variables_replaces_known_and_leaves_unknown(monkeypatch):
-    async def fake_map():
+    async def fake_map(product_id=None):
         return {"min_deposit": "10 USDT", "support_hours": "24/7"}
 
     monkeypatch.setattr(kb.db, "get_kb_variables_map", fake_map)
@@ -46,7 +46,7 @@ def test_kb_block_for_topic_resolves_variables(monkeypatch):
         assert topic_id == 7
         return "Minimum deposit: {min_deposit}"
 
-    async def fake_render(text):
+    async def fake_render(text, product_id=None):
         assert text == "Minimum deposit: {min_deposit}"
         return "Minimum deposit: 10 USDT"
 

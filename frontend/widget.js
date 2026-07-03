@@ -1,15 +1,28 @@
 // NowPlix support-chat floating widget — vanilla ES module, no build step.
 //
-// Embed contract (for the host site later): one script tag + a config object.
-//   <script type="module" src="/widget.js"></script>
+// Embed contract (for the host site): one script tag with the product's widget
+// key (issued in the admin Structure tab):
+//   <script type="module" src="https://chat.example.com/widget.js"
+//           data-widget-key="wk_..."></script>
 // or import and call mount() with overrides:
 //   import { mount } from "/widget.js";
-//   mount({ apiBase: "https://chat.example.com", userContext: {...} });
+//   mount({ API_BASE: "https://chat.example.com", WIDGET_KEY: "wk_..." });
 //
 // Owner tuning block — tweak without digging into the logic below.
 export const CONFIG = {
   // Base URL of this service. "" = same origin as the page that loads the widget.
   API_BASE: "",
+  // Public product identifier (multi-tenancy): tells the service WHICH casino
+  // this widget belongs to — its topics, copy, prompt persona and OpenAI keys.
+  // Resolution: window.NPCHAT_WIDGET_KEY -> the script tag's data-widget-key
+  // (ES modules can't use document.currentScript, so the tag is found by the
+  // attribute) -> "" (the service falls back to its default product).
+  WIDGET_KEY:
+    (typeof window !== "undefined" && window.NPCHAT_WIDGET_KEY) ||
+    (typeof document !== "undefined" &&
+      (document.querySelector("script[data-widget-key]") || { dataset: {} })
+        .dataset.widgetKey) ||
+    "",
   // reCaptcha v3 site key. Leave "" to skip captcha (dev).
   RECAPTCHA_SITE_KEY: "6LfNeistAAAAADIKPj_VP-AcInrFei0FLqabNK8X",
   // Sample user_context for the test build. In production the host page supplies this.
@@ -223,6 +236,7 @@ async function api(path, { method = "POST", body = null, auth = false } = {}) {
 // the catalogue must follow `state.lang`, never redefine it.
 async function fetchTopics() {
   const qs = new URLSearchParams({ lang: state.lang });
+  if (CONFIG.WIDGET_KEY) qs.set("widget_key", CONFIG.WIDGET_KEY);
   const { ok, data } = await api(`/api/chat/topics?${qs.toString()}`,
                                  { method: "GET" });
   if (!ok) throw new Error("topics fetch failed");
@@ -237,7 +251,9 @@ async function fetchTopics() {
 // missing keys inherit English via the server's own fallback chain). Cheap,
 // cacheable, session-free; failures are non-fatal — the baked-in copy stands.
 async function fetchI18n() {
-  const { ok, data } = await api("/api/chat/i18n", { method: "GET" });
+  const qs = CONFIG.WIDGET_KEY
+    ? `?widget_key=${encodeURIComponent(CONFIG.WIDGET_KEY)}` : "";
+  const { ok, data } = await api(`/api/chat/i18n${qs}`, { method: "GET" });
   if (!ok || !data || !data.strings) return;
   for (const [code, dict] of Object.entries(data.strings)) {
     I18N[code] = Object.assign({}, I18N[code] || I18N.en, dict);
@@ -314,6 +330,9 @@ async function createSession() {
       // back to the browser locale.
       locale: state.locale,
       recaptcha_token: token,
+      // Names the product (casino) this widget belongs to; empty = the
+      // service's default product (single-product deployments).
+      widget_key: CONFIG.WIDGET_KEY || null,
     },
   });
   if (!ok) throw new Error("session create failed");

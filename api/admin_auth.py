@@ -1,9 +1,14 @@
-"""Admin authentication — named-user email+password login + JWT guard (Phase 2).
+"""Admin authentication + scope authorization (multi-tenancy).
 
-Every admin signs in as a named `admin_users` account (email + password); the
-token carries a `role` claim that drives authorization. The legacy password-only
-owner login (`ADMIN_PASSWORD`) was removed — there is no super-admin login any
-more, only named accounts created from the Users tab.
+Every admin signs in as a named `admin_users` account (email + password). What
+an account may SEE and TOUCH is driven by its `admin_memberships` rows — one
+role per scope, where a scope is 'global' (the whole hub), a 'partner' (all of
+that partner's products) or a single 'product'. Role semantics per scope:
+'admin' may write, 'manager' is read-only. `require_admin` loads the
+memberships on every request (single choke point, same reason the account
+itself is re-checked: a JWT has no revocation), and the helpers below answer
+"which products can this account read?" / "may it write this product?" for the
+data routes in api/admin.py.
 """
 from __future__ import annotations
 
@@ -22,11 +27,11 @@ from api.client_ip import client_ip
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-# Roles allowed to MUTATE state. Everyone authenticated may read; only these may
-# write (KB, settings, variables, test profile, user management). "admin" is a
-# named user with full write rights; "manager" is read-only (support staff who
-# triage sessions but touch nothing technical).
+# Roles allowed to MUTATE state within their scope. "admin" is a named user
+# with full write rights over the scope; "manager" is read-only (support staff
+# who triage sessions but touch nothing technical).
 WRITE_ROLES = ("admin",)
+SCOPE_TYPES = ("global", "partner", "product")
 
 
 class AdminLogin(BaseModel):
@@ -44,8 +49,9 @@ async def require_admin(authorization: Optional[str] = Header(default=None)) -> 
     Beyond the signature/expiry check, the named account is re-checked against
     `admin_users` on every request: a JWT has no revocation, so without this a
     deactivated (or deleted) admin would keep full access until the token
-    expired (up to ADMIN_TOKEN_TTL_MIN). The DB role is authoritative too, so a
-    demotion applies immediately instead of riding out the old token.
+    expired (up to ADMIN_TOKEN_TTL_MIN). The account's memberships are loaded
+    here too (the DB is authoritative — a demotion applies immediately) and
+    ride in the payload for the scope helpers below.
     """
     try:
         token = auth.extract_bearer(authorization)
@@ -60,21 +66,133 @@ async def require_admin(authorization: Optional[str] = Header(default=None)) -> 
     user = await db.get_admin_user(email)
     if not user or not user.get("active", False):
         raise HTTPException(status_code=401, detail="account disabled")
-    payload["role"] = user.get("role") or payload.get("role")
+    payload["memberships"] = await db.memberships_for(email)
+    # Effective coarse role: 'admin' when the account may write ANYWHERE (the
+    # fine-grained scope checks still apply per route), else 'manager'.
+    payload["role"] = ("admin" if any(m.get("role") == "admin"
+                                      for m in payload["memberships"])
+                       else "manager")
     return payload
 
 
 async def require_admin_write(admin: dict = Depends(require_admin)) -> dict:
-    """FastAPI dependency: verify the token AND that the role may write (403 if not).
+    """FastAPI dependency: the account holds an admin role in AT LEAST ONE scope.
 
-    Managers are read-only, so every mutating route depends on this instead of the
-    bare `require_admin`. The check is server-side authority — the SPA also hides
-    the controls, but that is only cosmetic.
+    A coarse pre-filter for mutating routes — pure managers 403 here without
+    touching the handler. Every mutating handler still enforces the
+    fine-grained scope check (require_product_write / require_global_write) on
+    the specific target; this dependency alone is never sufficient authority.
     """
     if admin.get("role") not in WRITE_ROLES:
         raise HTTPException(status_code=403,
                             detail="This action requires an administrator account.")
     return admin
+
+
+# ---------------------------------------------------------------------------
+# Scope helpers (the authorization vocabulary for api/admin.py)
+# ---------------------------------------------------------------------------
+def _best(roles: set) -> Optional[str]:
+    if "admin" in roles:
+        return "admin"
+    if "manager" in roles:
+        return "manager"
+    return None
+
+
+def global_role(admin: dict) -> Optional[str]:
+    """The account's global-scope role, or None when it has no global membership."""
+    return _best({m["role"] for m in admin.get("memberships", [])
+                  if m.get("scope_type") == "global"})
+
+
+def role_for_partner(admin: dict, partner_id: int) -> Optional[str]:
+    """Effective role over a partner: global membership or partner membership."""
+    roles = {m["role"] for m in admin.get("memberships", [])
+             if m.get("scope_type") == "partner" and m.get("partner_id") == partner_id}
+    g = global_role(admin)
+    if g:
+        roles.add(g)
+    return _best(roles)
+
+
+async def role_for_product(admin: dict, product_id: int) -> Optional[str]:
+    """Effective role over a product: global > owning partner > the product itself.
+
+    None when the product does not exist or the account has no scope over it.
+    """
+    product = await db.get_product(product_id)
+    if product is None:
+        return None
+    roles = {m["role"] for m in admin.get("memberships", [])
+             if (m.get("scope_type") == "product" and m.get("product_id") == product_id)
+             or (m.get("scope_type") == "partner"
+                 and m.get("partner_id") == product["partner_id"])}
+    g = global_role(admin)
+    if g:
+        roles.add(g)
+    return _best(roles)
+
+
+async def accessible_product_ids(admin: dict) -> Optional[list[int]]:
+    """The products this account may read. None = ALL (global scope).
+
+    An empty list is a real answer (an account with no product reach) and must
+    filter every per-product query down to nothing.
+    """
+    if global_role(admin):
+        return None
+    memberships = admin.get("memberships", [])
+    partner_ids = [m["partner_id"] for m in memberships
+                   if m.get("scope_type") == "partner" and m.get("partner_id")]
+    product_ids = {m["product_id"] for m in memberships
+                   if m.get("scope_type") == "product" and m.get("product_id")}
+    product_ids.update(await db.product_ids_for_partners(partner_ids))
+    return sorted(product_ids)
+
+
+async def require_product_read(admin: dict, product_id: int) -> str:
+    role = await role_for_product(admin, product_id)
+    if role is None:
+        raise HTTPException(status_code=403,
+                            detail="No access to this product.")
+    return role
+
+
+async def require_product_write(admin: dict, product_id: int) -> None:
+    role = await role_for_product(admin, product_id)
+    if role not in WRITE_ROLES:
+        raise HTTPException(status_code=403,
+                            detail="This action requires an administrator "
+                                   "role over this product.")
+
+
+def require_global_write(admin: dict) -> None:
+    if global_role(admin) not in WRITE_ROLES:
+        raise HTTPException(status_code=403,
+                            detail="This action requires a global administrator "
+                                   "account.")
+
+
+async def resolve_scope_filter(admin: dict, product_id: Optional[int] = None,
+                               partner_id: Optional[int] = None
+                               ) -> Optional[list[int]]:
+    """Turn the dashboard's selected scope into a SQL product filter.
+
+    Explicit product -> [that product] (after a read check); explicit partner ->
+    that partner's products (after a read check); nothing selected -> everything
+    the account may read (None = all, for global scope). db._product_clause
+    treats an empty list as "match nothing".
+    """
+    if product_id is not None:
+        await require_product_read(admin, product_id)
+        return [product_id]
+    if partner_id is not None:
+        if role_for_partner(admin, partner_id) is None:
+            raise HTTPException(status_code=403,
+                                detail="No access to this partner.")
+        return await db.product_ids_for_partners([partner_id])
+    return await accessible_product_ids(admin)
 
 
 @router.post("/login")
@@ -113,9 +231,15 @@ async def login(req: Request, body: AdminLogin) -> JSONResponse:
         return JSONResponse(status_code=401,
                             content={"error": "unauthorized",
                                      "detail": "Invalid email or password."})
-    role = user["role"]
+    # The token's role claim is a coarse "may write anywhere?" hint — the
+    # authoritative fine-grained answer is recomputed from admin_memberships on
+    # every request in require_admin.
+    memberships = await db.memberships_for(email)
+    role = ("admin" if any(m.get("role") == "admin" for m in memberships)
+            else "manager")
     token = auth.issue_admin_token(role=role, email=email)
     return JSONResponse(status_code=200,
                         content={"token": token,
                                  "ttl_min": config.ADMIN_TOKEN_TTL_MIN,
-                                 "role": role, "email": email})
+                                 "role": role, "email": email,
+                                 "memberships": memberships})

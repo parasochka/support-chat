@@ -48,6 +48,12 @@ def _warn_insecure_config() -> None:
             "CORS_ALLOW_ORIGINS is '*' (any origin). Restrict it to your "
             "host site origins in production."
         )
+    if config.SECRETS_MASTER_KEY_IS_FALLBACK:
+        log.warning(
+            "SECRETS_MASTER_KEY is not set; per-product secrets are encrypted "
+            "with SESSION_JWT_SECRET. Set a DISTINCT SECRETS_MASTER_KEY in "
+            "production (rotating it later invalidates stored product secrets)."
+        )
 
 
 @asynccontextmanager
@@ -189,3 +195,14 @@ async def widget_css() -> FileResponse:
 async def test_html() -> FileResponse:
     return FileResponse(_TEST_PAGE, media_type="text/html",
                         headers=_WIDGET_CACHE)
+
+
+# --- integration docs ---------------------------------------------------------
+# Public, self-contained API/integration guide for partner dev teams: how to
+# embed the widget (widget key), sign the player handshake, and talk to the
+# chat/admin APIs. Static HTML, no auth (it documents the public contract and
+# contains no secrets); shareable as <host>/integration.
+@app.get("/integration", response_class=HTMLResponse)
+async def integration_docs() -> FileResponse:
+    return FileResponse(os.path.join(_FRONTEND_DIR, "integration.html"),
+                        media_type="text/html", headers=_WIDGET_CACHE)

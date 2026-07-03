@@ -13,7 +13,15 @@ def _stub_user(monkeypatch, role, active=True):
     async def _get_user(email):
         return {"email": email, "role": role, "active": active,
                 "password_hash": "x"}
+
+    async def _memberships(email):
+        # One GLOBAL membership carrying the account's role (the shape the
+        # boot migration gives every legacy account).
+        return [{"id": 1, "email": email, "scope_type": "global",
+                 "partner_id": None, "product_id": None, "role": role}]
+
     monkeypatch.setattr(db, "get_admin_user", _get_user)
+    monkeypatch.setattr(db, "memberships_for", _memberships)
 
 
 async def _guard_for(role, email=None):

@@ -18,6 +18,7 @@ import language
 import openai_client
 import prompts
 import settings
+import tenancy
 import translations
 
 
@@ -81,9 +82,14 @@ async def handle_message(
     """
     started = time.monotonic()
     session_id = session["id"]
+    product_id = session.get("product_id")
+    # Bind the tenancy scope to the session's product (idempotent when the API
+    # layer already did it; direct callers/tests get the right scope too), so
+    # settings / prompt variables / translations / KB resolve per product.
+    tenancy.set_current_product(product_id)
     log.info(
-        "chat_generation_started session_id=%s topic_id=%s message_count=%s chars=%s",
-        session_id, session.get("topic_id"),
+        "chat_generation_started session_id=%s product_id=%s topic_id=%s message_count=%s chars=%s",
+        session_id, product_id, session.get("topic_id"),
         session.get("message_count", 0), len(user_text),
     )
     # --- language resolution -------------------------------------------------
@@ -121,6 +127,7 @@ async def handle_message(
             assistant_text=esc_payload["message"],
             assistant_lang=base_lang,
             ai_meta=None,  # no OpenAI call happened
+            product_id=product_id,
         )
         if not session.get("escalated", False):
             await db.mark_escalated_soft(session_id)
@@ -201,8 +208,8 @@ async def handle_message(
         session_id, topic_slug, len(history), len(kb_block or ""), len(messages),
     )
 
-    # --- call model (two-key failover) --------------------------------------
-    client = openai_client.get_client()
+    # --- call model (two-key failover; the product's own keys when set) ------
+    client = await openai_client.client_for_product(product_id)
     error: Optional[str] = None
     try:
         result = await client.complete(
@@ -226,7 +233,7 @@ async def handle_message(
         log.exception("chat_model_failed session_id=%s error=%s", session_id, error)
         await db.log_ai_interaction(
             session_id, settings.model()["model"], "none",
-            0, 0, 0, 0.0, 0, False, error,
+            0, 0, 0, 0.0, 0, False, error, product_id=product_id,
         )
         await db.log_admin_event_sampled(
             session_id, "model_error", {"error": error[:300]}
@@ -332,7 +339,7 @@ async def handle_message(
         await db.log_ai_interaction(
             session_id, result.model, result.key_used,
             result.tokens_in, result.tokens_out, result.cached_in,
-            cost, result.latency_ms, ok, error,
+            cost, result.latency_ms, ok, error, product_id=product_id,
         )
         # Record the switch itself so the admin session view can trace the whole
         # path: this detect call belongs to NO chat_messages turn (the answer was
@@ -433,6 +440,7 @@ async def handle_message(
         user_lang=detected_lang,
         assistant_text=clean_text,
         assistant_lang=answer_lang,
+        product_id=product_id,
         ai_meta={
             "model": result.model,
             "key_used": result.key_used,

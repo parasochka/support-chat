@@ -102,7 +102,13 @@ def test_widget_strings_scope_only():
 
 
 async def test_public_i18n_endpoint(monkeypatch):
+    import db
     from api import chat as chat_api
+
+    async def fake_default_product():
+        return {"id": 1, "slug": "default", "active": True}
+
+    monkeypatch.setattr(db, "get_default_product", fake_default_product)
     monkeypatch.setattr(settings, "_cache",
                         {"language": {"default": "en", "supported": ["en", "ru"]},
                          "translations": {"ru": {"support": "Хелп"}}})

@@ -52,10 +52,60 @@ def pool() -> asyncpg.Pool:
 # Schema
 # ---------------------------------------------------------------------------
 _SCHEMA = """
--- KB ----------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS kb_topics (
+-- TENANCY ------------------------------------------------------------
+-- Partners own casino products; nearly every other table hangs off a
+-- product (see CLAUDE.md "Multi-tenancy"). Boot wraps pre-tenancy data
+-- into a 'default' partner/product so old deployments keep working.
+CREATE TABLE IF NOT EXISTS partners (
   id            SERIAL PRIMARY KEY,
   slug          TEXT UNIQUE NOT NULL,
+  name          TEXT NOT NULL,
+  active        BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS products (
+  id            SERIAL PRIMARY KEY,
+  partner_id    INT NOT NULL REFERENCES partners(id),
+  slug          TEXT UNIQUE NOT NULL,
+  name          TEXT NOT NULL,
+  -- Public embed identifier: the widget sends it on /session (and /topics,
+  -- /i18n) so the service knows WHICH casino is talking. Not a secret (it
+  -- ships in the host page's HTML) but unguessable, and rotatable from the
+  -- admin Structure tab.
+  widget_key    TEXT UNIQUE NOT NULL,
+  -- Per-product secrets, ENCRYPTED at rest via secretbox.py (master key in
+  -- env, never in the DB). NULL = not configured -> deploy-level env fallback
+  -- (OPENAI_API_KEY[_FALLBACK] / WIDGET_HANDSHAKE_SECRET).
+  openai_key_primary_enc  TEXT,
+  openai_key_fallback_enc TEXT,
+  handshake_secret_enc    TEXT,
+  active        BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Per-product settings overrides. Same keys and validators as app_settings;
+-- resolution is product_settings -> app_settings -> env -> built-in default
+-- (settings._group merges field-by-field), so a product only stores the
+-- knobs its owner actually changed.
+CREATE TABLE IF NOT EXISTS product_settings (
+  product_id  INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  key         TEXT NOT NULL,
+  value       JSONB NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by  TEXT,
+  PRIMARY KEY (product_id, key)
+);
+
+-- KB ----------------------------------------------------------------
+-- Topics are per product: slug is unique WITHIN a product (the unique index
+-- lives in _ensure_columns so legacy tables get it after the column guard).
+CREATE TABLE IF NOT EXISTS kb_topics (
+  id            SERIAL PRIMARY KEY,
+  product_id    INT REFERENCES products(id),
+  slug          TEXT NOT NULL,
   title         JSONB NOT NULL,
   display_order INT NOT NULL DEFAULT 0,
   active        BOOLEAN NOT NULL DEFAULT TRUE
@@ -68,8 +118,11 @@ CREATE TABLE IF NOT EXISTS kb_entries (
   active     BOOLEAN NOT NULL DEFAULT TRUE
 );
 
+-- {placeholder} registry, one set per product (key unique within a product;
+-- the unique index lives in _ensure_columns, same reason as kb_topics).
 CREATE TABLE IF NOT EXISTS kb_variables (
-  key         TEXT PRIMARY KEY,
+  product_id  INT REFERENCES products(id),
+  key         TEXT NOT NULL,
   description TEXT NOT NULL,
   value       TEXT NOT NULL,
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -80,6 +133,7 @@ CREATE TABLE IF NOT EXISTS kb_variables (
 CREATE TABLE IF NOT EXISTS chat_sessions (
   id            UUID PRIMARY KEY,
   consumer      TEXT NOT NULL DEFAULT 'web',
+  product_id    INT REFERENCES products(id),
   player_id     TEXT,
   lang          TEXT,
   topic_id      INT REFERENCES kb_topics(id),
@@ -112,9 +166,13 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 
 -- OPS / AUDIT ------------------------------------------------------
+-- product_id is denormalized onto both log tables (copied from the session /
+-- the admin's selected scope) so per-product dashboards aggregate without a
+-- chat_sessions join.
 CREATE TABLE IF NOT EXISTS ai_interaction_logs (
   id          BIGSERIAL PRIMARY KEY,
   session_id  UUID,
+  product_id  INT,
   model       TEXT,
   key_used    TEXT,
   tokens_in   INT,
@@ -130,6 +188,7 @@ CREATE TABLE IF NOT EXISTS ai_interaction_logs (
 CREATE TABLE IF NOT EXISTS admin_events (
   id          BIGSERIAL PRIMARY KEY,
   session_id  UUID,
+  product_id  INT,
   type        TEXT NOT NULL,
   payload     JSONB,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -154,6 +213,22 @@ CREATE TABLE IF NOT EXISTS admin_users (
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- user <-> scope <-> role memberships (multi-tenancy). scope_type is
+-- 'global' (both ids NULL), 'partner' (partner_id set) or 'product'
+-- (product_id set); role is 'admin' (write) or 'manager' (read-only) WITHIN
+-- that scope. Authorization derives from these rows; the legacy
+-- admin_users.role column survives only as the source for the boot migration
+-- (each pre-tenancy account gets a global membership with its old role).
+CREATE TABLE IF NOT EXISTS admin_memberships (
+  id            SERIAL PRIMARY KEY,
+  email         TEXT NOT NULL REFERENCES admin_users(email) ON DELETE CASCADE,
+  scope_type    TEXT NOT NULL,
+  partner_id    INT REFERENCES partners(id) ON DELETE CASCADE,
+  product_id    INT REFERENCES products(id) ON DELETE CASCADE,
+  role          TEXT NOT NULL DEFAULT 'manager',
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Runtime-tunable settings (hot-reloaded; precedence app_settings > env > default).
 CREATE TABLE IF NOT EXISTS app_settings (
   key        TEXT PRIMARY KEY,
@@ -169,7 +244,12 @@ CREATE INDEX IF NOT EXISTS idx_admin_events_session ON admin_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_admin_events_type ON admin_events(type, created_at);
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_created ON chat_sessions(created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_logs_created ON ai_interaction_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_products_partner ON products(partner_id);
+CREATE INDEX IF NOT EXISTS idx_admin_memberships_email ON admin_memberships(email);
 """
+# NB: indexes over the product_id columns of PRE-TENANCY tables live in
+# _ensure_columns — they must run AFTER the ADD COLUMN guards (_SCHEMA runs
+# first and would fail on a legacy database that lacks the columns).
 
 
 async def _ensure_columns(conn: asyncpg.Connection) -> None:
@@ -209,62 +289,166 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         "created_at TIMESTAMPTZ NOT NULL DEFAULT now()",
         "ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS "
         "updated_at TIMESTAMPTZ NOT NULL DEFAULT now()",
+        # --- Multi-tenancy scope columns (partners -> products) -------------
+        # Pre-tenancy tables gain a product_id; _migrate_tenancy backfills the
+        # NULLs to the boot-seeded default product.
+        "ALTER TABLE kb_topics ADD COLUMN IF NOT EXISTS "
+        "product_id INT REFERENCES products(id)",
+        "ALTER TABLE kb_variables ADD COLUMN IF NOT EXISTS "
+        "product_id INT REFERENCES products(id)",
+        "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
+        "product_id INT REFERENCES products(id)",
+        "ALTER TABLE ai_interaction_logs ADD COLUMN IF NOT EXISTS "
+        "product_id INT",
+        "ALTER TABLE admin_events ADD COLUMN IF NOT EXISTS "
+        "product_id INT",
+        # Slugs/keys are now unique WITHIN a product, not globally: drop the
+        # legacy single-column constraints (no-ops on a fresh database — the
+        # new _SCHEMA no longer declares them) and add the composite unique
+        # indexes that back the ON CONFLICT upserts.
+        "ALTER TABLE kb_topics DROP CONSTRAINT IF EXISTS kb_topics_slug_key",
+        "ALTER TABLE kb_variables DROP CONSTRAINT IF EXISTS kb_variables_pkey",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_kb_topics_product_slug "
+        "ON kb_topics (product_id, slug)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_kb_variables_product_key "
+        "ON kb_variables (product_id, key)",
+        # One membership row per (user, exact scope); COALESCE folds the NULL
+        # ids so 'global'/'partner'/'product' rows can share one guard index.
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_memberships_unique "
+        "ON admin_memberships (email, scope_type, COALESCE(partner_id, 0), "
+        "COALESCE(product_id, 0))",
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_product "
+        "ON chat_sessions(product_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_ai_logs_product "
+        "ON ai_interaction_logs(product_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_admin_events_product "
+        "ON admin_events(product_id, created_at)",
     ]
     for stmt in alters:
         await conn.execute(stmt)
 
 
+async def _migrate_tenancy(conn: asyncpg.Connection) -> int:
+    """Ensure the default partner/product exist and adopt pre-tenancy rows.
+
+    Idempotent, runs on every boot inside the init transaction:
+      1. seed the 'default' partner + 'default' product (widget_key generated
+         once; ON CONFLICT keeps an existing row untouched);
+      2. backfill product_id = <default product> on every pre-tenancy row that
+         still has NULL (kb_topics, kb_variables, chat_sessions, and — via the
+         session join — ai_interaction_logs / admin_events);
+      3. give every legacy admin_users account with NO memberships a GLOBAL
+         membership carrying its old role, so nobody is locked out by the
+         switch to membership-based authorization.
+
+    Returns the default product id (used by init_db to seed KB variables).
+    """
+    import secrets as _secrets
+
+    import tenancy
+
+    await conn.execute(
+        "INSERT INTO partners (slug, name) VALUES ($1, $2) "
+        "ON CONFLICT (slug) DO NOTHING",
+        tenancy.DEFAULT_PARTNER_SLUG, "Default partner",
+    )
+    partner_id = await conn.fetchval(
+        "SELECT id FROM partners WHERE slug = $1", tenancy.DEFAULT_PARTNER_SLUG
+    )
+    await conn.execute(
+        "INSERT INTO products (partner_id, slug, name, widget_key) "
+        "VALUES ($1, $2, $3, $4) ON CONFLICT (slug) DO NOTHING",
+        partner_id, tenancy.DEFAULT_PRODUCT_SLUG, "Default product",
+        "wk_" + _secrets.token_urlsafe(24),
+    )
+    product_id = await conn.fetchval(
+        "SELECT id FROM products WHERE slug = $1", tenancy.DEFAULT_PRODUCT_SLUG
+    )
+
+    await conn.execute(
+        "UPDATE kb_topics SET product_id = $1 WHERE product_id IS NULL", product_id
+    )
+    await conn.execute(
+        "UPDATE kb_variables SET product_id = $1 WHERE product_id IS NULL", product_id
+    )
+    await conn.execute(
+        "UPDATE chat_sessions SET product_id = $1 WHERE product_id IS NULL", product_id
+    )
+    await conn.execute(
+        "UPDATE ai_interaction_logs l SET product_id = s.product_id "
+        "FROM chat_sessions s "
+        "WHERE l.product_id IS NULL AND l.session_id = s.id"
+    )
+    await conn.execute(
+        "UPDATE admin_events e SET product_id = s.product_id "
+        "FROM chat_sessions s "
+        "WHERE e.product_id IS NULL AND e.session_id = s.id"
+    )
+    await conn.execute(
+        "INSERT INTO admin_memberships (email, scope_type, role) "
+        "SELECT u.email, 'global', u.role FROM admin_users u "
+        "WHERE NOT EXISTS "
+        "  (SELECT 1 FROM admin_memberships m WHERE m.email = u.email)"
+    )
+    return product_id
+
+
 async def init_db() -> None:
-    """Create the pool, then create tables and run column guards."""
+    """Create the pool, then create tables, run column guards + tenancy adoption."""
     await connect()
     async with _pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(_SCHEMA)
             await _ensure_columns(conn)
-            await seed_kb_variables(conn)
+            default_product_id = await _migrate_tenancy(conn)
+            await seed_kb_variables(conn, default_product_id)
 
 
 # ---------------------------------------------------------------------------
-# KB helpers
+# KB helpers (all product-scoped)
 # ---------------------------------------------------------------------------
-async def upsert_topic(slug: str, title: dict[str, str], display_order: int,
-                       active: bool = True) -> int:
+async def upsert_topic(product_id: int, slug: str, title: dict[str, str],
+                       display_order: int, active: bool = True) -> int:
     row = await _pool.fetchrow(
         """
-        INSERT INTO kb_topics (slug, title, display_order, active)
-        VALUES ($1, $2::jsonb, $3, $4)
-        ON CONFLICT (slug) DO UPDATE
+        INSERT INTO kb_topics (product_id, slug, title, display_order, active)
+        VALUES ($1, $2, $3::jsonb, $4, $5)
+        ON CONFLICT (product_id, slug) DO UPDATE
           SET title = EXCLUDED.title,
               display_order = EXCLUDED.display_order,
               active = EXCLUDED.active
         RETURNING id
         """,
-        slug, json.dumps(title), display_order, active,
+        product_id, slug, json.dumps(title), display_order, active,
     )
     return row["id"]
 
 
-async def get_topic_by_slug(slug: str) -> Optional[dict[str, Any]]:
+async def get_topic_by_slug(product_id: int, slug: str) -> Optional[dict[str, Any]]:
     row = await _pool.fetchrow(
-        "SELECT id, slug, title, display_order, active FROM kb_topics WHERE slug = $1",
-        slug,
+        "SELECT id, product_id, slug, title, display_order, active "
+        "FROM kb_topics WHERE product_id = $1 AND slug = $2",
+        product_id, slug,
     )
     return _row_to_topic(row) if row else None
 
 
 async def get_topic_by_id(topic_id: int) -> Optional[dict[str, Any]]:
     row = await _pool.fetchrow(
-        "SELECT id, slug, title, display_order, active FROM kb_topics WHERE id = $1",
+        "SELECT id, product_id, slug, title, display_order, active "
+        "FROM kb_topics WHERE id = $1",
         topic_id,
     )
     return _row_to_topic(row) if row else None
 
 
-async def list_topics(include_hidden: bool = False) -> list[dict[str, Any]]:
+async def list_topics(product_id: int,
+                      include_hidden: bool = False) -> list[dict[str, Any]]:
     """Visible catalogue for the widget. `other` is hidden from the picker."""
     rows = await _pool.fetch(
-        "SELECT id, slug, title, display_order, active FROM kb_topics "
-        "WHERE active ORDER BY display_order, id"
+        "SELECT id, product_id, slug, title, display_order, active FROM kb_topics "
+        "WHERE product_id = $1 AND active ORDER BY display_order, id",
+        product_id,
     )
     topics = [_row_to_topic(r) for r in rows]
     if not include_hidden:
@@ -285,13 +469,18 @@ def _row_to_topic(row: asyncpg.Record) -> dict[str, Any]:
     title = row["title"]
     if isinstance(title, str):
         title = json.loads(title)
-    return {
+    out = {
         "id": row["id"],
         "slug": row["slug"],
         "title": title,
         "display_order": row["display_order"],
         "active": row["active"],
     }
+    # product_id rides along when the query selected it (authorization checks
+    # need to know which product a topic belongs to).
+    if "product_id" in row.keys():
+        out["product_id"] = row["product_id"]
+    return out
 
 
 
@@ -399,15 +588,21 @@ _DEFAULT_KB_VARIABLES: tuple[tuple[str, str, str], ...] = (
 )
 
 
-async def seed_kb_variables(conn: Optional[asyncpg.Connection] = None) -> None:
-    """Insert default variables without overwriting admin-edited values."""
+async def seed_kb_variables(conn: Optional[asyncpg.Connection] = None,
+                            product_id: Optional[int] = None) -> None:
+    """Insert default variables for a product without overwriting edited values.
+
+    Runs at boot for the default product and at creation time for every new
+    product, so each casino starts with the full placeholder registry.
+    """
     target = conn or _pool
     await target.executemany(
         """
-        INSERT INTO kb_variables (key, description, value) VALUES ($1, $2, $3)
-        ON CONFLICT (key) DO NOTHING
+        INSERT INTO kb_variables (product_id, key, description, value)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (product_id, key) DO NOTHING
         """,
-        _DEFAULT_KB_VARIABLES,
+        [(product_id, k, d, v) for k, d, v in _DEFAULT_KB_VARIABLES],
     )
 
 
@@ -420,31 +615,36 @@ def _row_to_kb_variable(row: asyncpg.Record) -> dict[str, Any]:
     return d
 
 
-async def list_kb_variables() -> list[dict[str, Any]]:
+async def list_kb_variables(product_id: int) -> list[dict[str, Any]]:
     rows = await _pool.fetch(
-        "SELECT key, description, value, updated_at, updated_by FROM kb_variables ORDER BY key"
+        "SELECT key, description, value, updated_at, updated_by "
+        "FROM kb_variables WHERE product_id = $1 ORDER BY key",
+        product_id,
     )
     return [_row_to_kb_variable(r) for r in rows]
 
 
-async def get_kb_variables_map() -> dict[str, str]:
-    rows = await _pool.fetch("SELECT key, value FROM kb_variables")
+async def get_kb_variables_map(product_id: int) -> dict[str, str]:
+    rows = await _pool.fetch(
+        "SELECT key, value FROM kb_variables WHERE product_id = $1", product_id
+    )
     return {r["key"]: r["value"] for r in rows}
 
 
-async def set_kb_variable(key: str, description: str, value: str, updated_by: Optional[str] = None) -> dict[str, Any]:
+async def set_kb_variable(product_id: int, key: str, description: str, value: str,
+                          updated_by: Optional[str] = None) -> dict[str, Any]:
     row = await _pool.fetchrow(
         """
-        INSERT INTO kb_variables (key, description, value, updated_at, updated_by)
-        VALUES ($1, $2, $3, now(), $4)
-        ON CONFLICT (key) DO UPDATE
+        INSERT INTO kb_variables (product_id, key, description, value, updated_at, updated_by)
+        VALUES ($1, $2, $3, $4, now(), $5)
+        ON CONFLICT (product_id, key) DO UPDATE
           SET description = EXCLUDED.description,
               value = EXCLUDED.value,
               updated_at = now(),
               updated_by = EXCLUDED.updated_by
         RETURNING key, description, value, updated_at, updated_by
         """,
-        key, description, value, updated_by,
+        product_id, key, description, value, updated_by,
     )
     return _row_to_kb_variable(row)
 
@@ -454,13 +654,14 @@ async def set_kb_variable(key: str, description: str, value: str, updated_by: Op
 # ---------------------------------------------------------------------------
 async def create_session(consumer: str, player_id: Optional[str],
                          lang: Optional[str], user_context: dict[str, Any],
-                         session_id: Optional[str] = None) -> str:
+                         session_id: Optional[str] = None,
+                         product_id: Optional[int] = None) -> str:
     sid = session_id or str(uuid.uuid4())
     await _pool.execute(
         "INSERT INTO chat_sessions "
-        "(id, consumer, player_id, lang, user_context) "
-        "VALUES ($1, $2, $3, $4, $5::jsonb)",
-        sid, consumer, player_id, lang,
+        "(id, consumer, product_id, player_id, lang, user_context) "
+        "VALUES ($1, $2, $3, $4, $5, $6::jsonb)",
+        sid, consumer, product_id, player_id, lang,
         json.dumps(user_context or {}),
     )
     return sid
@@ -468,7 +669,7 @@ async def create_session(consumer: str, player_id: Optional[str],
 
 async def get_session(session_id: str) -> Optional[dict[str, Any]]:
     row = await _pool.fetchrow(
-        "SELECT id, consumer, player_id, lang, conv_lang, topic_id, "
+        "SELECT id, consumer, product_id, player_id, lang, conv_lang, topic_id, "
         "user_context, status, escalated, message_count, "
         "context_reset_id, created_at, updated_at "
         "FROM chat_sessions WHERE id = $1",
@@ -587,6 +788,7 @@ async def persist_turn(
     assistant_text: str,
     assistant_lang: Optional[str],
     ai_meta: Optional[dict[str, Any]] = None,
+    product_id: Optional[int] = None,
 ) -> int:
     """Insert user + assistant rows, bump counters, write the AI log — atomically.
 
@@ -595,6 +797,8 @@ async def persist_turn(
     cached_in, cost_usd, latency_ms, ok, error. Model-free backend replies
     (for example the message-cap hand-off) still persist the visible chat turn
     but intentionally skip `ai_interaction_logs` because no API call happened.
+    `product_id` (the session's product) is denormalized onto the AI log row so
+    per-product cost dashboards aggregate without a join.
     """
     ai_meta = ai_meta or {}
     async with _pool.acquire() as conn:
@@ -617,10 +821,11 @@ async def persist_turn(
             if ai_meta:
                 await conn.execute(
                     "INSERT INTO ai_interaction_logs "
-                    "(session_id, model, key_used, tokens_in, tokens_out, cached_in, "
-                    " cost_usd, latency_ms, ok, error) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-                    session_id, ai_meta.get("model"), ai_meta.get("key_used"),
+                    "(session_id, product_id, model, key_used, tokens_in, "
+                    " tokens_out, cached_in, cost_usd, latency_ms, ok, error) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                    session_id, product_id,
+                    ai_meta.get("model"), ai_meta.get("key_used"),
                     ai_meta.get("tokens_in"), ai_meta.get("tokens_out"),
                     ai_meta.get("cached_in"), ai_meta.get("cost_usd"),
                     ai_meta.get("latency_ms"), ai_meta.get("ok", True),
@@ -642,23 +847,30 @@ async def log_ai_interaction(
     session_id: Optional[str], model: Optional[str], key_used: Optional[str],
     tokens_in: Optional[int], tokens_out: Optional[int], cached_in: Optional[int],
     cost_usd: Optional[float], latency_ms: Optional[int], ok: bool,
-    error: Optional[str],
+    error: Optional[str], product_id: Optional[int] = None,
 ) -> None:
     await _pool.execute(
         "INSERT INTO ai_interaction_logs "
-        "(session_id, model, key_used, tokens_in, tokens_out, cached_in, "
-        " cost_usd, latency_ms, ok, error) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-        session_id, model, key_used, tokens_in, tokens_out, cached_in,
-        cost_usd, latency_ms, ok, error,
+        "(session_id, product_id, model, key_used, tokens_in, tokens_out, "
+        " cached_in, cost_usd, latency_ms, ok, error) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        session_id, product_id, model, key_used, tokens_in, tokens_out,
+        cached_in, cost_usd, latency_ms, ok, error,
     )
 
 
 async def log_admin_event(session_id: Optional[str], type_: str,
-                          payload: Optional[dict[str, Any]] = None) -> None:
+                          payload: Optional[dict[str, Any]] = None,
+                          product_id: Optional[int] = None) -> None:
+    # When the caller doesn't pass the product explicitly, fall back to the
+    # request's tenancy scope so per-product dashboards see admin actions too.
+    if product_id is None:
+        import tenancy  # local import: db must stay importable standalone
+        product_id = tenancy.current_product_id()
     await _pool.execute(
-        "INSERT INTO admin_events (session_id, type, payload) VALUES ($1, $2, $3::jsonb)",
-        session_id, type_, json.dumps(payload or {}),
+        "INSERT INTO admin_events (session_id, product_id, type, payload) "
+        "VALUES ($1, $2, $3, $4::jsonb)",
+        session_id, product_id, type_, json.dumps(payload or {}),
     )
 
 
@@ -734,6 +946,375 @@ async def set_setting(key: str, value: Any, updated_by: Optional[str] = None) ->
 
 
 # ---------------------------------------------------------------------------
+# product_settings (per-product overrides; resolution product > global > env)
+# ---------------------------------------------------------------------------
+async def get_all_product_settings() -> dict[int, dict[str, Any]]:
+    """Every product's overrides keyed by product_id (for the settings cache)."""
+    rows = await _pool.fetch("SELECT product_id, key, value FROM product_settings")
+    out: dict[int, dict[str, Any]] = {}
+    for r in rows:
+        out.setdefault(r["product_id"], {})[r["key"]] = _json_value(r["value"])
+    return out
+
+
+async def get_product_settings(product_id: int) -> dict[str, Any]:
+    rows = await _pool.fetch(
+        "SELECT key, value FROM product_settings WHERE product_id = $1", product_id
+    )
+    return {r["key"]: _json_value(r["value"]) for r in rows}
+
+
+async def set_product_setting(product_id: int, key: str, value: Any,
+                              updated_by: Optional[str] = None) -> None:
+    await _pool.execute(
+        "INSERT INTO product_settings (product_id, key, value, updated_at, updated_by) "
+        "VALUES ($1, $2, $3::jsonb, now(), $4) "
+        "ON CONFLICT (product_id, key) DO UPDATE "
+        "  SET value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by",
+        product_id, key, json.dumps(value), updated_by,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tenancy: partners & products (+ encrypted per-product secrets)
+#
+# Secret columns never leave this module in encrypted OR raw form through the
+# generic row serializers — _row_to_product exposes only has_* presence flags.
+# The decrypted values are returned ONLY by the two dedicated getters used by
+# the OpenAI client and the handshake verifier.
+# ---------------------------------------------------------------------------
+def _iso(value: Any) -> Any:
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def _row_to_partner(row: asyncpg.Record) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "slug": row["slug"],
+        "name": row["name"],
+        "active": row["active"],
+        "created_at": _iso(row["created_at"]),
+        "updated_at": _iso(row["updated_at"]),
+    }
+
+
+def _row_to_product(row: asyncpg.Record) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "partner_id": row["partner_id"],
+        "slug": row["slug"],
+        "name": row["name"],
+        "widget_key": row["widget_key"],
+        "active": row["active"],
+        "has_openai_key": row["openai_key_primary_enc"] is not None,
+        "has_openai_key_fallback": row["openai_key_fallback_enc"] is not None,
+        "has_handshake_secret": row["handshake_secret_enc"] is not None,
+        "created_at": _iso(row["created_at"]),
+        "updated_at": _iso(row["updated_at"]),
+    }
+
+
+_PRODUCT_COLS = ("id, partner_id, slug, name, widget_key, active, "
+                 "openai_key_primary_enc, openai_key_fallback_enc, "
+                 "handshake_secret_enc, created_at, updated_at")
+
+
+async def list_partners() -> list[dict[str, Any]]:
+    rows = await _pool.fetch(
+        "SELECT id, slug, name, active, created_at, updated_at "
+        "FROM partners ORDER BY id"
+    )
+    return [_row_to_partner(r) for r in rows]
+
+
+async def get_partner(partner_id: int) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        "SELECT id, slug, name, active, created_at, updated_at "
+        "FROM partners WHERE id = $1", partner_id
+    )
+    return _row_to_partner(row) if row else None
+
+
+async def create_partner(slug: str, name: str) -> Optional[dict[str, Any]]:
+    """Insert a partner; returns None when the slug is already taken."""
+    row = await _pool.fetchrow(
+        "INSERT INTO partners (slug, name) VALUES ($1, $2) "
+        "ON CONFLICT (slug) DO NOTHING "
+        "RETURNING id, slug, name, active, created_at, updated_at",
+        slug, name,
+    )
+    return _row_to_partner(row) if row else None
+
+
+async def update_partner(partner_id: int, *, name: Optional[str] = None,
+                         active: Optional[bool] = None) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        "UPDATE partners SET name = COALESCE($2, name), "
+        "active = COALESCE($3, active), updated_at = now() WHERE id = $1 "
+        "RETURNING id, slug, name, active, created_at, updated_at",
+        partner_id, name, active,
+    )
+    return _row_to_partner(row) if row else None
+
+
+async def list_products(partner_id: Optional[int] = None,
+                        product_ids: Optional[list[int]] = None
+                        ) -> list[dict[str, Any]]:
+    where, args = [], []
+    if partner_id is not None:
+        args.append(partner_id)
+        where.append(f"partner_id = ${len(args)}")
+    if product_ids is not None:
+        args.append(product_ids)
+        where.append(f"id = ANY(${len(args)}::int[])")
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    rows = await _pool.fetch(
+        f"SELECT {_PRODUCT_COLS} FROM products {where_sql} ORDER BY id", *args
+    )
+    return [_row_to_product(r) for r in rows]
+
+
+async def get_product(product_id: int) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        f"SELECT {_PRODUCT_COLS} FROM products WHERE id = $1", product_id
+    )
+    return _row_to_product(row) if row else None
+
+
+async def get_product_by_widget_key(widget_key: str) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        f"SELECT {_PRODUCT_COLS} FROM products WHERE widget_key = $1", widget_key
+    )
+    return _row_to_product(row) if row else None
+
+
+async def get_default_product() -> Optional[dict[str, Any]]:
+    """The boot-seeded product a key-less widget lands on (see tenancy.py)."""
+    import tenancy
+    row = await _pool.fetchrow(
+        f"SELECT {_PRODUCT_COLS} FROM products WHERE slug = $1",
+        tenancy.DEFAULT_PRODUCT_SLUG,
+    )
+    return _row_to_product(row) if row else None
+
+
+def _new_widget_key() -> str:
+    import secrets as _secrets
+    return "wk_" + _secrets.token_urlsafe(24)
+
+
+async def create_product(partner_id: int, slug: str, name: str
+                         ) -> Optional[dict[str, Any]]:
+    """Insert a product (widget key generated, KB variables seeded).
+
+    Returns None when the slug is already taken.
+    """
+    row = await _pool.fetchrow(
+        "INSERT INTO products (partner_id, slug, name, widget_key) "
+        "VALUES ($1, $2, $3, $4) ON CONFLICT (slug) DO NOTHING "
+        f"RETURNING {_PRODUCT_COLS}",
+        partner_id, slug, name, _new_widget_key(),
+    )
+    if row is None:
+        return None
+    await seed_kb_variables(product_id=row["id"])
+    return _row_to_product(row)
+
+
+async def update_product(product_id: int, *, name: Optional[str] = None,
+                         active: Optional[bool] = None) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        "UPDATE products SET name = COALESCE($2, name), "
+        "active = COALESCE($3, active), updated_at = now() WHERE id = $1 "
+        f"RETURNING {_PRODUCT_COLS}",
+        product_id, name, active,
+    )
+    return _row_to_product(row) if row else None
+
+
+async def rotate_widget_key(product_id: int) -> Optional[str]:
+    """Mint a fresh widget key (old embeds stop resolving immediately)."""
+    return await _pool.fetchval(
+        "UPDATE products SET widget_key = $2, updated_at = now() "
+        "WHERE id = $1 RETURNING widget_key",
+        product_id, _new_widget_key(),
+    )
+
+
+# Sentinel distinguishing "leave this secret unchanged" from "clear it" ("").
+UNSET: Any = object()
+
+
+async def set_product_secrets(product_id: int, *,
+                              openai_key_primary: Any = UNSET,
+                              openai_key_fallback: Any = UNSET,
+                              handshake_secret: Any = UNSET) -> bool:
+    """Write per-product secrets (encrypted at rest). Empty string clears one.
+
+    Values are encrypted with secretbox before they touch the table; the
+    plaintext is never stored or logged. Returns False for an unknown product.
+    """
+    import secretbox
+    sets: list[str] = ["updated_at = now()"]
+    args: list[Any] = []
+    for col, val in (("openai_key_primary_enc", openai_key_primary),
+                     ("openai_key_fallback_enc", openai_key_fallback),
+                     ("handshake_secret_enc", handshake_secret)):
+        if val is UNSET:
+            continue
+        args.append(secretbox.encrypt(val.strip()) if isinstance(val, str)
+                    and val.strip() else None)
+        sets.append(f"{col} = ${len(args)}")
+    args.append(product_id)
+    row = await _pool.fetchrow(
+        f"UPDATE products SET {', '.join(sets)} WHERE id = ${len(args)} RETURNING id",
+        *args,
+    )
+    return row is not None
+
+
+async def get_product_openai_keys(product_id: int) -> Optional[dict[str, Optional[str]]]:
+    """Decrypted per-product OpenAI keys, or None when the product has none.
+
+    A decryption failure (e.g. SECRETS_MASTER_KEY was rotated) is logged and
+    treated as "no product keys" so the chat degrades to the env fallback
+    instead of hard-failing every turn.
+    """
+    import logging
+
+    import secretbox
+    row = await _pool.fetchrow(
+        "SELECT openai_key_primary_enc, openai_key_fallback_enc "
+        "FROM products WHERE id = $1", product_id,
+    )
+    if not row or row["openai_key_primary_enc"] is None:
+        return None
+    try:
+        primary = secretbox.decrypt(row["openai_key_primary_enc"])
+        fallback = (secretbox.decrypt(row["openai_key_fallback_enc"])
+                    if row["openai_key_fallback_enc"] else None)
+    except secretbox.SecretBoxError:
+        logging.getLogger(__name__).warning(
+            "product_secret_undecryptable product_id=%s kind=openai "
+            "(SECRETS_MASTER_KEY rotated? re-enter the keys in the admin panel)",
+            product_id,
+        )
+        return None
+    return {"primary": primary, "fallback": fallback}
+
+
+async def get_product_handshake_secret(product_id: int) -> Optional[str]:
+    """Decrypted per-product handshake secret, or None (env fallback applies)."""
+    import logging
+
+    import secretbox
+    enc = await _pool.fetchval(
+        "SELECT handshake_secret_enc FROM products WHERE id = $1", product_id
+    )
+    if not enc:
+        return None
+    try:
+        return secretbox.decrypt(enc)
+    except secretbox.SecretBoxError:
+        logging.getLogger(__name__).warning(
+            "product_secret_undecryptable product_id=%s kind=handshake",
+            product_id,
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Admin memberships (user <-> scope <-> role)
+# ---------------------------------------------------------------------------
+def _row_to_membership(row: asyncpg.Record) -> dict[str, Any]:
+    d = {
+        "id": row["id"],
+        "email": row["email"],
+        "scope_type": row["scope_type"],
+        "partner_id": row["partner_id"],
+        "product_id": row["product_id"],
+        "role": row["role"],
+    }
+    for extra in ("partner_name", "product_name", "partner_slug", "product_slug"):
+        if extra in row.keys():
+            d[extra] = row[extra]
+    return d
+
+
+_MEMBERSHIP_SELECT = (
+    "SELECT m.id, m.email, m.scope_type, m.partner_id, m.product_id, m.role, "
+    "  pa.name AS partner_name, pa.slug AS partner_slug, "
+    "  pr.name AS product_name, pr.slug AS product_slug "
+    "FROM admin_memberships m "
+    "LEFT JOIN partners pa ON pa.id = m.partner_id "
+    "LEFT JOIN products pr ON pr.id = m.product_id "
+)
+
+
+async def memberships_for(email: str) -> list[dict[str, Any]]:
+    rows = await _pool.fetch(
+        _MEMBERSHIP_SELECT + "WHERE m.email = $1 ORDER BY m.id",
+        email.strip().lower(),
+    )
+    return [_row_to_membership(r) for r in rows]
+
+
+async def list_all_memberships() -> list[dict[str, Any]]:
+    rows = await _pool.fetch(_MEMBERSHIP_SELECT + "ORDER BY m.email, m.id")
+    return [_row_to_membership(r) for r in rows]
+
+
+async def add_membership(email: str, scope_type: str,
+                         partner_id: Optional[int], product_id: Optional[int],
+                         role: str) -> dict[str, Any]:
+    """Upsert one (user, scope) membership — a repeat write updates the role."""
+    email = email.strip().lower()
+    existing = await _pool.fetchval(
+        "SELECT id FROM admin_memberships WHERE email = $1 AND scope_type = $2 "
+        "AND COALESCE(partner_id, 0) = COALESCE($3, 0) "
+        "AND COALESCE(product_id, 0) = COALESCE($4, 0)",
+        email, scope_type, partner_id, product_id,
+    )
+    if existing is not None:
+        await _pool.execute(
+            "UPDATE admin_memberships SET role = $2 WHERE id = $1", existing, role
+        )
+        mid = existing
+    else:
+        mid = await _pool.fetchval(
+            "INSERT INTO admin_memberships (email, scope_type, partner_id, product_id, role) "
+            "VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            email, scope_type, partner_id, product_id, role,
+        )
+    row = await _pool.fetchrow(_MEMBERSHIP_SELECT + "WHERE m.id = $1", mid)
+    return _row_to_membership(row)
+
+
+async def get_membership(membership_id: int) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        _MEMBERSHIP_SELECT + "WHERE m.id = $1", membership_id
+    )
+    return _row_to_membership(row) if row else None
+
+
+async def delete_membership(membership_id: int) -> bool:
+    res = await _pool.execute(
+        "DELETE FROM admin_memberships WHERE id = $1", membership_id
+    )
+    return res.upper().startswith("DELETE") and not res.endswith(" 0")
+
+
+async def product_ids_for_partners(partner_ids: list[int]) -> list[int]:
+    """All product ids under the given partners (for scope expansion)."""
+    if not partner_ids:
+        return []
+    rows = await _pool.fetch(
+        "SELECT id FROM products WHERE partner_id = ANY($1::int[])", partner_ids
+    )
+    return [r["id"] for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # admin_users (named login accounts; password hash never leaves this module)
 # ---------------------------------------------------------------------------
 def _row_to_admin_user(row: asyncpg.Record, *, include_hash: bool = False) -> dict[str, Any]:
@@ -806,12 +1387,14 @@ async def delete_admin_user(email: str) -> bool:
 # ---------------------------------------------------------------------------
 # KB CRUD (admin management; reads still go through kb.py helpers)
 # ---------------------------------------------------------------------------
-async def list_topics_with_counts() -> list[dict[str, Any]]:
+async def list_topics_with_counts(product_id: int) -> list[dict[str, Any]]:
     rows = await _pool.fetch(
-        "SELECT t.id, t.slug, t.title, t.display_order, t.active, "
+        "SELECT t.id, t.product_id, t.slug, t.title, t.display_order, t.active, "
         "  COUNT(e.id) FILTER (WHERE e.active) AS entry_count "
         "FROM kb_topics t LEFT JOIN kb_entries e ON e.topic_id = t.id "
-        "GROUP BY t.id ORDER BY t.display_order, t.id"
+        "WHERE t.product_id = $1 "
+        "GROUP BY t.id ORDER BY t.display_order, t.id",
+        product_id,
     )
     out: list[dict[str, Any]] = []
     for r in rows:
@@ -887,8 +1470,25 @@ def _range_clause(col: str, idx_from: int, idx_to: int) -> str:
     return f"({col} >= ${idx_from} AND {col} < ${idx_to})"
 
 
-async def overview_aggregates(dt_from: Any, dt_to: Any) -> dict[str, Any]:
+def _product_clause(product_ids: Optional[list[int]], args: list[Any],
+                    col: str = "product_id") -> str:
+    """Append an `AND <col> = ANY($n)` filter when a product scope is set.
+
+    `None` means no scope (global view — all products); an empty list means an
+    admin with no accessible products, which must match nothing.
+    """
+    if product_ids is None:
+        return ""
+    args.append(product_ids)
+    return f" AND {col} = ANY(${len(args)}::int[])"
+
+
+async def overview_aggregates(dt_from: Any, dt_to: Any,
+                              product_ids: Optional[list[int]] = None
+                              ) -> dict[str, Any]:
     """Raw aggregate counters for the dashboard overview within [from, to)."""
+    args: list[Any] = [dt_from, dt_to]
+    scope = _product_clause(product_ids, args)
     sess = await _pool.fetchrow(
         "SELECT "
         "  COUNT(*) AS sessions_total, "
@@ -897,8 +1497,8 @@ async def overview_aggregates(dt_from: Any, dt_to: Any) -> dict[str, Any]:
         "  COUNT(*) FILTER (WHERE escalated) AS sessions_escalated, "
         "  COALESCE(AVG(message_count) FILTER (WHERE message_count > 0), 0) "
         "    AS avg_messages_per_session "
-        "FROM chat_sessions WHERE created_at >= $1 AND created_at < $2",
-        dt_from, dt_to,
+        f"FROM chat_sessions WHERE created_at >= $1 AND created_at < $2{scope}",
+        *args,
     )
     cost = await _pool.fetchrow(
         "SELECT "
@@ -907,13 +1507,13 @@ async def overview_aggregates(dt_from: Any, dt_to: Any) -> dict[str, Any]:
         "  COALESCE(SUM(tokens_in), 0) AS tokens_in_total, "
         "  COUNT(DISTINCT session_id) AS sessions_with_ai, "
         "  COUNT(*) FILTER (WHERE NOT ok) AS failed_calls "
-        "FROM ai_interaction_logs WHERE created_at >= $1 AND created_at < $2",
-        dt_from, dt_to,
+        f"FROM ai_interaction_logs WHERE created_at >= $1 AND created_at < $2{scope}",
+        *args,
     )
     ev = await _pool.fetch(
         "SELECT type, COUNT(*) AS n FROM admin_events "
-        "WHERE created_at >= $1 AND created_at < $2 GROUP BY type",
-        dt_from, dt_to,
+        f"WHERE created_at >= $1 AND created_at < $2{scope} GROUP BY type",
+        *args,
     )
     events = {r["type"]: r["n"] for r in ev}
     return {
@@ -935,16 +1535,20 @@ async def overview_aggregates(dt_from: Any, dt_to: Any) -> dict[str, Any]:
 
 
 async def timeseries(metric: str, dt_from: Any, dt_to: Any,
-                     bucket: str = "day") -> list[dict[str, Any]]:
+                     bucket: str = "day",
+                     product_ids: Optional[list[int]] = None
+                     ) -> list[dict[str, Any]]:
     """Per-bucket series for sessions | cost | cost_per_session | escalation_rate."""
     trunc = "day" if bucket not in ("hour", "day", "week", "month") else bucket
+    args: list[Any] = [dt_from, dt_to]
+    scope = _product_clause(product_ids, args)
     if metric == "cost":
         rows = await _pool.fetch(
             f"SELECT date_trunc('{trunc}', created_at) AS bucket, "
             "COALESCE(SUM(cost_usd), 0) AS value "
-            "FROM ai_interaction_logs WHERE created_at >= $1 AND created_at < $2 "
+            f"FROM ai_interaction_logs WHERE created_at >= $1 AND created_at < $2{scope} "
             "GROUP BY bucket ORDER BY bucket",
-            dt_from, dt_to,
+            *args,
         )
     elif metric == "cost_per_session":
         # Average spend per session per bucket: total cost / distinct sessions that
@@ -953,9 +1557,9 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
             f"SELECT date_trunc('{trunc}', created_at) AS bucket, "
             "COALESCE(SUM(cost_usd), 0) AS cost, "
             "COUNT(DISTINCT session_id) AS sessions "
-            "FROM ai_interaction_logs WHERE created_at >= $1 AND created_at < $2 "
+            f"FROM ai_interaction_logs WHERE created_at >= $1 AND created_at < $2{scope} "
             "GROUP BY bucket ORDER BY bucket",
-            dt_from, dt_to,
+            *args,
         )
         return [
             {"bucket": r["bucket"].isoformat(),
@@ -967,9 +1571,9 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
             f"SELECT date_trunc('{trunc}', created_at) AS bucket, "
             "COUNT(*) FILTER (WHERE message_count > 0) AS engaged, "
             "COUNT(*) FILTER (WHERE escalated) AS escalated "
-            "FROM chat_sessions WHERE created_at >= $1 AND created_at < $2 "
+            f"FROM chat_sessions WHERE created_at >= $1 AND created_at < $2{scope} "
             "GROUP BY bucket ORDER BY bucket",
-            dt_from, dt_to,
+            *args,
         )
         return [
             {"bucket": r["bucket"].isoformat(),
@@ -980,15 +1584,18 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
         rows = await _pool.fetch(
             f"SELECT date_trunc('{trunc}', created_at) AS bucket, "
             "COUNT(*) AS value "
-            "FROM chat_sessions WHERE created_at >= $1 AND created_at < $2 "
+            f"FROM chat_sessions WHERE created_at >= $1 AND created_at < $2{scope} "
             "GROUP BY bucket ORDER BY bucket",
-            dt_from, dt_to,
+            *args,
         )
     return [{"bucket": r["bucket"].isoformat(), "value": float(r["value"])}
             for r in rows]
 
 
-async def by_topic(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
+async def by_topic(dt_from: Any, dt_to: Any,
+                   product_ids: Optional[list[int]] = None) -> list[dict[str, Any]]:
+    args: list[Any] = [dt_from, dt_to]
+    scope = _product_clause(product_ids, args, col="s.product_id")
     rows = await _pool.fetch(
         "WITH costs AS ("
         "  SELECT session_id, SUM(cost_usd) AS cost_usd_total "
@@ -1003,9 +1610,9 @@ async def by_topic(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
         "  COALESCE(SUM(costs.cost_usd_total), 0) AS cost_usd_total "
         "FROM chat_sessions s JOIN kb_topics t ON t.id = s.topic_id "
         "LEFT JOIN costs ON costs.session_id = s.id "
-        "WHERE s.created_at >= $1 AND s.created_at < $2 "
+        f"WHERE s.created_at >= $1 AND s.created_at < $2{scope} "
         "GROUP BY t.slug, t.title ORDER BY sessions DESC",
-        dt_from, dt_to,
+        *args,
     )
     out = []
     for r in rows:
@@ -1022,7 +1629,11 @@ async def by_topic(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
     return out
 
 
-async def by_language(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
+async def by_language(dt_from: Any, dt_to: Any,
+                      product_ids: Optional[list[int]] = None
+                      ) -> list[dict[str, Any]]:
+    args: list[Any] = [dt_from, dt_to]
+    scope = _product_clause(product_ids, args, col="s.product_id")
     rows = await _pool.fetch(
         "WITH costs AS ("
         "  SELECT session_id, SUM(cost_usd) AS cost_usd_total "
@@ -1035,9 +1646,9 @@ async def by_language(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
         "  COUNT(*) FILTER (WHERE s.escalated AND s.message_count > 0) AS escalated, "
         "  COALESCE(SUM(costs.cost_usd_total), 0) AS cost_usd_total "
         "FROM chat_sessions s LEFT JOIN costs ON costs.session_id = s.id "
-        "WHERE s.created_at >= $1 AND s.created_at < $2 "
+        f"WHERE s.created_at >= $1 AND s.created_at < $2{scope} "
         "GROUP BY COALESCE(s.lang, 'unknown') ORDER BY sessions DESC",
-        dt_from, dt_to,
+        *args,
     )
     return [
         {"lang": r["lang"], "sessions": r["sessions"], "escalated": r["escalated"],
@@ -1051,9 +1662,12 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
                         lang: Optional[str] = None, status: Optional[str] = None,
                         escalated: Optional[bool] = None, q: Optional[str] = None,
                         min_messages: Optional[int] = None,
+                        product_ids: Optional[list[int]] = None,
                         page: int = 1, page_size: int = 25) -> dict[str, Any]:
     where = ["s.created_at >= $1", "s.created_at < $2"]
     args: list[Any] = [dt_from, dt_to]
+    if product_ids is not None:
+        args.append(product_ids); where.append(f"s.product_id = ANY(${len(args)}::int[])")
     if topic:
         args.append(topic); where.append(f"t.slug = ${len(args)}")
     if lang:
@@ -1081,8 +1695,10 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
     rows = await _pool.fetch(
         f"SELECT s.id, s.lang, s.status, s.escalated, s.message_count, "
         f"  s.created_at, s.updated_at, t.slug AS topic, "
+        f"  s.product_id, p.name AS product_name, "
         f"  COALESCE(c.cost_usd_total, 0) AS cost_usd_total "
         f"FROM chat_sessions s LEFT JOIN kb_topics t ON t.id = s.topic_id "
+        f"LEFT JOIN products p ON p.id = s.product_id "
         f"LEFT JOIN (SELECT session_id, SUM(cost_usd) AS cost_usd_total "
         f"           FROM ai_interaction_logs GROUP BY session_id) c "
         f"  ON c.session_id = s.id "
@@ -1160,13 +1776,17 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
     }
 
 
-async def unresolved_by_topic(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
+async def unresolved_by_topic(dt_from: Any, dt_to: Any,
+                              product_ids: Optional[list[int]] = None
+                              ) -> list[dict[str, Any]]:
     """Open or escalated engaged sessions grouped by topic.
 
     The admin page is an operational queue for conversations that still need KB
     or human attention, so it includes both escalated sessions and abandoned open
     chats with at least one user turn. Resolved sessions are excluded.
     """
+    args: list[Any] = [dt_from, dt_to]
+    scope = _product_clause(product_ids, args, col="s.product_id")
     rows = await _pool.fetch(
         "WITH costs AS ("
         "  SELECT session_id, SUM(cost_usd) AS cost_usd_total "
@@ -1184,9 +1804,9 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any) -> list[dict[str, Any]]:
         "LEFT JOIN costs ON costs.session_id = s.id "
         "WHERE s.message_count > 0 "
         "  AND (s.escalated OR s.status = 'open') "
-        "  AND s.created_at >= $1 AND s.created_at < $2 "
+        f"  AND s.created_at >= $1 AND s.created_at < $2{scope} "
         "ORDER BY topic, s.created_at DESC",
-        dt_from, dt_to,
+        *args,
     )
     groups: dict[str, dict[str, Any]] = {}
     for r in rows:
