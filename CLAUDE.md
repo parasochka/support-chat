@@ -258,7 +258,26 @@ overrides a knob in the admin. The DB is the source of truth for KB + settings o
 nothing on boot mutates existing rows. (The **prompt** is not stored at all — it lives in
 `prompts.py`.) **The one seeded table is `kb_variables`** (`db.seed_kb_variables`, run in
 `init_db`): it inserts the default `{placeholder}` registry with `ON CONFLICT (key) DO NOTHING`,
-so it never overwrites an admin-edited value — boot only fills keys that don't exist yet.
+so it never overwrites an admin-edited value — boot only fills keys that don't exist yet. The
+registry's default VALUES are **brand-neutral** (no brand names/URLs — `{{PLACEHOLDER}}` marks
+per-brand-only values), because the same registry seeds every product.
+
+**Exception — NEW products get a starter baseline (`starter_kb.py`).** `db.create_product`
+(the admin "add product" path, NOT boot) seeds the new casino so its chat works out of the box
+before the owner translates/uniquifies: (1) the kb_variables registry; (2) the generic starter
+topics + KB texts from `starter_kb.STARTER_TOPICS` — brand-neutral, English, Q&A-style casino
+support content (deposits, withdrawals, bonuses, account, verification, games, technical,
+`other`) that asserts **no** brand-specific facts (no names, URLs, amounts, timeframes — it
+points the player at the cashier/terms/game-info UI instead) and deliberately copies nothing
+from any live product's KB; (3) the FULL `prompt_variables` set into `product_settings`
+(template defaults, `brand_name` = the product's name, via
+`starter_kb.starter_prompt_variables`) so a new product never inherits another brand's
+**global** prompt-variable overrides (the API endpoint calls `settings.reload()` after the
+seed so it applies immediately). `db.seed_starter_kb` is idempotent-safe: it inserts only
+topics the product doesn't have and writes a KB entry only for a topic it just created — it
+can never overwrite existing content. The boot-seeded default product is untouched (it goes
+through `_migrate_tenancy`, not `create_product`). Tests in `tests/test_starter_kb.py` pin
+the no-brand-leak contract.
 
 ### KB variables — `{placeholder}` registry (`db.py` + `kb.render_variables`)
 KB texts may contain `{key}` placeholders (e.g. `{min_deposit}`). The `kb_variables` table holds

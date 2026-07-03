@@ -438,7 +438,15 @@ function dateToolbar(onChange) {
   return bar;
 }
 
+// Bumped on every routeView so an in-flight async view can tell it has been
+// superseded. Without this, two overlapping renders of the same view (e.g. the
+// initial route + the post-structure re-route in renderApp) both kept appending
+// into `main` after their awaits — the overview's charts and tables showed up
+// twice.
+let routeGen = 0;
+
 function routeView(main) {
+  routeGen += 1;
   main.innerHTML = "";
   // Guard: managers cannot reach the technical/management views even by URL.
   if (!allowedViews().some(([id]) => id === state.view)) {
@@ -476,12 +484,19 @@ function subTabs(main, view, tabs, active) {
 // Overview
 // ---------------------------------------------------------------------------
 async function viewOverview(main) {
+  const gen = routeGen; // superseded when routeView runs again
   main.appendChild(el("h1", "npadmin-h", "Overview"));
   main.appendChild(dateToolbar(() => routeView(main)));
+  // All containers are created and attached BEFORE the first await: a
+  // superseded render's containers get detached by the next routeView's
+  // main.innerHTML = "", so its late appends can never show up on screen.
   const cards = el("div", "npadmin-cards"); main.appendChild(cards);
+  const charts = el("div", "npadmin-chartgrid"); main.appendChild(charts);
+  const tables = el("div", "npadmin-2col"); main.appendChild(tables);
   cards.appendChild(el("div", "npadmin-meta", "Loading…"));
   try {
     const o = await api(`/overview${q()}`);
+    if (gen !== routeGen) return; // a newer route owns the screen now
     cards.innerHTML = "";
     const fmtPct = (v) => `${(v * 100).toFixed(1)}%`;
     card(cards, o.sessions_total, "Sessions (total)");
@@ -497,7 +512,6 @@ async function viewOverview(main) {
     card(cards, o.rate_limit_blocks, "Rate-limit blocks");
     card(cards, o.injection_blocks, "Injection blocks");
 
-    const charts = el("div", "npadmin-chartgrid"); main.appendChild(charts);
     await chartFor(charts, "sessions", "Sessions over time",
       { format: (v) => String(Math.round(v)), color: "#4f8cff" });
     await chartFor(charts, "cost", "Cost over time", { format: fmtUsd, color: "#36c08a" });
@@ -506,7 +520,7 @@ async function viewOverview(main) {
     await chartFor(charts, "escalation_rate", "Escalation rate over time",
       { format: pct, color: "#e8b349" });
 
-    const tables = el("div", "npadmin-2col"); main.appendChild(tables);
+    if (gen !== routeGen) return;
     await tableByTopic(tables);
     await tableByLanguage(tables);
   } catch (e) { cards.innerHTML = ""; cards.appendChild(errBox(e)); }

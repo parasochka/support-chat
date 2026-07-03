@@ -954,6 +954,10 @@ async def create_product(body: ProductCreate,
     product = await db.create_product(body.partner_id, slug, name)
     if product is None:
         raise HTTPException(status_code=409, detail="That slug is already taken.")
+    # create_product seeded the product's baseline prompt_variables into
+    # product_settings — pull them into the in-process cache so the new
+    # casino's very first prompt renders its own brand, not a stale scope.
+    await settings_mod.reload()
     await db.log_admin_event(None, "product_created",
                              {"id": product["id"], "slug": slug,
                               "partner_id": body.partner_id,

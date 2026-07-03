@@ -485,8 +485,11 @@ def _row_to_topic(row: asyncpg.Record) -> dict[str, Any]:
 
 
 
-# Default KB variables. Source: NikaBet knowledge-base variables registry; the
-# "Test value (TEST)" column is used until owners confirm final values.
+# Default KB variables. Keys/descriptions follow the original knowledge-base
+# variables registry; VALUES are brand-neutral test placeholders until owners
+# confirm final per-product values (this registry seeds every product, so no
+# brand name/URL may appear in it — {{PLACEHOLDER}} marks values that only
+# make sense once set per brand).
 _DEFAULT_KB_VARIABLES: tuple[tuple[str, str, str], ...] = (
     ("deposit_methods", "Deposit methods (per market)", "USDT (crypto: TRC20/ERC20/BEP20), Visa/Mastercard, local LATAM methods"),
     ("crypto_networks", "Supported crypto networks", "TRC20, ERC20, BEP20"),
@@ -511,7 +514,7 @@ _DEFAULT_KB_VARIABLES: tuple[tuple[str, str, str], ...] = (
     ("withdrawal_processing_time", "Withdrawal processing time (SLA)", "up to 24h (crypto usually faster)"),
     ("withdrawal_flow", "Exact withdrawal steps (UI)", "wallet -> withdraw -> method -> amount -> details -> confirm"),
     ("cancel_withdrawal_policy", "Withdrawal cancellation availability", "can cancel while Pending via support"),
-    ("withdrawal_taxes", "Withdrawal taxation", "per local jurisdiction (LATAM); not withheld by NikaBet"),
+    ("withdrawal_taxes", "Withdrawal taxation", "per local jurisdiction; not withheld by the casino"),
     ("kyc_documents", "KYC document list", "government ID + proof of address + selfie with document"),
     ("kyc_trigger", "Mandatory verification trigger", "before first withdrawal"),
     ("kyc_sla", "Document review time", "up to 24h"),
@@ -531,7 +534,7 @@ _DEFAULT_KB_VARIABLES: tuple[tuple[str, str, str], ...] = (
     ("providers", "Provider list", "NetEnt, Pragmatic Play, Evolution, Play'n GO, Hacksaw Gaming"),
     ("provably_fair", "Provably Fair for crash/fast games", "available for crash and instant games; verifiable by seed/hash per round"),
     ("demo_mode", "Demo mode (fun play)", "available for most slots (fun play, no real winnings) (test)"),
-    ("welcome_bonus", "Welcome bonus value", "100% Match up to 200 USDT + 50 FS (test, pending unification with live 5000 USDT+80FS)"),
+    ("welcome_bonus", "Welcome bonus value", "100% Match up to 200 USDT + 50 FS (test)"),
     ("welcome_min_deposit", "Minimum deposit for Welcome bonus", "10 USDT"),
     ("game_weighting", "Game weighting for wagering (table)", "slots 100%, live and table 10%, blackjack and baccarat 0%"),
     ("promo_code_field", "Promo code input field", "Cashier/Deposit page -> 'Promo code' field"),
@@ -566,10 +569,10 @@ _DEFAULT_KB_VARIABLES: tuple[tuple[str, str, str], ...] = (
     ("live_limits", "Live table betting limits", "per table; typically 0.50-5000 USDT (varies) (test)"),
     ("new_games_section", "New games catalogue section", "'New games' section in the casino catalog"),
     ("video_poker", "Video poker / poker formats availability", "available (e.g. Jacks or Better) (test)"),
-    ("privacy_policy", "Privacy policy URL", "https://nikabet.com/privacy (test URL)"),
-    ("terms_url", "Terms and Conditions URL", "https://nikabet.com/terms (test URL)"),
+    ("privacy_policy", "Privacy policy URL", "{{PRIVACY_POLICY_URL}} (set per brand)"),
+    ("terms_url", "Terms and Conditions URL", "{{TERMS_URL}} (set per brand)"),
     ("vip_withdrawal_limits", "Withdrawal limits by status/VIP", "higher limits for VIP (e.g. daily 20000 USDT) (test)"),
-    ("social_links", "Official social links and channels", "Telegram: t.me/nikabet (test)"),
+    ("social_links", "Official social links and channels", "{{SOCIAL_LINKS}} (set per brand)"),
     ("affiliate_program", "Affiliate program terms and onboarding", "revenue-share affiliate program; terms via support (test)"),
     ("agent_program", "Agent/cooperation program terms", "agent/partner cooperation program; terms via support (test)"),
     ("crypto_assets", "Accepted cryptocurrencies", "USDT, BTC, ETH"),
@@ -604,6 +607,37 @@ async def seed_kb_variables(conn: Optional[asyncpg.Connection] = None,
         """,
         [(product_id, k, d, v) for k, d, v in _DEFAULT_KB_VARIABLES],
     )
+
+
+async def seed_starter_kb(product_id: int) -> None:
+    """Seed a new product with the generic starter topics + KB texts.
+
+    Gives a freshly created casino a working, brand-neutral knowledge base
+    (see starter_kb.py) until the owner uniquifies the content. Inserts only
+    topics the product does not have yet (ON CONFLICT DO NOTHING) and writes
+    a KB entry only for a topic this call actually created — it can never
+    overwrite an existing topic or KB text.
+    """
+    import starter_kb  # local import (starter_kb → prompts) to avoid a cycle
+
+    for order, (slug, titles, content) in enumerate(starter_kb.STARTER_TOPICS,
+                                                    start=1):
+        row = await _pool.fetchrow(
+            """
+            INSERT INTO kb_topics (product_id, slug, title, display_order, active)
+            VALUES ($1, $2, $3::jsonb, $4, TRUE)
+            ON CONFLICT (product_id, slug) DO NOTHING
+            RETURNING id
+            """,
+            product_id, slug, json.dumps(titles), order,
+        )
+        if row is None:
+            continue
+        await _pool.execute(
+            "INSERT INTO kb_entries (topic_id, content, active) "
+            "VALUES ($1, $2, TRUE)",
+            row["id"], content,
+        )
 
 
 def _row_to_kb_variable(row: asyncpg.Record) -> dict[str, Any]:
@@ -1105,10 +1139,19 @@ def _new_widget_key() -> str:
 
 async def create_product(partner_id: int, slug: str, name: str
                          ) -> Optional[dict[str, Any]]:
-    """Insert a product (widget key generated, KB variables seeded).
+    """Insert a product and seed its brand-neutral baseline.
+
+    A new casino starts working out of the box: widget key generated, the KB
+    variables registry, the generic starter topics + KB texts (starter_kb.py)
+    and the full prompt-variables set (template defaults, brand_name = the
+    product's name) are all seeded into the PRODUCT layer — so nothing is
+    inherited from another brand's global overrides. The owner then
+    translates/uniquifies everything from the admin panel.
 
     Returns None when the slug is already taken.
     """
+    import starter_kb  # local import (starter_kb → prompts) to avoid a cycle
+
     row = await _pool.fetchrow(
         "INSERT INTO products (partner_id, slug, name, widget_key) "
         "VALUES ($1, $2, $3, $4) ON CONFLICT (slug) DO NOTHING "
@@ -1118,6 +1161,10 @@ async def create_product(partner_id: int, slug: str, name: str
     if row is None:
         return None
     await seed_kb_variables(product_id=row["id"])
+    await seed_starter_kb(row["id"])
+    await set_product_setting(row["id"], "prompt_variables",
+                              starter_kb.starter_prompt_variables(name),
+                              updated_by="starter-seed")
     return _row_to_product(row)
 
 
