@@ -48,6 +48,25 @@ def pool() -> asyncpg.Pool:
     return _pool
 
 
+def _as_text(value: Any) -> Optional[str]:
+    """Coerce a value bound to a TEXT column to str (None stays SQL NULL).
+
+    Player context arriving from a partner (a signed handshake, a nonce payload,
+    a Player-API pull) is free-form JSON: fields like `id`, `balance` or
+    `vip_level` may come across as numbers or booleans rather than strings.
+    asyncpg binds strictly, so an int destined for a TEXT column raises DataError
+    and 500s the write (session create / retention link). Coercing scalars to
+    their string form keeps the column contract without trusting the caller's
+    JSON types. Non-scalars (dict/list) are left untouched — those belong to a
+    jsonb column or signal a caller bug we should not mask.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, (bool, int, float)):
+        return str(value)
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -922,7 +941,7 @@ async def create_session(consumer: str, player_id: Optional[str],
         "INSERT INTO chat_sessions "
         "(id, consumer, product_id, player_id, lang, user_context, tg_user_id) "
         "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)",
-        sid, consumer, product_id, player_id, lang,
+        sid, consumer, product_id, _as_text(player_id), lang,
         json.dumps(user_context or {}), tg_user_id,
     )
     return sid
@@ -2282,11 +2301,11 @@ async def upsert_retention_user(product_id: int, tg_user_id: int, *,
     if existing is None:
         cols = ["product_id", "tg_user_id", "tg_username", "player_id",
                 "entry_type", "profile_source", "profile_updated_at"]
-        vals: list[Any] = [product_id, tg_user_id, tg_username, player_id,
+        vals: list[Any] = [product_id, tg_user_id, tg_username, _as_text(player_id),
                            entry_type, profile_source]
         placeholders = ["$1", "$2", "$3", "$4", "$5", "$6", "now()"]
         for f in prof_cols:
-            vals.append(profile.get(f))
+            vals.append(_as_text(profile.get(f)))
             cols.append(f)
             placeholders.append(f"${len(vals)}")
         row = await _pool.fetchrow(
@@ -2304,10 +2323,10 @@ async def upsert_retention_user(product_id: int, tg_user_id: int, *,
     args: list[Any] = [product_id, tg_user_id, tg_username, entry_type,
                        profile_source]
     if player_id is not None:
-        args.append(player_id)
+        args.append(_as_text(player_id))
         sets.append(f"player_id = ${len(args)}")
     for f in prof_cols:
-        args.append(profile.get(f))
+        args.append(_as_text(profile.get(f)))
         sets.append(f"{f} = ${len(args)}")
     row = await _pool.fetchrow(
         f"UPDATE retention_users SET {', '.join(sets)} "
@@ -2328,7 +2347,7 @@ async def update_retention_profile(product_id: int, player_id: str,
             "updated_at = now()"]
     args: list[Any] = [product_id, player_id, profile_source]
     for f in prof_cols:
-        args.append(profile.get(f))
+        args.append(_as_text(profile.get(f)))
         sets.append(f"{f} = ${len(args)}")
     result = await _pool.execute(
         f"UPDATE retention_users SET {', '.join(sets)} "
