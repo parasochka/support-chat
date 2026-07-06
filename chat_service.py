@@ -5,6 +5,7 @@ the atomic turn persistence in db.persist_turn. Keeps API handlers thin.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import logging
 import time
@@ -69,6 +70,11 @@ class ChatReply:
 async def _on_failover(session_id: Optional[str], reason: str) -> None:
     """Callback for openai_client: record the key failover as an admin event."""
     await db.log_admin_event(session_id, "key_failover", {"reason": reason})
+
+
+async def _none() -> None:
+    """A ready no-op awaitable — a gather slot for a read we skip this turn."""
+    return None
 
 
 async def handle_message(
@@ -151,19 +157,32 @@ async def handle_message(
         )
 
     topic_id = session.get("topic_id")
-    topic_slug = None
-    topic = None
-    if topic_id is not None:
-        topic = await db.get_topic_by_id(topic_id)
-        topic_slug = topic["slug"] if topic else None
-
     # --- build prompt --------------------------------------------------------
+    # Only feed the model turns from the current topic context. After a topic
+    # switch `context_reset_id` marks the boundary, so the previous topic's
+    # transcript can't re-trigger a [[TOPIC:...]] suggestion back to it (the
+    # switch loop). 0 (default) means the whole transcript.
+    context_reset_id = session.get("context_reset_id", 0) or 0
     # The other support topics (current one + 'other' excluded) are offered to
     # the model in Layer 3 so it can route a mismatched question via [[TOPIC:slug]].
     # Localize their titles with the resolved default (the UI re-localizes if the
     # player switches anyway); fall back to the service default for AUTO.
     title_lang = resolved if resolved != language.AUTO else language.default_code()
-    suggestable = await kb.suggestable_topics(exclude_topic_id=topic_id, lang=title_lang)
+
+    # Current topic, routing catalogue, KB block, history and the OpenAI client
+    # are independent, so fetch them concurrently rather than as a chain of
+    # round-trips before the model call.
+    topic, suggestable, kb_block, history, client = await asyncio.gather(
+        db.get_topic_by_id(topic_id) if topic_id is not None else _none(),
+        kb.suggestable_topics(exclude_topic_id=topic_id, lang=title_lang),
+        kb.kb_block_for_topic(topic_id),
+        db.get_history(
+            session_id, limit=settings.general()["history_max_turns"],
+            after_id=context_reset_id,
+        ),
+        openai_client.client_for_product(product_id),
+    )
+    topic_slug = topic["slug"] if topic else None
     log.info(
         "chat_prompt_context_loaded session_id=%s base_lang=%s title_lang=%s suggestable_topics=%s",
         session_id, base_lang, title_lang, len(suggestable),
@@ -177,16 +196,6 @@ async def handle_message(
             "slug": topic_slug,
             "title": kb.localize_title(topic.get("title"), title_lang) if topic else topic_slug,
         }
-    kb_block = await kb.kb_block_for_topic(topic_id)
-    # Only feed the model turns from the current topic context. After a topic
-    # switch `context_reset_id` marks the boundary, so the previous topic's
-    # transcript can't re-trigger a [[TOPIC:...]] suggestion back to it (the
-    # switch loop). 0 (default) means the whole transcript.
-    context_reset_id = session.get("context_reset_id", 0) or 0
-    history = await db.get_history(
-        session_id, limit=settings.general()["history_max_turns"],
-        after_id=context_reset_id,
-    )
     messages = prompts.build_messages(
         session=session,
         kb_block=kb_block,
@@ -209,7 +218,7 @@ async def handle_message(
     )
 
     # --- call model (two-key failover; the product's own keys when set) ------
-    client = await openai_client.client_for_product(product_id)
+    # `client` was resolved above, concurrently with the prompt inputs.
     error: Optional[str] = None
     try:
         result = await client.complete(
