@@ -91,6 +91,16 @@ if _TEST_MODE:
     os.environ.setdefault("SESSION_JWT_SECRET", "test-secret")
 
 
+# ---------------------------------------------------------------------------
+# Deployment environment marker. In "production" the app REFUSES to boot when a
+# purpose-specific secret would silently reuse SESSION_JWT_SECRET (see
+# _enforce_production_secrets below); anything else (dev/test) only warns, so
+# local runs keep working with zero secret config.
+# ---------------------------------------------------------------------------
+APP_ENV: str = _env("APP_ENV", "development").strip().lower()
+IS_PRODUCTION: bool = APP_ENV in ("production", "prod")
+
+
 # --- Required ---------------------------------------------------------------
 DATABASE_URL: str = _normalize_db_url(require_env("DATABASE_URL"))
 OPENAI_API_KEY: str = require_env("OPENAI_API_KEY")
@@ -243,6 +253,34 @@ CORS_ALLOW_ORIGINS: list[str] = [
 # SESSION_JWT_SECRET so dev runs work without extra config.
 TELEGRAM_WEBHOOK_SECRET: str = _env_opt("TELEGRAM_WEBHOOK_SECRET") or SESSION_JWT_SECRET
 TELEGRAM_WEBHOOK_SECRET_IS_FALLBACK: bool = _env_opt("TELEGRAM_WEBHOOK_SECRET") is None
+
+
+# --- Production secret hygiene (fail fast) ----------------------------------
+# ADMIN_JWT_SECRET, SECRETS_MASTER_KEY and TELEGRAM_WEBHOOK_SECRET each fall back
+# to SESSION_JWT_SECRET when unset (dev convenience). Left unset in production
+# that single key would sign admin sessions, encrypt every product's at-rest
+# secrets, AND authenticate the Telegram webhook all at once — leaking any one
+# use compromises the others. So in production we refuse to boot half-secured,
+# mirroring require_env's fail-fast philosophy; dev/test only warns (see
+# main._warn_insecure_config), so local runs still need no secret config.
+def _enforce_production_secrets() -> None:
+    if not IS_PRODUCTION or _TEST_MODE:
+        return
+    reused = [name for name, is_fallback in (
+        ("ADMIN_JWT_SECRET", ADMIN_JWT_SECRET_IS_FALLBACK),
+        ("SECRETS_MASTER_KEY", SECRETS_MASTER_KEY_IS_FALLBACK),
+        ("TELEGRAM_WEBHOOK_SECRET", TELEGRAM_WEBHOOK_SECRET_IS_FALLBACK),
+    ) if is_fallback]
+    if reused:
+        raise ConfigError(
+            "APP_ENV=production but these secrets are unset and would reuse "
+            f"SESSION_JWT_SECRET: {', '.join(reused)}. Set a DISTINCT strong "
+            "value for each (e.g. `openssl rand -hex 32`) — see the README env "
+            "table."
+        )
+
+
+_enforce_production_secrets()
 # Public base URL of THIS service (e.g. https://chat.example.com), used to build
 # the webhook URL when registering it with Telegram and the media-serving URL.
 # Empty in dev; set on Railway.
