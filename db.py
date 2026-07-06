@@ -374,6 +374,7 @@ CREATE INDEX IF NOT EXISTS idx_admin_events_session ON admin_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_admin_events_type ON admin_events(type, created_at);
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_created ON chat_sessions(created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_logs_created ON ai_interaction_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_logs_session ON ai_interaction_logs(session_id);
 CREATE INDEX IF NOT EXISTS idx_products_partner ON products(partner_id);
 CREATE INDEX IF NOT EXISTS idx_admin_memberships_email ON admin_memberships(email);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_retention_users_product_tg
@@ -650,6 +651,21 @@ async def init_db() -> None:
 # ---------------------------------------------------------------------------
 # KB helpers (all product-scoped)
 # ---------------------------------------------------------------------------
+# The topic catalogue, per-topic KB text and the variables registry change only
+# on an admin edit but are read on every chat turn, so they are served from an
+# in-process cache and dropped whenever a KB write goes through the helpers below
+# (same accepted per-instance model as the settings cache).
+_kb_topics_cache: dict[int, list[dict[str, Any]]] = {}   # product_id -> topics
+_kb_content_cache: dict[int, Optional[str]] = {}         # topic_id  -> content
+_kb_vars_cache: dict[int, dict[str, str]] = {}           # product_id -> vars map
+
+
+def _invalidate_kb_cache() -> None:
+    _kb_topics_cache.clear()
+    _kb_content_cache.clear()
+    _kb_vars_cache.clear()
+
+
 async def upsert_topic(product_id: int, slug: str, title: dict[str, str],
                        display_order: int, active: bool = True) -> int:
     row = await _pool.fetchrow(
@@ -664,6 +680,7 @@ async def upsert_topic(product_id: int, slug: str, title: dict[str, str],
         """,
         product_id, slug, json.dumps(title), display_order, active,
     )
+    _invalidate_kb_cache()
     return row["id"]
 
 
@@ -692,22 +709,31 @@ async def list_topics(product_id: int) -> list[dict[str, Any]]:
     special treatment it gets is ordering — as the always-available escape
     hatch it sorts last in the picker regardless of display_order.
     """
+    cached = _kb_topics_cache.get(product_id)
+    if cached is not None:
+        return cached
     rows = await _pool.fetch(
         "SELECT id, product_id, slug, title, display_order, active FROM kb_topics "
         "WHERE product_id = $1 AND active "
         "ORDER BY (slug = 'other'), display_order, id",
         product_id,
     )
-    return [_row_to_topic(r) for r in rows]
+    topics = [_row_to_topic(r) for r in rows]
+    _kb_topics_cache[product_id] = topics
+    return topics
 
 
 async def get_kb_content(topic_id: int) -> Optional[str]:
+    if topic_id in _kb_content_cache:
+        return _kb_content_cache[topic_id]
     row = await _pool.fetchrow(
         "SELECT content FROM kb_entries "
         "WHERE topic_id = $1 AND active ORDER BY id DESC LIMIT 1",
         topic_id,
     )
-    return row["content"] if row else None
+    content = row["content"] if row else None
+    _kb_content_cache[topic_id] = content
+    return content
 
 
 def _row_to_topic(row: asyncpg.Record) -> dict[str, Any]:
@@ -904,10 +930,15 @@ async def list_kb_variables(product_id: int) -> list[dict[str, Any]]:
 
 
 async def get_kb_variables_map(product_id: int) -> dict[str, str]:
+    cached = _kb_vars_cache.get(product_id)
+    if cached is not None:
+        return cached
     rows = await _pool.fetch(
         "SELECT key, value FROM kb_variables WHERE product_id = $1", product_id
     )
-    return {r["key"]: r["value"] for r in rows}
+    vars_map = {r["key"]: r["value"] for r in rows}
+    _kb_vars_cache[product_id] = vars_map
+    return vars_map
 
 
 async def set_kb_variable(product_id: int, key: str, description: str, value: str,
@@ -925,6 +956,7 @@ async def set_kb_variable(product_id: int, key: str, description: str, value: st
         """,
         product_id, key, description, value, updated_by,
     )
+    _invalidate_kb_cache()
     return _row_to_kb_variable(row)
 
 
@@ -1818,6 +1850,7 @@ async def update_topic(topic_id: int, title: Optional[dict[str, str]],
         json.dumps(title) if title is not None else None,
         display_order, active,
     )
+    _invalidate_kb_cache()
     return await get_topic_by_id(topic_id)
 
 
@@ -1847,13 +1880,16 @@ async def set_kb_content(topic_id: int, content: str) -> int:
                     "UPDATE kb_entries SET content = $2 WHERE id = $1",
                     existing, content,
                 )
-                return existing
-            row = await conn.fetchrow(
-                "INSERT INTO kb_entries (topic_id, content, active) "
-                "VALUES ($1, $2, TRUE) RETURNING id",
-                topic_id, content,
-            )
-            return row["id"]
+                entry_id = existing
+            else:
+                row = await conn.fetchrow(
+                    "INSERT INTO kb_entries (topic_id, content, active) "
+                    "VALUES ($1, $2, TRUE) RETURNING id",
+                    topic_id, content,
+                )
+                entry_id = row["id"]
+    _invalidate_kb_cache()
+    return entry_id
 
 
 async def clear_kb_content(topic_id: int) -> bool:
@@ -1862,6 +1898,7 @@ async def clear_kb_content(topic_id: int) -> bool:
         "UPDATE kb_entries SET active = FALSE WHERE topic_id = $1 AND active",
         topic_id,
     )
+    _invalidate_kb_cache()
     return not res.endswith(" 0")
 
 
