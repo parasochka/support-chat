@@ -67,7 +67,11 @@ in mind for every change:
   accounts + memberships. `GET /admin/structure` feeds the switcher.
 - **Integration docs**: `GET /integration` serves a public, self-contained HTML
   guide (Russian) for partner/CMS dev teams — embed contract, handshake signing
-  samples, chat + admin API reference. Update it when the public contract changes.
+  samples, chat + admin API reference. `GET /integration-telegram` is its SEPARATE
+  sibling for the Telegram retention bot (deeplink contract, profile pull/push,
+  admin setup) — same style, the two cross-link. The example page (`frontend/test.html`)
+  carries exactly one link to each. Update the matching page when a public contract
+  changes; keep the two in the same house style.
 - **The prompt template stays the one shared, deploy-level artifact** — brands
   differ only via prompt variables + KB + translations + settings, never per-tenant
   prompt forks.

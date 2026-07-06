@@ -10,7 +10,8 @@ def test_app_has_retention_routes():
               "/partner/{product_id}/player-update", "/admin/retention/kb",
               "/admin/retention/photos", "/admin/retention/managers",
               "/admin/retention/telegram/{product_id}",
-              "/admin/retention/webhook/{product_id}"):
+              "/admin/retention/webhook/{product_id}",
+              "/integration-telegram"):
         assert p in paths, p
 
 

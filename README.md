@@ -7,7 +7,10 @@ sportsbook brands. It is API-isolated: other modules talk to it over HTTP/JSON b
 > Developer/agent guidance lives in **[`CLAUDE.md`](./CLAUDE.md)** — architecture,
 > invariants, and conventions. This README is the human-facing overview.
 > Integration guide for partner/CMS dev teams is served by the app itself at
-> **`/integration`** (embed contract, handshake signing, API reference).
+> **`/integration`** (embed contract, handshake signing, API reference), and the
+> Telegram retention bot has its own guide at **`/integration-telegram`** (deeplink
+> contract, player profile sync, admin setup). Setup/run steps for the retention
+> bot are in **[`RETENTION_SETUP.md`](./RETENTION_SETUP.md)**.
 
 ## Multi-tenancy
 

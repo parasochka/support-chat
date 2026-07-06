@@ -238,3 +238,12 @@ async def test_html() -> FileResponse:
 async def integration_docs() -> FileResponse:
     return FileResponse(os.path.join(_FRONTEND_DIR, "integration.html"),
                         media_type="text/html", headers=_WIDGET_CACHE)
+
+
+# Separate, self-contained integration guide for the Telegram retention bot
+# (the second facade). Kept as its own page — matching the /integration style —
+# so the support-chat guide stays focused; the two cross-link each other.
+@app.get("/integration-telegram", response_class=HTMLResponse)
+async def integration_telegram_docs() -> FileResponse:
+    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-telegram.html"),
+                        media_type="text/html", headers=_WIDGET_CACHE)
