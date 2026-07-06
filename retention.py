@@ -71,11 +71,61 @@ async def create_deeplink(product: dict[str, Any], handshake_context: dict[str, 
 # ---------------------------------------------------------------------------
 # Profile / tier helpers
 # ---------------------------------------------------------------------------
+_PROFILE_FIELDS = ("full_name", "email", "activation_status", "country",
+                   "balance", "vip_level", "registration_date")
+
+
 def _profile_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Extract the whitelisted profile fields (_CONTEXT_FIELDS snapshot)."""
-    fields = ("full_name", "email", "activation_status", "country",
-              "balance", "vip_level", "registration_date")
-    return {f: payload.get(f) for f in fields if payload.get(f) is not None}
+    return {f: payload.get(f) for f in _PROFILE_FIELDS if payload.get(f) is not None}
+
+
+async def maybe_pull_profile(product: dict[str, Any], ru: dict[str, Any]
+                             ) -> dict[str, Any]:
+    """Lazy profile refresh (§8 level 2): if the snapshot is stale and the product
+    exposes a Player API, pull the fresh profile and update the snapshot.
+
+    Best-effort — any failure leaves the existing snapshot untouched and returns
+    it, so the schema degrades (not breaks) when the casino's API is down/absent.
+    Returns the (possibly refreshed) retention_user row.
+    """
+    import datetime as _dt
+    import httpx
+    url = (product.get("player_api_url") or "").strip()
+    player_id = ru.get("player_id")
+    if not url or not player_id:
+        return ru
+    ttl = int(settings.retention()["profile_pull_ttl_sec"])
+    if ttl <= 0:
+        return ru
+    last = ru.get("profile_updated_at")
+    if last:
+        try:
+            last_dt = _dt.datetime.fromisoformat(str(last))
+            now = _dt.datetime.now(last_dt.tzinfo)
+            if (now - last_dt).total_seconds() < ttl:
+                return ru  # fresh enough
+        except (ValueError, TypeError):
+            pass
+    key = await db.get_product_player_api_key(product["id"])
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(url, params={"player_id": player_id},
+                                    headers=headers)
+        if resp.status_code != 200:
+            log.warning("retention_profile_pull_http status=%s", resp.status_code)
+            return ru
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001 - a pull failure must not break the turn
+        log.warning("retention_profile_pull_failed error=%s", exc)
+        return ru
+    profile = _profile_from_payload(data if isinstance(data, dict) else {})
+    if not profile:
+        return ru
+    await db.update_retention_profile(product["id"], player_id, profile, "pull")
+    refreshed = await db.get_retention_user(product["id"], ru["tg_user_id"])
+    return refreshed or ru
 
 
 def tier_ordinal(vip_level: Optional[str], cfg: dict[str, Any]) -> int:
@@ -215,6 +265,14 @@ def resolve_user_lang(ru: dict[str, Any], tg_lang_code: Optional[str] = None) ->
 # ---------------------------------------------------------------------------
 # Session helper — one telegram chat_session per retention user (lazy)
 # ---------------------------------------------------------------------------
+def _user_context_from_ru(ru: dict[str, Any]) -> dict[str, Any]:
+    """Build the whitelisted Layer-3 player context from a retention_user row."""
+    ctx = {k: ru.get(k) for k in _PROFILE_FIELDS if ru.get(k)}
+    if ru.get("player_id"):
+        ctx["id"] = ru.get("player_id")
+    return ctx
+
+
 async def _ensure_session(product_id: int, ru: dict[str, Any],
                           lang: str) -> dict[str, Any]:
     """Get or lazily create the telegram chat session backing this player."""
@@ -223,10 +281,7 @@ async def _ensure_session(product_id: int, ru: dict[str, Any],
         session = await db.get_session(sid)
         if session:
             return session
-    user_context = {k: ru.get(k) for k in (
-        "full_name", "email", "activation_status", "country",
-        "balance", "vip_level", "registration_date") if ru.get(k)}
-    user_context["id"] = ru.get("player_id")
+    user_context = _user_context_from_ru(ru)
     new_id = str(uuid.uuid4())
     await db.create_session(
         consumer="telegram", player_id=ru.get("player_id"), lang=lang,
@@ -416,6 +471,9 @@ async def _handle_callback(client: TelegramClient, product: dict[str, Any],
 async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
                          ru: dict[str, Any], pu: ParsedUpdate, lang: str) -> None:
     """One AI retention turn: candidates -> model -> photo/handoff/stage/send."""
+    # Lazy profile refresh (§8 level 2): pull a fresh profile from the casino's
+    # Player API when the snapshot is stale, so targeting uses current VIP/balance.
+    ru = await maybe_pull_profile(product, ru)
     session = await _ensure_session(product["id"], ru, lang)
     if session is None:
         return
@@ -424,6 +482,10 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
     # Bump engagement counters BEFORE selecting candidates (so the proactive
     # cooldown counter reflects this message); returns the refreshed row.
     ru = await db.bump_retention_activity(int(ru["id"]), meaningful=meaningful)
+    # Keep the model's Layer-3 personalization in sync with the latest (possibly
+    # just-pulled) profile snapshot without an extra DB write — the session's
+    # stored user_context was fixed at creation.
+    session["user_context"] = _user_context_from_ru(ru)
     candidates = await select_photo_candidates(product["id"], ru, text)
 
     reply = await chat_service.handle_retention_message(session, text, candidates)

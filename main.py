@@ -98,13 +98,27 @@ app.add_middleware(
 )
 
 
+# Endpoints that accept a binary upload (retention media) need a much larger body
+# than the JSON API cap — a photo is megabytes, not the 64 KiB JSON default. The
+# media-upload path gets its own cap so a normal JSON body stays tightly bounded
+# while a legitimate image upload is allowed through.
+_UPLOAD_PATH_PREFIX = "/admin/retention/photos"
+
+
+def _body_cap_for(request: Request) -> int:
+    if (request.method == "POST"
+            and request.url.path.startswith(_UPLOAD_PATH_PREFIX)):
+        return config.RETENTION_MAX_UPLOAD_BYTES
+    return settings.general()["body_max_bytes"]
+
+
 # --- Body-size cap middleware ----------------------------------------------
 @app.middleware("http")
 async def body_size_cap(request: Request, call_next):
     cl = request.headers.get("content-length")
     if cl is not None:
         try:
-            body_max = settings.general()["body_max_bytes"]
+            body_max = _body_cap_for(request)
             if int(cl) > body_max:
                 return JSONResponse(
                     status_code=413,

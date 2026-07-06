@@ -255,6 +255,11 @@ RETENTION_MEDIA_DIR: str = _env("RETENTION_MEDIA_DIR",
 # One-time deeplink nonce lifetime (seconds). Also a `retention` settings knob;
 # this env value is the default.
 RETENTION_NONCE_TTL_SEC: int = _env_int("RETENTION_NONCE_TTL_SEC", 120)
+# Max size of a retention media upload (bytes). The JSON body cap (BODY_MAX_BYTES,
+# 64 KiB) is far too small for an image, so the media-upload path uses this cap
+# instead (see main.body_size_cap). Default 10 MiB.
+RETENTION_MAX_UPLOAD_BYTES: int = _env_int("RETENTION_MAX_UPLOAD_BYTES",
+                                           10 * 1024 * 1024)
 # Photo-progression / proactivity knobs — env defaults for the `retention`
 # settings group (hot-reloadable per product from the admin panel).
 RETENTION_DAILY_PHOTO_CAP: int = _env_int("RETENTION_DAILY_PHOTO_CAP", 10)
@@ -264,6 +269,10 @@ RETENTION_CANDIDATE_LIST_SIZE: int = _env_int("RETENTION_CANDIDATE_LIST_SIZE", 6
 RETENTION_STAGE_ADVANCE_MIN_HOURS: int = _env_int(
     "RETENTION_STAGE_ADVANCE_MIN_HOURS", 24)
 RETENTION_MAX_STAGE: int = _env_int("RETENTION_MAX_STAGE", 4)
+# Lazy profile-pull freshness: if the snapshot is older than this and the product
+# has a player_api_url + key, refresh it from the casino before a turn (§8 level 2).
+RETENTION_PROFILE_PULL_TTL_SEC: int = _env_int(
+    "RETENTION_PROFILE_PULL_TTL_SEC", 3600)
 
 # Convenience: a name shown in logs / health.
 SERVICE_NAME = "nowplix-support-chat"

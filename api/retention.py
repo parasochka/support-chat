@@ -25,16 +25,17 @@ from fastapi import (APIRouter, BackgroundTasks, Depends, File, Form, Header,
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+import antispam
 import auth
 import config
 import db
-import language
 import retention as retention_mod
 import settings as settings_mod
 import tenancy
 import telegram_transport
 from api import admin_auth
 from api.admin_auth import require_admin, require_admin_write
+from api.client_ip import client_ip
 
 log = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ async def _resolve_product(widget_key: Optional[str]) -> Optional[dict[str, Any]
 
 
 @public_router.post("/api/retention/deeplink")
-async def create_deeplink(body: DeeplinkReq) -> JSONResponse:
+async def create_deeplink(req: Request, body: DeeplinkReq) -> JSONResponse:
     """Site/widget hands us the player handshake; we return a one-time deep link.
 
     Trust of the profile mirrors the chat handshake: a signed blob is verified
@@ -109,6 +110,12 @@ async def create_deeplink(body: DeeplinkReq) -> JSONResponse:
     admin test profile stands in; the injection sanitizer runs regardless when the
     context reaches the model.
     """
+    # IP rate-limit (dedicated budget) so the nonce table can't be flooded.
+    ip = client_ip(req)
+    try:
+        antispam.check_rate_limit(f"deeplink:{ip}")
+    except antispam.AntiSpamError as exc:
+        return _err(exc.status, exc.code, exc.detail)
     product = await _resolve_product(body.widget_key)
     if product is None or not product.get("active"):
         return _err(403, "bad_widget_key", "Unknown or inactive widget key.")

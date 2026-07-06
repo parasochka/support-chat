@@ -743,9 +743,13 @@ an escalation entry, back to site support on a retention entry). Full spec: `RET
   in `retention_users`, and sets `entry_type` (`retention` | `escalation`). No valid nonce ⇒ the
   bot refuses (no organic entry). Then the **channel subscription gate** (`getChatMember`, the bot
   must be a channel admin) before any menu; a product with no channel configured skips the gate.
-- **Profile freshness degrades softly**: snapshot + re-handshake (ships now) → lazy pull via the
-  product's `player_api_url` + encrypted key → push webhook `POST /partner/{product_id}/player-update`
-  (authorized with the product's handshake secret as the shared partner secret). Partial updates only.
+- **Profile freshness degrades softly** — all three levels ship: snapshot + re-handshake;
+  **lazy pull** (`retention.maybe_pull_profile`, gated by `profile_pull_ttl_sec`) — before a turn,
+  if the snapshot is stale and the product has a `player_api_url` + encrypted key, GET the fresh
+  profile and update the snapshot (best-effort: a failure leaves the snapshot untouched); and
+  **push webhook** `POST /partner/{product_id}/player-update` (authorized with the product's
+  handshake secret as the shared partner secret). Partial updates only. A product with no Player
+  API just lives on the snapshot — the schema degrades, never breaks.
 - **Managers** (`retention_managers`): round-robin, **sticky** (a returning player keeps their
   manager); the hand-off is a `t.me/<username>` link; only the fact is logged
   (`retention_manager_handoff`).

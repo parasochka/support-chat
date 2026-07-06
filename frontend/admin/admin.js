@@ -1223,6 +1223,9 @@ async function viewSettings(main) {
       // message cap lives in the `general` box below). No editor here, so the
       // same knob is never editable from two places.
       if (key === "escalation") continue;
+      // The `retention` group has its home in Retention · Telegram → Settings;
+      // skip it here so the same knobs aren't editable from two places.
+      if (key === "retention") continue;
       if (key === "language") { languageSettingsBox(holder, data.resolved.language || {}); continue; }
       if (key === "model") { modelSettingsBox(holder, data.resolved.model || {}); continue; }
       if (key === "general") { generalSettingsBox(holder, data.resolved.general || {}); continue; }
@@ -2543,11 +2546,28 @@ async function retMedia(main, pid) {
   await reload();
 }
 
+// The media preview endpoint is auth-guarded, but an <img src> cannot send the
+// admin Bearer token — so fetch the bytes WITH the token and hand the <img> a
+// blob object URL instead (revoked on load to avoid leaking URLs).
+async function loadAuthImage(img, path) {
+  try {
+    const res = await fetch(`/admin${path}`, {
+      headers: state.token ? { Authorization: `Bearer ${state.token}` } : {},
+    });
+    if (!res.ok) { img.alt = "preview unavailable"; return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    img.src = url;
+    img.addEventListener("load", () => URL.revokeObjectURL(url), { once: true });
+  } catch (_) { img.alt = "preview unavailable"; }
+}
+
 function photoCard(ph, wr, reload, st) {
   const card = el("div", "npadmin-productcard");
-  const img = el("img"); img.src = `/admin/retention/photos/${ph.id}/file`;
+  const img = el("img"); img.alt = "loading…";
   img.style.maxWidth = "160px"; img.style.maxHeight = "160px"; img.style.borderRadius = "8px";
   img.style.opacity = ph.active ? "1" : "0.4";
+  loadAuthImage(img, `/retention/photos/${ph.id}/file`);
   card.appendChild(img);
   card.appendChild(el("div", "npadmin-meta",
     `#${ph.id} · stage ${ph.stage} · lvl ${ph.level_min} · views ${ph.views_count}` +

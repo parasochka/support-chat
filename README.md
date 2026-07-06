@@ -112,7 +112,9 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `TELEGRAM_WEBHOOK_SECRET` | no | `SESSION_JWT_SECRET` | Retention bot: verifies the `X-Telegram-Bot-Api-Secret-Token` header on `/telegram/webhook/{secret}` (NOT in the URL). Set a distinct value in prod. |
 | `PUBLIC_BASE_URL` | no | — | Retention bot: public base URL of this service (e.g. `https://chat.example.com`), used to build the webhook URL when registering it with Telegram. Required to auto-register the webhook from the admin. |
 | `RETENTION_MEDIA_DIR` | no | `./media` | Retention bot: on-disk path for uploaded media. On Railway set it to the mount path of an attached **Volume** so photos survive redeploys. |
+| `RETENTION_MAX_UPLOAD_BYTES` | no | `10485760` | Max size of a retention media upload (the JSON body cap is far smaller; the media-upload path uses this instead). |
 | `RETENTION_NONCE_TTL_SEC` | no | `120` | Retention deeplink nonce lifetime (also a `retention` settings knob). |
+| `RETENTION_PROFILE_PULL_TTL_SEC` | no | `3600` | If a profile snapshot is older than this and the product has a Player API, pull a fresh profile before a turn (also a `retention` settings knob). |
 
 The retention bot's per-product config (bot token, channel, player-API key) lives on the
 product row in the admin **Retention · Telegram** section, not in env; secrets there are

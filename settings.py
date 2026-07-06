@@ -316,6 +316,8 @@ def retention() -> dict[str, Any]:
         "vip_tiers": db_v.get("vip_tiers",
                               list(_DEFAULT_RETENTION["vip_tiers"])),
         "nonce_ttl_sec": db_v.get("nonce_ttl_sec", config.RETENTION_NONCE_TTL_SEC),
+        "profile_pull_ttl_sec": db_v.get("profile_pull_ttl_sec",
+                                         config.RETENTION_PROFILE_PULL_TTL_SEC),
     }
 
 
@@ -437,6 +439,7 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "stage_advance_min_hours", 0, 8_760)
         _require_int(value, "max_stage", 1, 20)
         _require_int(value, "nonce_ttl_sec", 10, 3_600)
+        _require_int(value, "profile_pull_ttl_sec", 0, 604_800)  # <= 1 week
         if "stage_advance_msgs" in value:
             v = value["stage_advance_msgs"]
             if (not isinstance(v, list)

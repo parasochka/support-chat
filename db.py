@@ -2702,6 +2702,9 @@ async def assign_round_robin_manager(product_id: int, retention_user_id: int
 async def create_retention_nonce(nonce: str, product_id: int,
                                  payload: dict[str, Any], escalation: bool,
                                  ttl_sec: int) -> None:
+    # Opportunistically reap expired nonces (indexed on expires_at, low volume)
+    # so the single-use table can't grow without bound.
+    await _pool.execute("DELETE FROM retention_nonces WHERE expires_at < now()")
     await _pool.execute(
         "INSERT INTO retention_nonces "
         "(nonce, product_id, payload, escalation, expires_at) "

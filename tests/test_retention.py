@@ -250,3 +250,92 @@ def test_extract_photo_file_id():
 def test_inline_keyboard():
     kb = tt.inline_keyboard([[{"text": "A", "callback_data": "a"}]])
     assert kb == {"inline_keyboard": [[{"text": "A", "callback_data": "a"}]]}
+
+
+# ---------------------------------------------------------------------------
+# Lazy profile pull (§8 level 2)
+# ---------------------------------------------------------------------------
+def test_retention_settings_has_pull_ttl():
+    assert "profile_pull_ttl_sec" in settings.retention()
+    v = settings.validate_setting("retention", {"profile_pull_ttl_sec": 60})
+    assert v["profile_pull_ttl_sec"] == 60
+
+
+class _FakeResp:
+    def __init__(self, status, payload):
+        self.status_code = status
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _FakeClient:
+    payload = {"vip_level": "Platinum", "balance": "5000 EUR"}
+    status = 200
+
+    def __init__(self, *a, **k):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url, params=None, headers=None):
+        return _FakeResp(self.status, self.payload)
+
+
+async def test_maybe_pull_profile_fresh_skips(monkeypatch):
+    import datetime as dt
+    import httpx
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    called = {"update": False}
+
+    async def _update(*a, **k):
+        called["update"] = True
+        return 1
+    monkeypatch.setattr(retention.db, "update_retention_profile", _update)
+
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    product = {"id": 1, "player_api_url": "https://api"}
+    ru = {"id": 1, "tg_user_id": 7, "player_id": "p1", "profile_updated_at": now}
+    out = await retention.maybe_pull_profile(product, ru)
+    assert out is ru and called["update"] is False   # fresh -> no pull
+
+
+async def test_maybe_pull_profile_stale_pulls(monkeypatch):
+    import httpx
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    async def _key(pid):
+        return "apikey"
+    monkeypatch.setattr(retention.db, "get_product_player_api_key", _key)
+
+    captured = {}
+
+    async def _update(product_id, player_id, profile, source):
+        captured.update(profile=profile, source=source)
+        return 1
+    monkeypatch.setattr(retention.db, "update_retention_profile", _update)
+
+    async def _get(pid, tg):
+        return {"id": 1, "tg_user_id": tg, "vip_level": "Platinum"}
+    monkeypatch.setattr(retention.db, "get_retention_user", _get)
+
+    product = {"id": 1, "player_api_url": "https://api"}
+    ru = {"id": 1, "tg_user_id": 7, "player_id": "p1",
+          "profile_updated_at": "2000-01-01T00:00:00+00:00"}
+    out = await retention.maybe_pull_profile(product, ru)
+    assert captured["source"] == "pull"
+    assert captured["profile"]["vip_level"] == "Platinum"
+    assert out["vip_level"] == "Platinum"
+
+
+async def test_maybe_pull_profile_no_url_noop(monkeypatch):
+    product = {"id": 1, "player_api_url": ""}
+    ru = {"id": 1, "tg_user_id": 7, "player_id": "p1"}
+    out = await retention.maybe_pull_profile(product, ru)
+    assert out is ru
