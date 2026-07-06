@@ -42,6 +42,7 @@ function isoDaysAgo(n) {
 const VIEWS = [
   ["overview", "Overview"], ["sessions", "Sessions"], ["unresolved", "Unresolved"],
   ["kb", "Knowledge base"], ["prompt", "Prompt"], ["translations", "Translations"],
+  ["retention", "Retention · Telegram", true],
   ["structure", "Structure", true], ["settings", "Settings", true],
   ["users", "Users", true],
 ];
@@ -456,6 +457,7 @@ function routeView(main) {
   const map = {
     overview: viewOverview, sessions: viewSessions, unresolved: viewUnresolved,
     kb: viewKB, prompt: viewPrompt, translations: viewTranslations,
+    retention: viewRetention,
     structure: viewStructure, settings: viewSettings, users: viewUsers,
   };
   (map[state.view] || viewOverview)(main, state.param);
@@ -2288,6 +2290,421 @@ function rowEls(t, cells) {
   return tr;
 }
 function addRow(t, cells) { return rowEls(t, cells); }
+
+// ===========================================================================
+// Retention · Telegram (Section B) — one view with sub-tabs. Everything is
+// product-scoped: edits act on the selected product (else the default). The
+// `retention` settings GROUP is edited under the Settings sub-tab (it reuses
+// the generic /admin/settings/retention endpoint).
+// ===========================================================================
+const RETENTION_SUBTABS = [
+  ["telegram", "Telegram config"], ["kb", "Retention KB"], ["media", "Media"],
+  ["managers", "Managers"], ["config", "Settings"], ["analytics", "Analytics"],
+];
+
+function viewRetention(main, param) {
+  const sub = RETENTION_SUBTABS.some(([id]) => id === param) ? param : "telegram";
+  main.appendChild(el("h1", "npadmin-h", "Retention · Telegram"));
+  subTabs(main, "retention", RETENTION_SUBTABS, sub);
+  main.appendChild(scopeHint());
+  const pr = editedProduct();
+  if (!pr) {
+    main.appendChild(el("div", "npadmin-warnbox",
+      "No product resolved. Create a product in Structure first."));
+    return;
+  }
+  const pid = pr.id;
+  const body = el("div"); main.appendChild(body);
+  ({
+    telegram: retTelegram, kb: retKB, media: retMedia,
+    managers: retManagers, config: retConfig, analytics: retAnalytics,
+  }[sub])(body, pid, pr);
+}
+
+// --- Telegram config + secrets + webhook -----------------------------------
+async function retTelegram(main, pid) {
+  const st = el("div", "npadmin-err"); main.appendChild(st);
+  main.appendChild(el("div", "npadmin-meta", "Loading…"));
+  let data;
+  try { data = await api(`/retention/telegram/${pid}`); }
+  catch (e) { main.appendChild(errBox(e)); return; }
+  main.innerHTML = ""; main.appendChild(st);
+  const p = data.product;
+  const wr = canWrite();
+
+  // Enable + config fields
+  const cfg = el("div", "npadmin-productcard");
+  cfg.appendChild(el("div", "npadmin-meta", "Bot & channel configuration"));
+  const enCb = document.createElement("input"); enCb.type = "checkbox";
+  enCb.checked = !!p.retention_enabled; enCb.disabled = !wr;
+  const enLbl = el("label", "npadmin-field");
+  enLbl.append(enCb, document.createTextNode(" Retention bot enabled"));
+  cfg.appendChild(enLbl);
+  const mk = (label, val, ph) => {
+    const l = el("label", "npadmin-field"); l.appendChild(el("span", null, label));
+    const i = el("input", "npadmin-input"); i.value = val || ""; i.placeholder = ph || "";
+    i.disabled = !wr; l.appendChild(i); cfg.appendChild(l); return i;
+  };
+  const uInp = mk("Bot username (without @)", p.telegram_bot_username, "nika_casino_bot");
+  const chIdInp = mk("Channel id (@channel or -100…)", p.telegram_channel_id, "@my_channel");
+  const chUrlInp = mk("Channel URL", p.telegram_channel_url, "https://t.me/my_channel");
+  const apiUrlInp = mk("Player API URL (profile pull)", p.player_api_url, "https://casino.example/api/player");
+  if (wr) {
+    const save = el("button", "npadmin-btn", "Save config");
+    save.addEventListener("click", async () => {
+      st.textContent = ""; st.style.color = "";
+      try {
+        await api(`/retention/telegram/${pid}`, { method: "PUT", body: {
+          retention_enabled: enCb.checked,
+          telegram_bot_username: uInp.value.trim(),
+          telegram_channel_id: chIdInp.value.trim(),
+          telegram_channel_url: chUrlInp.value.trim(),
+          player_api_url: apiUrlInp.value.trim(),
+        } });
+        st.style.color = "var(--good)"; st.textContent = "Saved";
+      } catch (e) { st.textContent = e.message; }
+    });
+    cfg.appendChild(save);
+  }
+  main.appendChild(cfg);
+
+  // Secrets (write-only): bot token + player API key
+  const sec = el("div", "npadmin-productcard");
+  sec.appendChild(el("div", "npadmin-meta",
+    "Secrets (write-only, stored encrypted). Leave blank to keep current."));
+  const mkSecret = (field, label, has) => {
+    const l = el("label", "npadmin-field");
+    l.appendChild(el("span", null, `${label} — ${has ? "currently set ✓" : "not set"}`));
+    const i = el("input", "npadmin-input"); i.type = "password";
+    i.autocomplete = "new-password"; i.disabled = !wr;
+    i.placeholder = has ? "Enter new value to replace" : "Enter a value to set";
+    l.appendChild(i); sec.appendChild(l);
+    return { field, get: () => i.value };
+  };
+  const tok = mkSecret("telegram_bot_token", "Telegram bot token", p.has_telegram_bot_token);
+  const key = mkSecret("player_api_key", "Player API key", p.has_player_api_key);
+  if (wr) {
+    const save = el("button", "npadmin-btn", "Save secrets");
+    save.addEventListener("click", async () => {
+      const b = {};
+      if (tok.get() !== "") b.telegram_bot_token = tok.get();
+      if (key.get() !== "") b.player_api_key = key.get();
+      if (!Object.keys(b).length) { st.textContent = "Nothing to save"; return; }
+      st.textContent = ""; st.style.color = "";
+      try {
+        await api(`/products/${pid}/secrets`, { method: "PUT", body: b });
+        st.style.color = "var(--good)"; st.textContent = "Secrets saved";
+        retTelegram(main, pid); // refresh has_* flags + webhook url
+      } catch (e) { st.textContent = e.message; }
+    });
+    sec.appendChild(save);
+  }
+  main.appendChild(sec);
+
+  // Webhook
+  const wh = el("div", "npadmin-productcard");
+  wh.appendChild(el("div", "npadmin-meta", "Telegram webhook"));
+  const whUrl = el("input", "npadmin-input"); whUrl.readOnly = true;
+  whUrl.value = data.webhook_url || "(set PUBLIC_BASE_URL + bot token, then it appears)";
+  wh.appendChild(whUrl);
+  if (wr) {
+    const reg = el("button", "npadmin-btn", "Register / refresh webhook with Telegram");
+    reg.addEventListener("click", async () => {
+      st.textContent = "Registering…"; st.style.color = "";
+      try {
+        const r = await api(`/retention/webhook/${pid}`, { method: "POST" });
+        st.style.color = "var(--good)";
+        st.textContent = r.ok ? `Webhook set (bot @${r.bot || "?"})` : "Telegram rejected the webhook";
+      } catch (e) { st.textContent = e.message; }
+    });
+    wh.appendChild(reg);
+  }
+  main.appendChild(wh);
+}
+
+// --- Retention KB ----------------------------------------------------------
+async function retKB(main, pid) {
+  const st = el("div", "npadmin-err"); main.appendChild(st);
+  const listWrap = el("div"); main.appendChild(listWrap);
+  const wr = canWrite();
+  async function reload() {
+    listWrap.innerHTML = "";
+    let items;
+    try { items = (await api(`/retention/kb?product_id=${pid}`)).items; }
+    catch (e) { listWrap.appendChild(errBox(e)); return; }
+    if (!items.length) listWrap.appendChild(el("div", "npadmin-meta", "No scenarios yet."));
+    for (const it of items) listWrap.appendChild(kbEntryCard(it, wr, pid, reload, st));
+  }
+  if (wr) {
+    const add = el("div", "npadmin-productcard");
+    add.appendChild(el("div", "npadmin-meta", "Add scenario / offer"));
+    const title = el("input", "npadmin-input"); title.placeholder = "Title (e.g. Long time no see)";
+    const when = el("input", "npadmin-input"); when.placeholder = "Trigger / when (optional)";
+    const bodyT = el("textarea", "npadmin-input"); bodyT.rows = 3;
+    bodyT.placeholder = "What Nika should say / offer";
+    const links = el("input", "npadmin-input"); links.placeholder = "Links (comma-separated, optional)";
+    const btn = el("button", "npadmin-btn", "Add");
+    btn.addEventListener("click", async () => {
+      if (!title.value.trim() || !bodyT.value.trim()) { st.textContent = "Title and body required"; return; }
+      st.textContent = "";
+      try {
+        await api("/retention/kb", { method: "POST", body: {
+          product_id: pid, title: title.value.trim(),
+          trigger_when: when.value.trim(), body: bodyT.value.trim(),
+          links: links.value.split(",").map((s) => s.trim()).filter(Boolean),
+        } });
+        title.value = when.value = bodyT.value = links.value = "";
+        reload();
+      } catch (e) { st.textContent = e.message; }
+    });
+    add.append(title, when, bodyT, links, btn);
+    main.appendChild(add);
+  }
+  await reload();
+}
+
+function kbEntryCard(it, wr, pid, reload, st) {
+  const card = el("div", "npadmin-productcard");
+  const title = el("input", "npadmin-input"); title.value = it.title; title.disabled = !wr;
+  const when = el("input", "npadmin-input"); when.value = it.trigger_when || ""; when.disabled = !wr;
+  when.placeholder = "Trigger / when";
+  const bodyT = el("textarea", "npadmin-input"); bodyT.rows = 3; bodyT.value = it.body; bodyT.disabled = !wr;
+  const links = el("input", "npadmin-input"); links.value = (it.links || []).join(", "); links.disabled = !wr;
+  links.placeholder = "Links";
+  card.append(title, when, bodyT, links);
+  if (wr) {
+    const row = el("div", "npadmin-formrow");
+    const save = el("button", "npadmin-btn ghost", "Save");
+    save.addEventListener("click", async () => {
+      try {
+        await api(`/retention/kb/${it.id}`, { method: "PUT", body: {
+          title: title.value.trim(), trigger_when: when.value.trim(),
+          body: bodyT.value.trim(),
+          links: links.value.split(",").map((s) => s.trim()).filter(Boolean),
+          sort_order: it.sort_order, active: it.active,
+        } });
+        st.style.color = "var(--good)"; st.textContent = "Saved";
+      } catch (e) { st.textContent = e.message; }
+    });
+    const del = el("button", "npadmin-btn ghost", "Delete");
+    del.addEventListener("click", async () => {
+      if (!confirm("Delete this scenario?")) return;
+      try { await api(`/retention/kb/${it.id}`, { method: "DELETE" }); reload(); }
+      catch (e) { st.textContent = e.message; }
+    });
+    row.append(save, del); card.appendChild(row);
+  }
+  return card;
+}
+
+// --- Media library ---------------------------------------------------------
+async function retMedia(main, pid) {
+  const st = el("div", "npadmin-err"); main.appendChild(st);
+  const grid = el("div");
+  const wr = canWrite();
+  if (wr) {
+    const add = el("div", "npadmin-productcard");
+    add.appendChild(el("div", "npadmin-meta", "Upload photo"));
+    const file = document.createElement("input"); file.type = "file"; file.accept = "image/*";
+    const desc = el("textarea", "npadmin-input"); desc.rows = 2;
+    desc.placeholder = "Internal description (what's on the photo) — the model reads this";
+    const tags = el("input", "npadmin-input"); tags.placeholder = "Tags (comma-separated)";
+    const lvl = el("input", "npadmin-input"); lvl.type = "number"; lvl.value = "0"; lvl.placeholder = "level_min (VIP tier ordinal)";
+    const stg = el("input", "npadmin-input"); stg.type = "number"; stg.value = "1"; stg.placeholder = "stage";
+    const cat = el("input", "npadmin-input"); cat.placeholder = "Category (optional)";
+    const btn = el("button", "npadmin-btn", "Upload");
+    btn.addEventListener("click", async () => {
+      if (!file.files.length) { st.textContent = "Choose a file"; return; }
+      const fd = new FormData();
+      fd.append("product_id", pid); fd.append("description", desc.value);
+      fd.append("tags", tags.value); fd.append("level_min", lvl.value || "0");
+      fd.append("stage", stg.value || "1"); fd.append("category", cat.value);
+      fd.append("file", file.files[0]);
+      st.textContent = "Uploading…"; st.style.color = "";
+      try { await api("/retention/photos", { method: "POST", form: fd }); reload(); file.value = ""; desc.value = tags.value = cat.value = ""; }
+      catch (e) { st.textContent = e.message; }
+    });
+    const lblFor = (t, node) => { const l = el("label", "npadmin-field"); l.appendChild(el("span", null, t)); l.appendChild(node); return l; };
+    add.append(lblFor("Image", file), desc, tags,
+      lblFor("Min VIP tier (level_min)", lvl), lblFor("Explicitness stage", stg), cat, btn);
+    main.appendChild(add);
+  }
+  main.appendChild(grid);
+  async function reload() {
+    grid.innerHTML = "";
+    let items;
+    try { items = (await api(`/retention/photos?product_id=${pid}`)).items; }
+    catch (e) { grid.appendChild(errBox(e)); return; }
+    grid.appendChild(el("div", "npadmin-meta", `${items.length} photo(s)`));
+    const wrap = el("div", "npadmin-cards");
+    for (const ph of items) wrap.appendChild(photoCard(ph, wr, reload, st));
+    grid.appendChild(wrap);
+  }
+  await reload();
+}
+
+function photoCard(ph, wr, reload, st) {
+  const card = el("div", "npadmin-productcard");
+  const img = el("img"); img.src = `/admin/retention/photos/${ph.id}/file`;
+  img.style.maxWidth = "160px"; img.style.maxHeight = "160px"; img.style.borderRadius = "8px";
+  img.style.opacity = ph.active ? "1" : "0.4";
+  card.appendChild(img);
+  card.appendChild(el("div", "npadmin-meta",
+    `#${ph.id} · stage ${ph.stage} · lvl ${ph.level_min} · views ${ph.views_count}` +
+    (ph.active ? "" : " · inactive")));
+  const desc = el("textarea", "npadmin-input"); desc.rows = 2; desc.value = ph.description || ""; desc.disabled = !wr;
+  const tags = el("input", "npadmin-input"); tags.value = (ph.tags || []).join(", "); tags.disabled = !wr;
+  const lvl = el("input", "npadmin-input"); lvl.type = "number"; lvl.value = ph.level_min; lvl.disabled = !wr;
+  const stg = el("input", "npadmin-input"); stg.type = "number"; stg.value = ph.stage; stg.disabled = !wr;
+  card.append(desc, tags, lvl, stg);
+  if (wr) {
+    const row = el("div", "npadmin-formrow");
+    const save = el("button", "npadmin-btn ghost", "Save");
+    save.addEventListener("click", async () => {
+      try {
+        await api(`/retention/photos/${ph.id}`, { method: "PUT", body: {
+          description: desc.value, tags: tags.value.split(",").map((s) => s.trim()).filter(Boolean),
+          level_min: Number(lvl.value), stage: Number(stg.value),
+        } });
+        st.style.color = "var(--good)"; st.textContent = "Saved";
+      } catch (e) { st.textContent = e.message; }
+    });
+    const toggle = el("button", "npadmin-btn ghost", ph.active ? "Deactivate" : "Activate");
+    toggle.addEventListener("click", async () => {
+      try { await api(`/retention/photos/${ph.id}`, { method: "PUT", body: { active: !ph.active } }); reload(); }
+      catch (e) { st.textContent = e.message; }
+    });
+    const del = el("button", "npadmin-btn ghost", "Delete");
+    del.addEventListener("click", async () => {
+      if (!confirm("Delete (deactivate) this photo?")) return;
+      try { await api(`/retention/photos/${ph.id}`, { method: "DELETE" }); reload(); }
+      catch (e) { st.textContent = e.message; }
+    });
+    row.append(save, toggle, del); card.appendChild(row);
+  }
+  return card;
+}
+
+// --- Managers pool ---------------------------------------------------------
+async function retManagers(main, pid) {
+  const st = el("div", "npadmin-err"); main.appendChild(st);
+  const wr = canWrite();
+  const listWrap = el("div");
+  if (wr) {
+    const add = el("div", "npadmin-productcard");
+    add.appendChild(el("div", "npadmin-meta", "Add manager"));
+    const name = el("input", "npadmin-input"); name.placeholder = "Display name (e.g. Masha NikaBet)";
+    const user = el("input", "npadmin-input"); user.placeholder = "Telegram @username";
+    const btn = el("button", "npadmin-btn", "Add");
+    btn.addEventListener("click", async () => {
+      if (!name.value.trim() || !user.value.trim()) { st.textContent = "Name and username required"; return; }
+      try {
+        await api("/retention/managers", { method: "POST", body: {
+          product_id: pid, display_name: name.value.trim(), username: user.value.trim() } });
+        name.value = user.value = ""; reload();
+      } catch (e) { st.textContent = e.message; }
+    });
+    add.append(name, user, btn); main.appendChild(add);
+  }
+  main.appendChild(listWrap);
+  async function reload() {
+    listWrap.innerHTML = "";
+    let items;
+    try { items = (await api(`/retention/managers?product_id=${pid}`)).items; }
+    catch (e) { listWrap.appendChild(errBox(e)); return; }
+    const t = table(["Name", "Username", "Assigned", "Active", ""]);
+    for (const m of items) {
+      const tr = rowEls(t, [m.display_name, "@" + m.username, m.assigned_count,
+        m.active ? "yes" : "no", ""]);
+      if (wr) {
+        const cell = tr.lastChild;
+        const toggle = el("button", "npadmin-btn ghost", m.active ? "Disable" : "Enable");
+        toggle.addEventListener("click", async () => {
+          try { await api(`/retention/managers/${m.id}`, { method: "PUT", body: { active: !m.active } }); reload(); }
+          catch (e) { st.textContent = e.message; }
+        });
+        const del = el("button", "npadmin-btn ghost", "Delete");
+        del.addEventListener("click", async () => {
+          if (!confirm("Delete this manager?")) return;
+          try { await api(`/retention/managers/${m.id}`, { method: "DELETE" }); reload(); }
+          catch (e) { st.textContent = e.message; }
+        });
+        cell.append(toggle, del);
+      }
+    }
+    listWrap.appendChild(t);
+  }
+  await reload();
+}
+
+// --- Retention settings group (JSON editor over /admin/settings/retention) --
+async function retConfig(main, pid) {
+  const st = el("div", "npadmin-err"); main.appendChild(st);
+  let data;
+  try { data = await api(`/settings?product_id=${pid}`); }
+  catch (e) { main.appendChild(errBox(e)); return; }
+  const resolved = (data.resolved || {}).retention || {};
+  const override = (data.overrides || {}).retention || {};
+  main.appendChild(el("div", "npadmin-meta",
+    "Retention knobs (daily_photo_cap, proactive_photo_cooldown_msgs, " +
+    "candidate_list_size, stage_advance_msgs, stage_advance_min_hours, max_stage, " +
+    "max_stage_by_tier, vip_tiers, nonce_ttl_sec). Edit the JSON; only changed " +
+    "keys need to be present. Resolved (effective) values shown."));
+  const ta = el("textarea", "npadmin-input"); ta.rows = 16;
+  ta.value = JSON.stringify(Object.keys(override).length ? override : resolved, null, 2);
+  ta.disabled = !canWrite();
+  main.appendChild(ta);
+  main.appendChild(el("div", "npadmin-meta",
+    "Effective now: " + JSON.stringify(resolved)));
+  if (canWrite()) {
+    const btn = el("button", "npadmin-btn", "Save retention settings");
+    btn.addEventListener("click", async () => {
+      let parsed;
+      try { parsed = JSON.parse(ta.value); }
+      catch (e) { st.textContent = "Invalid JSON: " + e.message; return; }
+      st.textContent = ""; st.style.color = "";
+      try {
+        await api(`/settings/retention?product_id=${pid}`, { method: "PUT", body: { value: parsed } });
+        st.style.color = "var(--good)"; st.textContent = "Saved";
+      } catch (e) { st.textContent = e.message; }
+    });
+    main.appendChild(btn);
+  }
+}
+
+// --- Analytics -------------------------------------------------------------
+async function retAnalytics(main, pid) {
+  main.appendChild(dateToolbar(() => routeView(document.getElementById("npadmin-main"))));
+  const cards = el("div", "npadmin-cards"); main.appendChild(cards);
+  const usersWrap = el("div"); main.appendChild(usersWrap);
+  cards.appendChild(el("div", "npadmin-meta", "Loading…"));
+  try {
+    const o = await api(`/retention/overview?product_id=${pid}${dateQS()}`);
+    cards.innerHTML = "";
+    card(cards, o.users_total, "Users total");
+    card(cards, o.users_subscribed, "Subscribed");
+    card(cards, o.users_active, "Active in range");
+    card(cards, o.avg_stage, "Avg stage");
+    card(cards, o.photos_sent, "Photos sent");
+    card(cards, o.handoffs, "Handoffs");
+  } catch (e) { cards.innerHTML = ""; cards.appendChild(errBox(e)); }
+  try {
+    const { items } = await api(`/retention/users?product_id=${pid}`);
+    const t = table(["tg id", "username", "player", "entry", "VIP", "stage",
+      "sub", "msgs", "photos", "manager", "last active"]);
+    for (const u of items) rowEls(t, [u.tg_user_id, u.tg_username || "—",
+      u.player_id || "—", u.entry_type, u.vip_level || "—", u.unlocked_stage,
+      u.subscribed ? "yes" : "no", u.meaningful_msgs, u.photos_total,
+      u.manager_name || "—", fmtDateTime(u.last_active_at)]);
+    usersWrap.appendChild(el("h3", null, "Users"));
+    const scroll = el("div", "npadmin-table-scroll"); scroll.appendChild(t);
+    usersWrap.appendChild(scroll);
+  } catch (e) { usersWrap.appendChild(errBox(e)); }
+}
+
+// Date query fragment (?from=&to=) for retention analytics — leading '&' safe
+// because callers append it after ?product_id=.
+function dateQS() { return `&from=${state.from}&to=${state.to}`; }
 
 // ---------------------------------------------------------------------------
 // boot

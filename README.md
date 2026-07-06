@@ -109,6 +109,16 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `CORS_ALLOW_ORIGINS` | no | `*` | Comma-separated allowed origins (restrict in prod). |
 | `TRUSTED_PROXY_COUNT` | no | `1` | Trusted proxy hops to read from the right of `X-Forwarded-For`. |
 | `TRUSTED_PROXY_IPS` | no | private/reserved ranges | Comma-separated immediate proxy IPs/CIDRs whose `X-Forwarded-For` may be trusted. Defaults to the private/reserved ranges (RFC1918 + CGNAT + loopback/ULA), which is correct on Railway and most PaaS — the platform proxy connects from a private peer IP that a public client cannot forge. Tighten to your edge's exact CIDR if you know it. |
+| `TELEGRAM_WEBHOOK_SECRET` | no | `SESSION_JWT_SECRET` | Retention bot: verifies the `X-Telegram-Bot-Api-Secret-Token` header on `/telegram/webhook/{secret}` (NOT in the URL). Set a distinct value in prod. |
+| `PUBLIC_BASE_URL` | no | — | Retention bot: public base URL of this service (e.g. `https://chat.example.com`), used to build the webhook URL when registering it with Telegram. Required to auto-register the webhook from the admin. |
+| `RETENTION_MEDIA_DIR` | no | `./media` | Retention bot: on-disk path for uploaded media. On Railway set it to the mount path of an attached **Volume** so photos survive redeploys. |
+| `RETENTION_NONCE_TTL_SEC` | no | `120` | Retention deeplink nonce lifetime (also a `retention` settings knob). |
+
+The retention bot's per-product config (bot token, channel, player-API key) lives on the
+product row in the admin **Retention · Telegram** section, not in env; secrets there are
+encrypted at rest via `SECRETS_MASTER_KEY`. Photo-progression / limit knobs
+(`daily_photo_cap`, `stage_advance_msgs`, `max_stage_by_tier`, …) live in the `retention`
+settings group (defaults seeded from `RETENTION_*` env). See `RETENTION_BOT_SPEC.md`.
 
 Most operational knobs (rate limits, cooldowns, model tuning, escalation thresholds,
 session TTL, body cap, etc.) are tunable live from the admin **Settings** tab and only need

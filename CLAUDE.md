@@ -697,6 +697,73 @@ truth, not the admin panel. Ships non-empty (off-topic blocking works out of the
 localizes to the player's language. Lives in Layer 3 only, so `SYSTEM_CORE` stays byte-stable
 (a test asserts it).
 
+### RETENTION BOT — Telegram second facade (`retention.py`, `telegram_transport.py`)
+A **second front-end over the same AI core**: from the site a player deep-links into a
+Telegram bot where **Nika runs retention only** (warm, flirtatious engagement + photos under
+the player's profile). She does **not** handle support — any support/complaint/account-block/
+deposit-withdrawal/responsible-gaming/ask-for-a-human topic is routed **out** (to a manager on
+an escalation entry, back to site support on a retention entry). Full spec: `RETENTION_BOT_SPEC.md`.
+
+- **Transport vs. brain vs. AI turn are separated on purpose** so the transport can be lifted
+  into its own service later: `telegram_transport.py` (HTTP to the Bot API + update parsing,
+  holds no logic), `retention.py` (the orchestration: nonce exchange, subscription gate, entry
+  menu, photo selection/gating, manager round-robin, progression), `chat_service.handle_retention_message`
+  (the AI turn: build prompt → model → strip sentinels → persist).
+- **Channel = the existing `consumer` column** (`'web'` → `'telegram'`), NOT a new `channel`; the
+  mode is derived from it (telegram ⇒ retention). Support is never duplicated in Telegram.
+- **Retention prompt mode (`prompts.py`)** is a SECOND Layer-1 assembly — `SYSTEM_CORE_RETENTION`
+  + retention static directives (`get_retention_system_core()`), byte-stable per **product × mode**
+  (a test asserts it, mirroring the support core). It shares the persona but swaps support
+  behaviour for engagement + photos + route-out. **No** KB-grounding / escalation-restraint /
+  topic-routing / suggestions here. Layer 2 = the **whole** retention-KB (`db.retention_kb_block`,
+  a flat scenario base, NOT `kb_topics`). Layer 3 (`build_retention_dynamic_prompt`) = full profile
+  personalization + language directive + the **photo-candidate list** + a lighter retention guardrail.
+- **Retention sentinels** (stripped like the support ones): `[[PHOTO:id]]` (send a photo from the
+  candidate list the model was shown — backend re-validates the id), `[[STAGE_UP]]` (a hint the
+  player is ready for the next explicitness stage — the backend gate decides), `[[HANDOFF]]`
+  (route out; writes `admin_events('retention_handoff')`), `[[LANG:xx]]` (as everywhere). Strip
+  helpers: `prompts.strip_photo_tag` / `strip_stage_up_tag` / `strip_handoff_tag`.
+- **Media library + file_id cache**: `retention_photos` gates by `level_min` (VIP-tier ordinal) ×
+  `stage` (explicitness). The first send uploads the binary from the media dir (Railway Volume,
+  `RETENTION_MEDIA_DIR`); Telegram returns a `file_id` cached on the row so later sends skip the
+  re-upload/egress. **Candidate selection is pre-model** (`retention.select_photo_candidates`):
+  unseen, tier×stage-gated (current stage + 1 teaser, capped by the tier ceiling), bounded by the
+  **daily cap** (hard, reactive included) and the **proactive cooldown** (bypassed when the player
+  explicitly asks — `is_photo_request`). Empty candidate set ⇒ the model is told to keep chatting
+  with text and not promise a photo. The model's reply text becomes the photo **caption**, grounded
+  on the candidate descriptions it was shown (one call — no separate caption round-trip).
+- **Progression is backend-decided** (`retention.maybe_advance_stage`): the model only hints;
+  the actual `unlocked_stage` advance needs the engagement threshold (`stage_advance_msgs`) **and**
+  the tier ceiling (`max_stage_by_tier`) **and** spacing (`stage_advance_min_hours`). VIP tier is
+  mapped from the free-text `vip_level` via the ordered `vip_tiers` list. All knobs are in the
+  **`retention` settings group** (`settings.retention()`, in `SETTING_KEYS` — per-product tunable).
+- **Entry = deeplink + one-time nonce** (`retention_nonces`): the site posts a handshake to
+  `POST /api/retention/deeplink` → `{nonce, deep_link}`; `/start <nonce>` redeems it (single-use,
+  TTL-bounded), fixes the **`tg_user_id ↔ player_id` link** + a `_CONTEXT_FIELDS` profile snapshot
+  in `retention_users`, and sets `entry_type` (`retention` | `escalation`). No valid nonce ⇒ the
+  bot refuses (no organic entry). Then the **channel subscription gate** (`getChatMember`, the bot
+  must be a channel admin) before any menu; a product with no channel configured skips the gate.
+- **Profile freshness degrades softly**: snapshot + re-handshake (ships now) → lazy pull via the
+  product's `player_api_url` + encrypted key → push webhook `POST /partner/{product_id}/player-update`
+  (authorized with the product's handshake secret as the shared partner secret). Partial updates only.
+- **Managers** (`retention_managers`): round-robin, **sticky** (a returning player keeps their
+  manager); the hand-off is a `t.me/<username>` link; only the fact is logged
+  (`retention_manager_handoff`).
+- **Per-product Telegram config** lives on the `products` row: `telegram_bot_token_enc` /
+  `player_api_key_enc` (secretbox-encrypted, like the OpenAI keys — `has_*` flags only out),
+  `telegram_bot_username`, `telegram_webhook_secret` (non-secret webhook routing token, the
+  Telegram analogue of `widget_key` — resolves an update to its product), `telegram_channel_id`,
+  `telegram_channel_url`, `player_api_url`, `retention_enabled`. Webhook auth is two-layer: the
+  routing token in the path + the deploy-wide `TELEGRAM_WEBHOOK_SECRET` in the
+  `X-Telegram-Bot-Api-Secret-Token` header (NOT in the URL).
+- **Admin**: the SPA **Retention · Telegram** view (sub-tabs: Telegram config, Retention KB, Media,
+  Managers, Settings, Analytics); API under `/admin/retention/*` (`api/retention.py`, guarded per
+  product) + the `retention` group via the generic `/admin/settings/retention`. Retention copy
+  (menu/gate/handoff strings, `rtn_*` keys) is in the translations registry (scope `retention`).
+- **All existing invariants hold**: retention turns persist atomically as normal
+  `chat_messages` + `ai_interaction_logs`, carry the session's `product_id`, use the product's own
+  (encrypted) OpenAI keys with the same failover, and DB access stays behind `db.*` helpers.
+
 ## Invariants (these break silently — do not violate)
 
 1. The Layer-1 block (`get_system_core()` = `SYSTEM_CORE` + the static directives,

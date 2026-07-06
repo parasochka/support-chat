@@ -1,0 +1,206 @@
+"""Flow-level tests for retention.handle_update with a fake Telegram + fake DB.
+
+Exercises the wiring: /start nonce redemption, the subscription gate, the entry
+menu, the callback actions, and a Nika text turn that sends a photo. DB helpers
+and the model call are monkeypatched; the assertions are on what the bot sends.
+"""
+from __future__ import annotations
+
+import chat_service
+import retention
+
+
+class FakeTelegram:
+    def __init__(self, *a, **k):
+        self.messages = []       # (chat_id, text, reply_markup)
+        self.photos = []         # (chat_id, file_id, caption)
+        self.answered = []
+        self.subscribed = True   # what is_subscribed returns
+
+    async def send_message(self, chat_id, text, *, reply_markup=None, parse_mode=None):
+        self.messages.append((chat_id, text, reply_markup))
+        return {"message_id": 1}
+
+    async def send_photo_file_id(self, chat_id, file_id, *, caption=None):
+        self.photos.append((chat_id, file_id, caption))
+        return {"ok": True}
+
+    async def send_photo_bytes(self, chat_id, content, filename, *, caption=None):
+        self.photos.append((chat_id, "uploaded", caption))
+        return {"photo": [{"file_id": "newid"}]}
+
+    async def answer_callback(self, cb_id, text=None):
+        self.answered.append(cb_id)
+
+    async def is_subscribed(self, chat_id, user_id):
+        return self.subscribed
+
+
+def _patch_common(monkeypatch, tg):
+    async def _token(pid):
+        return "bot-token"
+    monkeypatch.setattr(retention.db, "get_product_telegram_token", _token)
+    monkeypatch.setattr(retention, "TelegramClient", lambda *a, **k: tg)
+
+
+PRODUCT = {"id": 1, "active": True, "retention_enabled": True,
+           "telegram_bot_username": "nika_bot", "telegram_channel_id": None,
+           "telegram_channel_url": "https://t.me/chan"}
+
+
+async def test_start_without_valid_nonce(monkeypatch):
+    tg = FakeTelegram()
+    _patch_common(monkeypatch, tg)
+
+    async def _redeem(nonce):
+        return None
+    monkeypatch.setattr(retention.db, "redeem_retention_nonce", _redeem)
+
+    await retention.handle_update(PRODUCT, {"message": {
+        "from": {"id": 7}, "chat": {"id": 7}, "text": "/start bad"}})
+    assert tg.messages, "expected a message"
+    assert "site" in tg.messages[0][1].lower() or "сайт" in tg.messages[0][1].lower()
+
+
+async def test_start_valid_nonce_shows_menu(monkeypatch):
+    tg = FakeTelegram()
+    _patch_common(monkeypatch, tg)
+
+    async def _redeem(nonce):
+        return {"product_id": 1, "payload": {"id": "p9", "full_name": "Andrey",
+                "vip_level": "Gold"}, "escalation": True}
+    monkeypatch.setattr(retention.db, "redeem_retention_nonce", _redeem)
+
+    captured = {}
+
+    async def _upsert(product_id, tg_user_id, **kw):
+        captured.update(kw)
+        return {"id": 10, "tg_user_id": tg_user_id, "entry_type": kw["entry_type"],
+                "conv_lang": None}
+    monkeypatch.setattr(retention.db, "upsert_retention_user", _upsert)
+
+    async def _sub(rid, val):
+        pass
+    monkeypatch.setattr(retention.db, "set_retention_subscribed", _sub)
+
+    await retention.handle_update(PRODUCT, {"message": {
+        "from": {"id": 7, "username": "andr"}, "chat": {"id": 7},
+        "text": "/start goodnonce"}})
+
+    # escalation entry -> the manager button is offered alongside Nika
+    assert captured["entry_type"] == "escalation"
+    assert tg.messages, "menu expected"
+    markup = tg.messages[-1][2]
+    labels = [b["text"] for row in markup["inline_keyboard"] for b in row]
+    assert any("manager" in l.lower() or "менеджер" in l.lower() for l in labels)
+    assert any("nika" in l.lower() or "ник" in l.lower() for l in labels)
+
+
+async def test_callback_nika_starts_chat(monkeypatch):
+    tg = FakeTelegram()
+    _patch_common(monkeypatch, tg)
+
+    async def _get_ru(pid, tg_id):
+        return {"id": 10, "tg_user_id": tg_id, "entry_type": "retention",
+                "conv_lang": None, "subscribed": True}
+    monkeypatch.setattr(retention.db, "get_retention_user", _get_ru)
+
+    await retention.handle_update(PRODUCT, {"callback_query": {
+        "id": "cb", "from": {"id": 7}, "data": retention.CB_MENU_NIKA,
+        "message": {"chat": {"id": 7}}}})
+    assert tg.answered == ["cb"]
+    assert tg.messages, "a Nika-start line expected"
+
+
+async def test_nika_turn_sends_photo(monkeypatch):
+    tg = FakeTelegram()
+    _patch_common(monkeypatch, tg)
+
+    ru = {"id": 10, "tg_user_id": 7, "entry_type": "retention", "conv_lang": None,
+          "subscribed": True, "vip_level": "Gold", "unlocked_stage": 2,
+          "photos_sent_today": 0, "photos_day": None, "msgs_since_photo": 9,
+          "meaningful_msgs": 3, "player_id": "p9", "session_id": "sess-1"}
+
+    async def _get_ru(pid, tg_id):
+        return dict(ru)
+    monkeypatch.setattr(retention.db, "get_retention_user", _get_ru)
+
+    async def _get_session(sid):
+        return {"id": "sess-1", "product_id": 1, "user_context": {}, "lang": "en",
+                "conv_lang": None, "message_count": 0}
+    monkeypatch.setattr(retention.db, "get_session", _get_session)
+
+    async def _bump(rid, *, meaningful):
+        return dict(ru)
+    monkeypatch.setattr(retention.db, "bump_retention_activity", _bump)
+
+    async def _candidates(pid, rid, **kw):
+        return [{"id": 55, "stage": 2, "description": "beach", "tags": []}]
+    monkeypatch.setattr(retention.db, "candidate_photos", _candidates)
+
+    async def _get_photo(pid):
+        return {"id": 55, "active": True, "telegram_file_id": "cachedfile",
+                "storage_ref": "x.jpg"}
+    monkeypatch.setattr(retention.db, "get_retention_photo", _get_photo)
+
+    async def _record(rid, photo_id, product_id):
+        pass
+    monkeypatch.setattr(retention.db, "record_retention_photo_view", _record)
+
+    async def _advance(rid, stage):
+        pass
+    monkeypatch.setattr(retention.db, "advance_retention_stage", _advance)
+
+    # The model "sends" photo 55 with a caption.
+    async def _handle(session, text, candidates):
+        assert candidates and candidates[0]["id"] == 55
+        return chat_service.RetentionReply(
+            reply="here you go", lang="en", message_count=1, photo_id=55)
+    monkeypatch.setattr(chat_service, "handle_retention_message", _handle)
+
+    await retention.handle_update(PRODUCT, {"message": {
+        "from": {"id": 7}, "chat": {"id": 7}, "text": "покажи фото"}})
+
+    assert tg.photos, "a photo should have been sent"
+    assert tg.photos[0] == (7, "cachedfile", "here you go")
+
+
+async def test_nika_handoff_retention_entry_routes_to_support(monkeypatch):
+    tg = FakeTelegram()
+    _patch_common(monkeypatch, tg)
+    ru = {"id": 10, "tg_user_id": 7, "entry_type": "retention", "conv_lang": None,
+          "subscribed": True, "vip_level": "none", "unlocked_stage": 1,
+          "photos_sent_today": 0, "photos_day": None, "msgs_since_photo": 0,
+          "meaningful_msgs": 1, "player_id": "p9", "session_id": "sess-1"}
+
+    async def _get_ru(pid, tg_id):
+        return dict(ru)
+    monkeypatch.setattr(retention.db, "get_retention_user", _get_ru)
+
+    async def _get_session(sid):
+        return {"id": "sess-1", "product_id": 1, "user_context": {}, "lang": "en",
+                "conv_lang": None, "message_count": 0}
+    monkeypatch.setattr(retention.db, "get_session", _get_session)
+
+    async def _bump(rid, *, meaningful):
+        return dict(ru)
+    monkeypatch.setattr(retention.db, "bump_retention_activity", _bump)
+
+    async def _candidates(pid, rid, **kw):
+        return []
+    monkeypatch.setattr(retention.db, "candidate_photos", _candidates)
+
+    async def _log(*a, **k):
+        pass
+    monkeypatch.setattr(retention.db, "log_admin_event", _log)
+
+    async def _handle(session, text, candidates):
+        return chat_service.RetentionReply(
+            reply="let me pass you along", lang="en", message_count=1, handoff=True)
+    monkeypatch.setattr(chat_service, "handle_retention_message", _handle)
+
+    await retention.handle_update(PRODUCT, {"message": {
+        "from": {"id": 7}, "chat": {"id": 7}, "text": "my account is blocked"}})
+
+    texts = " ".join(m[1] for m in tg.messages).lower()
+    assert "support" in texts or "поддержк" in texts

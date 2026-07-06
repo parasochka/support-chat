@@ -21,6 +21,7 @@ from api import admin as admin_api
 from api import admin_auth as admin_auth_api
 from api import chat as chat_api
 from api import health as health_api
+from api import retention as retention_api
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,6 +55,17 @@ def _warn_insecure_config() -> None:
             "with SESSION_JWT_SECRET. Set a DISTINCT SECRETS_MASTER_KEY in "
             "production (rotating it later invalidates stored product secrets)."
         )
+    if config.TELEGRAM_WEBHOOK_SECRET_IS_FALLBACK:
+        log.warning(
+            "TELEGRAM_WEBHOOK_SECRET is not set; the retention bot webhook falls "
+            "back to SESSION_JWT_SECRET. Set a DISTINCT TELEGRAM_WEBHOOK_SECRET "
+            "in production."
+        )
+    if not config.PUBLIC_BASE_URL:
+        log.warning(
+            "PUBLIC_BASE_URL is not set; the retention bot webhook cannot be "
+            "auto-registered from the admin panel until it is."
+        )
 
 
 @asynccontextmanager
@@ -62,6 +74,10 @@ async def lifespan(app: FastAPI):
     _warn_insecure_config()
     await db.init_db()
     await settings.reload()       # populate the hot settings cache from app_settings
+    try:
+        os.makedirs(config.RETENTION_MEDIA_DIR, exist_ok=True)
+    except OSError as exc:
+        log.warning("could not create RETENTION_MEDIA_DIR: %s", exc)
     log.info("Startup complete")
     try:
         yield
@@ -116,6 +132,8 @@ app.include_router(health_api.router)
 app.include_router(chat_api.router)
 app.include_router(admin_auth_api.router)   # /admin/login + require_admin
 app.include_router(admin_api.router)        # /admin/* data + management (guarded)
+app.include_router(retention_api.public_router)  # telegram webhook + deeplink + CRM
+app.include_router(retention_api.admin_router)    # /admin/retention/* (guarded)
 
 
 # --- static frontend --------------------------------------------------------

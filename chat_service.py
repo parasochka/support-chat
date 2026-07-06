@@ -480,3 +480,138 @@ async def handle_message(
         closing_suggestion=closing_suggestion,
         resolved=resolved,
     )
+
+
+# ===========================================================================
+# RETENTION mode (Telegram bot) — reuses the same AI core, different assembly.
+# The transport (telegram_transport) and orchestration (retention.py) sit above
+# this; here we build the retention prompt, call the model, strip the retention
+# sentinels, and persist the turn atomically. No support mechanics (topic
+# routing / escalation restraint / suggestions) run in this mode.
+# ===========================================================================
+@dataclass
+class RetentionReply:
+    reply: str                 # visible text / photo caption (sentinels stripped)
+    lang: str
+    message_count: int
+    photo_id: Optional[int] = None   # validated id to send, or None
+    handoff: bool = False            # route the player OUT (support/manager)
+    stage_up_hint: bool = False      # the model proposed advancing the stage
+    ok: bool = True                  # False on a transient model failure
+
+
+async def handle_retention_message(
+    session: dict[str, Any],
+    user_text: str,
+    photo_candidates: Optional[list[dict[str, Any]]] = None,
+) -> RetentionReply:
+    """Process one retention (Telegram) turn for an already-linked session.
+
+    `photo_candidates` is the pre-filtered allowed set (tier x stage x unseen x
+    daily-cap x proactive-cooldown), computed by retention.py; the model may only
+    pick a [[PHOTO:id]] from it and we re-validate here.
+    """
+    started = time.monotonic()
+    session_id = session["id"]
+    product_id = session.get("product_id")
+    tenancy.set_current_product(product_id)
+    candidates = photo_candidates or []
+    candidate_ids = {int(c["id"]) for c in candidates}
+
+    base_lang = (session.get("conv_lang") or session.get("lang")
+                 or language.default_code())
+
+    # --- retention KB (Layer 2, loaded WHOLE) + history ---------------------
+    kb_text = await db.retention_kb_block(product_id) if product_id else ""
+    kb_block = await kb.render_variables(kb_text, product_id=product_id) if kb_text else None
+    history = await db.get_history(
+        session_id, limit=settings.general()["history_max_turns"],
+    )
+    messages = prompts.build_retention_messages(
+        session=session,
+        kb_block=kb_block,
+        history=history,
+        user_text=user_text,
+        resolved_lang=base_lang,
+        photo_candidates=candidates,
+    )
+    log.info(
+        "retention_prompt_built session_id=%s history=%s candidates=%s kb_chars=%s",
+        session_id, len(history), len(candidates), len(kb_block or ""),
+    )
+
+    # --- call model (product keys / env failover) ---------------------------
+    client = await openai_client.client_for_product(product_id)
+    error: Optional[str] = None
+    try:
+        result = await client.complete(
+            messages, session_id=session_id, on_failover=_on_failover
+        )
+        raw_text = result.text
+    except Exception as exc:  # noqa: BLE001
+        error = f"{exc.__class__.__name__}: {exc}"
+        log.exception("retention_model_failed session_id=%s error=%s", session_id, error)
+        await db.log_ai_interaction(
+            session_id, settings.model()["model"], "none",
+            0, 0, 0, 0.0, 0, False, error, product_id=product_id,
+        )
+        await db.log_admin_event_sampled(session_id, "model_error", {"error": error[:300]})
+        return RetentionReply(
+            reply=_model_error_reply(base_lang), lang=base_lang,
+            message_count=session.get("message_count", 0), ok=False,
+        )
+
+    # --- strip retention sentinels ------------------------------------------
+    detected_lang: Optional[str] = None
+    handoff = False
+    stage_up = False
+    photo_id: Optional[int] = None
+    clean_text = raw_text or ""
+    if clean_text:
+        clean_text, detected_lang = prompts.strip_language_tag(clean_text)
+        clean_text, handoff = prompts.strip_handoff_tag(clean_text)
+        clean_text, stage_up = prompts.strip_stage_up_tag(clean_text)
+        clean_text, photo_id = prompts.strip_photo_tag(clean_text)
+    if detected_lang and detected_lang not in language.supported_codes():
+        detected_lang = None
+    # Only honour a photo id from the allowed candidate set.
+    if photo_id is not None and photo_id not in candidate_ids:
+        log.info("retention_photo_id_rejected session_id=%s id=%s", session_id, photo_id)
+        photo_id = None
+
+    answer_lang = detected_lang or base_lang
+    if detected_lang and detected_lang != session.get("conv_lang"):
+        await db.set_conv_lang(session_id, detected_lang)
+
+    cost = openai_client.compute_cost(
+        result.model, result.tokens_in, result.tokens_out, result.cached_in
+    )
+
+    if not clean_text:
+        # A photo turn may legitimately carry only a caption; if even that is
+        # empty, fall back to a warm nudge so the player never gets silence.
+        clean_text = "" if photo_id is not None else antispam.low_content_reply(answer_lang)
+
+    new_count = await db.persist_turn(
+        session_id=session_id,
+        user_text=user_text,
+        user_lang=detected_lang,
+        assistant_text=clean_text or ("[photo]" if photo_id else ""),
+        assistant_lang=answer_lang,
+        product_id=product_id,
+        ai_meta={
+            "model": result.model, "key_used": result.key_used,
+            "tokens_in": result.tokens_in, "tokens_out": result.tokens_out,
+            "cached_in": result.cached_in, "cost_usd": cost,
+            "latency_ms": result.latency_ms, "ok": True, "error": None,
+        },
+    )
+    log.info(
+        "retention_turn_done session_id=%s photo=%s handoff=%s stage_up=%s elapsed_ms=%s",
+        session_id, photo_id, handoff, stage_up,
+        int((time.monotonic() - started) * 1000),
+    )
+    return RetentionReply(
+        reply=clean_text, lang=answer_lang, message_count=new_count,
+        photo_id=photo_id, handoff=handoff, stage_up_hint=stage_up,
+    )
