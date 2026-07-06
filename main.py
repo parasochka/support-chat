@@ -21,6 +21,7 @@ from api import admin as admin_api
 from api import admin_auth as admin_auth_api
 from api import chat as chat_api
 from api import health as health_api
+from api import retention as retention_api
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,6 +55,17 @@ def _warn_insecure_config() -> None:
             "with SESSION_JWT_SECRET. Set a DISTINCT SECRETS_MASTER_KEY in "
             "production (rotating it later invalidates stored product secrets)."
         )
+    if config.TELEGRAM_WEBHOOK_SECRET_IS_FALLBACK:
+        log.warning(
+            "TELEGRAM_WEBHOOK_SECRET is not set; the retention bot webhook falls "
+            "back to SESSION_JWT_SECRET. Set a DISTINCT TELEGRAM_WEBHOOK_SECRET "
+            "in production."
+        )
+    if not config.PUBLIC_BASE_URL:
+        log.warning(
+            "PUBLIC_BASE_URL is not set; the retention bot webhook cannot be "
+            "auto-registered from the admin panel until it is."
+        )
 
 
 @asynccontextmanager
@@ -62,6 +74,10 @@ async def lifespan(app: FastAPI):
     _warn_insecure_config()
     await db.init_db()
     await settings.reload()       # populate the hot settings cache from app_settings
+    try:
+        os.makedirs(config.RETENTION_MEDIA_DIR, exist_ok=True)
+    except OSError as exc:
+        log.warning("could not create RETENTION_MEDIA_DIR: %s", exc)
     log.info("Startup complete")
     try:
         yield
@@ -82,13 +98,27 @@ app.add_middleware(
 )
 
 
+# Endpoints that accept a binary upload (retention media) need a much larger body
+# than the JSON API cap — a photo is megabytes, not the 64 KiB JSON default. The
+# media-upload path gets its own cap so a normal JSON body stays tightly bounded
+# while a legitimate image upload is allowed through.
+_UPLOAD_PATH_PREFIX = "/admin/retention/photos"
+
+
+def _body_cap_for(request: Request) -> int:
+    if (request.method == "POST"
+            and request.url.path.startswith(_UPLOAD_PATH_PREFIX)):
+        return config.RETENTION_MAX_UPLOAD_BYTES
+    return settings.general()["body_max_bytes"]
+
+
 # --- Body-size cap middleware ----------------------------------------------
 @app.middleware("http")
 async def body_size_cap(request: Request, call_next):
     cl = request.headers.get("content-length")
     if cl is not None:
         try:
-            body_max = settings.general()["body_max_bytes"]
+            body_max = _body_cap_for(request)
             if int(cl) > body_max:
                 return JSONResponse(
                     status_code=413,
@@ -116,6 +146,8 @@ app.include_router(health_api.router)
 app.include_router(chat_api.router)
 app.include_router(admin_auth_api.router)   # /admin/login + require_admin
 app.include_router(admin_api.router)        # /admin/* data + management (guarded)
+app.include_router(retention_api.public_router)  # telegram webhook + deeplink + CRM
+app.include_router(retention_api.admin_router)    # /admin/retention/* (guarded)
 
 
 # --- static frontend --------------------------------------------------------
@@ -205,4 +237,13 @@ async def test_html() -> FileResponse:
 @app.get("/integration", response_class=HTMLResponse)
 async def integration_docs() -> FileResponse:
     return FileResponse(os.path.join(_FRONTEND_DIR, "integration.html"),
+                        media_type="text/html", headers=_WIDGET_CACHE)
+
+
+# Separate, self-contained integration guide for the Telegram retention bot
+# (the second facade). Kept as its own page — matching the /integration style —
+# so the support-chat guide stays focused; the two cross-link each other.
+@app.get("/integration-telegram", response_class=HTMLResponse)
+async def integration_telegram_docs() -> FileResponse:
+    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-telegram.html"),
                         media_type="text/html", headers=_WIDGET_CACHE)

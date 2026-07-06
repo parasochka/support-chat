@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retention-бот (Telegram) — интеграция</title>
+<style>
+  :root {
+    --bg:#0f1320; --panel:#1a2032; --panel2:#232c44; --line:#2e3a57;
+    --text:#e7ecf5; --muted:#9aa7c2; --accent:#4f8cff; --good:#36c08a; --warn:#e8b349;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:32px 20px 80px; }
+  h1 { font-size:26px; margin:0 0 6px; }
+  h2 { font-size:19px; margin:44px 0 10px; padding-top:18px; border-top:1px solid var(--line); }
+  h3 { font-size:15px; margin:24px 0 8px; color:var(--accent); }
+  p, li { color:var(--text); }
+  .muted { color:var(--muted); }
+  code { background:var(--panel2); border:1px solid var(--line); border-radius:5px;
+    padding:1px 6px; font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace; }
+  pre { background:var(--panel); border:1px solid var(--line); border-radius:9px;
+    padding:14px 16px; overflow-x:auto; font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace; }
+  pre code { background:none; border:none; padding:0; }
+  table { width:100%; border-collapse:collapse; margin:10px 0 18px; font-size:13px; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,Menlo,monospace; border-radius:5px;
+    padding:4px 7px; margin-right:6px; }
+  .get { background:rgba(54,192,138,.16); color:var(--good); }
+  .post { background:rgba(79,140,255,.16); color:var(--accent); }
+  .put { background:rgba(232,179,73,.16); color:var(--warn); }
+  .del { background:rgba(224,89,107,.16); color:#e0596b; }
+  .note { background:rgba(79,140,255,.08); border:1px solid var(--line); border-left:3px solid var(--accent);
+    border-radius:8px; padding:10px 14px; margin:14px 0; }
+  .warnbox { background:rgba(232,179,73,.10); border:1px solid var(--warn); color:var(--warn);
+    border-radius:8px; padding:10px 14px; margin:14px 0; }
+  nav { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 18px; margin:22px 0; }
+  nav a { color:var(--accent); text-decoration:none; display:inline-block; margin:2px 14px 2px 0; }
+  nav a:hover { text-decoration:underline; }
+  .endpoint { margin:14px 0 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Retention-бот «Ника» в Telegram — интеграция и API</h1>
+<p class="muted">Документация для команд разработки: как подключить второй фасад сервиса — Telegram-бот
+с ретеншн-персоной Никой — к сайту казино. Это тот же AI-сервис и та же мультитенантность, что у
+чата поддержки (см. <a href="/integration" style="color:var(--accent)">страницу интеграции чата поддержки</a>);
+здесь описано только то, что специфично для Telegram. База URL во всех примерах — адрес этого сервиса.</p>
+
+<nav>
+  <a href="#what">Что это и границы</a>
+  <a href="#config">Что настроить на продукте</a>
+  <a href="#deeplink">Вход: диплинк и nonce</a>
+  <a href="#buttons">Две кнопки на сайте</a>
+  <a href="#gate">Гейт подписки на канал</a>
+  <a href="#profile">Профиль игрока (снапшот / pull / push)</a>
+  <a href="#api">Справочник API</a>
+  <a href="#env">Переменные окружения</a>
+</nav>
+
+<h2 id="what">1. Что это и границы</h2>
+<p>С сайта игрок уходит по диплинку в Telegram-бота, где <b>Ника ведёт только ретеншн</b> — живую
+тёплую переписку и фото под профиль игрока. Ядро AI — общее с чатом поддержки; отличается транспорт
+(Telegram webhook вместо виджета) и режим (вовлечение вместо решения вопросов).</p>
+<ul>
+  <li><b>Поддержку бот не обрабатывает.</b> Любую тему про поддержку, жалобу, блок аккаунта,
+      ввод-вывод, ответственную игру или просьбу о живом человеке Ника не решает, а роутит наружу:
+      эскалированный вход → к менеджеру, ретеншн-вход → назад в поддержку на сайте.</li>
+  <li><b>Органического входа нет.</b> Бот открывается только с сайта, всегда с данными игрока
+      (см. диплинк). Из канала в бота попасть нельзя.</li>
+  <li><b>Всё вешается на продукт</b> (мультитенант): у каждого казино свой бот, канал, медиатека,
+      менеджеры, retention-KB. White-label работает из коробки, как виджет.</li>
+</ul>
+<div class="note">Продукт при входящем апдейте резолвится по токену маршрутизации вебхука
+(аналог <code>widget_key</code> для виджета) — он же в пути вебхука. Профиль игрока при этом
+<b>не настраивается вручную</b>, он приходит per-player через диплинк (раздел&nbsp;3).</div>
+
+<h2 id="config">2. Что настроить на продукте (в админке)</h2>
+<p>Всё — в админке сервиса, раздел <b>Retention · Telegram</b> (выбрав нужный продукт в шапке).
+Настраивается <b>один раз на продукт</b>; данные конкретного игрока сюда не вводятся.</p>
+<table>
+  <tr><th>Что</th><th>Где</th><th>Секрет?</th></tr>
+  <tr><td><b>Bot username</b> (например <code>nika_casino_bot</code>) + <b>Bot token</b> от BotFather</td>
+      <td>Telegram config → поле + Secrets</td><td>токен — да (шифруется, наружу только флаг)</td></tr>
+  <tr><td><b>Channel id</b> (<code>@channel</code> или <code>-100…</code>) + <b>Channel URL</b></td>
+      <td>Telegram config</td><td>нет</td></tr>
+  <tr><td><b>Retention enabled</b></td><td>Telegram config (галочка)</td><td>нет</td></tr>
+  <tr><td><b>Player API URL</b> + ключ (для pull профиля, опционально)</td>
+      <td>Telegram config + Secrets</td><td>ключ — да (шифруется)</td></tr>
+  <tr><td>Медиатека, менеджеры, retention-KB, пороги ретеншна</td>
+      <td>под-вкладки Media / Managers / Retention KB / Settings</td><td>нет</td></tr>
+</table>
+<div class="warnbox">Ранее у продукта мог быть указан только <b>адрес Telegram-канала</b> (или ссылка на
+контакт в эскалации чата поддержки). Для бота этого мало: нужно добавить именно <b>бота</b> —
+username и токен от BotFather, — и включить <b>Retention enabled</b>. Канал остаётся целью подписки
+(гейт), входом в бота он не является. Всё остальное (VIP, баланс, имя игрока) передаётся автоматически
+в диплинке — руками нигде не вводится.</div>
+<p>После сохранения токена в Telegram config появляется кнопка <b>Register / refresh webhook</b> —
+она сама пропишет вебхук боту у Telegram (нужен заданный <code>PUBLIC_BASE_URL</code>). Проверка:
+<code>https://api.telegram.org/bot&lt;ТОКЕН&gt;/getWebhookInfo</code>. Бот должен быть
+<b>администратором канала</b> — иначе гейт подписки (<code>getChatMember</code>) не сработает.</p>
+
+<h2 id="deeplink">3. Вход: диплинк и одноразовый nonce</h2>
+<p>Полный профиль игрока не влезает в <code>start=</code> Telegram (лимит 64 символа), поэтому обмен
+идёт через одноразовый nonce. Сайт (или бэкенд CMS) зовёт нашу ручку с handshake игрока и получает
+готовую ссылку <code>t.me/…?start=…</code>, которую открывает игроку.</p>
+
+<div class="endpoint"><span class="tag post">POST</span><code>/api/retention/deeplink</code></div>
+<p>Тело: <code>{ widget_key?, signed_context?, escalation? }</code>. Ответ:
+<code>{ nonce, deep_link }</code>.</p>
+<pre><code>POST /api/retention/deeplink
+{
+  "widget_key": "wk_XXXXXXXXXXXX",     // тот же ключ продукта, что у виджета
+  "signed_context": "&lt;подписанный handshake игрока&gt;",
+  "escalation": false                   // true — вход из эскалации чата поддержки
+}
+→ 200 { "nonce": "r7Kx…", "deep_link": "https://t.me/nika_casino_bot?start=r7Kx…" }</code></pre>
+<ul>
+  <li><b>Профиль</b> в <code>signed_context</code> — тот же подписанный handshake, что и в чате поддержки
+      (whitelisted-поля <code>id, full_name, email, activation_status, country, balance, vip_level,
+      registration_date</code>). Подпись, форматы и примеры кода — на
+      <a href="/integration#handshake" style="color:var(--accent)">странице интеграции чата поддержки,
+      раздел 3</a>. В dev (без секрета handshake) вместо подписи берётся тест-профиль из админки.</li>
+  <li><b>nonce одноразовый</b>, живёт <code>nonce_ttl_sec</code> (по умолч. 120 сек) — генерируйте его
+      в момент клика по кнопке. Повторное использование и протухший nonce отклоняются.</li>
+  <li><b>escalation</b> различает вход: <code>false</code> — обычная ретеншн-кнопка (в меню только
+      Ника); <code>true</code> — кнопка эскалации в чате поддержки (в меню появляется «Перейти к
+      менеджеру»).</li>
+</ul>
+<p>При редиме на <code>/start &lt;nonce&gt;</code> бот фиксирует связку <code>tg_user_id ↔ player_id</code>
+и снимок профиля. Диплинк — единственный вход; без валидного nonce бот отвечает «открой чат через
+кабинет на сайте».</p>
+
+<h2 id="buttons">4. Две кнопки на сайте</h2>
+<p>На сайте казино ставятся две точки входа; обе зовут <code>/api/retention/deeplink</code> и открывают
+полученный <code>deep_link</code> (новая вкладка или <code>tg://</code>):</p>
+<table>
+  <tr><th>Кнопка</th><th>Вызов</th><th>Меню в боте</th></tr>
+  <tr><td>«Написать Нике» (ретеншн)</td><td><code>escalation: false</code></td><td>[💬 Пообщаться с Никой]</td></tr>
+  <tr><td>Эскалация в чате поддержки</td><td><code>escalation: true</code></td><td>[👩 К менеджеру] + [💬 Ника]</td></tr>
+</table>
+<pre><code>// пример: клиентский обработчик кнопки «Написать Нике»
+async function openNika(signedContext) {
+  const r = await fetch("https://CHAT_HOST/api/retention/deeplink", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      widget_key: "wk_XXXXXXXXXXXX",
+      signed_context: signedContext,   // подписан бэкендом CMS, TTL ≤ 120 сек
+      escalation: false,
+    }),
+  });
+  const { deep_link } = await r.json();
+  window.open(deep_link, "_blank");
+}</code></pre>
+
+<h2 id="gate">5. Гейт подписки на канал</h2>
+<p>После обмена nonce, до любого меню, бот проверяет подписку на канал продукта
+(<code>getChatMember</code>) и не пускает дальше, пока игрок не подписан: показывает
+[📢 Открыть канал] и [✅ Я подписался] (повторная проверка). Продукт без заданного канала гейт
+пропускает. Бот обязан быть <b>админом канала</b>. Тексты гейта и кнопок редактируются в админке
+(Translations, ключи <code>rtn_*</code>) на каждый язык.</p>
+
+<h2 id="profile">6. Профиль игрока — три уровня свежести</h2>
+<p>Набор полей — тот же whitelist, что в handshake. Схема мягко деградирует: без интеграции живёт на
+снапшоте, с Player API — освежается автоматически.</p>
+<ol>
+  <li><b>Снапшот</b> (готов сразу) — профиль с последнего диплинка; каждый новый диплинк его обновляет.
+      Ноль интеграции у партнёра.</li>
+  <li><b>Ленивый pull</b> (когда казино реализует эндпоинт) — если на продукте задан Player API URL + ключ,
+      сервис сам подтягивает свежий профиль перед ходом, когда снапшоту больше
+      <code>profile_pull_ttl_sec</code> (по умолч. 1 ч).</li>
+  <li><b>Push-webhook</b> (апгрейд) — CRM казино шлёт изменения нам мгновенно.</li>
+</ol>
+<h3>Pull — контракт на стороне казино (реализуете вы у себя)</h3>
+<pre><code>GET  {player_api_url}?player_id=&lt;id&gt;
+Authorization: Bearer &lt;player_api_key&gt;
+→ 200 {
+  "id": "player-123", "full_name": "Иван Петров", "email": "ivan@example.com",
+  "activation_status": "active", "country": "Portugal", "balance": "1500.00 EUR",
+  "vip_level": "Silver", "registration_date": "2024-01-15"
+}</code></pre>
+<h3>Push — контракт на нашей стороне (шлёте вы при изменении профиля)</h3>
+<div class="endpoint"><span class="tag post">POST</span><code>/partner/{product_id}/player-update</code></div>
+<pre><code>POST /partner/42/player-update
+Authorization: Bearer &lt;handshake-секрет продукта&gt;
+{ "player_id": "player-123", "balance": "2000.00 EUR", "vip_level": "Gold" }
+→ 200 { "ok": true, "updated": 1 }</code></pre>
+<p class="muted">Авторизация push — секретом handshake продукта (тот же общий секрет, что подписывает
+handshake). Отсутствующие поля не трогаются (частичный апдейт).</p>
+
+<h2 id="api">7. Справочник API</h2>
+<h3>Публичные ручки</h3>
+<table>
+  <tr><th>Метод / путь</th><th>Кто зовёт</th><th>Назначение</th></tr>
+  <tr><td><span class="tag post">POST</span><code>/api/retention/deeplink</code></td><td>сайт/CMS</td>
+      <td>handshake → <code>{nonce, deep_link}</code></td></tr>
+  <tr><td><span class="tag post">POST</span><code>/partner/{product_id}/player-update</code></td><td>CRM казино</td>
+      <td>push профиля (частичный, partner-секрет)</td></tr>
+  <tr><td><span class="tag post">POST</span><code>/telegram/webhook/{secret}</code></td><td>Telegram</td>
+      <td>апдейты бота (secret-token в заголовке; настраивается из админки, вручную не зовётся)</td></tr>
+</table>
+<h3>Admin API (раздел Retention · Telegram, под <code>require_admin</code>)</h3>
+<table>
+  <tr><th>Метод / путь</th><th>Назначение</th></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag put">PUT</span><code>/admin/retention/telegram/{product_id}</code></td>
+      <td>Telegram-конфиг продукта (username, канал, player API url, enabled) + webhook URL</td></tr>
+  <tr><td><span class="tag post">POST</span><code>/admin/retention/webhook/{product_id}</code></td>
+      <td>зарегистрировать/обновить вебхук у Telegram</td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag post">POST</span><span class="tag put">PUT</span><span class="tag del">DEL</span><code>/admin/retention/kb</code></td>
+      <td>единая retention-KB (сценарии + офферы + линки)</td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag post">POST</span><span class="tag put">PUT</span><span class="tag del">DEL</span><code>/admin/retention/photos</code></td>
+      <td>медиатека (загрузка файла + описание, теги, level_min, stage, категория)</td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag post">POST</span><span class="tag put">PUT</span><span class="tag del">DEL</span><code>/admin/retention/managers</code></td>
+      <td>пул менеджеров (round-robin, sticky)</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/retention/overview</code>, <code>/admin/retention/users</code></td>
+      <td>аналитика вовлечённости, показов фото, переходов к менеджерам</td></tr>
+  <tr><td><span class="tag put">PUT</span><code>/admin/settings/retention</code></td>
+      <td>группа настроек ретеншна (лимиты фото, прогрессия, VIP-тиры)</td></tr>
+  <tr><td><span class="tag put">PUT</span><code>/admin/products/{product_id}/secrets</code></td>
+      <td>секреты продукта: <code>telegram_bot_token</code>, <code>player_api_key</code> (наружу только флаги)</td></tr>
+</table>
+<p class="muted">Секреты — как OpenAI-ключи: шифруются в БД, через API возвращаются только флаги
+«задан/не задан». Авторизация admin-роутов — строго против конкретного продукта.</p>
+
+<h2 id="env">8. Переменные окружения (деплой)</h2>
+<table>
+  <tr><th>Переменная</th><th>Назначение</th></tr>
+  <tr><td><code>TELEGRAM_WEBHOOK_SECRET</code></td>
+      <td>Проверка заголовка <code>X-Telegram-Bot-Api-Secret-Token</code> вебхука (в URL его нет).
+          В проде — отдельное сильное значение.</td></tr>
+  <tr><td><code>PUBLIC_BASE_URL</code></td>
+      <td>Публичный адрес сервиса — нужен, чтобы собрать URL вебхука при регистрации из админки.</td></tr>
+  <tr><td><code>RETENTION_MEDIA_DIR</code></td>
+      <td>Путь хранения фото. На Railway — точка монтирования <b>Volume</b>, чтобы фото пережили редеплой.</td></tr>
+  <tr><td><code>SECRETS_MASTER_KEY</code></td>
+      <td>Мастер-ключ шифрования секретов продукта (токен бота, player-API-ключ).</td></tr>
+  <tr><td><code>RETENTION_MAX_UPLOAD_BYTES</code>, <code>RETENTION_NONCE_TTL_SEC</code>,
+          <code>RETENTION_PROFILE_PULL_TTL_SEC</code>…</td>
+      <td>Прочие ретеншн-дефолты — см. README сервиса (полная таблица).</td></tr>
+</table>
+
+<p class="muted" style="margin-top:40px">Страница обновляется вместе с сервисом. Полная инструкция по
+запуску (Telegram, Railway, админка, примеры сообщений) — в <code>RETENTION_SETUP.md</code> репозитория.
+Вопросы по интеграции — к команде support-chat.</p>
+</div>
+</body>
+</html>

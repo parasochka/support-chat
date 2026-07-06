@@ -237,6 +237,117 @@ CREATE TABLE IF NOT EXISTS app_settings (
   updated_by TEXT
 );
 
+-- RETENTION / TELEGRAM ----------------------------------------------
+-- Second facade over the same AI core: a Telegram retention bot. Every table
+-- hangs off a product (multi-tenant, like the KB). Support-KB is NOT reused
+-- here (retention has its own flat scenario base). See RETENTION_BOT_SPEC.md.
+-- NB: retention_managers is declared BEFORE retention_users because the latter
+-- carries an FK to it (assigned_manager_id).
+
+-- Pool of live managers a player is routed to (round-robin, sticky).
+CREATE TABLE IF NOT EXISTS retention_managers (
+  id             BIGSERIAL PRIMARY KEY,
+  product_id     INT NOT NULL REFERENCES products(id),
+  display_name   TEXT NOT NULL,
+  username       TEXT NOT NULL,     -- Telegram @username (no leading @)
+  active         BOOLEAN NOT NULL DEFAULT TRUE,
+  assigned_count INT NOT NULL DEFAULT 0,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- A player inside the Telegram bot: the tg<->player link + a snapshot of the
+-- whitelisted profile (_CONTEXT_FIELDS) + progression/limit state.
+CREATE TABLE IF NOT EXISTS retention_users (
+  id                   BIGSERIAL PRIMARY KEY,
+  product_id           INT NOT NULL REFERENCES products(id),
+  tg_user_id           BIGINT NOT NULL,
+  tg_username          TEXT,
+  player_id            TEXT,
+  entry_type           TEXT NOT NULL DEFAULT 'retention',  -- 'retention' | 'escalation'
+  -- profile snapshot (mirrors prompts._CONTEXT_FIELDS)
+  full_name            TEXT,
+  email                TEXT,
+  activation_status    TEXT,
+  country              TEXT,
+  balance              TEXT,
+  vip_level            TEXT,
+  registration_date    TEXT,
+  profile_source       TEXT,        -- 'handshake' | 'pull' | 'push'
+  profile_updated_at   TIMESTAMPTZ,
+  unlocked_stage       INT NOT NULL DEFAULT 1,
+  last_stage_advance_at TIMESTAMPTZ,
+  assigned_manager_id  BIGINT REFERENCES retention_managers(id),
+  subscribed           BOOLEAN NOT NULL DEFAULT FALSE,
+  meaningful_msgs      INT NOT NULL DEFAULT 0,   -- lifetime meaningful player msgs
+  msgs_since_photo     INT NOT NULL DEFAULT 0,   -- proactive-cooldown counter
+  photos_day           DATE,                     -- day the daily counter counts
+  photos_sent_today    INT NOT NULL DEFAULT 0,
+  conv_lang            TEXT,
+  session_id           UUID REFERENCES chat_sessions(id),
+  last_active_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- The single flat retention-KB: scenario/offer playbooks + links, loaded WHOLE
+-- into Layer 2 (byte-stable per product). NOT kb_topics (that is support-only).
+CREATE TABLE IF NOT EXISTS retention_kb (
+  id           BIGSERIAL PRIMARY KEY,
+  product_id   INT NOT NULL REFERENCES products(id),
+  title        TEXT NOT NULL,
+  trigger_when TEXT,
+  body         TEXT NOT NULL,
+  links        JSONB NOT NULL DEFAULT '[]',
+  sort_order   INT NOT NULL DEFAULT 0,
+  active       BOOLEAN NOT NULL DEFAULT TRUE,
+  updated_by   TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- The media library: up to ~500 photos per brand, gated by level_min (VIP tier)
+-- x stage (explicitness ladder). storage_ref is the on-disk filename; the first
+-- Telegram send caches telegram_file_id so later sends skip the re-upload.
+CREATE TABLE IF NOT EXISTS retention_photos (
+  id                BIGSERIAL PRIMARY KEY,
+  product_id        INT NOT NULL REFERENCES products(id),
+  storage_ref       TEXT,
+  telegram_file_id  TEXT,
+  description        TEXT NOT NULL DEFAULT '',
+  tags              JSONB NOT NULL DEFAULT '[]',
+  level_min         INT NOT NULL DEFAULT 0,   -- min VIP tier ordinal to unlock
+  stage             INT NOT NULL DEFAULT 1,   -- explicitness ladder step
+  category          TEXT,
+  sort_order        INT NOT NULL DEFAULT 0,
+  active            BOOLEAN NOT NULL DEFAULT TRUE,
+  views_count       INT NOT NULL DEFAULT 0,
+  created_by        TEXT,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Who saw which photo (anti-repeat + per-photo counters).
+CREATE TABLE IF NOT EXISTS retention_photo_views (
+  id                BIGSERIAL PRIMARY KEY,
+  photo_id          BIGINT NOT NULL REFERENCES retention_photos(id),
+  retention_user_id BIGINT NOT NULL REFERENCES retention_users(id),
+  product_id        INT NOT NULL REFERENCES products(id),
+  viewed_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- One-time deeplink exchange: the site posts a handshake, gets a nonce; the bot
+-- redeems it on /start. TTL-bounded, single-use.
+CREATE TABLE IF NOT EXISTS retention_nonces (
+  nonce       TEXT PRIMARY KEY,
+  product_id  INT NOT NULL REFERENCES products(id),
+  payload     JSONB NOT NULL DEFAULT '{}',
+  escalation  BOOLEAN NOT NULL DEFAULT FALSE,
+  used        BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at  TIMESTAMPTZ NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_kb_entries_topic ON kb_entries(topic_id) WHERE active;
 CREATE INDEX IF NOT EXISTS idx_kb_variables_updated ON kb_variables(updated_at);
@@ -246,6 +357,18 @@ CREATE INDEX IF NOT EXISTS idx_chat_sessions_created ON chat_sessions(created_at
 CREATE INDEX IF NOT EXISTS idx_ai_logs_created ON ai_interaction_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_products_partner ON products(partner_id);
 CREATE INDEX IF NOT EXISTS idx_admin_memberships_email ON admin_memberships(email);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_retention_users_product_tg
+  ON retention_users(product_id, tg_user_id);
+CREATE INDEX IF NOT EXISTS idx_retention_kb_product
+  ON retention_kb(product_id, sort_order) WHERE active;
+CREATE INDEX IF NOT EXISTS idx_retention_photos_product
+  ON retention_photos(product_id) WHERE active;
+CREATE INDEX IF NOT EXISTS idx_retention_photo_views_user
+  ON retention_photo_views(retention_user_id, photo_id);
+CREATE INDEX IF NOT EXISTS idx_retention_managers_product
+  ON retention_managers(product_id) WHERE active;
+CREATE INDEX IF NOT EXISTS idx_retention_nonces_expires
+  ON retention_nonces(expires_at);
 """
 # NB: indexes over the product_id columns of PRE-TENANCY tables live in
 # _ensure_columns — they must run AFTER the ADD COLUMN guards (_SCHEMA runs
@@ -323,6 +446,39 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         "ON ai_interaction_logs(product_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_admin_events_product "
         "ON admin_events(product_id, created_at)",
+        # --- Retention / Telegram (second facade) ---------------------------
+        # Per-product Telegram + player-API config on the product row. The two
+        # secret columns (bot token, player-API key) are encrypted at rest via
+        # secretbox, exactly like openai_key_*_enc / handshake_secret_enc; the
+        # rest are plain config.
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "telegram_bot_token_enc TEXT",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "telegram_bot_username TEXT",
+        # Per-product webhook routing token (NON-secret, like widget_key): the
+        # bot's webhook is registered at /telegram/webhook/{this}, so an incoming
+        # update resolves to its product by this column. Minted when the bot token
+        # is first saved.
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "telegram_webhook_secret TEXT",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_products_tg_webhook "
+        "ON products(telegram_webhook_secret) "
+        "WHERE telegram_webhook_secret IS NOT NULL",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "telegram_channel_id TEXT",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "telegram_channel_url TEXT",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "player_api_url TEXT",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "player_api_key_enc TEXT",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "retention_enabled BOOLEAN NOT NULL DEFAULT FALSE",
+        # The Telegram user this session belongs to (nullable; the durable
+        # tg<->player link lives in retention_users). Only set on telegram
+        # sessions; web sessions leave it NULL.
+        "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
+        "tg_user_id BIGINT",
     ]
     for stmt in alters:
         await conn.execute(stmt)
@@ -759,14 +915,15 @@ async def set_kb_variable(product_id: int, key: str, description: str, value: st
 async def create_session(consumer: str, player_id: Optional[str],
                          lang: Optional[str], user_context: dict[str, Any],
                          session_id: Optional[str] = None,
-                         product_id: Optional[int] = None) -> str:
+                         product_id: Optional[int] = None,
+                         tg_user_id: Optional[int] = None) -> str:
     sid = session_id or str(uuid.uuid4())
     await _pool.execute(
         "INSERT INTO chat_sessions "
-        "(id, consumer, product_id, player_id, lang, user_context) "
-        "VALUES ($1, $2, $3, $4, $5, $6::jsonb)",
+        "(id, consumer, product_id, player_id, lang, user_context, tg_user_id) "
+        "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)",
         sid, consumer, product_id, player_id, lang,
-        json.dumps(user_context or {}),
+        json.dumps(user_context or {}), tg_user_id,
     )
     return sid
 
@@ -1113,6 +1270,15 @@ def _row_to_product(row: asyncpg.Record) -> dict[str, Any]:
         "has_openai_key": row["openai_key_primary_enc"] is not None,
         "has_openai_key_fallback": row["openai_key_fallback_enc"] is not None,
         "has_handshake_secret": row["handshake_secret_enc"] is not None,
+        # Retention / Telegram config (secrets exposed as presence flags only).
+        "has_telegram_bot_token": row["telegram_bot_token_enc"] is not None,
+        "telegram_bot_username": row["telegram_bot_username"],
+        "telegram_webhook_secret": row["telegram_webhook_secret"],
+        "telegram_channel_id": row["telegram_channel_id"],
+        "telegram_channel_url": row["telegram_channel_url"],
+        "player_api_url": row["player_api_url"],
+        "has_player_api_key": row["player_api_key_enc"] is not None,
+        "retention_enabled": row["retention_enabled"],
         "created_at": _iso(row["created_at"]),
         "updated_at": _iso(row["updated_at"]),
     }
@@ -1120,7 +1286,11 @@ def _row_to_product(row: asyncpg.Record) -> dict[str, Any]:
 
 _PRODUCT_COLS = ("id, partner_id, slug, name, widget_key, active, "
                  "openai_key_primary_enc, openai_key_fallback_enc, "
-                 "handshake_secret_enc, created_at, updated_at")
+                 "handshake_secret_enc, telegram_bot_token_enc, "
+                 "telegram_bot_username, telegram_webhook_secret, "
+                 "telegram_channel_id, telegram_channel_url, player_api_url, "
+                 "player_api_key_enc, retention_enabled, "
+                 "created_at, updated_at")
 
 
 async def list_partners() -> list[dict[str, Any]]:
@@ -1265,29 +1435,125 @@ UNSET: Any = object()
 async def set_product_secrets(product_id: int, *,
                               openai_key_primary: Any = UNSET,
                               openai_key_fallback: Any = UNSET,
-                              handshake_secret: Any = UNSET) -> bool:
+                              handshake_secret: Any = UNSET,
+                              telegram_bot_token: Any = UNSET,
+                              player_api_key: Any = UNSET) -> bool:
     """Write per-product secrets (encrypted at rest). Empty string clears one.
 
     Values are encrypted with secretbox before they touch the table; the
     plaintext is never stored or logged. Returns False for an unknown product.
+    Setting a non-empty telegram_bot_token also mints the product's non-secret
+    webhook routing token if it has none yet (so the webhook URL can be built).
     """
     import secretbox
+    import secrets as _secrets
     sets: list[str] = ["updated_at = now()"]
     args: list[Any] = []
     for col, val in (("openai_key_primary_enc", openai_key_primary),
                      ("openai_key_fallback_enc", openai_key_fallback),
-                     ("handshake_secret_enc", handshake_secret)):
+                     ("handshake_secret_enc", handshake_secret),
+                     ("telegram_bot_token_enc", telegram_bot_token),
+                     ("player_api_key_enc", player_api_key)):
         if val is UNSET:
             continue
         args.append(secretbox.encrypt(val.strip()) if isinstance(val, str)
                     and val.strip() else None)
         sets.append(f"{col} = ${len(args)}")
+    # Mint the webhook routing token when a bot token is (re)set and none exists.
+    if isinstance(telegram_bot_token, str) and telegram_bot_token.strip():
+        args.append("tgwh_" + _secrets.token_urlsafe(24))
+        sets.append(f"telegram_webhook_secret = "
+                    f"COALESCE(telegram_webhook_secret, ${len(args)})")
     args.append(product_id)
     row = await _pool.fetchrow(
         f"UPDATE products SET {', '.join(sets)} WHERE id = ${len(args)} RETURNING id",
         *args,
     )
     return row is not None
+
+
+async def get_product_telegram_token(product_id: int) -> Optional[str]:
+    """Decrypted per-product Telegram bot token, or None when unset/undecryptable."""
+    import logging
+    import secretbox
+    enc = await _pool.fetchval(
+        "SELECT telegram_bot_token_enc FROM products WHERE id = $1", product_id
+    )
+    if not enc:
+        return None
+    try:
+        return secretbox.decrypt(enc)
+    except secretbox.SecretBoxError:
+        logging.getLogger(__name__).warning(
+            "product_secret_undecryptable product_id=%s kind=telegram", product_id
+        )
+        return None
+
+
+async def get_product_player_api_key(product_id: int) -> Optional[str]:
+    """Decrypted per-product player-API key, or None when unset/undecryptable."""
+    import logging
+    import secretbox
+    enc = await _pool.fetchval(
+        "SELECT player_api_key_enc FROM products WHERE id = $1", product_id
+    )
+    if not enc:
+        return None
+    try:
+        return secretbox.decrypt(enc)
+    except secretbox.SecretBoxError:
+        logging.getLogger(__name__).warning(
+            "product_secret_undecryptable product_id=%s kind=player_api", product_id
+        )
+        return None
+
+
+async def update_product_telegram_config(
+    product_id: int, *,
+    telegram_bot_username: Any = UNSET,
+    telegram_channel_id: Any = UNSET,
+    telegram_channel_url: Any = UNSET,
+    player_api_url: Any = UNSET,
+    retention_enabled: Any = UNSET,
+) -> Optional[dict[str, Any]]:
+    """Set the NON-secret Telegram/player config on a product (partial update)."""
+    sets: list[str] = ["updated_at = now()"]
+    args: list[Any] = []
+    for col, val in (("telegram_bot_username", telegram_bot_username),
+                     ("telegram_channel_id", telegram_channel_id),
+                     ("telegram_channel_url", telegram_channel_url),
+                     ("player_api_url", player_api_url),
+                     ("retention_enabled", retention_enabled)):
+        if val is UNSET:
+            continue
+        if isinstance(val, str):
+            val = val.strip() or None
+        args.append(val)
+        sets.append(f"{col} = ${len(args)}")
+    args.append(product_id)
+    row = await _pool.fetchrow(
+        f"UPDATE products SET {', '.join(sets)} WHERE id = ${len(args)} "
+        f"RETURNING {_PRODUCT_COLS}",
+        *args,
+    )
+    return _row_to_product(row) if row else None
+
+
+async def get_product_by_telegram_webhook_secret(secret: str
+                                                 ) -> Optional[dict[str, Any]]:
+    """Resolve the product an incoming Telegram update belongs to (webhook path).
+
+    The webhook path segment is the product's non-secret routing token
+    (telegram_webhook_secret), so this is the multi-tenant entry point for the
+    bot — the Telegram analogue of get_product_by_widget_key.
+    """
+    if not secret:
+        return None
+    row = await _pool.fetchrow(
+        f"SELECT {_PRODUCT_COLS} FROM products WHERE telegram_webhook_secret = $1",
+        secret,
+    )
+    return _row_to_product(row) if row else None
 
 
 async def get_product_openai_keys(product_id: int) -> Optional[dict[str, Optional[str]]]:
@@ -1947,3 +2213,598 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any,
             "updated_at": r["updated_at"].isoformat(),
         })
     return sorted(groups.values(), key=lambda x: x["count"], reverse=True)
+
+
+# ===========================================================================
+# RETENTION / TELEGRAM helpers (all product-scoped)
+# ===========================================================================
+_RETENTION_PROFILE_FIELDS = (
+    "full_name", "email", "activation_status", "country",
+    "balance", "vip_level", "registration_date",
+)
+
+
+def _row_to_retention_user(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    if d.get("id") is not None:
+        d["id"] = int(d["id"])
+    if d.get("session_id") is not None:
+        d["session_id"] = str(d["session_id"])
+    for ts in ("profile_updated_at", "last_stage_advance_at", "last_active_at",
+               "created_at", "updated_at", "photos_day"):
+        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
+            d[ts] = d[ts].isoformat()
+    return d
+
+
+_RU_COLS = (
+    "id, product_id, tg_user_id, tg_username, player_id, entry_type, "
+    "full_name, email, activation_status, country, balance, vip_level, "
+    "registration_date, profile_source, profile_updated_at, unlocked_stage, "
+    "last_stage_advance_at, assigned_manager_id, subscribed, meaningful_msgs, "
+    "msgs_since_photo, photos_day, photos_sent_today, conv_lang, session_id, "
+    "last_active_at, created_at, updated_at"
+)
+
+
+async def get_retention_user(product_id: int, tg_user_id: int
+                             ) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        f"SELECT {_RU_COLS} FROM retention_users "
+        f"WHERE product_id = $1 AND tg_user_id = $2",
+        product_id, tg_user_id,
+    )
+    return _row_to_retention_user(row) if row else None
+
+
+async def get_retention_user_by_id(rid: int) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        f"SELECT {_RU_COLS} FROM retention_users WHERE id = $1", rid)
+    return _row_to_retention_user(row) if row else None
+
+
+async def upsert_retention_user(product_id: int, tg_user_id: int, *,
+                                tg_username: Optional[str] = None,
+                                player_id: Optional[str] = None,
+                                entry_type: str = "retention",
+                                profile: Optional[dict[str, Any]] = None,
+                                profile_source: str = "handshake"
+                                ) -> dict[str, Any]:
+    """Create/refresh the tg<->player link + profile snapshot (last-wins).
+
+    Called on every nonce redemption. Profile fields present in `profile`
+    overwrite the snapshot; absent ones are left untouched (partial update).
+    """
+    profile = profile or {}
+    # Build the dynamic SET for the profile fields actually supplied.
+    prof_cols = [f for f in _RETENTION_PROFILE_FIELDS if f in profile]
+    existing = await get_retention_user(product_id, tg_user_id)
+    if existing is None:
+        cols = ["product_id", "tg_user_id", "tg_username", "player_id",
+                "entry_type", "profile_source", "profile_updated_at"]
+        vals: list[Any] = [product_id, tg_user_id, tg_username, player_id,
+                           entry_type, profile_source]
+        placeholders = ["$1", "$2", "$3", "$4", "$5", "$6", "now()"]
+        for f in prof_cols:
+            vals.append(profile.get(f))
+            cols.append(f)
+            placeholders.append(f"${len(vals)}")
+        row = await _pool.fetchrow(
+            f"INSERT INTO retention_users ({', '.join(cols)}) "
+            f"VALUES ({', '.join(placeholders)}) RETURNING {_RU_COLS}",
+            *vals,
+        )
+        return _row_to_retention_user(row)
+    sets = ["tg_username = COALESCE($3, tg_username)",
+            "entry_type = $4",
+            "profile_source = $5",
+            "profile_updated_at = now()",
+            "last_active_at = now()",
+            "updated_at = now()"]
+    args: list[Any] = [product_id, tg_user_id, tg_username, entry_type,
+                       profile_source]
+    if player_id is not None:
+        args.append(player_id)
+        sets.append(f"player_id = ${len(args)}")
+    for f in prof_cols:
+        args.append(profile.get(f))
+        sets.append(f"{f} = ${len(args)}")
+    row = await _pool.fetchrow(
+        f"UPDATE retention_users SET {', '.join(sets)} "
+        f"WHERE product_id = $1 AND tg_user_id = $2 RETURNING {_RU_COLS}",
+        *args,
+    )
+    return _row_to_retention_user(row)
+
+
+async def update_retention_profile(product_id: int, player_id: str,
+                                   profile: dict[str, Any],
+                                   profile_source: str = "push") -> int:
+    """Partial profile update by player_id (Player-API pull / push). Returns rows."""
+    prof_cols = [f for f in _RETENTION_PROFILE_FIELDS if f in profile]
+    if not prof_cols:
+        return 0
+    sets = ["profile_source = $3", "profile_updated_at = now()",
+            "updated_at = now()"]
+    args: list[Any] = [product_id, player_id, profile_source]
+    for f in prof_cols:
+        args.append(profile.get(f))
+        sets.append(f"{f} = ${len(args)}")
+    result = await _pool.execute(
+        f"UPDATE retention_users SET {', '.join(sets)} "
+        f"WHERE product_id = $1 AND player_id = $2",
+        *args,
+    )
+    # asyncpg returns "UPDATE <n>"
+    try:
+        return int(result.split()[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+async def set_retention_subscribed(rid: int, subscribed: bool) -> None:
+    await _pool.execute(
+        "UPDATE retention_users SET subscribed = $2, last_active_at = now(), "
+        "updated_at = now() WHERE id = $1",
+        rid, subscribed,
+    )
+
+
+async def set_retention_session(rid: int, session_id: str) -> None:
+    await _pool.execute(
+        "UPDATE retention_users SET session_id = $2, updated_at = now() "
+        "WHERE id = $1", rid, session_id,
+    )
+
+
+async def set_retention_conv_lang(rid: int, conv_lang: str) -> None:
+    await _pool.execute(
+        "UPDATE retention_users SET conv_lang = $2, updated_at = now() "
+        "WHERE id = $1", rid, conv_lang,
+    )
+
+
+async def bump_retention_activity(rid: int, *, meaningful: bool) -> dict[str, Any]:
+    """Touch last_active + optionally increment the meaningful-message counters.
+
+    Returns the refreshed row so the caller can evaluate stage-advance thresholds.
+    """
+    if meaningful:
+        row = await _pool.fetchrow(
+            "UPDATE retention_users SET meaningful_msgs = meaningful_msgs + 1, "
+            "msgs_since_photo = msgs_since_photo + 1, last_active_at = now(), "
+            f"updated_at = now() WHERE id = $1 RETURNING {_RU_COLS}", rid,
+        )
+    else:
+        row = await _pool.fetchrow(
+            "UPDATE retention_users SET last_active_at = now(), "
+            f"updated_at = now() WHERE id = $1 RETURNING {_RU_COLS}", rid,
+        )
+    return _row_to_retention_user(row) if row else {}
+
+
+async def advance_retention_stage(rid: int, new_stage: int) -> None:
+    await _pool.execute(
+        "UPDATE retention_users SET unlocked_stage = $2, "
+        "last_stage_advance_at = now(), updated_at = now() WHERE id = $1",
+        rid, new_stage,
+    )
+
+
+async def record_retention_photo_view(rid: int, photo_id: int,
+                                      product_id: int) -> None:
+    """Record a photo delivery: view row + per-photo counter + daily counter.
+
+    Resets the daily counter when the stored day is not today, resets the
+    proactive-cooldown counter, all in one transaction.
+    """
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "INSERT INTO retention_photo_views "
+                "(photo_id, retention_user_id, product_id) VALUES ($1, $2, $3)",
+                photo_id, rid, product_id,
+            )
+            await conn.execute(
+                "UPDATE retention_photos SET views_count = views_count + 1, "
+                "updated_at = now() WHERE id = $1", photo_id,
+            )
+            await conn.execute(
+                "UPDATE retention_users SET "
+                "  photos_sent_today = CASE WHEN photos_day = CURRENT_DATE "
+                "                           THEN photos_sent_today + 1 ELSE 1 END, "
+                "  photos_day = CURRENT_DATE, "
+                "  msgs_since_photo = 0, updated_at = now() "
+                "WHERE id = $1", rid,
+            )
+
+
+async def set_photo_file_id(photo_id: int, file_id: str) -> None:
+    await _pool.execute(
+        "UPDATE retention_photos SET telegram_file_id = $2, updated_at = now() "
+        "WHERE id = $1", photo_id, file_id,
+    )
+
+
+def _row_to_photo(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    if d.get("id") is not None:
+        d["id"] = int(d["id"])
+    d["tags"] = _json_value(d.get("tags")) if d.get("tags") is not None else []
+    for ts in ("created_at", "updated_at"):
+        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
+            d[ts] = d[ts].isoformat()
+    return d
+
+
+_PHOTO_COLS = ("id, product_id, storage_ref, telegram_file_id, description, "
+               "tags, level_min, stage, category, sort_order, active, "
+               "views_count, created_by, created_at, updated_at")
+
+
+async def list_retention_photos(product_id: int, *, active_only: bool = False
+                                ) -> list[dict[str, Any]]:
+    where = "product_id = $1" + (" AND active" if active_only else "")
+    rows = await _pool.fetch(
+        f"SELECT {_PHOTO_COLS} FROM retention_photos WHERE {where} "
+        "ORDER BY sort_order, id", product_id,
+    )
+    return [_row_to_photo(r) for r in rows]
+
+
+async def get_retention_photo(photo_id: int) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        f"SELECT {_PHOTO_COLS} FROM retention_photos WHERE id = $1", photo_id)
+    return _row_to_photo(row) if row else None
+
+
+async def create_retention_photo(product_id: int, *, storage_ref: Optional[str],
+                                 description: str, tags: list[str],
+                                 level_min: int, stage: int,
+                                 category: Optional[str], sort_order: int,
+                                 created_by: Optional[str]) -> dict[str, Any]:
+    row = await _pool.fetchrow(
+        "INSERT INTO retention_photos "
+        "(product_id, storage_ref, description, tags, level_min, stage, "
+        " category, sort_order, created_by) "
+        "VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9) "
+        f"RETURNING {_PHOTO_COLS}",
+        product_id, storage_ref, description or "", json.dumps(tags or []),
+        level_min, stage, category, sort_order, created_by,
+    )
+    return _row_to_photo(row)
+
+
+async def update_retention_photo(photo_id: int, **fields: Any
+                                 ) -> Optional[dict[str, Any]]:
+    allowed = ("description", "tags", "level_min", "stage", "category",
+               "sort_order", "active", "storage_ref")
+    sets = ["updated_at = now()"]
+    args: list[Any] = []
+    for col in allowed:
+        if col in fields:
+            args.append(json.dumps(fields[col]) if col == "tags" else fields[col])
+            sets.append(f"{col} = ${len(args)}"
+                        + ("::jsonb" if col == "tags" else ""))
+    args.append(photo_id)
+    row = await _pool.fetchrow(
+        f"UPDATE retention_photos SET {', '.join(sets)} "
+        f"WHERE id = ${len(args)} RETURNING {_PHOTO_COLS}", *args,
+    )
+    return _row_to_photo(row) if row else None
+
+
+async def delete_retention_photo(photo_id: int) -> bool:
+    """Soft-delete (active=false) so existing view history stays valid."""
+    row = await _pool.fetchrow(
+        "UPDATE retention_photos SET active = FALSE, updated_at = now() "
+        "WHERE id = $1 RETURNING id", photo_id)
+    return row is not None
+
+
+async def candidate_photos(product_id: int, retention_user_id: int, *,
+                           level_ordinal: int, max_stage: int, limit: int
+                           ) -> list[dict[str, Any]]:
+    """Photos eligible for this player: active, within tier + stage gate, unseen.
+
+    Ordered by stage then least-viewed then sort_order so the model sees a small,
+    fresh, on-tier candidate set (see RETENTION_BOT_SPEC §5).
+    """
+    rows = await _pool.fetch(
+        f"SELECT {_PHOTO_COLS} FROM retention_photos "
+        "WHERE product_id = $1 AND active AND level_min <= $2 AND stage <= $3 "
+        "  AND id NOT IN (SELECT photo_id FROM retention_photo_views "
+        "                 WHERE retention_user_id = $4) "
+        "ORDER BY stage, views_count, sort_order, id LIMIT $5",
+        product_id, level_ordinal, max_stage, retention_user_id, limit,
+    )
+    return [_row_to_photo(r) for r in rows]
+
+
+# --- retention_kb ----------------------------------------------------------
+def _row_to_retention_kb(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    if d.get("id") is not None:
+        d["id"] = int(d["id"])
+    d["links"] = _json_value(d.get("links")) if d.get("links") is not None else []
+    for ts in ("created_at", "updated_at"):
+        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
+            d[ts] = d[ts].isoformat()
+    return d
+
+
+_RKB_COLS = ("id, product_id, title, trigger_when, body, links, sort_order, "
+             "active, updated_by, created_at, updated_at")
+
+
+async def list_retention_kb(product_id: int, *, active_only: bool = False
+                            ) -> list[dict[str, Any]]:
+    where = "product_id = $1" + (" AND active" if active_only else "")
+    rows = await _pool.fetch(
+        f"SELECT {_RKB_COLS} FROM retention_kb WHERE {where} "
+        "ORDER BY sort_order, id", product_id,
+    )
+    return [_row_to_retention_kb(r) for r in rows]
+
+
+async def get_retention_kb_entry(entry_id: int) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        f"SELECT {_RKB_COLS} FROM retention_kb WHERE id = $1", entry_id)
+    return _row_to_retention_kb(row) if row else None
+
+
+async def create_retention_kb(product_id: int, *, title: str,
+                              trigger_when: Optional[str], body: str,
+                              links: list[str], sort_order: int,
+                              updated_by: Optional[str]) -> dict[str, Any]:
+    row = await _pool.fetchrow(
+        "INSERT INTO retention_kb "
+        "(product_id, title, trigger_when, body, links, sort_order, updated_by) "
+        "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7) RETURNING " + _RKB_COLS,
+        product_id, title, trigger_when, body, json.dumps(links or []),
+        sort_order, updated_by,
+    )
+    return _row_to_retention_kb(row)
+
+
+async def update_retention_kb(entry_id: int, *, updated_by: Optional[str] = None,
+                              **fields: Any) -> Optional[dict[str, Any]]:
+    allowed = ("title", "trigger_when", "body", "links", "sort_order", "active")
+    sets = ["updated_at = now()"]
+    args: list[Any] = []
+    for col in allowed:
+        if col in fields:
+            args.append(json.dumps(fields[col]) if col == "links" else fields[col])
+            sets.append(f"{col} = ${len(args)}"
+                        + ("::jsonb" if col == "links" else ""))
+    args.append(updated_by)
+    sets.append(f"updated_by = ${len(args)}")
+    args.append(entry_id)
+    row = await _pool.fetchrow(
+        f"UPDATE retention_kb SET {', '.join(sets)} "
+        f"WHERE id = ${len(args)} RETURNING {_RKB_COLS}", *args,
+    )
+    return _row_to_retention_kb(row) if row else None
+
+
+async def delete_retention_kb(entry_id: int) -> bool:
+    row = await _pool.fetchrow(
+        "DELETE FROM retention_kb WHERE id = $1 RETURNING id", entry_id)
+    return row is not None
+
+
+# --- retention_managers ----------------------------------------------------
+def _row_to_manager(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    if d.get("id") is not None:
+        d["id"] = int(d["id"])
+    for ts in ("created_at", "updated_at"):
+        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
+            d[ts] = d[ts].isoformat()
+    return d
+
+
+_MGR_COLS = ("id, product_id, display_name, username, active, "
+             "assigned_count, created_at, updated_at")
+
+
+async def list_retention_managers(product_id: int) -> list[dict[str, Any]]:
+    rows = await _pool.fetch(
+        f"SELECT {_MGR_COLS} FROM retention_managers WHERE product_id = $1 "
+        "ORDER BY id", product_id,
+    )
+    return [_row_to_manager(r) for r in rows]
+
+
+async def get_retention_manager(manager_id: int) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        f"SELECT {_MGR_COLS} FROM retention_managers WHERE id = $1", manager_id)
+    return _row_to_manager(row) if row else None
+
+
+async def create_retention_manager(product_id: int, *, display_name: str,
+                                   username: str) -> dict[str, Any]:
+    row = await _pool.fetchrow(
+        "INSERT INTO retention_managers (product_id, display_name, username) "
+        f"VALUES ($1, $2, $3) RETURNING {_MGR_COLS}",
+        product_id, display_name, username.lstrip("@"),
+    )
+    return _row_to_manager(row)
+
+
+async def update_retention_manager(manager_id: int, **fields: Any
+                                   ) -> Optional[dict[str, Any]]:
+    allowed = ("display_name", "username", "active")
+    sets = ["updated_at = now()"]
+    args: list[Any] = []
+    for col in allowed:
+        if col in fields:
+            val = fields[col]
+            if col == "username" and isinstance(val, str):
+                val = val.lstrip("@")
+            args.append(val)
+            sets.append(f"{col} = ${len(args)}")
+    args.append(manager_id)
+    row = await _pool.fetchrow(
+        f"UPDATE retention_managers SET {', '.join(sets)} "
+        f"WHERE id = ${len(args)} RETURNING {_MGR_COLS}", *args,
+    )
+    return _row_to_manager(row) if row else None
+
+
+async def delete_retention_manager(manager_id: int) -> bool:
+    row = await _pool.fetchrow(
+        "DELETE FROM retention_managers WHERE id = $1 RETURNING id", manager_id)
+    return row is not None
+
+
+async def assign_round_robin_manager(product_id: int, retention_user_id: int
+                                     ) -> Optional[dict[str, Any]]:
+    """Pick + assign a manager for a player, round-robin and STICKY.
+
+    A player already assigned to an ACTIVE manager keeps that manager (continuity).
+    Otherwise the least-loaded active manager is chosen, its assigned_count bumped,
+    and stored on the player. Returns the manager, or None when the pool is empty.
+    """
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
+            ru = await conn.fetchrow(
+                "SELECT assigned_manager_id FROM retention_users WHERE id = $1 "
+                "FOR UPDATE", retention_user_id,
+            )
+            if ru and ru["assigned_manager_id"] is not None:
+                existing = await conn.fetchrow(
+                    f"SELECT {_MGR_COLS} FROM retention_managers "
+                    "WHERE id = $1 AND active", ru["assigned_manager_id"],
+                )
+                if existing:
+                    return _row_to_manager(existing)
+            chosen = await conn.fetchrow(
+                f"SELECT {_MGR_COLS} FROM retention_managers "
+                "WHERE product_id = $1 AND active "
+                "ORDER BY assigned_count, id LIMIT 1 FOR UPDATE", product_id,
+            )
+            if chosen is None:
+                return None
+            await conn.execute(
+                "UPDATE retention_managers SET assigned_count = assigned_count + 1, "
+                "updated_at = now() WHERE id = $1", chosen["id"],
+            )
+            await conn.execute(
+                "UPDATE retention_users SET assigned_manager_id = $2, "
+                "updated_at = now() WHERE id = $1",
+                retention_user_id, chosen["id"],
+            )
+            return _row_to_manager(chosen)
+
+
+# --- retention_nonces ------------------------------------------------------
+async def create_retention_nonce(nonce: str, product_id: int,
+                                 payload: dict[str, Any], escalation: bool,
+                                 ttl_sec: int) -> None:
+    # Opportunistically reap expired nonces (indexed on expires_at, low volume)
+    # so the single-use table can't grow without bound.
+    await _pool.execute("DELETE FROM retention_nonces WHERE expires_at < now()")
+    await _pool.execute(
+        "INSERT INTO retention_nonces "
+        "(nonce, product_id, payload, escalation, expires_at) "
+        "VALUES ($1, $2, $3::jsonb, $4, now() + ($5 || ' seconds')::interval)",
+        nonce, product_id, json.dumps(payload or {}), escalation, str(int(ttl_sec)),
+    )
+
+
+async def redeem_retention_nonce(nonce: str) -> Optional[dict[str, Any]]:
+    """Atomically consume a valid, unused, unexpired nonce. Returns its data or None."""
+    row = await _pool.fetchrow(
+        "UPDATE retention_nonces SET used = TRUE "
+        "WHERE nonce = $1 AND NOT used AND expires_at > now() "
+        "RETURNING product_id, payload, escalation",
+        nonce,
+    )
+    if row is None:
+        return None
+    return {
+        "product_id": row["product_id"],
+        "payload": _json_value(row["payload"]) or {},
+        "escalation": row["escalation"],
+    }
+
+
+# --- retention analytics ---------------------------------------------------
+async def retention_overview(product_id: int, dt_from: Any, dt_to: Any
+                             ) -> dict[str, Any]:
+    users = await _pool.fetchrow(
+        "SELECT COUNT(*) AS total, "
+        "  COUNT(*) FILTER (WHERE subscribed) AS subscribed, "
+        "  COUNT(*) FILTER (WHERE last_active_at >= $2 AND last_active_at < $3) "
+        "    AS active_in_range, "
+        "  COALESCE(AVG(unlocked_stage), 0) AS avg_stage "
+        "FROM retention_users WHERE product_id = $1", product_id, dt_from, dt_to,
+    )
+    photos = await _pool.fetchval(
+        "SELECT COUNT(*) FROM retention_photo_views "
+        "WHERE product_id = $1 AND viewed_at >= $2 AND viewed_at < $3",
+        product_id, dt_from, dt_to,
+    )
+    handoffs = await _pool.fetchval(
+        "SELECT COUNT(*) FROM admin_events "
+        "WHERE product_id = $1 AND type IN "
+        "  ('retention_handoff', 'retention_manager_handoff') "
+        "  AND created_at >= $2 AND created_at < $3",
+        product_id, dt_from, dt_to,
+    )
+    return {
+        "users_total": users["total"] if users else 0,
+        "users_subscribed": users["subscribed"] if users else 0,
+        "users_active": users["active_in_range"] if users else 0,
+        "avg_stage": round(float(users["avg_stage"]), 2) if users else 0.0,
+        "photos_sent": int(photos or 0),
+        "handoffs": int(handoffs or 0),
+    }
+
+
+async def list_retention_users(product_id: int, *, limit: int = 100,
+                               offset: int = 0) -> list[dict[str, Any]]:
+    rows = await _pool.fetch(
+        "SELECT u.id, u.tg_user_id, u.tg_username, u.player_id, u.entry_type, "
+        "  u.vip_level, u.country, u.unlocked_stage, u.subscribed, "
+        "  u.meaningful_msgs, u.photos_sent_today, u.conv_lang, u.last_active_at, "
+        "  u.created_at, m.display_name AS manager_name, "
+        "  (SELECT COUNT(*) FROM retention_photo_views v "
+        "     WHERE v.retention_user_id = u.id) AS photos_total "
+        "FROM retention_users u "
+        "LEFT JOIN retention_managers m ON m.id = u.assigned_manager_id "
+        "WHERE u.product_id = $1 ORDER BY u.last_active_at DESC "
+        "LIMIT $2 OFFSET $3",
+        product_id, limit, offset,
+    )
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        for ts in ("last_active_at", "created_at"):
+            if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
+                d[ts] = d[ts].isoformat()
+        out.append(d)
+    return out
+
+
+async def retention_kb_block(product_id: int) -> str:
+    """The whole active retention-KB rendered as a single Layer-2 text block.
+
+    Compact and fully relevant, so it loads WHOLE and stays byte-stable per
+    product (see RETENTION_BOT_SPEC §4). {placeholder} rendering is applied by the
+    caller (kb.render_variables), same as the support KB.
+    """
+    entries = await list_retention_kb(product_id, active_only=True)
+    parts: list[str] = []
+    for e in entries:
+        block = [f"## {e['title']}"]
+        if e.get("trigger_when"):
+            block.append(f"When: {e['trigger_when']}")
+        block.append(e["body"])
+        links = e.get("links") or []
+        if links:
+            block.append("Links: " + ", ".join(str(l) for l in links))
+        parts.append("\n".join(block))
+    return "\n\n".join(parts)

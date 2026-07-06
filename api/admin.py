@@ -873,6 +873,9 @@ class ProductSecretsWrite(BaseModel):
     openai_key_primary: Optional[str] = None
     openai_key_fallback: Optional[str] = None
     handshake_secret: Optional[str] = None
+    # Retention / Telegram secrets (encrypted at rest, like the keys above).
+    telegram_bot_token: Optional[str] = None
+    player_api_key: Optional[str] = None
 
 
 def _validate_slug(slug: str) -> str:
@@ -997,6 +1000,10 @@ async def put_product_secrets(product_id: int, body: ProductSecretsWrite,
         fields["openai_key_fallback"] = body.openai_key_fallback
     if body.handshake_secret is not None:
         fields["handshake_secret"] = body.handshake_secret
+    if body.telegram_bot_token is not None:
+        fields["telegram_bot_token"] = body.telegram_bot_token
+    if body.player_api_key is not None:
+        fields["player_api_key"] = body.player_api_key
     if not fields:
         raise HTTPException(status_code=400, detail="Nothing to update.")
     ok = await db.set_product_secrets(product_id, **fields)

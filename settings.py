@@ -42,7 +42,23 @@ _product_cache: dict[int, dict[str, Any]] = {}
 # panel instead of Railway env. NOTE: the PROMPT itself (Layer 1 core, the
 # Layer-3 directives, and the forbidden-topics list) is NOT here — it lives in
 # `prompts.py`, the single source of truth, and is not editable from the admin.
-SETTING_KEYS = ("escalation", "language", "antispam", "model", "general")
+SETTING_KEYS = ("escalation", "language", "antispam", "model", "general",
+                "retention")
+
+# Retention-bot defaults (photo progression, limits, proactivity, VIP tiers).
+# The ordered `vip_tiers` list turns a free-text vip_level string into a numeric
+# tier ordinal (its index) so a photo's `level_min` (int) gates by tier. Every
+# scalar has an env-backed default in config; the maps/lists default here.
+_DEFAULT_RETENTION: dict[str, Any] = {
+    "vip_tiers": ["none", "bronze", "silver", "gold", "platinum", "diamond"],
+    # tier name (lowercased) -> the highest photo stage that tier may unlock.
+    "max_stage_by_tier": {
+        "none": 2, "bronze": 2, "silver": 3, "gold": 4,
+        "platinum": 4, "diamond": 4,
+    },
+    # accumulated meaningful player messages required for stages 2 / 3 / 4 ...
+    "stage_advance_msgs": [20, 45, 80],
+}
 
 # Test/dev sandbox profile. In a real deployment the host site supplies the
 # player's `user_context` over the signed handshake; in test/dev (no
@@ -275,6 +291,36 @@ def general() -> dict[str, Any]:
     }
 
 
+def retention() -> dict[str, Any]:
+    """Resolved retention-bot knobs (photo progression, limits, proactivity).
+
+    Precedence product_settings > app_settings > env/default, like every group,
+    so a partner can tune its own casino's pacing without touching another's.
+    """
+    db_v = _group("retention")
+    return {
+        "daily_photo_cap": db_v.get("daily_photo_cap",
+                                    config.RETENTION_DAILY_PHOTO_CAP),
+        "proactive_photo_cooldown_msgs": db_v.get(
+            "proactive_photo_cooldown_msgs",
+            config.RETENTION_PROACTIVE_COOLDOWN_MSGS),
+        "candidate_list_size": db_v.get("candidate_list_size",
+                                        config.RETENTION_CANDIDATE_LIST_SIZE),
+        "stage_advance_msgs": db_v.get("stage_advance_msgs",
+                                       list(_DEFAULT_RETENTION["stage_advance_msgs"])),
+        "stage_advance_min_hours": db_v.get(
+            "stage_advance_min_hours", config.RETENTION_STAGE_ADVANCE_MIN_HOURS),
+        "max_stage": db_v.get("max_stage", config.RETENTION_MAX_STAGE),
+        "max_stage_by_tier": db_v.get("max_stage_by_tier",
+                                      dict(_DEFAULT_RETENTION["max_stage_by_tier"])),
+        "vip_tiers": db_v.get("vip_tiers",
+                              list(_DEFAULT_RETENTION["vip_tiers"])),
+        "nonce_ttl_sec": db_v.get("nonce_ttl_sec", config.RETENTION_NONCE_TTL_SEC),
+        "profile_pull_ttl_sec": db_v.get("profile_pull_ttl_sec",
+                                         config.RETENTION_PROFILE_PULL_TTL_SEC),
+    }
+
+
 def resolved_all() -> dict[str, Any]:
     return {
         "escalation": escalation(),
@@ -282,6 +328,7 @@ def resolved_all() -> dict[str, Any]:
         "antispam": antispam(),
         "model": model(),
         "general": general(),
+        "retention": retention(),
     }
 
 
@@ -385,6 +432,30 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "max_messages_per_session", 1, 10_000)
         _require_str_list(value, "high_risk_keywords")
         _require_str_list(value, "human_request_keywords")
+    elif key == "retention":
+        _require_int(value, "daily_photo_cap", 0, 10_000)
+        _require_int(value, "proactive_photo_cooldown_msgs", 1, 10_000)
+        _require_int(value, "candidate_list_size", 1, 50)
+        _require_int(value, "stage_advance_min_hours", 0, 8_760)
+        _require_int(value, "max_stage", 1, 20)
+        _require_int(value, "nonce_ttl_sec", 10, 3_600)
+        _require_int(value, "profile_pull_ttl_sec", 0, 604_800)  # <= 1 week
+        if "stage_advance_msgs" in value:
+            v = value["stage_advance_msgs"]
+            if (not isinstance(v, list)
+                    or not all(isinstance(x, int) and not isinstance(x, bool)
+                               and x >= 0 for x in v)):
+                raise ValueError("stage_advance_msgs must be a list of "
+                                 "non-negative integers")
+        _require_str_list(value, "vip_tiers")
+        if "max_stage_by_tier" in value:
+            m = value["max_stage_by_tier"]
+            if not isinstance(m, dict) or not all(
+                    isinstance(k, str) and isinstance(x, int)
+                    and not isinstance(x, bool) and 1 <= x <= 20
+                    for k, x in m.items()):
+                raise ValueError("max_stage_by_tier must be a map of "
+                                 "tier name -> stage (1..20)")
     elif key == "language":
         import language as _language  # lazy: avoid import cycle at module load
         if "default" in value and not isinstance(value["default"], str):

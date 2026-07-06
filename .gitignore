@@ -7,3 +7,5 @@ venv/
 .env
 *.egg-info/
 .DS_Store
+# Local retention media uploads (real media lives on the Railway Volume).
+media/

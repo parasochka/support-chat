@@ -7,6 +7,9 @@ __pycache__/
 .venv/
 venv/
 tests/
+# Local retention media uploads never belong in the image (real media lives on
+# the Railway Volume mounted at RETENTION_MEDIA_DIR).
+media/
 # Keep .md out of the image EXCEPT the docs the app renders at runtime:
 # main.py reads CLAUDE.md on every request to render the root test page, and
 # README.md is its byte-identical mirror. Excluding them left the <pre> block

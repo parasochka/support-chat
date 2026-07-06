@@ -230,5 +230,49 @@ CORS_ALLOW_ORIGINS: list[str] = [
     o.strip() for o in _env("CORS_ALLOW_ORIGINS", "*").split(",") if o.strip()
 ]
 
+# --- Retention / Telegram bot (second facade over the same AI core) ---------
+# The retention bot is a Telegram webhook consumer of the same FastAPI service.
+# Per-product Telegram config (bot token, channel, player-API key) lives on the
+# product row (encrypted where it is a secret); these env values are only the
+# deploy-level defaults / knobs shared by every product.
+#
+# TELEGRAM_WEBHOOK_SECRET guards POST /telegram/webhook/{secret}: Telegram is
+# told this path secret when the webhook is registered, so a public caller that
+# doesn't know it can't inject fake updates. It also rides in the
+# X-Telegram-Bot-Api-Secret-Token header (defence in depth). Falls back to
+# SESSION_JWT_SECRET so dev runs work without extra config.
+TELEGRAM_WEBHOOK_SECRET: str = _env_opt("TELEGRAM_WEBHOOK_SECRET") or SESSION_JWT_SECRET
+TELEGRAM_WEBHOOK_SECRET_IS_FALLBACK: bool = _env_opt("TELEGRAM_WEBHOOK_SECRET") is None
+# Public base URL of THIS service (e.g. https://chat.example.com), used to build
+# the webhook URL when registering it with Telegram and the media-serving URL.
+# Empty in dev; set on Railway.
+PUBLIC_BASE_URL: str | None = _env_opt("PUBLIC_BASE_URL")
+# Where uploaded retention media (photos) are stored on disk. On Railway this is
+# the mount path of the attached Volume so binaries survive redeploys; locally it
+# defaults to a directory under the repo.
+RETENTION_MEDIA_DIR: str = _env("RETENTION_MEDIA_DIR",
+                                os.path.join(os.path.dirname(__file__), "media"))
+# One-time deeplink nonce lifetime (seconds). Also a `retention` settings knob;
+# this env value is the default.
+RETENTION_NONCE_TTL_SEC: int = _env_int("RETENTION_NONCE_TTL_SEC", 120)
+# Max size of a retention media upload (bytes). The JSON body cap (BODY_MAX_BYTES,
+# 64 KiB) is far too small for an image, so the media-upload path uses this cap
+# instead (see main.body_size_cap). Default 10 MiB.
+RETENTION_MAX_UPLOAD_BYTES: int = _env_int("RETENTION_MAX_UPLOAD_BYTES",
+                                           10 * 1024 * 1024)
+# Photo-progression / proactivity knobs — env defaults for the `retention`
+# settings group (hot-reloadable per product from the admin panel).
+RETENTION_DAILY_PHOTO_CAP: int = _env_int("RETENTION_DAILY_PHOTO_CAP", 10)
+RETENTION_PROACTIVE_COOLDOWN_MSGS: int = _env_int(
+    "RETENTION_PROACTIVE_COOLDOWN_MSGS", 6)
+RETENTION_CANDIDATE_LIST_SIZE: int = _env_int("RETENTION_CANDIDATE_LIST_SIZE", 6)
+RETENTION_STAGE_ADVANCE_MIN_HOURS: int = _env_int(
+    "RETENTION_STAGE_ADVANCE_MIN_HOURS", 24)
+RETENTION_MAX_STAGE: int = _env_int("RETENTION_MAX_STAGE", 4)
+# Lazy profile-pull freshness: if the snapshot is older than this and the product
+# has a player_api_url + key, refresh it from the casino before a turn (§8 level 2).
+RETENTION_PROFILE_PULL_TTL_SEC: int = _env_int(
+    "RETENTION_PROFILE_PULL_TTL_SEC", 3600)
+
 # Convenience: a name shown in logs / health.
 SERVICE_NAME = "nowplix-support-chat"
