@@ -867,7 +867,12 @@ Map of what lives where:
 - **Dashboard data API** (`api/admin.py` + `db.py` aggregation + `metrics.py` derived
   rates): overview/timeseries/by-topic/by-language/sessions/session/unresolved.
   `resolution_rate` is a documented PROXY (counts "not escalated", incl. abandoned →
-  `sessions_open` tracked separately). **Cost** is surfaced per row: `by-topic`, `by-language`,
+  `sessions_open` tracked separately). The overview also carries AI-API health:
+  `avg_latency_ms` (mean end-to-end latency of the SUCCESSFUL OpenAI calls — failures
+  carry no meaningful latency, so they are excluded from the average), `ai_calls_total`
+  and `failed_calls` (from `ai_interaction_logs`). The SPA renders the KPI tiles as two
+  rows of six, grouped by meaning (sessions/engagement, then AI/cost/performance). **Cost**
+  is surfaced per row: `by-topic`, `by-language`,
   and `sessions` each carry a `cost_usd_total` (summed from `ai_interaction_logs` via a join/CTE)
   rendered in the SPA tables. **Date ranges** are half-open and a date-only `to=YYYY-MM-DD` is
   made **inclusive** of that whole day (`api.admin._range` adds one day), so "today" isn't dropped.
@@ -949,6 +954,25 @@ Map of what lives where:
   `product_id`/`partner_id` query params). Local dev: `npm run dev` in
   `admin/` (set `VITE_API_URL` + allow the dev origin in
   `CORS_ALLOW_ORIGINS`); a separate static deploy also still works.
+  **Sidebar** (`App.jsx`): three collapsible sections (Support chat / Telegram ·
+  Retention / System) whose open state persists in localStorage; the Retention
+  sub-tabs are exposed as sub-menu entries that deep-link `/retention?tab=…`
+  (the page reads `?tab=`, like the Prompt page). **Product-scoped surfaces are
+  gated** by `components/RequireProduct` — KB, KB variables, Prompt, Translations
+  and Retention refuse to render without a concrete product selected in the header
+  (otherwise they'd silently edit the default product), showing a "select a
+  product" notice instead; this applies to admins and managers alike. Dashboard,
+  Structure, Users and the session/unresolved lists stay usable at the
+  all/partner scope. **Settings** (`pages/Settings.jsx` + `settingsSchema.js`) is a
+  typed, tabbed editor (one tab per group + a Languages tab with an ISO-picker
+  add-language / default / custom-name editor) — not a raw-JSON textarea — with a
+  scope banner (global defaults vs the selected product). **Topic titles are
+  single-sourced** in Translations → Topic names; the KB form keeps only the
+  canonical English title (the prompt is English-only) and links there. **SET-state
+  is explicit**: `components/SetBadge` shows a green check for configured secrets
+  and `components/SecretField` adds a Clear button so an operator can save an empty
+  value (fall back to env) — used in Structure + Retention config; the test-profile
+  handshake notice links to Structure to clear the product's handshake secret.
 
 §16 decisions: unresolved analysis = topic-grouped (no embeddings); contact form =
 host-site button only; admin auth = named `admin_users` accounts only (email + password,

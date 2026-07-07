@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   Admin,
   CustomRoutes,
@@ -7,15 +8,23 @@ import {
   defaultDarkTheme,
   defaultLightTheme,
 } from 'react-admin';
-import { Navigate, Route } from 'react-router-dom';
-import Typography from '@mui/material/Typography';
+import { Navigate, Route, useLocation, useNavigate } from 'react-router-dom';
+import Collapse from '@mui/material/Collapse';
+import ListItemButton from '@mui/material/ListItemButton';
+import ListItemIcon from '@mui/material/ListItemIcon';
+import ListItemText from '@mui/material/ListItemText';
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
+import ExpandLess from '@mui/icons-material/ExpandLess';
+import ExpandMore from '@mui/icons-material/ExpandMore';
 import ForumIcon from '@mui/icons-material/Forum';
+import InsightsIcon from '@mui/icons-material/Insights';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
 import PeopleIcon from '@mui/icons-material/People';
+import PhotoLibraryIcon from '@mui/icons-material/PhotoLibrary';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
-import SendIcon from '@mui/icons-material/Send';
 import SettingsIcon from '@mui/icons-material/Settings';
+import SupportAgentIcon from '@mui/icons-material/SupportAgent';
+import TelegramIcon from '@mui/icons-material/Telegram';
 import TranslateIcon from '@mui/icons-material/Translate';
 import TuneIcon from '@mui/icons-material/Tune';
 
@@ -34,47 +43,98 @@ import Settings from './pages/Settings';
 import Structure from './pages/Structure';
 import Translations from './pages/Translations';
 
-const MenuSection = ({ label }) => (
-  <Typography
-    variant="overline"
-    color="text.secondary"
-    sx={{ px: 2, pt: 2, pb: 0.5, display: 'block', lineHeight: 1.5 }}
-  >
-    {label}
-  </Typography>
-);
+// Collapsed/expanded state of the sidebar sections persists across reloads so
+// the operator's layout is remembered (default: expanded).
+const OPEN_KEY = 'admin_menu_sections';
+const loadOpen = () => {
+  try {
+    return JSON.parse(localStorage.getItem(OPEN_KEY)) || {};
+  } catch {
+    return {};
+  }
+};
+const saveOpen = (state) => localStorage.setItem(OPEN_KEY, JSON.stringify(state));
+
+const CollapsibleSection = ({ id, label, children }) => {
+  const [open, setOpen] = useState(() => loadOpen()[id] !== false);
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    saveOpen({ ...loadOpen(), [id]: next });
+  };
+  return (
+    <>
+      <ListItemButton onClick={toggle} sx={{ px: 2, py: 0.5 }}>
+        <ListItemText
+          primary={label}
+          slotProps={{
+            primary: { variant: 'overline', color: 'text.secondary' },
+          }}
+        />
+        {open ? <ExpandLess fontSize="small" /> : <ExpandMore fontSize="small" />}
+      </ListItemButton>
+      <Collapse in={open} timeout="auto" unmountOnExit>
+        {children}
+      </Collapse>
+    </>
+  );
+};
+
+// A retention sub-tab as its own sidebar entry: navigates to /retention?tab=…
+// and highlights when that tab is the active one (the page reads ?tab=).
+const RetentionSubItem = ({ tab, label, icon }) => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const active =
+    location.pathname.startsWith('/retention') &&
+    (new URLSearchParams(location.search).get('tab') || 'config') === tab;
+  return (
+    <ListItemButton
+      selected={active}
+      onClick={() => navigate(`/retention?tab=${tab}`)}
+      sx={{ pl: 4, py: 0.4 }}
+    >
+      <ListItemIcon sx={{ minWidth: 34 }}>{icon}</ListItemIcon>
+      <ListItemText primary={label} slotProps={{ primary: { variant: 'body2' } }} />
+    </ListItemButton>
+  );
+};
 
 /**
- * The sidebar in three sections: the support-chat surface, the Telegram
- * retention bot, and the system-wide management. KB variables ride inside the
- * Knowledge base page (a tab there), so they get no menu item of their own.
+ * The sidebar in three collapsible sections: the support-chat surface, the
+ * Telegram retention bot (whose sub-tabs are exposed as sub-menu entries), and
+ * system-wide management. Section open/closed state is remembered. KB variables
+ * ride inside the Knowledge base page (a tab there), so they get no menu item.
  */
 const AppMenu = () => (
   <Menu>
     <Menu.DashboardItem />
 
-    <MenuSection label="Support chat" />
-    <Menu.ResourceItem name="sessions" />
-    <Menu.ResourceItem name="unresolved" />
-    <Menu.ResourceItem name="kb" />
-    <Menu.Item to="/prompt" primaryText="Prompt" leftIcon={<TuneIcon />} />
-    <Menu.Item
-      to="/translations"
-      primaryText="Translations"
-      leftIcon={<TranslateIcon />}
-    />
+    <CollapsibleSection id="support" label="Support chat">
+      <Menu.ResourceItem name="sessions" />
+      <Menu.ResourceItem name="unresolved" />
+      <Menu.ResourceItem name="kb" />
+      <Menu.Item to="/prompt" primaryText="Prompt" leftIcon={<TuneIcon />} />
+      <Menu.Item
+        to="/translations"
+        primaryText="Translations"
+        leftIcon={<TranslateIcon />}
+      />
+    </CollapsibleSection>
 
-    <MenuSection label="Telegram · Retention" />
-    <Menu.Item
-      to="/retention"
-      primaryText="Retention bot"
-      leftIcon={<SendIcon />}
-    />
+    <CollapsibleSection id="retention" label="Telegram · Retention">
+      <RetentionSubItem tab="config" label="Telegram config" icon={<TelegramIcon fontSize="small" />} />
+      <RetentionSubItem tab="kb" label="Retention KB" icon={<LibraryBooksIcon fontSize="small" />} />
+      <RetentionSubItem tab="photos" label="Media" icon={<PhotoLibraryIcon fontSize="small" />} />
+      <RetentionSubItem tab="managers" label="Managers" icon={<SupportAgentIcon fontSize="small" />} />
+      <RetentionSubItem tab="analytics" label="Analytics" icon={<InsightsIcon fontSize="small" />} />
+    </CollapsibleSection>
 
-    <MenuSection label="System" />
-    <Menu.Item to="/structure" primaryText="Structure" leftIcon={<AccountTreeIcon />} />
-    <Menu.Item to="/settings" primaryText="Settings" leftIcon={<SettingsIcon />} />
-    <Menu.ResourceItem name="users" />
+    <CollapsibleSection id="system" label="System">
+      <Menu.Item to="/structure" primaryText="Structure" leftIcon={<AccountTreeIcon />} />
+      <Menu.Item to="/settings" primaryText="Settings" leftIcon={<SettingsIcon />} />
+      <Menu.ResourceItem name="users" />
+    </CollapsibleSection>
   </Menu>
 );
 

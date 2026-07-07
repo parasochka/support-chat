@@ -1,43 +1,370 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Title, useNotify } from 'react-admin';
+import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
+import Chip from '@mui/material/Chip';
+import Divider from '@mui/material/Divider';
+import FormControlLabel from '@mui/material/FormControlLabel';
+import Grid from '@mui/material/Grid';
+import IconButton from '@mui/material/IconButton';
+import MenuItem from '@mui/material/MenuItem';
 import Stack from '@mui/material/Stack';
+import Switch from '@mui/material/Switch';
+import Tab from '@mui/material/Tab';
+import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
+import DeleteIcon from '@mui/icons-material/Delete';
 import { API_URL, httpClient } from '../httpClient';
-import { withProduct } from '../productScope';
+import { getProductId, getScopeName, withProduct } from '../productScope';
+import { GROUP_FIELDS, GROUP_HELP, GROUP_LABELS } from './settingsSchema';
 
-// Content-tuning group edited from the prompt-variables area in the legacy
-// SPA; kept out of the generic settings editor to avoid a duplicate editor.
+// Content-tuning group edited from the Prompt page; kept out of this editor.
 const SKIP_GROUPS = ['escalation'];
+const GROUP_ORDER = ['antispam', 'model', 'general', 'retention', 'language'];
 
-/**
- * Hot-reloaded runtime settings groups (antispam / model / language / general
- * / retention). Each group is edited as JSON and written whole via
- * PUT /admin/settings/{key} — the backend validates hard and rejects bad
- * shapes with a 400.
- */
-const Settings = () => {
-  const [keys, setKeys] = useState([]);
-  const [resolved, setResolved] = useState({});
-  const [drafts, setDrafts] = useState({});
-  const [saving, setSaving] = useState('');
+// ---------------------------------------------------------------------------
+// One typed field
+// ---------------------------------------------------------------------------
+const Field = ({ field, value, onChange }) => {
+  const { type, label, help } = field;
+
+  if (type === 'bool') {
+    return (
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={Boolean(value)}
+              onChange={(e) => onChange(e.target.checked)}
+            />
+          }
+          label={label}
+        />
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ ml: 6, mt: -0.5 }}>
+          {help}
+        </Typography>
+      </Grid>
+    );
+  }
+
+  if (type === 'select') {
+    return (
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField
+          select
+          label={label}
+          value={value ?? ''}
+          onChange={(e) => onChange(e.target.value)}
+          helperText={help}
+          fullWidth
+          size="small"
+        >
+          {field.options.map((o) => (
+            <MenuItem key={o} value={o}>
+              {o === '' ? '(model default)' : o}
+            </MenuItem>
+          ))}
+        </TextField>
+      </Grid>
+    );
+  }
+
+  if (type === 'intlist' || type === 'strlist') {
+    const text = Array.isArray(value) ? value.join('\n') : '';
+    return (
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField
+          label={label}
+          value={text}
+          onChange={(e) => {
+            const lines = e.target.value.split('\n').map((s) => s.trim()).filter(Boolean);
+            onChange(type === 'intlist' ? lines.map(Number).filter((n) => !Number.isNaN(n)) : lines);
+          }}
+          helperText={help}
+          fullWidth
+          size="small"
+          multiline
+          minRows={3}
+        />
+      </Grid>
+    );
+  }
+
+  if (type === 'intmap') {
+    const obj = value && typeof value === 'object' ? value : {};
+    return (
+      <Grid size={{ xs: 12 }}>
+        <Typography variant="subtitle2">{label}</Typography>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+          {help}
+        </Typography>
+        <Grid container spacing={1}>
+          {Object.keys(obj).map((k) => (
+            <Grid size={{ xs: 6, sm: 3 }} key={k}>
+              <TextField
+                label={k}
+                type="number"
+                value={obj[k]}
+                onChange={(e) => onChange({ ...obj, [k]: Number(e.target.value) })}
+                fullWidth
+                size="small"
+              />
+            </Grid>
+          ))}
+        </Grid>
+      </Grid>
+    );
+  }
+
+  // int / float / string
+  return (
+    <Grid size={{ xs: 12, sm: 6 }}>
+      <TextField
+        label={label}
+        type={type === 'string' ? 'text' : 'number'}
+        value={value ?? ''}
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (type === 'string') return onChange(raw);
+          if (raw === '') return onChange('');
+          onChange(type === 'float' ? Number(raw) : parseInt(raw, 10));
+        }}
+        helperText={help}
+        fullWidth
+        size="small"
+        slotProps={
+          type === 'string'
+            ? undefined
+            : { htmlInput: { min: field.min, max: field.max, step: field.step } }
+        }
+      />
+    </Grid>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// One group (typed fields) — saves the whole group object
+// ---------------------------------------------------------------------------
+const GroupEditor = ({ group, resolved, onSaved }) => {
   const notify = useNotify();
+  const [form, setForm] = useState(() => ({ ...(resolved || {}) }));
+  const [saving, setSaving] = useState(false);
+  const fields = GROUP_FIELDS[group] || [];
+
+  const setField = (name, v) => setForm((f) => ({ ...f, [name]: v }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await httpClient(withProduct(`${API_URL}/admin/settings/${group}`), {
+        method: 'PUT',
+        body: JSON.stringify({ value: form }),
+      });
+      notify(`${GROUP_LABELS[group] || group} settings saved`, { type: 'success' });
+      onSaved?.();
+    } catch (e) {
+      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardContent>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          {GROUP_HELP[group]}
+        </Typography>
+        <Grid container spacing={2}>
+          {fields.map((f) => (
+            <Field key={f.name} field={f} value={form[f.name]} onChange={(v) => setField(f.name, v)} />
+          ))}
+        </Grid>
+        <Button variant="contained" onClick={save} disabled={saving} sx={{ mt: 2 }}>
+          {saving ? 'Saving…' : `Save ${GROUP_LABELS[group] || group}`}
+        </Button>
+      </CardContent>
+    </Card>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Languages editor (supported set + default + custom names + add-a-language)
+// ---------------------------------------------------------------------------
+const LanguageEditor = ({ resolved, overrides, meta, onSaved }) => {
+  const notify = useNotify();
+  const lang = resolved?.language || {};
+  const [supported, setSupported] = useState(() => [...(lang.supported || [])]);
+  const [def, setDef] = useState(lang.default || 'en');
+  const [names, setNames] = useState(() => ({ ...(overrides?.language?.names || {}) }));
+  const [addCode, setAddCode] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const nameFor = (code) => {
+    const known = (meta?.languages || []).find((l) => l.code === code);
+    return names[code] || known?.name || code.toUpperCase();
+  };
+
+  const addable = useMemo(
+    () => (meta?.iso_catalog || []).filter((l) => !supported.includes(l.code)),
+    [meta, supported]
+  );
+
+  const addLanguage = () => {
+    if (!addCode || supported.includes(addCode)) return;
+    setSupported((s) => [...s, addCode]);
+    setAddCode('');
+  };
+
+  const removeLanguage = (code) => {
+    const next = supported.filter((c) => c !== code);
+    setSupported(next);
+    if (def === code) setDef(next[0] || 'en');
+    setNames((n) => {
+      const { [code]: _drop, ...rest } = n;
+      return rest;
+    });
+  };
+
+  const save = async () => {
+    if (!supported.length) {
+      notify('Keep at least one supported language', { type: 'warning' });
+      return;
+    }
+    // Only persist non-empty custom names for still-supported codes.
+    const cleanNames = {};
+    supported.forEach((c) => {
+      if (names[c] && names[c].trim()) cleanNames[c] = names[c].trim();
+    });
+    setSaving(true);
+    try {
+      await httpClient(withProduct(`${API_URL}/admin/settings/language`), {
+        method: 'PUT',
+        body: JSON.stringify({
+          value: { default: supported.includes(def) ? def : supported[0], supported, names: cleanNames },
+        }),
+      });
+      notify('Languages saved', { type: 'success' });
+      onSaved?.();
+    } catch (e) {
+      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardContent>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          {GROUP_HELP.language}
+        </Typography>
+
+        <Typography variant="subtitle2" gutterBottom>
+          Default answer language
+        </Typography>
+        <TextField
+          select
+          size="small"
+          value={supported.includes(def) ? def : ''}
+          onChange={(e) => setDef(e.target.value)}
+          sx={{ minWidth: 240, mb: 2 }}
+          helperText="Fallback when the player's language can't be detected."
+        >
+          {supported.map((c) => (
+            <MenuItem key={c} value={c}>
+              {nameFor(c)} ({c})
+            </MenuItem>
+          ))}
+        </TextField>
+
+        <Typography variant="subtitle2" gutterBottom>
+          Supported languages ({supported.length})
+        </Typography>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+          A language added here starts on English copy and becomes translatable in the Translations tab.
+          Edit the display name (optional) to override the built-in name.
+        </Typography>
+        <Stack spacing={1} sx={{ mb: 2 }}>
+          {supported.map((c) => (
+            <Stack key={c} direction="row" spacing={1} alignItems="center">
+              <Chip label={c} size="small" sx={{ minWidth: 52 }} />
+              <TextField
+                size="small"
+                value={names[c] ?? ''}
+                placeholder={nameFor(c)}
+                onChange={(e) => setNames((n) => ({ ...n, [c]: e.target.value }))}
+                sx={{ minWidth: 220 }}
+              />
+              {def === c && <Chip label="default" size="small" color="primary" variant="outlined" />}
+              <IconButton
+                size="small"
+                color="error"
+                onClick={() => removeLanguage(c)}
+                aria-label={`Remove ${c}`}
+                disabled={supported.length <= 1}
+              >
+                <DeleteIcon fontSize="small" />
+              </IconButton>
+            </Stack>
+          ))}
+        </Stack>
+
+        <Divider sx={{ my: 2 }} />
+        <Typography variant="subtitle2" gutterBottom>
+          Add a language
+        </Typography>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          <TextField
+            select
+            size="small"
+            label="ISO 639-1 language"
+            value={addCode}
+            onChange={(e) => setAddCode(e.target.value)}
+            sx={{ minWidth: 280 }}
+          >
+            {addable.map((l) => (
+              <MenuItem key={l.code} value={l.code}>
+                {l.name} ({l.code})
+              </MenuItem>
+            ))}
+          </TextField>
+          <Button variant="outlined" onClick={addLanguage} disabled={!addCode}>
+            Add
+          </Button>
+        </Stack>
+
+        <Box sx={{ mt: 2 }}>
+          <Button variant="contained" onClick={save} disabled={saving}>
+            {saving ? 'Saving…' : 'Save languages'}
+          </Button>
+        </Box>
+      </CardContent>
+    </Card>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// page
+// ---------------------------------------------------------------------------
+const Settings = () => {
+  const notify = useNotify();
+  const [settings, setSettings] = useState(null);
+  const [meta, setMeta] = useState(null);
+  const [tab, setTab] = useState('antispam');
 
   const load = () =>
-    httpClient(withProduct(`${API_URL}/admin/settings`))
-      .then(({ json }) => {
-        const ks = (json.keys || []).filter((k) => !SKIP_GROUPS.includes(k));
-        setKeys(ks);
-        setResolved(json.resolved || {});
-        const d = {};
-        ks.forEach((k) => {
-          d[k] = JSON.stringify(json.resolved?.[k] ?? {}, null, 2);
-        });
-        setDrafts(d);
+    Promise.all([
+      httpClient(withProduct(`${API_URL}/admin/settings`)),
+      httpClient(withProduct(`${API_URL}/admin/meta`)),
+    ])
+      .then(([s, m]) => {
+        setSettings(s.json);
+        setMeta(m.json);
       })
       .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
 
@@ -46,66 +373,66 @@ const Settings = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const save = async (key) => {
-    let value;
-    try {
-      value = JSON.parse(drafts[key]);
-    } catch {
-      notify(`"${key}": invalid JSON`, { type: 'error' });
-      return;
-    }
-    setSaving(key);
-    try {
-      await httpClient(withProduct(`${API_URL}/admin/settings/${key}`), {
-        method: 'PUT',
-        body: JSON.stringify({ value }),
-      });
-      notify(`Setting "${key}" saved`, { type: 'success' });
-      await load();
-    } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
-    } finally {
-      setSaving('');
-    }
-  };
+  if (!settings) return <Box sx={{ p: 2 }}>Loading…</Box>;
+
+  const groups = GROUP_ORDER.filter(
+    (k) => k === 'language' || ((settings.keys || []).includes(k) && !SKIP_GROUPS.includes(k))
+  );
+  const productId = getProductId();
+  const scopeName = getScopeName();
 
   return (
-    <Box sx={{ p: 2, maxWidth: 900 }}>
+    <Box sx={{ p: 2, maxWidth: 1000 }}>
       <Title title="Settings" />
+      <Alert severity={productId ? 'success' : 'info'} sx={{ mb: 2 }}>
+        {productId ? (
+          <>
+            Editing settings for <strong>{scopeName || `product #${productId}`}</strong>.
+            These override the global defaults for this product only.
+          </>
+        ) : (
+          <>
+            Editing the <strong>global defaults</strong> (all products). Select a product in the header
+            to tune that product's own overrides. Global editing needs a global admin account.
+          </>
+        )}
+      </Alert>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Hot-reloaded runtime settings (effective values shown; precedence
-        DB&nbsp;→ env&nbsp;→ default). Each group is saved whole; the backend
-        validates and rejects invalid shapes.
+        Hot-reloaded runtime settings — effective values shown (precedence
+        product&nbsp;→ global&nbsp;→ env&nbsp;→ default). The backend validates and
+        rejects out-of-range values.
       </Typography>
-      <Stack spacing={2}>
-        {keys.map((key) => (
-          <Card key={key}>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                {key}
-              </Typography>
-              <TextField
-                value={drafts[key] ?? ''}
-                onChange={(e) => setDrafts({ ...drafts, [key]: e.target.value })}
-                fullWidth
-                multiline
-                minRows={6}
-                slotProps={{ input: { sx: { fontFamily: 'monospace', fontSize: 13 } } }}
-              />
-              <Button
-                variant="contained"
-                onClick={() => save(key)}
-                disabled={saving === key}
-                sx={{ mt: 1 }}
-              >
-                {saving === key ? 'Saving…' : `Save ${key}`}
-              </Button>
-            </CardContent>
-          </Card>
+
+      <Tabs
+        value={tab}
+        onChange={(e, v) => setTab(v)}
+        sx={{ mb: 2, borderBottom: 1, borderColor: 'divider' }}
+        variant="scrollable"
+        allowScrollButtonsMobile
+      >
+        {groups.map((g) => (
+          <Tab key={g} value={g} label={GROUP_LABELS[g] || g} />
         ))}
-      </Stack>
-      {/* resolved kept in state for future diff-vs-override display */}
-      {void resolved}
+      </Tabs>
+
+      {groups.map((g) =>
+        g !== tab ? null : g === 'language' ? (
+          <LanguageEditor
+            key={g}
+            resolved={settings.resolved}
+            overrides={settings.overrides}
+            meta={meta}
+            onSaved={load}
+          />
+        ) : (
+          <GroupEditor
+            key={g}
+            group={g}
+            resolved={settings.resolved?.[g]}
+            onSaved={load}
+          />
+        )
+      )}
     </Box>
   );
 };

@@ -6,6 +6,7 @@ import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
 import FormControlLabel from '@mui/material/FormControlLabel';
+import Link from '@mui/material/Link';
 import Switch from '@mui/material/Switch';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
@@ -211,7 +212,14 @@ const PromptVariables = () => {
             {!profileActive && (
               <Alert severity="info" sx={{ mb: 1 }}>
                 A handshake secret is configured — the host site supplies the
-                player context, so this profile is ignored at session create.
+                player context, so this test profile is ignored at session
+                create. To use this profile instead, clear the product's{' '}
+                <Link href="#/structure">
+                  Widget handshake secret in Structure
+                </Link>{' '}
+                (use its Clear button). A deploy-wide{' '}
+                <code>WIDGET_HANDSHAKE_SECRET</code> env value can only be
+                removed in Railway.
               </Alert>
             )}
             <FormControlLabel

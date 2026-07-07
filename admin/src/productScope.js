@@ -9,6 +9,7 @@
 
 const KEY = 'admin_product_id';
 const PARTNER_KEY = 'admin_partner_id';
+const NAME_KEY = 'admin_scope_name';
 
 export const getProductId = () => {
   const v = localStorage.getItem(KEY);
@@ -20,11 +21,16 @@ export const getPartnerId = () => {
   return v ? Number(v) : null;
 };
 
-export const setScope = ({ productId = null, partnerId = null }) => {
+/** Human label of the current selection (product/partner name), for banners. */
+export const getScopeName = () => localStorage.getItem(NAME_KEY) || '';
+
+export const setScope = ({ productId = null, partnerId = null, name = '' }) => {
   if (productId) localStorage.setItem(KEY, String(productId));
   else localStorage.removeItem(KEY);
   if (partnerId) localStorage.setItem(PARTNER_KEY, String(partnerId));
   else localStorage.removeItem(PARTNER_KEY);
+  if (name) localStorage.setItem(NAME_KEY, name);
+  else localStorage.removeItem(NAME_KEY);
 };
 
 /** Query params ({product_id} / {partner_id}) for the current selection. */

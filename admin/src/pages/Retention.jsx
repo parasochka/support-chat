@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Title, useNotify } from 'react-admin';
-import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
@@ -21,6 +21,8 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import { API_URL, httpClient, getToken } from '../httpClient';
 import { getProductId } from '../productScope';
+import RequireProduct from '../components/RequireProduct';
+import SecretField from '../components/SecretField';
 
 // ---------------------------------------------------------------------------
 // Telegram config tab
@@ -65,6 +67,8 @@ const ConfigTab = ({ productId }) => {
   };
 
   const saveSecrets = async () => {
+    // Only send fields the operator actually typed into (a non-empty string).
+    // Clearing is an explicit action (clearSecret), not "leave the box empty".
     const fields = Object.fromEntries(
       Object.entries(secrets).filter(([, v]) => v !== undefined && v !== '')
     );
@@ -79,6 +83,21 @@ const ConfigTab = ({ productId }) => {
       load();
     } catch (e) {
       notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+    }
+  };
+
+  const clearSecret = async (field, label) => {
+    if (!window.confirm(`Clear ${label}? It falls back to the deploy env value.`)) return;
+    try {
+      await httpClient(`${API_URL}/admin/products/${productId}/secrets`, {
+        method: 'PUT',
+        body: JSON.stringify({ [field]: '' }),
+      });
+      notify(`${label} cleared`, { type: 'success' });
+      setSecrets({ ...secrets, [field]: '' });
+      load();
+    } catch (e) {
+      notify(e.body?.detail || e.message || 'Clear failed', { type: 'error' });
     }
   };
 
@@ -141,23 +160,19 @@ const ConfigTab = ({ productId }) => {
         <Typography variant="h6" sx={{ mt: 2 }}>
           Secrets
         </Typography>
-        <TextField
-          label={`Telegram bot token ${p.has_telegram_bot_token ? '· set' : '· not set'}`}
-          type="password"
-          value={secrets.telegram_bot_token ?? ''}
+        <SecretField
+          label="Telegram bot token"
+          set={Boolean(p.has_telegram_bot_token)}
+          value={secrets.telegram_bot_token}
           onChange={(e) => setSecrets({ ...secrets, telegram_bot_token: e.target.value })}
-          fullWidth
-          margin="dense"
-          autoComplete="new-password"
+          onClear={() => clearSecret('telegram_bot_token', 'Telegram bot token')}
         />
-        <TextField
-          label={`Player API key ${p.has_player_api_key ? '· set' : '· not set'}`}
-          type="password"
-          value={secrets.player_api_key ?? ''}
+        <SecretField
+          label="Player API key"
+          set={Boolean(p.has_player_api_key)}
+          value={secrets.player_api_key}
           onChange={(e) => setSecrets({ ...secrets, player_api_key: e.target.value })}
-          fullWidth
-          margin="dense"
-          autoComplete="new-password"
+          onClear={() => clearSecret('player_api_key', 'Player API key')}
         />
         <Button variant="contained" size="small" onClick={saveSecrets} sx={{ mt: 1 }}>
           Save secrets
@@ -742,36 +757,27 @@ const TABS = [
 ];
 
 const Retention = () => {
-  const [tab, setTab] = useState('config');
-  const [productId, setProductId] = useState(getProductId());
+  const [params, setParams] = useSearchParams();
+  const productId = getProductId();
+  const requested = params.get('tab');
+  const tab = TABS.some(([v]) => v === requested) ? requested : 'config';
 
-  useEffect(() => {
-    if (productId) return;
-    // No product selected in the header switcher — fall back to the first
-    // product the account can see (single-product deployments just work).
-    httpClient(`${API_URL}/admin/structure`)
-      .then(({ json }) => {
-        const first = (json.partners || []).flatMap((pa) => pa.products || [])[0];
-        if (first) setProductId(first.id);
-      })
-      .catch(() => {});
-  }, [productId]);
-
+  // Retention data is strictly per-product; refuse to render without one so the
+  // operator can't edit the default product by accident (same gate as KB /
+  // Prompt / Translations).
   if (!productId) {
-    return (
-      <Box sx={{ p: 2 }}>
-        <Title title="Retention · Telegram" />
-        <Alert severity="info">
-          Select a product in the header switcher to manage its retention bot.
-        </Alert>
-      </Box>
-    );
+    return <RequireProduct title="Retention · Telegram" />;
   }
 
   return (
     <Box sx={{ p: 2, maxWidth: 1100 }}>
       <Title title="Retention · Telegram" />
-      <Tabs value={tab} onChange={(e, v) => setTab(v)} sx={{ mb: 2 }} variant="scrollable">
+      <Tabs
+        value={tab}
+        onChange={(e, v) => setParams({ tab: v }, { replace: true })}
+        sx={{ mb: 2 }}
+        variant="scrollable"
+      >
         {TABS.map(([value, label]) => (
           <Tab key={value} value={value} label={label} />
         ))}
