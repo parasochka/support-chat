@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Title, useNotify } from 'react-admin';
 import Alert from '@mui/material/Alert';
+import AlertTitle from '@mui/material/AlertTitle';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
@@ -18,6 +19,7 @@ import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import DeleteIcon from '@mui/icons-material/Delete';
+import PublicIcon from '@mui/icons-material/Public';
 import { API_URL, httpClient } from '../httpClient';
 import { getProductId, getScopeName, withProduct } from '../productScope';
 import { GROUP_FIELDS, GROUP_HELP, GROUP_LABELS } from './settingsSchema';
@@ -149,7 +151,7 @@ const Field = ({ field, value, onChange }) => {
 // ---------------------------------------------------------------------------
 // One group (typed fields) — saves the whole group object
 // ---------------------------------------------------------------------------
-const GroupEditor = ({ group, resolved, onSaved }) => {
+const GroupEditor = ({ group, resolved, onSaved, scopeLabel }) => {
   const notify = useNotify();
   const [form, setForm] = useState(() => ({ ...(resolved || {}) }));
   const [saving, setSaving] = useState(false);
@@ -185,7 +187,7 @@ const GroupEditor = ({ group, resolved, onSaved }) => {
           ))}
         </Grid>
         <Button variant="contained" onClick={save} disabled={saving} sx={{ mt: 2 }}>
-          {saving ? 'Saving…' : `Save ${GROUP_LABELS[group] || group}`}
+          {saving ? 'Saving…' : `Save ${GROUP_LABELS[group] || group}${scopeLabel}`}
         </Button>
       </CardContent>
     </Card>
@@ -195,7 +197,7 @@ const GroupEditor = ({ group, resolved, onSaved }) => {
 // ---------------------------------------------------------------------------
 // Languages editor (supported set + default + custom names + add-a-language)
 // ---------------------------------------------------------------------------
-const LanguageEditor = ({ resolved, overrides, meta, onSaved }) => {
+const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
   const notify = useNotify();
   const lang = resolved?.language || {};
   const [supported, setSupported] = useState(() => [...(lang.supported || [])]);
@@ -340,7 +342,7 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved }) => {
 
         <Box sx={{ mt: 2 }}>
           <Button variant="contained" onClick={save} disabled={saving}>
-            {saving ? 'Saving…' : 'Save languages'}
+            {saving ? 'Saving…' : `Save languages${scopeLabel}`}
           </Button>
         </Box>
       </CardContent>
@@ -380,23 +382,34 @@ const Settings = () => {
   );
   const productId = getProductId();
   const scopeName = getScopeName();
+  // Rides in every Save button so the write scope is unmistakable even after
+  // the operator scrolled the banner away.
+  const scopeLabel = productId
+    ? ` for ${scopeName || `product #${productId}`}`
+    : ' — GLOBAL defaults';
 
   return (
     <Box sx={{ p: 2, maxWidth: 1000 }}>
       <Title title="Settings" />
-      <Alert severity={productId ? 'success' : 'info'} sx={{ mb: 2 }}>
-        {productId ? (
-          <>
-            Editing settings for <strong>{scopeName || `product #${productId}`}</strong>.
-            These override the global defaults for this product only.
-          </>
-        ) : (
-          <>
-            Editing the <strong>global defaults</strong> (all products). Select a product in the header
-            to tune that product's own overrides. Global editing needs a global admin account.
-          </>
-        )}
-      </Alert>
+      {productId ? (
+        <Alert severity="success" sx={{ mb: 2 }}>
+          <AlertTitle>
+            Product settings — {scopeName || `product #${productId}`}
+          </AlertTitle>
+          Values you save here override the global defaults for this product
+          only.
+        </Alert>
+      ) : (
+        <Alert severity="warning" icon={<PublicIcon />} sx={{ mb: 2 }}>
+          <AlertTitle>Global defaults — the fallback for EVERY product</AlertTitle>
+          No product is selected, so you are editing the deploy-wide fallback
+          layer (model tuning, limits, languages) that applies to every product
+          without its own override. Writing here needs a global admin account.
+          To tune a single casino, pick it in the Partner → Product switcher at
+          the top-right. Per-product secrets (OpenAI/API keys) live on the
+          Structure page, not here.
+        </Alert>
+      )}
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         Hot-reloaded runtime settings — effective values shown (precedence
         product&nbsp;→ global&nbsp;→ env&nbsp;→ default). The backend validates and
@@ -423,6 +436,7 @@ const Settings = () => {
             overrides={settings.overrides}
             meta={meta}
             onSaved={load}
+            scopeLabel={scopeLabel}
           />
         ) : (
           <GroupEditor
@@ -430,6 +444,7 @@ const Settings = () => {
             group={g}
             resolved={settings.resolved?.[g]}
             onSaved={load}
+            scopeLabel={scopeLabel}
           />
         )
       )}

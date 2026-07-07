@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   BooleanField,
   BooleanInput,
@@ -13,11 +14,46 @@ import {
   email,
   required,
 } from 'react-admin';
+import { useFormContext } from 'react-hook-form';
+import Button from '@mui/material/Button';
+import Stack from '@mui/material/Stack';
+import { generatePassword } from '../lib/secrets';
 
 const ROLE_CHOICES = [
   { id: 'admin', name: 'admin (read + write)' },
   { id: 'manager', name: 'manager (read-only)' },
 ];
+
+// Password input with a one-click generator. A generated password renders as
+// visible text (the admin must copy it to hand it over — there is no email
+// reset flow); a hand-typed one stays masked.
+const PasswordWithGenerate = ({ source = 'password', label, helperText, validate }) => {
+  const { setValue } = useFormContext();
+  const [revealed, setRevealed] = useState(false);
+
+  const generate = () => {
+    setValue(source, generatePassword(), { shouldDirty: true, shouldValidate: true });
+    setRevealed(true);
+  };
+
+  return (
+    <Stack direction="row" spacing={1} alignItems="flex-start" sx={{ width: '100%' }}>
+      <TextInput
+        source={source}
+        type={revealed ? 'text' : 'password'}
+        label={label}
+        helperText={helperText}
+        validate={validate}
+        autoComplete="new-password"
+        fullWidth
+        onChange={() => setRevealed(false)}
+      />
+      <Button variant="outlined" onClick={generate} sx={{ whiteSpace: 'nowrap', mt: 1 }}>
+        Generate
+      </Button>
+    </Stack>
+  );
+};
 
 export const UserList = () => (
   <List perPage={50} exporter={false} title="Admin users">
@@ -36,9 +72,7 @@ export const UserEdit = () => (
       <TextInput source="email" disabled />
       <SelectInput source="role" choices={ROLE_CHOICES} />
       <BooleanInput source="active" />
-      <TextInput
-        source="password"
-        type="password"
+      <PasswordWithGenerate
         label="New password (leave empty to keep)"
         helperText="Minimum 8 characters. Set directly — there is no email reset flow."
       />
@@ -50,7 +84,7 @@ export const UserCreate = () => (
   <Create redirect="list" title="New admin user">
     <SimpleForm>
       <TextInput source="email" validate={[required(), email()]} />
-      <TextInput source="password" type="password" validate={required()} />
+      <PasswordWithGenerate validate={required()} />
       <SelectInput source="role" choices={ROLE_CHOICES} defaultValue="manager" />
     </SimpleForm>
   </Create>

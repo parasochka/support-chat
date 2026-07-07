@@ -213,8 +213,10 @@ const Dashboard = () => {
         />
       </Grid>
 
-      {/* Row 2 — AI, cost & performance (6 tiles). */}
-      <Grid container spacing={2} sx={{ mt: 0 }} alignItems="stretch">
+      {/* Row 2 — AI, cost & performance (6 tiles). The gap-based Grid container
+          carries no outer margin, so without an explicit top margin the two
+          KPI rows touch. */}
+      <Grid container spacing={2} sx={{ mt: 2 }} alignItems="stretch">
         <Kpi
           label="Cost (USD)"
           value={usd(overview?.cost_usd_total)}
