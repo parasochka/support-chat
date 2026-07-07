@@ -1,0 +1,150 @@
+import {
+  BooleanField,
+  BooleanInput,
+  Datagrid,
+  DateField,
+  DateInput,
+  List,
+  NumberField,
+  SelectInput,
+  Show,
+  TextField,
+  TextInput,
+  useRecordContext,
+} from 'react-admin';
+import Box from '@mui/material/Box';
+import Card from '@mui/material/Card';
+import CardContent from '@mui/material/CardContent';
+import Chip from '@mui/material/Chip';
+import Stack from '@mui/material/Stack';
+import Typography from '@mui/material/Typography';
+
+const STATUS_CHOICES = [
+  { id: 'open', name: 'Open' },
+  { id: 'escalated', name: 'Escalated' },
+  { id: 'resolved', name: 'Resolved' },
+];
+
+const LANG_CHOICES = ['en', 'ru', 'es', 'tr', 'pt'].map((l) => ({ id: l, name: l }));
+
+const filters = [
+  <TextInput key="q" source="q" label="Search in messages" alwaysOn />,
+  <TextInput key="topic" source="topic" label="Topic slug" />,
+  <SelectInput key="lang" source="lang" label="Language" choices={LANG_CHOICES} />,
+  <SelectInput key="status" source="status" choices={STATUS_CHOICES} />,
+  <BooleanInput key="escalated" source="escalated" label="Escalated" />,
+  <DateInput key="from" source="from" label="From" />,
+  <DateInput key="to" source="to" label="To" />,
+];
+
+export const ConversationList = () => (
+  <List
+    filters={filters}
+    perPage={25}
+    pagination={false}
+    exporter={false}
+    title="Conversations"
+    sort={{ field: 'created_at', order: 'DESC' }}
+  >
+    <Datagrid rowClick="show" bulkActionButtons={false}>
+      <TextField source="id" label="Session" sortable={false} />
+      <TextField source="topic" sortable={false} />
+      <TextField source="lang" label="Lang" sortable={false} />
+      <TextField source="status" sortable={false} />
+      <BooleanField source="escalated" sortable={false} />
+      <NumberField source="message_count" label="Msgs" sortable={false} />
+      <NumberField
+        source="cost_usd_total"
+        label="Cost $"
+        options={{ maximumFractionDigits: 4 }}
+        sortable={false}
+      />
+      <DateField source="created_at" showTime sortable={false} />
+    </Datagrid>
+  </List>
+);
+
+const MessageThread = () => {
+  const record = useRecordContext();
+  if (!record) return null;
+  const messages = record.messages || [];
+  const events = record.events || [];
+  // Interleave topic-switch markers into the transcript by timestamp.
+  const timeline = [
+    ...messages.map((m) => ({ ...m, kind: 'message' })),
+    ...events.map((e) => ({ ...e, kind: 'event' })),
+  ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+  return (
+    <Stack spacing={1} sx={{ mt: 2 }}>
+      <Typography variant="h6">Message thread</Typography>
+      {timeline.length === 0 && (
+        <Typography color="text.secondary">No messages.</Typography>
+      )}
+      {timeline.map((item, i) =>
+        item.kind === 'event' ? (
+          <Box key={i} sx={{ textAlign: 'center', py: 0.5 }}>
+            <Chip
+              size="small"
+              label={`switched ${item.payload?.from || '?'} → ${item.payload?.to || '?'}${
+                item.payload?.cost_usd ? ` · $${item.payload.cost_usd}` : ''
+              }`}
+            />
+          </Box>
+        ) : (
+          <Card
+            key={i}
+            variant="outlined"
+            sx={{
+              maxWidth: '75%',
+              alignSelf: item.role === 'user' ? 'flex-start' : 'flex-end',
+              bgcolor: item.role === 'user' ? 'transparent' : 'action.hover',
+            }}
+          >
+            <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
+              <Typography variant="caption" color="text.secondary">
+                {item.role} · {new Date(item.created_at).toLocaleString()}
+                {item.model ? ` · ${item.model}` : ''}
+                {item.cost_usd ? ` · $${item.cost_usd.toFixed(5)}` : ''}
+              </Typography>
+              <Typography sx={{ whiteSpace: 'pre-wrap' }}>{item.content}</Typography>
+            </CardContent>
+          </Card>
+        )
+      )}
+    </Stack>
+  );
+};
+
+const SessionSummary = () => {
+  const record = useRecordContext();
+  if (!record) return null;
+  const fields = [
+    ['Session', record.id],
+    ['Topic', record.topic],
+    ['Language', record.lang],
+    ['Status', record.status],
+    ['Escalated', record.escalated ? 'yes' : 'no'],
+    ['Messages', record.message_count],
+    ['Total cost $', record.cost_usd_total],
+    ['Created', record.created_at && new Date(record.created_at).toLocaleString()],
+  ];
+  return (
+    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+      {fields
+        .filter(([, v]) => v !== undefined && v !== null && v !== '')
+        .map(([k, v]) => (
+          <Chip key={k} label={`${k}: ${v}`} variant="outlined" />
+        ))}
+    </Stack>
+  );
+};
+
+export const ConversationShow = () => (
+  <Show title="Conversation">
+    <Box sx={{ p: 2 }}>
+      <SessionSummary />
+      <MessageThread />
+    </Box>
+  </Show>
+);
