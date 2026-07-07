@@ -38,10 +38,11 @@ def test_retention_on_routes_button_to_the_bot(monkeypatch):
 
     captured = {}
 
-    async def _create_deeplink(prod, context, escalation):  # noqa: A002 - mirror API
+    async def _create_deeplink(prod, context, escalation, lang=None):  # noqa: A002 - mirror API
         captured["product_id"] = prod["id"]
         captured["escalation"] = escalation
         captured["context"] = context
+        captured["lang"] = lang
         return {"nonce": "n1", "deep_link": "https://t.me/nika_bot?start=n1"}
     monkeypatch.setattr(retention, "create_deeplink", _create_deeplink)
 
@@ -55,6 +56,8 @@ def test_retention_on_routes_button_to_the_bot(monkeypatch):
     assert captured["escalation"] is True
     assert captured["product_id"] == 1
     assert captured["context"] == {"full_name": "Andrey"}
+    # The turn's answer language rides in the nonce so the bot opens in it.
+    assert captured["lang"] == "ru"
 
 
 def test_retention_off_falls_back_to_static_contact_url(monkeypatch):
@@ -123,7 +126,7 @@ def test_mint_failure_degrades_to_static(monkeypatch):
         return product
     monkeypatch.setattr("db.get_product", _get_product)
 
-    async def _create_deeplink(prod, context, escalation):  # noqa: A002
+    async def _create_deeplink(prod, context, escalation, lang=None):  # noqa: A002
         raise RuntimeError("db down")
     monkeypatch.setattr(retention, "create_deeplink", _create_deeplink)
 

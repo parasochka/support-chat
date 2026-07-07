@@ -53,15 +53,25 @@ def new_nonce() -> str:
 
 
 async def create_deeplink(product: dict[str, Any], handshake_context: dict[str, Any],
-                          escalation: bool) -> dict[str, str]:
+                          escalation: bool,
+                          lang: Optional[str] = None) -> dict[str, str]:
     """Mint a nonce for a player's handshake and return the t.me deep link.
 
     The full profile is stashed server-side keyed by the nonce (the deeplink
     only carries the short nonce). Redeemed once on /start.
+
+    `lang` is the language the player's conversation was ALREADY running in
+    (the widget escalation passes the turn's answer language; the site deeplink
+    endpoint passes an optional `lang` field). It rides in the nonce payload and
+    on redemption becomes the bot's conversation language — so a player who
+    chatted in Russian lands in a Russian bot, not the service default.
     """
     nonce = new_nonce()
     ttl = settings.retention()["nonce_ttl_sec"]
-    await db.create_retention_nonce(nonce, product["id"], handshake_context,
+    payload = dict(handshake_context or {})
+    if lang and lang in language.supported_codes():
+        payload["lang"] = lang
+    await db.create_retention_nonce(nonce, product["id"], payload,
                                     escalation, ttl)
     username = product.get("telegram_bot_username") or ""
     deep_link = f"https://t.me/{username}?start={nonce}" if username else ""
@@ -305,13 +315,23 @@ async def check_subscription(client: TelegramClient, product: dict[str, Any],
     return await client.is_subscribed(channel, tg_user_id)
 
 
+def _persona_name() -> str:
+    """The product's persona name (prompt variable; product scope is already set)."""
+    return settings.prompt_variables().get("persona_name") or "Nika"
+
+
+def _rtn_text(key: str, lang: str) -> str:
+    """A retention copy string with the {persona} placeholder substituted."""
+    return translations.text(key, lang).replace("{persona}", _persona_name())
+
+
 def _subscribe_markup(product: dict[str, Any], lang: str) -> dict[str, Any]:
     rows = []
     url = product.get("telegram_channel_url")
     if url:
-        rows.append([{"text": translations.text("rtn_btn_open_channel", lang),
+        rows.append([{"text": _rtn_text("rtn_btn_open_channel", lang),
                       "url": url}])
-    rows.append([{"text": translations.text("rtn_btn_check_sub", lang),
+    rows.append([{"text": _rtn_text("rtn_btn_check_sub", lang),
                   "callback_data": CB_CHECK_SUB}])
     return inline_keyboard(rows)
 
@@ -320,17 +340,27 @@ def _menu_markup(entry_type: str, lang: str) -> dict[str, Any]:
     rows = []
     # The "to a manager" button is shown only to an escalated entry.
     if entry_type == "escalation":
-        rows.append([{"text": translations.text("rtn_btn_manager", lang),
+        rows.append([{"text": _rtn_text("rtn_btn_manager", lang),
                       "callback_data": CB_MENU_MANAGER}])
-    rows.append([{"text": translations.text("rtn_btn_nika", lang),
+    rows.append([{"text": _rtn_text("rtn_btn_nika", lang),
                   "callback_data": CB_MENU_NIKA}])
     return inline_keyboard(rows)
+
+
+def _menu_text(ru: dict[str, Any], lang: str) -> str:
+    """The first message after /start: a warm greeting FROM the persona (by the
+    player's first name when the profile snapshot has one) + the menu prompt."""
+    full_name = str(ru.get("full_name") or "").strip()
+    first_name = full_name.split()[0] if full_name else ""
+    key = "rtn_menu_greeting" if first_name else "rtn_menu_greeting_noname"
+    greeting = _rtn_text(key, lang).replace("{name}", first_name)
+    return f"{greeting}\n\n{_rtn_text('rtn_menu_prompt', lang)}"
 
 
 async def _send_menu(client: TelegramClient, chat_id: int, ru: dict[str, Any],
                      lang: str) -> None:
     await client.send_message(
-        chat_id, translations.text("rtn_menu_prompt", lang),
+        chat_id, _menu_text(ru, lang),
         reply_markup=_menu_markup(ru.get("entry_type", "retention"), lang),
     )
 
@@ -340,14 +370,15 @@ async def _route_to_manager(client: TelegramClient, product: dict[str, Any],
                             reason: str = "menu") -> None:
     manager = await db.assign_round_robin_manager(product["id"], int(ru["id"]))
     if manager is None:
-        await client.send_message(chat_id, translations.text("rtn_manager_none", lang))
+        await client.send_message(chat_id, _rtn_text("rtn_manager_none", lang))
         return
     link = f"https://t.me/{manager['username']}"
-    intro = translations.text("rtn_manager_intro", lang).replace(
+    intro = _rtn_text("rtn_manager_intro", lang).replace(
         "{manager}", f"{manager['display_name']} ({link})")
     await client.send_message(chat_id, intro,
                               reply_markup=inline_keyboard([[{
-                                  "text": manager["display_name"], "url": link}]]))
+                                  "text": f"👤 {manager['display_name']}",
+                                  "url": link}]]))
     await db.log_admin_event(
         None, "retention_manager_handoff",
         {"tg_user_id": ru.get("tg_user_id"), "manager_id": manager["id"],
@@ -389,7 +420,7 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
         # Never entered via a deeplink — require the site.
         lang = resolve_user_lang({}, pu.language_code)
         await client.send_message(pu.chat_id,
-                                  translations.text("rtn_need_deeplink", lang))
+                                  _rtn_text("rtn_need_deeplink", lang))
         return
 
     lang = resolve_user_lang(ru, pu.language_code)
@@ -397,7 +428,7 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
     if not await check_subscription(client, product, pu.tg_user_id):
         await db.set_retention_subscribed(int(ru["id"]), False)
         await client.send_message(pu.chat_id,
-                                  translations.text("rtn_subscribe_prompt", lang),
+                                  _rtn_text("rtn_subscribe_prompt", lang),
                                   reply_markup=_subscribe_markup(product, lang))
         return
     if not ru.get("subscribed"):
@@ -413,7 +444,7 @@ async def _handle_start(client: TelegramClient, product: dict[str, Any],
     data = await db.redeem_retention_nonce(nonce) if nonce else None
     if data is None:
         await client.send_message(pu.chat_id,
-                                  translations.text("rtn_need_deeplink", lang))
+                                  _rtn_text("rtn_need_deeplink", lang))
         return
     payload = data["payload"] or {}
     entry_type = "escalation" if data["escalation"] else "retention"
@@ -425,11 +456,19 @@ async def _handle_start(client: TelegramClient, product: dict[str, Any],
         profile=_profile_from_payload(payload),
         profile_source="handshake",
     )
+    # The deeplink carries the language the player's site conversation was
+    # already running in — adopt it as the bot's conversation language so the
+    # hand-off keeps the same language instead of jumping to the default.
+    link_lang = payload.get("lang")
+    if (isinstance(link_lang, str) and link_lang in language.supported_codes()
+            and link_lang != ru.get("conv_lang")):
+        await db.set_retention_conv_lang(int(ru["id"]), link_lang)
+        ru = dict(ru, conv_lang=link_lang)
     lang = resolve_user_lang(ru, pu.language_code)
     # Subscription gate before any menu.
     if not await check_subscription(client, product, pu.tg_user_id):
         await client.send_message(pu.chat_id,
-                                  translations.text("rtn_subscribe_prompt", lang),
+                                  _rtn_text("rtn_subscribe_prompt", lang),
                                   reply_markup=_subscribe_markup(product, lang))
         return
     await db.set_retention_subscribed(int(ru["id"]), True)
@@ -444,7 +483,7 @@ async def _handle_callback(client: TelegramClient, product: dict[str, Any],
         await client.answer_callback(pu.callback_id)
     if ru is None:
         await client.send_message(pu.chat_id,
-                                  translations.text("rtn_need_deeplink", lang))
+                                  _rtn_text("rtn_need_deeplink", lang))
         return
     if pu.callback_data == CB_CHECK_SUB:
         if await check_subscription(client, product, pu.tg_user_id):
@@ -452,20 +491,20 @@ async def _handle_callback(client: TelegramClient, product: dict[str, Any],
             await _send_menu(client, pu.chat_id, ru, lang)
         else:
             await client.send_message(pu.chat_id,
-                                      translations.text("rtn_not_subscribed", lang),
+                                      _rtn_text("rtn_not_subscribed", lang),
                                       reply_markup=_subscribe_markup(product, lang))
         return
     # Both menu actions require an active subscription.
     if not await check_subscription(client, product, pu.tg_user_id):
         await client.send_message(pu.chat_id,
-                                  translations.text("rtn_subscribe_prompt", lang),
+                                  _rtn_text("rtn_subscribe_prompt", lang),
                                   reply_markup=_subscribe_markup(product, lang))
         return
     if pu.callback_data == CB_MENU_MANAGER and ru.get("entry_type") == "escalation":
         await _route_to_manager(client, product, ru, pu.chat_id, lang, reason="menu")
     elif pu.callback_data == CB_MENU_NIKA:
         await client.send_message(pu.chat_id,
-                                  translations.text("rtn_nika_start", lang))
+                                  _rtn_text("rtn_nika_start", lang))
 
 
 async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
@@ -490,6 +529,12 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
 
     reply = await chat_service.handle_retention_message(session, text, candidates)
 
+    # Keep the retention_users row's sticky language in step with the answer
+    # drift (chat_service persists it on the session; the ru copy drives the
+    # model-free bot chrome — gate messages, menus, route-out lines).
+    if reply.ok and reply.lang and reply.lang != ru.get("conv_lang"):
+        await db.set_retention_conv_lang(int(ru["id"]), reply.lang)
+
     # Route-out: Nika does not handle support / complaints / RG / human asks.
     if reply.handoff:
         await db.log_admin_event(
@@ -504,7 +549,7 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
                                     reason="handoff")
         else:
             await client.send_message(
-                pu.chat_id, translations.text("rtn_handoff_support", reply.lang))
+                pu.chat_id, _rtn_text("rtn_handoff_support", reply.lang))
         return
 
     # Photo delivery (file_id cache; first send uploads + caches the id).

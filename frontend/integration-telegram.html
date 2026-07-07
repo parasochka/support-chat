@@ -110,13 +110,14 @@ username и токен от BotFather, — и включить <b>Retention enab
 готовую ссылку <code>t.me/…?start=…</code>, которую открывает игроку.</p>
 
 <div class="endpoint"><span class="tag post">POST</span><code>/api/retention/deeplink</code></div>
-<p>Тело: <code>{ widget_key?, signed_context?, escalation? }</code>. Ответ:
+<p>Тело: <code>{ widget_key?, signed_context?, escalation?, lang? }</code>. Ответ:
 <code>{ nonce, deep_link }</code>.</p>
 <pre><code>POST /api/retention/deeplink
 {
   "widget_key": "wk_XXXXXXXXXXXX",     // тот же ключ продукта, что у виджета
   "signed_context": "&lt;подписанный handshake игрока&gt;",
-  "escalation": false                   // true — вход из эскалации чата поддержки
+  "escalation": false,                  // true — вход из эскалации чата поддержки
+  "lang": "ru"                          // язык, на котором игрок общался (код или локаль "ru-RU")
 }
 → 200 { "nonce": "r7Kx…", "deep_link": "https://t.me/nika_casino_bot?start=r7Kx…" }</code></pre>
 <ul>
@@ -130,6 +131,11 @@ username и токен от BotFather, — и включить <b>Retention enab
   <li><b>escalation</b> различает вход: <code>false</code> — обычная ретеншн-кнопка (в меню только
       Ника); <code>true</code> — кнопка эскалации в чате поддержки (в меню появляется «Перейти к
       менеджеру»).</li>
+  <li><b>lang</b> (опционально) — язык, на котором игрок уже общался на сайте (код
+      <code>ru</code>/<code>en</code>/… или локаль <code>ru-RU</code>). Едет в nonce; при редиме бот
+      сразу открывается на этом языке (приветствие, меню, кнопки) и разговор с Никой продолжается на
+      нём. Без поля язык берётся из <code>language_code</code> клиента Telegram. Эскалация из виджета
+      передаёт язык беседы автоматически.</li>
 </ul>
 <p>При редиме на <code>/start &lt;nonce&gt;</code> бот фиксирует связку <code>tg_user_id ↔ player_id</code>
 и снимок профиля. Диплинк — единственный вход; без валидного nonce бот отвечает «открой чат через
@@ -148,9 +154,9 @@ username и токен от BotFather, — и включить <b>Retention enab
 <code>tg://</code>):</p>
 <table>
   <tr><th>Точка входа</th><th>Вызов</th><th>Меню в боте</th></tr>
-  <tr><td>Эскалация в виджете (авто, основной)</td><td>минтится сервером, <code>escalation: true</code></td><td>[👩 К менеджеру] + [💬 Ника]</td></tr>
+  <tr><td>Эскалация в виджете (авто, основной)</td><td>минтится сервером, <code>escalation: true</code>, язык беседы едет сам</td><td>[👤 Перейти к менеджеру] + [💬 Пообщаться с Никой]</td></tr>
   <tr><td>«Написать Нике» на сайте (опц.)</td><td><code>escalation: false</code></td><td>[💬 Пообщаться с Никой]</td></tr>
-  <tr><td>Эскалация-кнопка на сайте (опц.)</td><td><code>escalation: true</code></td><td>[👩 К менеджеру] + [💬 Ника]</td></tr>
+  <tr><td>Эскалация-кнопка на сайте (опц.)</td><td><code>escalation: true</code></td><td>[👤 Перейти к менеджеру] + [💬 Пообщаться с Никой]</td></tr>
 </table>
 <pre><code>// пример: клиентский обработчик кнопки «Написать Нике»
 async function openNika(signedContext) {
@@ -160,6 +166,7 @@ async function openNika(signedContext) {
       widget_key: "wk_XXXXXXXXXXXX",
       signed_context: signedContext,   // подписан бэкендом CMS, TTL ≤ 120 сек
       escalation: false,
+      lang: navigator.language,        // язык игрока — бот откроется на нём
     }),
   });
   const { deep_link } = await r.json();

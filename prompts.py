@@ -112,6 +112,15 @@ PROMPT_VARIABLES: tuple[tuple[str, str, str], ...] = (
     ("support_scope", "Short list of what product support covers (used in guardrails/refusals)",
      "deposits and withdrawals, account and verification, bonuses, betting and "
      "games, technical questions"),
+    ("retention_tone_of_voice",
+     "Tone-of-voice for the RETENTION (Telegram) persona - may be bolder/more "
+     "flirtatious than the support tone; the two are tuned independently",
+     "This is an international persona, not tied to any single country. Speak "
+     "informally and warmly, on a first-name basis, with playful, affectionate "
+     "flirtation - noticeably bolder and more personal than a support chat, yet "
+     "never vulgar and always respectful. Keep it simple and human, like texting "
+     "someone you like. Make the player feel desired and special, like a VIP, "
+     "and keep the excitement of playing alive."),
 )
 
 # Placeholder syntax mirrors the KB variables ({key}); only keys registered in
@@ -966,7 +975,7 @@ def strip_resolved_tag(text: str) -> tuple[str, bool]:
 # The whole block is byte-stable WITHIN a product scope (like the support core),
 # so the OpenAI prefix cache stays warm per (product x mode). A test asserts it.
 # ===========================================================================
-SYSTEM_CORE_RETENTION = """You are {persona_name}, {persona_role} for the {brand_name} brand ({products}). {tone_of_voice}
+SYSTEM_CORE_RETENTION = """You are {persona_name}, {persona_role} for the {brand_name} brand ({products}). {retention_tone_of_voice}
 
 You are talking to the player in a private Telegram chat. This is a RETENTION conversation: your job is to keep the player warmly engaged, make them feel like a VIP, and gently keep the excitement of playing alive - never to resolve support questions.
 
@@ -1030,6 +1039,26 @@ _RETENTION_PHOTO_DIRECTIVE = (
 )
 
 
+# Formatting directive (STATIC → retention Layer-1). The retention channel is
+# TELEGRAM, and messages are sent WITHOUT a parse_mode — Telegram renders them as
+# plain text, so any Markdown the model emits (**bold**, lists, [links](url))
+# reaches the player as literal stray characters. This directive replaces the
+# widget's _FORMATTING_DIRECTIVE (which ASKS for light Markdown) in the retention
+# Layer-1 assembly: plain text only, bare URLs, no markup of any kind.
+_RETENTION_FORMATTING_DIRECTIVE = (
+    "FORMATTING (TELEGRAM, PLAIN TEXT ONLY):\n"
+    "- Your reply is delivered as a plain-text Telegram message: NO markup is "
+    "rendered. Never use Markdown or HTML of any kind - no **bold**, *italic*, "
+    "_underscores_, `backticks`, # headings, bulleted or numbered lists, tables "
+    "or [text](url) links - every such marker would reach the player as literal "
+    "characters. Write plain conversational sentences; when you need to share a "
+    "link, paste the bare URL as-is.\n"
+    "- Never use an em dash (—) or guillemet quotes (« »); use a plain hyphen (-) "
+    "for any dash and straight quotes (\"...\") instead - these characters are an "
+    "instant tell that the text is AI-written."
+)
+
+
 # Stage-hint directive (STATIC → retention Layer-1). The backend gates the actual
 # advance; the model only proposes.
 _RETENTION_STAGE_DIRECTIVE = (
@@ -1047,7 +1076,7 @@ def _retention_static_directives() -> list[str]:
         _RETENTION_ENGAGEMENT_DIRECTIVE,
         _RETENTION_PHOTO_DIRECTIVE,
         _RETENTION_STAGE_DIRECTIVE,
-        _FORMATTING_DIRECTIVE,
+        _RETENTION_FORMATTING_DIRECTIVE,
     ]
 
 

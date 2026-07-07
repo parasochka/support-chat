@@ -73,11 +73,13 @@ def test_retention_prompt_variable_keys_subset():
     registered = [k for k, _d, _v in prompts.PROMPT_VARIABLES]
     # Only registered keys, in registry order.
     assert keys == [k for k in registered if k in keys]
-    # The retention templates use the persona/brand set...
-    for expected in ("persona_name", "brand_name", "products", "tone_of_voice"):
+    # The retention templates use the persona/brand set + their OWN tone...
+    for expected in ("persona_name", "brand_name", "products",
+                     "retention_tone_of_voice"):
         assert expected in keys
-    # ...but not the support-only scope list.
+    # ...but not the support-only scope list or the support tone.
     assert "support_scope" not in keys
+    assert "tone_of_voice" not in keys
 
 
 async def test_retention_effective_prompt_renders_all_layers(monkeypatch):

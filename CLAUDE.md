@@ -319,7 +319,11 @@ the tab (the bug that shipped with the feature).
 The prompt in `prompts.py` is a **dry template**: `SYSTEM_CORE`, `_GUARDRAILS`, the
 forbidden-topics list/refusal and the closing-goodbye directive carry `{placeholder}` tokens
 (`{persona_name}`, `{brand_name}`, `{products}`, `{persona_role}`,
-`{tone_of_voice}`, `{support_scope}`). The B2B platform the brand runs on is deliberately
+`{tone_of_voice}`, `{support_scope}`, `{retention_tone_of_voice}`). The support core renders
+`{tone_of_voice}`; the retention (Telegram) core renders `{retention_tone_of_voice}` — the two
+tones are tuned INDEPENDENTLY from the same Prompt → Prompt variables sub-tab (the retention
+persona may be bolder/flirtier than the support one; its default is), so the retention KB's
+sexier persona never has to fight the support tone. The B2B platform the brand runs on is deliberately
 **absent** — the prompt names only the brand and its products; anything platform-related is
 KB content (Layer 2), managed from the Knowledge-base tab, never prompt material.
 `prompts.PROMPT_VARIABLES` is the registry — (key,
@@ -749,7 +753,13 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   + retention static directives (`get_retention_system_core()`), byte-stable per **product × mode**
   (a test asserts it, mirroring the support core). It shares the persona but swaps support
   behaviour for engagement + photos + route-out. **No** KB-grounding / escalation-restraint /
-  topic-routing / suggestions here. Layer 2 = the **whole** retention-KB (`db.retention_kb_block`,
+  topic-routing / suggestions here — and **no widget Markdown**: retention replies go to
+  Telegram as plain text (no `parse_mode`), so the retention Layer 1 carries its OWN
+  `_RETENTION_FORMATTING_DIRECTIVE` (plain text only, bare URLs, no Markdown/HTML of any
+  kind) instead of the support `_FORMATTING_DIRECTIVE` (which ASKS for the widget's Markdown
+  subset and would leak literal `**`/`[]()` characters to the player). The retention core
+  also renders its OWN tone variable `{retention_tone_of_voice}` (not the support
+  `{tone_of_voice}`) — see "Prompt variables". Layer 2 = the **whole** retention-KB (`db.retention_kb_block`,
   NOT `kb_topics`). **The retention KB is edited as ONE free-text document per product** (like a
   support topic's KB text): stored as a single `retention_kb` row with the sentinel title
   `db.RETENTION_KB_DOC_TITLE` (its body enters the prompt verbatim, no header);
@@ -782,9 +792,23 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
 - **Entry = deeplink + one-time nonce** (`retention_nonces`): the site posts a handshake to
   `POST /api/retention/deeplink` → `{nonce, deep_link}`; `/start <nonce>` redeems it (single-use,
   TTL-bounded), fixes the **`tg_user_id ↔ player_id` link** + a `_CONTEXT_FIELDS` profile snapshot
-  in `retention_users`, and sets `entry_type` (`retention` | `escalation`). No valid nonce ⇒ the
+  in `retention_users`, and sets `entry_type` (`retention` | `escalation`). **The nonce also
+  carries the conversation LANGUAGE**: `retention.create_deeplink(..., lang=)` stores a supported
+  code in the nonce payload (the widget escalation passes the turn's answer language automatically;
+  the site endpoint takes an optional `lang` body field, code or locale) and `/start` adopts it as
+  the retention user's `conv_lang` — so a player who chatted in Russian lands in a Russian bot
+  (greeting, menu, buttons AND Nika's replies), not the Telegram-client/default language. Without
+  it the language falls back to the client `language_code` → default (`resolve_user_lang`); after
+  every AI turn `_run_nika_turn` syncs the answer-language drift back onto the `retention_users`
+  row so the model-free chrome follows the conversation. No valid nonce ⇒ the
   bot refuses (no organic entry). Then the **channel subscription gate** (`getChatMember`, the bot
   must be a channel admin) before any menu; a product with no channel configured skips the gate.
+  After the gate, the entry menu opens with a **personalized persona greeting**
+  (`retention._menu_text`: `rtn_menu_greeting`/`_noname` — the persona name from the product's
+  `persona_name` prompt variable + the player's first name from the profile snapshot) above the
+  `rtn_menu_prompt` line; all `rtn_*` copy supports a `{persona}` placeholder
+  (`retention._rtn_text`), and the default button labels carry emoji icons (📢/✅/👤/💬) so the
+  buttons read at a glance.
   Two things mint that deeplink: (1) the **support-chat widget's escalation button** — when the
   product runs retention, every escalation hand-off routes the player INTO the bot on the
   **escalation entry** (`escalation=True` → the manager option in the menu), via
