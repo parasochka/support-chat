@@ -8,6 +8,9 @@ instead of only surfacing as a 500 in production.
 """
 from __future__ import annotations
 
+import pytest
+from fastapi import HTTPException
+
 import auth
 import db
 from api import admin as admin_api
@@ -88,3 +91,41 @@ async def test_update_user_password_hashes(monkeypatch):
         "a@b.com", UserUpdate(password="rotatedpw9"), admin=admin)
     stored = created["a@b.com"]["password_hash"]
     assert auth.verify_password("rotatedpw9", stored)
+
+
+# A caller scoped to a SINGLE product: coarse role "admin" (so it clears
+# require_admin_write) but NO global membership.
+_PRODUCT_ADMIN = {
+    "role": "admin", "email": "p@nowplix.com",
+    "memberships": [{"id": 9, "email": "p@nowplix.com", "scope_type": "product",
+                     "partner_id": None, "product_id": 11, "role": "admin"}],
+}
+
+
+async def test_self_flat_role_update_requires_global_write(monkeypatch):
+    """C1 regression: a product-scoped admin must NOT be able to self-grant a
+    GLOBAL admin membership by PUT-ing its own account with role='admin'. The
+    flat-role update writes a global membership, so it always needs global write
+    — the self-edit branch must not bypass that check."""
+    created = _stub_db(monkeypatch)
+    created["p@nowplix.com"] = {
+        "email": "p@nowplix.com", "password_hash": "x", "role": "admin",
+        "active": True, "created_at": None, "updated_at": None,
+    }
+    with pytest.raises(HTTPException) as exc:
+        await admin_api.update_user(
+            "p@nowplix.com", UserUpdate(role="admin"), admin=_PRODUCT_ADMIN)
+    assert exc.value.status_code == 403
+
+
+async def test_self_password_only_update_still_allowed(monkeypatch):
+    """A product-scoped admin can still change ITS OWN password (no role change,
+    so no global-membership write) — the C1 fix must not lock self-service out."""
+    created = _stub_db(monkeypatch)
+    created["p@nowplix.com"] = {
+        "email": "p@nowplix.com", "password_hash": "x", "role": "admin",
+        "active": True, "created_at": None, "updated_at": None,
+    }
+    await admin_api.update_user(
+        "p@nowplix.com", UserUpdate(password="newpassw0rd"), admin=_PRODUCT_ADMIN)
+    assert auth.verify_password("newpassw0rd", created["p@nowplix.com"]["password_hash"])

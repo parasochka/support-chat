@@ -53,6 +53,23 @@ def test_cooldown_passes_after_window(monkeypatch):
     antispam.check_cooldown(sid)  # no error with 0s cooldown
 
 
+def test_clear_cooldown_lets_next_message_through(monkeypatch):
+    """H3: after a cross-topic routing-only turn the automatic re-ask must not be
+    throttled. clear_cooldown drops the mark so the immediate follow-up passes."""
+    monkeypatch.setattr(config, "MESSAGE_COOLDOWN_SEC", 5)
+    sid = "sess-switch"
+    antispam.check_cooldown(sid)  # routing turn records the stamp
+    antispam.clear_cooldown(sid)  # server releases it for the automatic re-ask
+    antispam.check_cooldown(sid)  # the re-ask is not blocked
+    # And a normal repeat is still throttled afterwards.
+    with pytest.raises(antispam.AntiSpamError):
+        antispam.check_cooldown(sid)
+
+
+def test_clear_cooldown_unknown_session_is_noop():
+    antispam.clear_cooldown("never-seen")  # must not raise
+
+
 def test_input_length_cap(monkeypatch):
     monkeypatch.setattr(config, "MAX_INPUT_CHARS", 10)
     antispam.check_input_length("short")

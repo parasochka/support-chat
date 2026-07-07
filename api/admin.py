@@ -808,9 +808,14 @@ async def update_user(email: str, body: UserUpdate,
     user = await db.update_admin_user(target, role=role, active=body.active,
                                       password_hash=pw_hash)
     if role is not None:
-        # Legacy shape: a flat role update targets the GLOBAL membership.
-        if admin.get("email") != target:
-            admin_auth.require_global_write(admin)
+        # Legacy shape: a flat role update targets the GLOBAL membership. Writing
+        # a global membership is a global-scope change, so it ALWAYS requires
+        # global write — including when the caller edits their OWN account.
+        # (Without this, a product/partner-scoped admin — coarse role "admin", so
+        # it clears require_admin_write — could PUT its own account with
+        # role="admin" and self-grant a global membership, escalating to full hub
+        # control. The self-branch must never bypass the scope check.)
+        admin_auth.require_global_write(admin)
         await db.add_membership(target, "global", None, None, role)
     await db.log_admin_event(None, "admin_user_updated",
                              {"email": target, "by": admin.get("email")})

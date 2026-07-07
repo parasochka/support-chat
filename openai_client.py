@@ -37,6 +37,40 @@ except Exception:  # noqa: BLE001
 
 
 # ---------------------------------------------------------------------------
+# Circuit breaker — fail fast during a sustained OpenAI outage
+#
+# Without this, every request under an outage pays the full
+# timeout×attempts×failover cost (~2.5 min worst case) and piles up unbounded
+# coroutines behind the per-key semaphore. After N consecutive fully-failed
+# completions the breaker OPENS and further completions raise immediately (the
+# caller returns the localized nudge in ms) until a cooldown elapses, then one
+# HALF-OPEN trial probes recovery. Keyed by key_source ('env' | 'product:<id>')
+# so one product's bad key can't trip the breaker for everyone.
+# ---------------------------------------------------------------------------
+class CircuitOpenError(Exception):
+    """Raised by complete() when the breaker is open — no OpenAI call is made."""
+
+
+class _Breaker:
+    __slots__ = ("fails", "opened_at")
+
+    def __init__(self) -> None:
+        self.fails = 0
+        self.opened_at = 0.0  # monotonic time the breaker last opened; 0 = closed
+
+
+_breakers: dict[str, _Breaker] = {}
+
+
+def _breaker_for(source: str) -> _Breaker:
+    b = _breakers.get(source)
+    if b is None:
+        b = _Breaker()
+        _breakers[source] = b
+    return b
+
+
+# ---------------------------------------------------------------------------
 # Pricing — USD per 1,000,000 tokens: (input, cached_input, output)
 # gpt-5-mini list prices verified 2026-06-23: input $0.25, cached input
 # $0.025, output $2.00 per 1M tokens. GPT-5.4 mini: input $0.75, cached input
@@ -323,6 +357,60 @@ class OpenAIClient:
         session_id: Optional[str] = None,
         on_failover: Optional[Any] = None,
     ) -> ChatResult:
+        """Two-key completion, guarded by the circuit breaker (fail fast on outage).
+
+        When the breaker for this client's key_source is open, raise
+        CircuitOpenError immediately instead of paying the full failover cost;
+        chat_service treats any completion exception as a transient failure and
+        returns the localized nudge. A success closes the breaker; a failure that
+        reaches the threshold opens it.
+        """
+        threshold = int(config.OPENAI_BREAKER_FAIL_THRESHOLD)
+        cooldown = float(config.OPENAI_BREAKER_COOLDOWN_SEC)
+        b = _breaker_for(self.key_source)
+
+        if threshold > 0 and b.opened_at:
+            remaining = cooldown - (time.monotonic() - b.opened_at)
+            if remaining > 0:
+                log.warning(
+                    "openai_circuit_open key_source=%s session_id=%s "
+                    "cooldown_remaining_sec=%.1f",
+                    self.key_source, session_id, remaining,
+                )
+                raise CircuitOpenError(
+                    f"OpenAI circuit open for {self.key_source}; retry shortly"
+                )
+            log.info("openai_circuit_half_open key_source=%s session_id=%s",
+                     self.key_source, session_id)
+
+        try:
+            result = await self._complete_inner(messages, session_id, on_failover)
+        except Exception:
+            if threshold > 0:
+                b.fails += 1
+                if b.opened_at:
+                    # A half-open trial failed — re-arm the cooldown window.
+                    b.opened_at = time.monotonic()
+                elif b.fails >= threshold:
+                    b.opened_at = time.monotonic()
+                    log.error(
+                        "openai_circuit_opened key_source=%s consecutive_fails=%s "
+                        "cooldown_sec=%s",
+                        self.key_source, b.fails, cooldown,
+                    )
+            raise
+        if b.fails or b.opened_at:
+            log.info("openai_circuit_reset key_source=%s", self.key_source)
+        b.fails = 0
+        b.opened_at = 0.0
+        return result
+
+    async def _complete_inner(
+        self,
+        messages: list[dict[str, str]],
+        session_id: Optional[str] = None,
+        on_failover: Optional[Any] = None,
+    ) -> ChatResult:
         """Run a chat completion with two-key failover + race.
 
         `on_failover` (optional async callable) is awaited when the fallback is
@@ -496,3 +584,7 @@ def reset() -> None:
     global _client
     _client = None
     _product_clients.clear()
+    # Clear breaker state too: an operator changing model/keys is an explicit
+    # intervention, and the new config deserves a clean probe rather than an
+    # inherited open breaker from the prior configuration.
+    _breakers.clear()
