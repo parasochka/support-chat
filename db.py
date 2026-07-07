@@ -259,7 +259,8 @@ CREATE TABLE IF NOT EXISTS app_settings (
 -- RETENTION / TELEGRAM ----------------------------------------------
 -- Second facade over the same AI core: a Telegram retention bot. Every table
 -- hangs off a product (multi-tenant, like the KB). Support-KB is NOT reused
--- here (retention has its own flat scenario base). See RETENTION_BOT_SPEC.md.
+-- here (retention has its own flat scenario base). See the retention section
+-- in CLAUDE.md.
 -- NB: retention_managers is declared BEFORE retention_users because the latter
 -- carries an FK to it (assigned_manager_id).
 
@@ -2573,7 +2574,7 @@ async def candidate_photos(product_id: int, retention_user_id: int, *,
     """Photos eligible for this player: active, within tier + stage gate, unseen.
 
     Ordered by stage then least-viewed then sort_order so the model sees a small,
-    fresh, on-tier candidate set (see RETENTION_BOT_SPEC §5).
+    fresh, on-tier candidate set.
     """
     rows = await _pool.fetch(
         f"SELECT {_PHOTO_COLS} FROM retention_photos "
@@ -2858,7 +2859,7 @@ async def retention_kb_block(product_id: int) -> str:
     """The whole active retention-KB rendered as a single Layer-2 text block.
 
     Compact and fully relevant, so it loads WHOLE and stays byte-stable per
-    product (see RETENTION_BOT_SPEC §4). {placeholder} rendering is applied by the
+    product. {placeholder} rendering is applied by the
     caller (kb.render_variables), same as the support KB.
     """
     entries = await list_retention_kb(product_id, active_only=True)

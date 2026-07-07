@@ -9,8 +9,8 @@ sportsbook brands. It is API-isolated: other modules talk to it over HTTP/JSON b
 > Integration guide for partner/CMS dev teams is served by the app itself at
 > **`/integration`** (embed contract, handshake signing, API reference), and the
 > Telegram retention bot has its own guide at **`/integration-telegram`** (deeplink
-> contract, player profile sync, admin setup). Setup/run steps for the retention
-> bot are in **[`RETENTION_SETUP.md`](./RETENTION_SETUP.md)**.
+> contract, player profile sync, admin setup); its step-by-step setup checklist
+> lives in the admin panel — **Retention · Telegram → Setup guide**.
 
 ## Multi-tenancy
 
@@ -132,7 +132,8 @@ The retention bot's per-product config (bot token, channel, player-API key) live
 product row in the admin **Retention · Telegram** section, not in env; secrets there are
 encrypted at rest via `SECRETS_MASTER_KEY`. Photo-progression / limit knobs
 (`daily_photo_cap`, `stage_advance_msgs`, `max_stage_by_tier`, …) live in the `retention`
-settings group (defaults seeded from `RETENTION_*` env). See `RETENTION_BOT_SPEC.md`.
+settings group (defaults seeded from `RETENTION_*` env). Setup checklist: the admin
+**Retention · Telegram → Setup guide** tab; architecture: the retention section in `CLAUDE.md`.
 
 Most operational knobs (rate limits, cooldowns, model tuning, escalation thresholds,
 session TTL, body cap, etc.) are tunable live from the admin **Settings** tab and only need

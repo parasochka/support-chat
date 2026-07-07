@@ -17,6 +17,7 @@ import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
 import ForumIcon from '@mui/icons-material/Forum';
+import MenuBookIcon from '@mui/icons-material/MenuBook';
 import InsightsIcon from '@mui/icons-material/Insights';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
 import PeopleIcon from '@mui/icons-material/People';
@@ -123,6 +124,7 @@ const AppMenu = () => (
     </CollapsibleSection>
 
     <CollapsibleSection id="retention" label="Telegram · Retention">
+      <RetentionSubItem tab="guide" label="Setup guide" icon={<MenuBookIcon fontSize="small" />} />
       <RetentionSubItem tab="config" label="Telegram config" icon={<TelegramIcon fontSize="small" />} />
       <RetentionSubItem tab="kb" label="Retention KB" icon={<LibraryBooksIcon fontSize="small" />} />
       <RetentionSubItem tab="photos" label="Media" icon={<PhotoLibraryIcon fontSize="small" />} />

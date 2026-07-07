@@ -19,10 +19,126 @@ import TableRow from '@mui/material/TableRow';
 import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
+import Link from '@mui/material/Link';
 import { API_URL, httpClient, getToken } from '../httpClient';
 import { getProductId } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
 import SecretField from '../components/SecretField';
+
+// ---------------------------------------------------------------------------
+// Setup guide tab — the short "how to connect the bot" checklist that replaced
+// the repo's RETENTION_SETUP.md. Everything product-level is configured right
+// here in this section; only deploy env vars live outside.
+// ---------------------------------------------------------------------------
+const GUIDE_STEPS = [
+  {
+    title: '1 · Create the bot',
+    body: (
+      <>
+        Open{' '}
+        <Link href="https://t.me/BotFather" target="_blank" rel="noopener">
+          @BotFather
+        </Link>{' '}
+        → <code>/newbot</code>, pick a name and a username, copy the <b>token</b>.
+        Optionally set the description, about text and avatar there too. Menu
+        commands are not needed — players enter only via a deeplink from the site.
+      </>
+    ),
+  },
+  {
+    title: '2 · Create the channel (subscription gate)',
+    body: (
+      <>
+        Create a Telegram <b>channel</b> and add the bot as a <b>channel
+        administrator</b> — without admin rights the subscription check
+        (<code>getChatMember</code>) fails and the gate never passes. Note the
+        channel id (<code>@name</code> for public, <code>-100…</code> for private)
+        and the channel URL (the gate&apos;s &quot;open channel&quot; button leads there).
+      </>
+    ),
+  },
+  {
+    title: '3 · Deploy env (Railway)',
+    body: (
+      <>
+        Set on the service (not per product): <code>PUBLIC_BASE_URL</code> (public
+        address, used to build the webhook URL), <code>TELEGRAM_WEBHOOK_SECRET</code>{' '}
+        (random string, verified in the webhook header),{' '}
+        <code>RETENTION_MEDIA_DIR</code> (mount path of an attached <b>Volume</b>,
+        so photos survive redeploys) and <code>SECRETS_MASTER_KEY</code> (encrypts
+        product secrets). The full env table is in the repo&apos;s README.
+      </>
+    ),
+  },
+  {
+    title: '4 · Connect this product',
+    body: (
+      <>
+        On the <Link href="#/retention?tab=config">Telegram config</Link> tab:
+        switch on <b>Retention bot enabled</b>, fill the bot username, channel id
+        and channel URL → <b>Save config</b>. In <b>Secrets</b> paste the bot token
+        (and the Player API key, if the casino exposes a profile endpoint) →{' '}
+        <b>Save secrets</b>. Then press <b>Register Telegram webhook</b> — it must
+        report the webhook URL back.
+      </>
+    ),
+  },
+  {
+    title: '5 · Content and tuning',
+    body: (
+      <>
+        Fill the <Link href="#/retention?tab=kb">Retention KB</Link> (flat scenario
+        base: title + when to apply + what Nika offers), upload photos in{' '}
+        <Link href="#/retention?tab=photos">Media</Link> (description grounds the
+        caption; <code>level_min</code> = VIP tier, <code>stage</code> =
+        explicitness) and add live <Link href="#/retention?tab=managers">Managers</Link>{' '}
+        (round-robin, sticky). Thresholds (daily photo cap, stage progression, VIP
+        tiers, nonce TTL) are the <code>retention</code> group in{' '}
+        <Link href="#/settings">Settings</Link>; bot texts are the{' '}
+        <code>rtn_*</code> keys in <Link href="#/translations">Translations</Link>.
+      </>
+    ),
+  },
+  {
+    title: '6 · Entry points',
+    body: (
+      <>
+        Nothing extra to integrate for the main path: once the bot is enabled, the
+        support widget&apos;s <b>escalation button</b> automatically routes the player
+        into the bot (one-time deeplink, subscription gate on the way in, &quot;go to
+        a manager&quot; in the menu). Optionally the site can mint its own per-player
+        deeplink via <code>POST /api/retention/deeplink</code> — the full contract
+        (handshake signing, profile pull/push) is documented at{' '}
+        <Link href="/integration-telegram" target="_blank" rel="noopener">
+          /integration-telegram
+        </Link>
+        .
+      </>
+    ),
+  },
+];
+
+const GuideTab = () => (
+  <Box>
+    {GUIDE_STEPS.map((s) => (
+      <Card key={s.title} sx={{ mb: 1.5 }}>
+        <CardContent>
+          <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
+            {s.title}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {s.body}
+          </Typography>
+        </CardContent>
+      </Card>
+    ))}
+    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+      Quick test: open the deeplink → pass the channel gate → chat with Nika → ask
+      for a photo → it arrives; write &quot;my account is blocked&quot; → she routes you
+      out instead of answering support questions herself.
+    </Typography>
+  </Box>
+);
 
 // ---------------------------------------------------------------------------
 // Telegram config tab
@@ -749,6 +865,7 @@ const AnalyticsTab = ({ productId }) => {
 // page shell — needs a concrete product (retention is strictly per-product)
 // ---------------------------------------------------------------------------
 const TABS = [
+  ['guide', 'Setup guide', GuideTab],
   ['config', 'Telegram config', ConfigTab],
   ['kb', 'Retention KB', KbTab],
   ['photos', 'Media', PhotosTab],
