@@ -41,6 +41,12 @@ panel.
   questions**, and offers a **"finish chat"** action once the issue looks resolved.
 - **Escalation** to human support (a contact button) on explicit request, complaints,
   suspected fraud/legal threats, the per-session message cap, or when the model can't help.
+  The button's default target is the per-language `contact_url` (a form / support group /
+  chat). **When the product runs the Telegram retention bot, the escalation button instead
+  routes the player straight into the bot** — a one-time escalation-entry deeplink that
+  subscribes them to the channel on the way in and offers a live manager. The widget is the
+  primary channel, so this hand-off happens from the widget itself; it falls back to the
+  static `contact_url` whenever retention is off.
 - **Anti-spam** before any model call: IP rate limiting, per-message cooldown, an input
   length cap, a low-content/junk guard, and a prompt-injection scan (hard-block by default).
 - **Two-key OpenAI failover** — a fallback API key is raced in after a switch timeout so a

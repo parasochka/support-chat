@@ -180,7 +180,7 @@ def sign_handshake(context: dict, secret: str, ttl_sec: int = 300) -> str:
   "reply": "текст ответа (может быть пуст при эскалации/переключении темы)",
   "lang": "ru",
   "escalation": { "active": false } | {
-      "active": true, "final": true|false,
+      "active": true, "final": true|false, "retention": true?,
       "message": "...", "button": { "label": "...", "url": "..." } },
   "message_count": 5,
   "suggested_topic": null | { "slug": "...", "title": "..." },
@@ -266,7 +266,12 @@ def sign_handshake(context: dict, secret: str, ttl_sec: int = 300) -> str:
       (<code>message</code> + кнопка <code>button.url</code>, если url задан; открывать с
       <code>target="_blank" rel="noopener"</code>), скройте поле ввода и сбросьте локальную сессию —
       сервер отклонит дальнейшие ходы с <code>409</code>. <b><code>final=false</code></b> (мягкая,
-      по ключевым словам): карточку покажите, но поле ввода оставьте — разговор продолжается.</li>
+      по ключевым словам): карточку покажите, но поле ввода оставьте — разговор продолжается.
+      <b><code>escalation.retention=true</code></b> — этот хендофф ведёт не на форму контакта, а
+      в Telegram-бота Nika: <code>button.url</code> уже содержит одноразовый диплинк входа
+      (nonce живёт ~120 c), просто откройте его — игрок попадёт в бота, подпишется на канал и
+      получит кнопку менеджера. Флаг появляется только когда у продукта включён ретеншн; иначе
+      кнопка ведёт на статический <code>contact_url</code>.</li>
   <li><b><code>suggested_topic</code> — автопереключение темы.</b> Сервер уже подавил необоснованный
       ответ (он генерировался без базы знаний целевой темы), поэтому <code>reply</code> пуст. Клиент:
       (1) оставляет в переписке постоянную заметку «переключаю на «X»…» (без кнопок — это запись о

@@ -467,7 +467,7 @@ async def send_message(req: Request, body: MessageSend,
         )
         ans_lang = (session.get("conv_lang") or session.get("lang")
                     or language.default_code())
-        esc_payload = escalation.build_payload(ans_lang)
+        esc_payload = await escalation.build_payload_for_session(session, ans_lang)
         new_count = await db.persist_turn(
             session_id=body.session_id,
             user_text=body.text,
@@ -570,7 +570,7 @@ async def escalate(body: EscalateReq,
     await db.mark_escalated(body.session_id)
     if session.get("status") != "escalated":
         await db.log_admin_event(body.session_id, "escalation", {"reason": "explicit"})
-    esc_payload = escalation.build_payload(ans_lang)
+    esc_payload = await escalation.build_payload_for_session(session, ans_lang)
 
     return JSONResponse(
         status_code=200,

@@ -199,5 +199,61 @@ def build_payload(lang: str, final: bool = True) -> dict:
     }
 
 
+async def build_payload_for_session(session: dict, lang: str,
+                                    final: bool = True) -> dict:
+    """Retention-aware escalation payload for a chat session.
+
+    The widget is the primary channel, so the escalation contact button follows
+    the product's configuration:
+
+      - **Retention ON** (the session's product has `retention_enabled` AND a
+        Telegram bot username) — the button routes the player INTO the retention
+        bot instead of the static contact link. We mint a one-time *escalation*
+        deeplink (`entry_type='escalation'`), so on `/start` the bot runs the
+        channel-subscription gate and its menu offers "go to a manager". The
+        player's session profile snapshot rides in the nonce, so Nika greets them
+        by name. A `retention` marker is added to the payload so API consumers /
+        the widget can tell this hand-off leads to the bot.
+      - **Retention OFF** (or the mint fails, or no bot is set) — the button falls
+        back to the static per-language `contact_url` (form / group / chat) exactly
+        as before. Any failure degrades to this fallback, never breaks escalation.
+
+    Multi-tenant: the product is resolved from the session's own `product_id`, the
+    deeplink uses that product's bot + product-scoped nonce settings, and the nonce
+    stores that product's id — one brand's escalation can never leak into another.
+
+    NB: the deeplink nonce is TTL-bounded (`retention.nonce_ttl_sec`, default 120s)
+    and minted here at response time; a product that expects players to sit on the
+    escalation card for a while should raise that knob.
+    """
+    payload = build_payload(lang, final=final)
+    product_id = session.get("product_id") if session else None
+    if product_id is None:
+        return payload
+    # Lazy imports: keep this module import-light and avoid a db/retention cycle.
+    import db          # noqa: PLC0415
+    import retention   # noqa: PLC0415
+    import tenancy     # noqa: PLC0415
+    try:
+        product = await db.get_product(product_id)
+    except Exception:  # noqa: BLE001 — a DB hiccup must not break escalation
+        return payload
+    if (not product or not product.get("retention_enabled")
+            or not product.get("telegram_bot_username")):
+        return payload
+    tenancy.set_current_product(product_id)  # scope the nonce settings
+    try:
+        context = session.get("user_context") or {}
+        link = await retention.create_deeplink(product, context, escalation=True)
+    except Exception:  # noqa: BLE001 — fall back to the static contact link
+        return payload
+    if link.get("deep_link"):
+        payload["button"]["url"] = link["deep_link"]
+        # Marker for the widget / API consumers: this hand-off routes into the
+        # retention bot, not a plain contact form.
+        payload["retention"] = True
+    return payload
+
+
 def inactive_payload() -> dict:
     return {"active": False}
