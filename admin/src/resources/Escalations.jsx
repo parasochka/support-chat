@@ -10,6 +10,7 @@ import {
   useRedirect,
 } from 'react-admin';
 import Alert from '@mui/material/Alert';
+import RequireProduct from '../components/RequireProduct';
 
 const filters = [
   <TextInput key="topic" source="topic" label="Topic slug" alwaysOn />,
@@ -26,7 +27,7 @@ const filters = [
 export const EscalationList = () => {
   const redirect = useRedirect();
   return (
-    <>
+    <RequireProduct title="Escalations / unresolved">
       <Alert severity="info" sx={{ mt: 2 }}>
         Sessions that still need attention: escalated hand-offs and abandoned
         open chats. Rows open the full conversation.
@@ -60,6 +61,6 @@ export const EscalationList = () => {
           <DateField source="created_at" showTime />
         </Datagrid>
       </List>
-    </>
+    </RequireProduct>
   );
 };

@@ -1035,12 +1035,12 @@ Map of what lives where:
   Retention / System) whose open state persists in localStorage; the Retention
   sub-tabs are exposed as sub-menu entries that deep-link `/retention?tab=…`
   (the page reads `?tab=`, like the Prompt page). **Product-scoped surfaces are
-  gated** by `components/RequireProduct` — KB, KB variables, Prompt, Translations
-  and Retention refuse to render without a concrete product selected in the header
-  (otherwise they'd silently edit the default product), showing a "select a
-  product" notice instead; this applies to admins and managers alike. Dashboard,
-  Structure, Users and the session/unresolved lists stay usable at the
-  all/partner scope. **Settings** (`pages/Settings.jsx` + `settingsSchema.js`) is a
+  gated** by `components/RequireProduct` — KB, KB variables, Prompt, Translations,
+  Retention and the Conversations / Unresolved lists (incl. the conversation
+  detail view) refuse to render without a concrete product selected in the header
+  (otherwise they'd silently edit/show the default product's data), showing a
+  "select a product" notice instead; this applies to admins and managers alike.
+  Dashboard, Structure and Users stay usable at the all/partner scope. **Settings** (`pages/Settings.jsx` + `settingsSchema.js`) is a
   typed, tabbed editor (one tab per group + a Languages tab with an ISO-picker
   add-language / default / custom-name editor) — not a raw-JSON textarea — with a
   scope banner (global defaults vs the selected product). **Topic titles are
