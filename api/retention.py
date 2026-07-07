@@ -701,15 +701,56 @@ async def run_pings_now(product_id: int,
 # ===========================================================================
 # Admin: analytics
 # ===========================================================================
+async def _analytics_scope(admin: dict, product_id: Optional[int],
+                           partner_id: Optional[int]) -> Optional[list[int]]:
+    """Product scope for a retention analytics read: an explicit product is
+    read-checked; otherwise the caller's whole accessible scope applies (so the
+    global dashboard can show retention across products). Mirrors the support
+    dashboard's resolve_scope_filter convention (None = all, [] = none)."""
+    if product_id is not None:
+        await admin_auth.require_product_read(admin, product_id)
+        return [product_id]
+    return await admin_auth.resolve_scope_filter(admin, None, partner_id)
+
+
 @admin_router.get("/overview")
-async def overview(product_id: int,
+async def overview(product_id: Optional[int] = None,
+                   partner_id: Optional[int] = None,
                    from_: Optional[str] = Query(default=None, alias="from"),
                    to: Optional[str] = None,
                    admin=Depends(require_admin)) -> JSONResponse:
     from api.admin import _range  # reuse the shared date-range parser
-    await admin_auth.require_product_read(admin, product_id)
+    scope = await _analytics_scope(admin, product_id, partner_id)
     dt_from, dt_to = _range(from_, to)
-    return JSONResponse(content=await db.retention_overview(product_id, dt_from, dt_to))
+    return JSONResponse(content=await db.retention_overview(scope, dt_from, dt_to))
+
+
+@admin_router.get("/funnel")
+async def funnel(product_id: Optional[int] = None,
+                 partner_id: Optional[int] = None,
+                 from_: Optional[str] = Query(default=None, alias="from"),
+                 to: Optional[str] = None,
+                 admin=Depends(require_admin)) -> JSONResponse:
+    """Entry funnel: deeplinks -> starts -> linked -> subscribed -> engaged ->
+    photos -> handoffs, for the range."""
+    from api.admin import _range
+    scope = await _analytics_scope(admin, product_id, partner_id)
+    dt_from, dt_to = _range(from_, to)
+    return JSONResponse(content=await db.retention_funnel(scope, dt_from, dt_to))
+
+
+@admin_router.get("/timeseries")
+async def timeseries(product_id: Optional[int] = None,
+                     partner_id: Optional[int] = None,
+                     from_: Optional[str] = Query(default=None, alias="from"),
+                     to: Optional[str] = None,
+                     admin=Depends(require_admin)) -> JSONResponse:
+    """Daily retention activity (messages, active players, photos, pings, cost)."""
+    from api.admin import _range
+    scope = await _analytics_scope(admin, product_id, partner_id)
+    dt_from, dt_to = _range(from_, to)
+    return JSONResponse(content={
+        "series": await db.retention_timeseries(scope, dt_from, dt_to)})
 
 
 @admin_router.get("/users")

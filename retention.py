@@ -80,6 +80,11 @@ async def create_deeplink(product: dict[str, Any], handshake_context: dict[str, 
         payload["lang"] = lang
     await db.create_retention_nonce(nonce, product["id"], payload,
                                     escalation, ttl)
+    # Durable funnel marker: expired nonces are reaped from the table, so the
+    # "deeplinks issued" denominator lives in admin_events.
+    await db.log_admin_event(
+        None, "retention_deeplink_created",
+        {"escalation": escalation}, product_id=product["id"])
     username = product.get("telegram_bot_username") or ""
     deep_link = f"https://t.me/{username}?start={nonce}" if username else ""
     return {"nonce": nonce, "deep_link": deep_link}
@@ -594,6 +599,11 @@ async def _handle_start(client: TelegramClient, product: dict[str, Any],
         return
     payload = data["payload"] or {}
     entry_type = "escalation" if data["escalation"] else "retention"
+    # Funnel marker: a successful /start redemption (pairs with
+    # retention_deeplink_created for the entry conversion).
+    await db.log_admin_event(None, "retention_start",
+                             {"entry_type": entry_type},
+                             product_id=product["id"])
     ru = await db.upsert_retention_user(
         product["id"], pu.tg_user_id,
         tg_username=pu.tg_username,

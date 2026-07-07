@@ -46,6 +46,10 @@ def _patch_common(monkeypatch, tg):
         pass
     monkeypatch.setattr(retention.db, "set_retention_conv_lang", _set_conv_lang)
 
+    async def _log_event(*a, **k):
+        pass
+    monkeypatch.setattr(retention.db, "log_admin_event", _log_event)
+
 
 PRODUCT = {"id": 1, "active": True, "retention_enabled": True,
            "telegram_bot_username": "nika_bot", "telegram_channel_id": None,

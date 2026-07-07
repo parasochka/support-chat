@@ -55,6 +55,10 @@ async def test_create_deeplink_carries_lang(monkeypatch):
         captured.update(payload=payload, escalation=escalation)
     monkeypatch.setattr(retention.db, "create_retention_nonce", _create_nonce)
 
+    async def _log_event(*a, **k):
+        pass
+    monkeypatch.setattr(retention.db, "log_admin_event", _log_event)
+
     product = {"id": 1, "telegram_bot_username": "nika_bot"}
     link = await retention.create_deeplink(product, {"full_name": "Andrey"},
                                            escalation=True, lang="ru")

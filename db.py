@@ -3387,36 +3387,223 @@ async def redeem_retention_nonce(nonce: str) -> Optional[dict[str, Any]]:
 
 
 # --- retention analytics ---------------------------------------------------
-async def retention_overview(product_id: int, dt_from: Any, dt_to: Any
-                             ) -> dict[str, Any]:
+def _pid_where(product_ids: Optional[list[int]], args: list[Any],
+               col: str = "product_id") -> str:
+    """SQL filter for a product-id scope: None = all, [] = match nothing."""
+    if product_ids is None:
+        return "TRUE"
+    args.append(product_ids)
+    return f"{col} = ANY(${len(args)}::int[])"
+
+
+async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
+                             dt_to: Any) -> dict[str, Any]:
+    """Retention KPIs, split into LIFETIME numbers (the player base as it is
+    now) and RANGE numbers (what happened between dt_from and dt_to) so the
+    two are never mixed in one row. `product_ids` follows the dashboard scope
+    convention: None = all accessible, [] = none."""
+    args: list[Any] = [dt_from, dt_to]
+    pid = _pid_where(product_ids, args)
     users = await _pool.fetchrow(
         "SELECT COUNT(*) AS total, "
         "  COUNT(*) FILTER (WHERE subscribed) AS subscribed, "
-        "  COUNT(*) FILTER (WHERE last_active_at >= $2 AND last_active_at < $3) "
+        "  COUNT(*) FILTER (WHERE pings_muted) AS pings_muted, "
+        "  COUNT(*) FILTER (WHERE unreachable) AS unreachable, "
+        "  COUNT(*) FILTER (WHERE last_active_at >= $1 AND last_active_at < $2) "
         "    AS active_in_range, "
+        "  COUNT(*) FILTER (WHERE created_at >= $1 AND created_at < $2) "
+        "    AS new_in_range, "
         "  COALESCE(AVG(unlocked_stage), 0) AS avg_stage "
-        "FROM retention_users WHERE product_id = $1", product_id, dt_from, dt_to,
+        f"FROM retention_users WHERE {pid}", *args,
     )
     photos = await _pool.fetchval(
         "SELECT COUNT(*) FROM retention_photo_views "
-        "WHERE product_id = $1 AND viewed_at >= $2 AND viewed_at < $3",
-        product_id, dt_from, dt_to,
+        f"WHERE {pid} AND viewed_at >= $1 AND viewed_at < $2", *args,
     )
     handoffs = await _pool.fetchval(
         "SELECT COUNT(*) FROM admin_events "
-        "WHERE product_id = $1 AND type IN "
+        f"WHERE {pid} AND type IN "
         "  ('retention_handoff', 'retention_manager_handoff') "
-        "  AND created_at >= $2 AND created_at < $3",
-        product_id, dt_from, dt_to,
+        "  AND created_at >= $1 AND created_at < $2", *args,
     )
+    messages = await _pool.fetchrow(
+        "SELECT COUNT(*) AS user_msgs, COUNT(DISTINCT s.tg_user_id) AS senders "
+        "FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id "
+        f"WHERE s.consumer = 'telegram' AND {_pid_where(product_ids, args, 's.product_id')} "
+        "  AND m.role = 'user' AND m.created_at >= $1 AND m.created_at < $2",
+        *args,
+    )
+    args2: list[Any] = [dt_from, dt_to]
+    pid2 = _pid_where(product_ids, args2, "p.product_id")
+    pings = await _pool.fetchrow(
+        "SELECT COUNT(*) FILTER (WHERE p.status = 'sent') AS sent, "
+        "  COUNT(*) FILTER (WHERE p.status = 'failed') AS failed, "
+        "  COUNT(*) FILTER (WHERE p.status = 'sent' AND EXISTS ("
+        "    SELECT 1 FROM chat_messages m "
+        "    JOIN chat_sessions s ON s.id = m.session_id "
+        "    JOIN retention_users u ON u.id = p.retention_user_id "
+        "    WHERE s.tg_user_id = u.tg_user_id AND s.product_id = p.product_id "
+        "      AND m.role = 'user' AND m.created_at > p.created_at "
+        "      AND m.created_at < p.created_at + interval '48 hours')) AS replied "
+        f"FROM retention_pings p WHERE {pid2} "
+        "  AND p.created_at >= $1 AND p.created_at < $2", *args2,
+    )
+    args3: list[Any] = [dt_from, dt_to]
+    pid3 = _pid_where(product_ids, args3, "s.product_id")
+    cost = await _pool.fetchval(
+        "SELECT COALESCE(SUM(l.cost_usd), 0) FROM ai_interaction_logs l "
+        "JOIN chat_sessions s ON s.id = l.session_id "
+        f"WHERE s.consumer = 'telegram' AND {pid3} "
+        "  AND l.created_at >= $1 AND l.created_at < $2", *args3,
+    )
+    args4: list[Any] = []
+    pid4 = _pid_where(product_ids, args4)
+    stage_rows = await _pool.fetch(
+        "SELECT unlocked_stage AS stage, COUNT(*) AS users "
+        f"FROM retention_users WHERE {pid4} "
+        "GROUP BY unlocked_stage ORDER BY unlocked_stage", *args4,
+    )
+    sent = int(pings["sent"] or 0) if pings else 0
+    replied = int(pings["replied"] or 0) if pings else 0
     return {
-        "users_total": users["total"] if users else 0,
-        "users_subscribed": users["subscribed"] if users else 0,
-        "users_active": users["active_in_range"] if users else 0,
-        "avg_stage": round(float(users["avg_stage"]), 2) if users else 0.0,
+        "users": {
+            "total": int(users["total"] or 0),
+            "subscribed": int(users["subscribed"] or 0),
+            "pings_muted": int(users["pings_muted"] or 0),
+            "unreachable": int(users["unreachable"] or 0),
+            "avg_stage": round(float(users["avg_stage"] or 0), 2),
+        },
+        "range": {
+            "active_users": int(users["active_in_range"] or 0),
+            "new_users": int(users["new_in_range"] or 0),
+            "user_messages": int(messages["user_msgs"] or 0) if messages else 0,
+            "photos_sent": int(photos or 0),
+            "handoffs": int(handoffs or 0),
+            "pings_sent": sent,
+            "pings_failed": int(pings["failed"] or 0) if pings else 0,
+            "ping_replies": replied,
+            "ping_reply_rate": round(replied / sent, 3) if sent else None,
+            "cost_usd": round(float(cost or 0), 4),
+        },
+        "stage_distribution": [
+            {"stage": int(r["stage"]), "users": int(r["users"])}
+            for r in stage_rows
+        ],
+        # Legacy flat keys (pre-split API consumers).
+        "users_total": int(users["total"] or 0),
+        "users_subscribed": int(users["subscribed"] or 0),
+        "users_active": int(users["active_in_range"] or 0),
+        "avg_stage": round(float(users["avg_stage"] or 0), 2),
         "photos_sent": int(photos or 0),
         "handoffs": int(handoffs or 0),
     }
+
+
+async def retention_funnel(product_ids: Optional[list[int]], dt_from: Any,
+                           dt_to: Any) -> dict[str, Any]:
+    """The entry funnel for the range: deeplinks minted -> /start redemptions ->
+    new linked players -> subscribed -> engaged (wrote a message) -> got a photo
+    -> handed off. Sources: durable admin_events for the two event steps (the
+    nonce table is reaped on expiry, so it cannot be the denominator), the
+    retention tables for the rest."""
+    args: list[Any] = [dt_from, dt_to]
+    pid = _pid_where(product_ids, args)
+    events = await _pool.fetchrow(
+        "SELECT COUNT(*) FILTER (WHERE type = 'retention_deeplink_created') "
+        "    AS deeplinks, "
+        "  COUNT(*) FILTER (WHERE type = 'retention_start') AS starts, "
+        "  COUNT(*) FILTER (WHERE type IN ('retention_handoff', "
+        "    'retention_manager_handoff')) AS handoffs "
+        f"FROM admin_events WHERE {pid} "
+        "  AND created_at >= $1 AND created_at < $2", *args,
+    )
+    users = await _pool.fetchrow(
+        "SELECT COUNT(*) AS new_users, "
+        "  COUNT(*) FILTER (WHERE subscribed) AS subscribed "
+        f"FROM retention_users WHERE {pid} "
+        "  AND created_at >= $1 AND created_at < $2", *args,
+    )
+    args2: list[Any] = [dt_from, dt_to]
+    pid2 = _pid_where(product_ids, args2, "s.product_id")
+    engaged = await _pool.fetchval(
+        "SELECT COUNT(DISTINCT s.tg_user_id) "
+        "FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id "
+        f"WHERE s.consumer = 'telegram' AND {pid2} AND m.role = 'user' "
+        "  AND m.created_at >= $1 AND m.created_at < $2", *args2,
+    )
+    args3: list[Any] = [dt_from, dt_to]
+    pid3 = _pid_where(product_ids, args3)
+    photo_receivers = await _pool.fetchval(
+        "SELECT COUNT(DISTINCT retention_user_id) FROM retention_photo_views "
+        f"WHERE {pid3} AND viewed_at >= $1 AND viewed_at < $2", *args3,
+    )
+    return {
+        "deeplinks_created": int(events["deeplinks"] or 0) if events else 0,
+        "starts": int(events["starts"] or 0) if events else 0,
+        "new_users": int(users["new_users"] or 0) if users else 0,
+        "subscribed": int(users["subscribed"] or 0) if users else 0,
+        "engaged": int(engaged or 0),
+        "photo_receivers": int(photo_receivers or 0),
+        "handoffs": int(events["handoffs"] or 0) if events else 0,
+    }
+
+
+async def retention_timeseries(product_ids: Optional[list[int]], dt_from: Any,
+                               dt_to: Any) -> list[dict[str, Any]]:
+    """Daily retention activity: player messages + distinct active players,
+    photos delivered, proactive pings sent, and OpenAI cost of telegram turns.
+    One merged row per day (days with no activity in any source are omitted)."""
+    out: dict[str, dict[str, Any]] = {}
+
+    def _day(row_day: Any) -> str:
+        return str(row_day)[:10]
+
+    args: list[Any] = [dt_from, dt_to]
+    pid = _pid_where(product_ids, args, "s.product_id")
+    for r in await _pool.fetch(
+            "SELECT date_trunc('day', m.created_at) AS day, "
+            "  COUNT(*) AS msgs, COUNT(DISTINCT s.tg_user_id) AS actives "
+            "FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id "
+            f"WHERE s.consumer = 'telegram' AND {pid} AND m.role = 'user' "
+            "  AND m.created_at >= $1 AND m.created_at < $2 "
+            "GROUP BY 1", *args):
+        d = out.setdefault(_day(r["day"]), {})
+        d["messages"] = int(r["msgs"])
+        d["active_users"] = int(r["actives"])
+
+    args = [dt_from, dt_to]
+    pid = _pid_where(product_ids, args)
+    for r in await _pool.fetch(
+            "SELECT date_trunc('day', viewed_at) AS day, COUNT(*) AS n "
+            f"FROM retention_photo_views WHERE {pid} "
+            "  AND viewed_at >= $1 AND viewed_at < $2 GROUP BY 1", *args):
+        out.setdefault(_day(r["day"]), {})["photos"] = int(r["n"])
+
+    args = [dt_from, dt_to]
+    pid = _pid_where(product_ids, args)
+    for r in await _pool.fetch(
+            "SELECT date_trunc('day', created_at) AS day, COUNT(*) AS n "
+            f"FROM retention_pings WHERE {pid} AND status = 'sent' "
+            "  AND created_at >= $1 AND created_at < $2 GROUP BY 1", *args):
+        out.setdefault(_day(r["day"]), {})["pings"] = int(r["n"])
+
+    args = [dt_from, dt_to]
+    pid = _pid_where(product_ids, args, "s.product_id")
+    for r in await _pool.fetch(
+            "SELECT date_trunc('day', l.created_at) AS day, "
+            "  COALESCE(SUM(l.cost_usd), 0) AS cost "
+            "FROM ai_interaction_logs l JOIN chat_sessions s ON s.id = l.session_id "
+            f"WHERE s.consumer = 'telegram' AND {pid} "
+            "  AND l.created_at >= $1 AND l.created_at < $2 GROUP BY 1", *args):
+        out.setdefault(_day(r["day"]), {})["cost_usd"] = round(float(r["cost"]), 4)
+
+    series = []
+    for day in sorted(out):
+        row = {"date": day, "messages": 0, "active_users": 0, "photos": 0,
+               "pings": 0, "cost_usd": 0.0}
+        row.update(out[day])
+        series.append(row)
+    return series
 
 
 async def list_retention_users(product_id: int, *, limit: int = 100,
