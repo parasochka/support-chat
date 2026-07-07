@@ -171,7 +171,7 @@ async def test_nika_turn_sends_photo(monkeypatch):
 
     async def _get_session(sid):
         return {"id": "sess-1", "product_id": 1, "user_context": {}, "lang": "en",
-                "conv_lang": None, "message_count": 0}
+                "conv_lang": None, "message_count": 0, "status": "open"}
     monkeypatch.setattr(retention.db, "get_session", _get_session)
 
     async def _bump(rid, *, meaningful):
@@ -223,7 +223,7 @@ async def test_nika_handoff_retention_entry_routes_to_support(monkeypatch):
 
     async def _get_session(sid):
         return {"id": "sess-1", "product_id": 1, "user_context": {}, "lang": "en",
-                "conv_lang": None, "message_count": 0}
+                "conv_lang": None, "message_count": 0, "status": "open"}
     monkeypatch.setattr(retention.db, "get_session", _get_session)
 
     async def _bump(rid, *, meaningful):

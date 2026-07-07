@@ -749,6 +749,30 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   (the AI turn: build prompt → model → strip sentinels → persist).
 - **Channel = the existing `consumer` column** (`'web'` → `'telegram'`), NOT a new `channel`; the
   mode is derived from it (telegram ⇒ retention). Support is never duplicated in Telegram.
+  **Telegram chats are logged APART from support chats**: the support admin surfaces
+  (`db.list_sessions`, `db.unresolved_by_topic` — the Conversations + Unresolved views) exclude
+  `consumer='telegram'` entirely; the Telegram chats live in their own **Retention · Telegram →
+  Conversations** tab (`GET /admin/retention/sessions` → `db.list_retention_sessions`, joined
+  with the `retention_users` identity + summed cost; the transcript opens via the shared
+  `GET /admin/session/{id}`, same scope check).
+- **Telegram chat lifecycle — idle rollover + returning-player continuity.** A Telegram
+  conversation has no "close the widget" moment, so a chat "ends" by INACTIVITY: on the next
+  incoming message `retention._ensure_session` reuses the linked session only while it is
+  `open` and not idle past the `retention.session_idle_minutes` knob (default 360; 0 = never —
+  the old endless-session behaviour). An idle (or already-closed) chat with messages is closed
+  lazily — `db.close_retention_session` sets `status='resolved'` + logs
+  `admin_events('retention_session_closed')` — and a FRESH session is created pointing back via
+  `chat_sessions.prev_session_id` (guarded ALTER; an empty open session is simply reused, no
+  churn). **Continuity:** on the first turn of the fresh session,
+  `chat_service.handle_retention_message` pulls the tail of the previous chat
+  (`carry_context_turns` knob, default 6, 0 = off) and passes it to
+  `prompts.build_retention_messages(previous_history=…)`, which renders a Layer-3
+  `RETURNING PLAYER — PREVIOUS CONVERSATION (context only)` block (messages truncated to ~240
+  chars, rough "N hours/days ago" recency): greet back warmly like someone she knows, never
+  re-introduce, don't re-answer the old messages. It rides ONLY on the first turn (never as
+  message history — it is a new chat); durable state (stage progression, seen photos, manager,
+  language, profile) lives on `retention_users` and survives rollover by construction. Tests:
+  `tests/test_retention_lifecycle.py`.
 - **Retention prompt mode (`prompts.py`)** is a SECOND Layer-1 assembly — `SYSTEM_CORE_RETENTION`
   + retention static directives (`get_retention_system_core()`), byte-stable per **product × mode**
   (a test asserts it, mirroring the support core). It shares the persona but swaps support
@@ -833,7 +857,9 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `X-Telegram-Bot-Api-Secret-Token` header (NOT in the URL).
 - **Admin**: the SPA **Retention · Telegram** view (sub-tabs: Setup guide — the static
   "how to connect the bot" checklist that replaced `RETENTION_SETUP.md` —, Telegram config,
-  Retention KB — the one-document text editor —, **Prompt preview**, Media, Managers, Analytics);
+  Retention KB — the one-document text editor —, **Prompt preview**, Media, Managers,
+  **Conversations** — the Telegram chat list + transcript dialog, see the lifecycle bullet
+  above —, Analytics);
   API under `/admin/retention/*` (`api/retention.py`, guarded per
   product) + the `retention` group via the generic `/admin/settings/retention`. Retention copy
   (menu/gate/handoff strings, `rtn_*` keys) is in the translations registry (scope `retention`).
@@ -1035,12 +1061,12 @@ Map of what lives where:
   Retention / System) whose open state persists in localStorage; the Retention
   sub-tabs are exposed as sub-menu entries that deep-link `/retention?tab=…`
   (the page reads `?tab=`, like the Prompt page). **Product-scoped surfaces are
-  gated** by `components/RequireProduct` — KB, KB variables, Prompt, Translations
-  and Retention refuse to render without a concrete product selected in the header
-  (otherwise they'd silently edit the default product), showing a "select a
-  product" notice instead; this applies to admins and managers alike. Dashboard,
-  Structure, Users and the session/unresolved lists stay usable at the
-  all/partner scope. **Settings** (`pages/Settings.jsx` + `settingsSchema.js`) is a
+  gated** by `components/RequireProduct` — KB, KB variables, Prompt, Translations,
+  Retention and the Conversations / Unresolved lists (incl. the conversation
+  detail view) refuse to render without a concrete product selected in the header
+  (otherwise they'd silently edit/show the default product's data), showing a
+  "select a product" notice instead; this applies to admins and managers alike.
+  Dashboard, Structure and Users stay usable at the all/partner scope. **Settings** (`pages/Settings.jsx` + `settingsSchema.js`) is a
   typed, tabbed editor (one tab per group + a Languages tab with an ISO-picker
   add-language / default / custom-name editor) — not a raw-JSON textarea — with a
   scope banner (global defaults vs the selected product). **Topic titles are

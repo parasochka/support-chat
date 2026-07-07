@@ -66,6 +66,8 @@ export const GROUP_FIELDS = {
     { name: 'max_stage', label: 'Max stage', type: 'int', min: 1, max: 20, help: 'Global ceiling on the explicitness stage.' },
     { name: 'nonce_ttl_sec', label: 'Deeplink nonce TTL (sec)', type: 'int', min: 10, max: 3600, help: 'Lifetime of a one-time deeplink nonce.' },
     { name: 'profile_pull_ttl_sec', label: 'Profile pull TTL (sec)', type: 'int', min: 0, max: 604800, help: 'How long a pulled player profile stays fresh before a re-pull.' },
+    { name: 'session_idle_minutes', label: 'Session idle (min)', type: 'int', min: 0, max: 525600, help: 'Idle minutes before a Telegram chat closes; the next message starts a fresh chat (0 = never close).' },
+    { name: 'carry_context_turns', label: 'Carry-over context turns', type: 'int', min: 0, max: 50, help: 'Trailing turns of the previous chat shown to the model when a returning player starts a fresh one (0 = off).' },
     { name: 'stage_advance_msgs', label: 'Stage advance thresholds', type: 'intlist', help: 'Accumulated meaningful messages required for stages 2 / 3 / 4 … (one per line).' },
     { name: 'vip_tiers', label: 'VIP tiers (ordered)', type: 'strlist', help: 'Ordered tier names; a tier’s index is its ordinal (one per line).' },
     { name: 'max_stage_by_tier', label: 'Max stage by tier', type: 'intmap', help: 'Highest photo stage each VIP tier may unlock.' },

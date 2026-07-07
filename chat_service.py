@@ -537,6 +537,15 @@ async def handle_retention_message(
     history = await db.get_history(
         session_id, limit=settings.general()["history_max_turns"],
     )
+    # Returning-player continuity: on the FIRST turn of a fresh session that
+    # rolled over from an idle chat (prev_session_id), carry the tail of the
+    # previous conversation into Layer 3 so Nika greets them with continuity.
+    previous_history: list[dict[str, Any]] = []
+    prev_sid = session.get("prev_session_id")
+    if not history and prev_sid:
+        carry = int(settings.retention()["carry_context_turns"])
+        if carry > 0:
+            previous_history = await db.get_history(prev_sid, limit=carry)
     messages = prompts.build_retention_messages(
         session=session,
         kb_block=kb_block,
@@ -544,10 +553,13 @@ async def handle_retention_message(
         user_text=user_text,
         resolved_lang=base_lang,
         photo_candidates=candidates,
+        previous_history=previous_history or None,
     )
     log.info(
-        "retention_prompt_built session_id=%s history=%s candidates=%s kb_chars=%s",
-        session_id, len(history), len(candidates), len(kb_block or ""),
+        "retention_prompt_built session_id=%s history=%s prev_carry=%s "
+        "candidates=%s kb_chars=%s",
+        session_id, len(history), len(previous_history), len(candidates),
+        len(kb_block or ""),
     )
 
     # --- call model (product keys / env failover) ---------------------------

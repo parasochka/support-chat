@@ -6,10 +6,11 @@ import { getProductId } from '../productScope';
 
 /**
  * Gate for surfaces whose data belongs to a single product (KB, Prompt,
- * Translations, Retention). Editing them while the header shows "All products"
- * silently resolves to the default product — confusing, because it looks like
- * you are editing global data. So unless a concrete product is selected we
- * refuse to render and ask the operator to pick one in the header switcher.
+ * Translations, Retention, the Conversations / Unresolved lists). Editing or
+ * viewing them while the header shows "All products" silently resolves to the
+ * default product — confusing, because it looks like you are seeing global
+ * data. So unless a concrete product is selected we refuse to render and ask
+ * the operator to pick one in the header switcher.
  *
  * Applies to admins and managers alike (managers get read-only controls inside,
  * but still need a product context for the data to mean anything).

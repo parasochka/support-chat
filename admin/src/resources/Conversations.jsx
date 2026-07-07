@@ -20,6 +20,7 @@ import Chip from '@mui/material/Chip';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { useSupportedLanguages } from '../lib/meta';
+import RequireProduct from '../components/RequireProduct';
 
 const STATUS_CHOICES = [
   { id: 'open', name: 'Open' },
@@ -53,6 +54,7 @@ const useFilters = () => {
 };
 
 export const ConversationList = () => (
+  <RequireProduct title="Conversations">
   <List
     filters={useFilters()}
     // Hide empty sessions (opened widget, never wrote) by default — clear the
@@ -80,6 +82,7 @@ export const ConversationList = () => (
       <DateField source="created_at" showTime sortable={false} />
     </Datagrid>
   </List>
+  </RequireProduct>
 );
 
 const MessageThread = () => {
@@ -159,10 +162,12 @@ const SessionSummary = () => {
 };
 
 export const ConversationShow = () => (
+  <RequireProduct title="Conversation">
   <Show title="Conversation">
     <Box sx={{ p: 2 }}>
       <SessionSummary />
       <MessageThread />
     </Box>
   </Show>
+  </RequireProduct>
 );
