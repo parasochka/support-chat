@@ -45,7 +45,9 @@ panel.
   length cap, a low-content/junk guard, and a prompt-injection scan (hard-block by default).
 - **Two-key OpenAI failover** — a fallback API key is raced in after a switch timeout so a
   silent primary key doesn't stall answers.
-- **Admin dashboard** (`/admin`) — overview metrics, per-topic/-language breakdowns
+- **Admin dashboard** (`/admin` — the React Admin SPA in `admin/`, compiled by the
+  two-stage Docker build and served by this same service over the `/admin/*` API;
+  see `admin/README.md`) — overview metrics, per-topic/-language breakdowns
   (with per-row cost), session browsing (with per-session cost), unresolved-cluster
   export, hot-reloaded runtime settings, knowledge-base editing (with a **Variables**
   sub-tab for the `{placeholder}` values injected into KB answers), a **Prompt** view

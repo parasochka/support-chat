@@ -7,6 +7,12 @@ __pycache__/
 .venv/
 venv/
 tests/
+# Admin SPA: sources are copied into the node build stage; local artifacts and
+# env files must never leak into either stage.
+admin/node_modules/
+admin/dist/
+admin/.env
+admin/.env.local
 # Local retention media uploads never belong in the image (real media lives on
 # the Railway Volume mounted at RETENTION_MEDIA_DIR).
 media/

@@ -159,48 +159,28 @@ async def index() -> FileResponse:
 if os.path.isdir(_FRONTEND_DIR):
     app.mount("/static", StaticFiles(directory=_FRONTEND_DIR), name="static")
 
-# --- admin dashboard SPA ----------------------------------------------------
-# The data API lives under /admin/* (guarded). The SPA HTML is served at /admin
-# and /admin/, and its ES-module assets under /admin-static (a distinct prefix
-# so it never shadows the /admin/* JSON routes).
-_ADMIN_DIR = os.path.join(_FRONTEND_DIR, "admin")
+# --- admin SPA (React Admin) --------------------------------------------------
+# The admin UI is the React Admin app in admin/ (repo root). The Docker build
+# compiles it (node stage -> admin/dist) and this service serves it at /admin,
+# same-origin with the /admin/* JSON API — no CORS needed for the admin. The
+# SPA uses a hash router, so the single index.html covers every admin route;
+# its hashed assets live under /admin/assets (vite base '/admin/'). In local
+# dev without a build the mount is simply skipped (use `npm run dev` instead).
+_ADMIN_DIST = os.path.join(os.path.dirname(__file__), "admin", "dist")
 
+if os.path.isdir(_ADMIN_DIST):
+    @app.get("/admin", include_in_schema=False)
+    @app.get("/admin/", include_in_schema=False)
+    async def admin_spa() -> FileResponse:
+        # no-cache: the HTML references hashed asset URLs, so revalidating the
+        # tiny entry page is what makes a redeploy take effect immediately.
+        return FileResponse(os.path.join(_ADMIN_DIST, "index.html"),
+                            media_type="text/html",
+                            headers={"Cache-Control": "no-cache"})
 
-def _asset_version() -> str:
-    """Cache-busting token from the admin assets' mtimes.
-
-    The SPA has no build step and its assets are served by StaticFiles, which
-    sets no explicit Cache-Control — so browsers apply *heuristic* caching and
-    can serve a stale admin.js for a while after a redeploy (the bug behind
-    "the new option isn't showing up"). We stamp the asset URLs with a token
-    derived from the files' modification times so every redeploy yields a fresh
-    URL and the browser is forced to refetch.
-    """
-    latest = 0.0
-    for name in ("admin.js", "admin.css"):
-        try:
-            latest = max(latest, os.path.getmtime(os.path.join(_ADMIN_DIR, name)))
-        except OSError:
-            pass
-    return str(int(latest))
-
-
-@app.get("/admin")
-@app.get("/admin/")
-async def admin_index() -> HTMLResponse:
-    with open(os.path.join(_ADMIN_DIR, "index.html"), encoding="utf-8") as fh:
-        html = fh.read()
-    v = _asset_version()
-    html = html.replace("/admin-static/admin.css", f"/admin-static/admin.css?v={v}")
-    html = html.replace("/admin-static/admin.js", f"/admin-static/admin.js?v={v}")
-    # Always revalidate the HTML itself so the freshly-stamped URLs take effect
-    # on the next load instead of being served from a stale cached page.
-    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
-
-
-if os.path.isdir(_ADMIN_DIR):
-    app.mount("/admin-static", StaticFiles(directory=_ADMIN_DIR), name="admin-static")
-
+    app.mount("/admin/assets",
+              StaticFiles(directory=os.path.join(_ADMIN_DIST, "assets")),
+              name="admin-assets")
 
 # The widget files are served at fixed URLs with no build step, so without an
 # explicit Cache-Control browsers apply heuristic caching and can keep serving
