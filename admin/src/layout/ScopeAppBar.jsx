@@ -33,10 +33,22 @@ const ScopeSelect = () => {
 
   const onChange = (e) => {
     const v = e.target.value;
-    if (v === 'all') setScope({});
-    else if (v.startsWith('partner:'))
-      setScope({ partnerId: Number(v.slice(8)) });
-    else setScope({ productId: Number(v.slice(8)) });
+    if (v === 'all') {
+      setScope({});
+    } else if (v.startsWith('partner:')) {
+      const id = Number(v.slice(8));
+      const pa = (structure.partners || []).find((x) => x.id === id);
+      setScope({ partnerId: id, name: pa ? `${pa.name} — all products` : '' });
+    } else {
+      const id = Number(v.slice(8));
+      let name = '';
+      (structure.partners || []).forEach((pa) =>
+        (pa.products || []).forEach((pr) => {
+          if (pr.id === id) name = pr.name;
+        })
+      );
+      setScope({ productId: id, name });
+    }
     window.location.reload();
   };
 

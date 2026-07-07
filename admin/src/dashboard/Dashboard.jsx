@@ -20,6 +20,10 @@ import { scopeParams } from '../productScope';
 const pct = (v) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`);
 const usd = (v) => (v == null ? '—' : `$${Number(v).toFixed(4)}`);
 const num = (v) => (v == null ? '—' : String(v));
+// Latency reads as whole ms under a second, seconds above — the natural unit
+// for a reasoning-model turn that often runs several seconds.
+const ms = (v) =>
+  v == null ? '—' : v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)} ms`;
 
 // Chart series colors: validated categorical slots (dataviz reference palette),
 // stepped per theme mode so contrast holds on both surfaces.
@@ -180,6 +184,7 @@ const Dashboard = () => {
       <Title title="Dashboard" />
       {error && <Typography color="error">{error}</Typography>}
 
+      {/* Row 1 — sessions & engagement (6 tiles). */}
       <Grid container spacing={2} alignItems="stretch">
         <Kpi label="Sessions (30d)" value={num(overview?.sessions_total)} />
         <Kpi
@@ -206,6 +211,10 @@ const Dashboard = () => {
           label="Avg msgs / session"
           value={num(overview?.avg_messages_per_session)}
         />
+      </Grid>
+
+      {/* Row 2 — AI, cost & performance (6 tiles). */}
+      <Grid container spacing={2} sx={{ mt: 0 }} alignItems="stretch">
         <Kpi
           label="Cost (USD)"
           value={usd(overview?.cost_usd_total)}
@@ -215,8 +224,30 @@ const Dashboard = () => {
               : undefined
           }
         />
-        <Kpi label="Cache hit ratio" value={pct(overview?.cache_hit_ratio)} />
-        <Kpi label="Key failovers" value={num(overview?.failovers)} />
+        <Kpi
+          label="Avg response time"
+          value={ms(overview?.avg_latency_ms)}
+          hint="AI generation, successful calls"
+        />
+        <Kpi
+          label="AI calls"
+          value={num(overview?.ai_calls_total)}
+          hint={
+            overview?.failed_calls
+              ? `${overview.failed_calls} failed`
+              : 'OpenAI requests'
+          }
+        />
+        <Kpi
+          label="Cache hit ratio"
+          value={pct(overview?.cache_hit_ratio)}
+          hint="prefix-cache economics"
+        />
+        <Kpi
+          label="Key failovers"
+          value={num(overview?.failovers)}
+          hint="fallback key engaged"
+        />
         <Kpi
           label="Blocks"
           value={

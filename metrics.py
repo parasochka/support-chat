@@ -59,6 +59,11 @@ def overview(raw: dict[str, Any]) -> dict[str, Any]:
         "cache_hit_ratio": round(
             _safe_div(raw["cached_in_total"], raw["tokens_in_total"]), 4
         ),
+        # AI-API observability: how many OpenAI calls the period made and how long
+        # a successful one took on average (rounded to whole ms for display).
+        "ai_calls_total": raw.get("ai_calls_total", 0),
+        "avg_latency_ms": round(raw.get("avg_latency_ms", 0) or 0),
+        "failed_calls": raw.get("failed_calls", 0),
         "failovers": events.get("key_failover", 0),
         "rate_limit_blocks": events.get("rate_limited", 0),
         "injection_blocks": events.get("injection_blocked", 0),

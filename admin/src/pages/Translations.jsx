@@ -11,6 +11,7 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import { API_URL, httpClient } from '../httpClient';
 import { getProductId, withProduct } from '../productScope';
+import RequireProduct from '../components/RequireProduct';
 
 const SCOPES = [
   ['widget', 'Widget texts', 'Chrome strings rendered by the widget itself.'],
@@ -37,7 +38,7 @@ const SCOPES = [
  * save only values that differ from the shipped default are stored as
  * overrides; clearing a field falls back to the default.
  */
-const Translations = () => {
+const TranslationsInner = () => {
   const [data, setData] = useState(null);
   const [topics, setTopics] = useState([]);
   const [texts, setTexts] = useState({}); // lang -> {key: value}, seeded from resolved
@@ -233,5 +234,11 @@ const Translations = () => {
     </Box>
   );
 };
+
+const Translations = () => (
+  <RequireProduct title="Translations">
+    <TranslationsInner />
+  </RequireProduct>
+);
 
 export default Translations;

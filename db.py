@@ -1945,6 +1945,9 @@ async def overview_aggregates(dt_from: Any, dt_to: Any,
         "  COALESCE(SUM(cached_in), 0) AS cached_in_total, "
         "  COALESCE(SUM(tokens_in), 0) AS tokens_in_total, "
         "  COUNT(DISTINCT session_id) AS sessions_with_ai, "
+        "  COUNT(*) AS ai_calls_total, "
+        "  COALESCE(AVG(latency_ms) FILTER "
+        "    (WHERE ok AND latency_ms IS NOT NULL), 0) AS avg_latency_ms, "
         "  COUNT(*) FILTER (WHERE NOT ok) AS failed_calls "
         f"FROM ai_interaction_logs WHERE created_at >= $1 AND created_at < $2{scope}",
         *args,
@@ -1969,6 +1972,12 @@ async def overview_aggregates(dt_from: Any, dt_to: Any,
         # greeting-only "zero" sessions (chat opened, canned greeting shown, no API
         # call) never appear here, so they don't dilute cost-per-session.
         "sessions_with_ai": int(cost["sessions_with_ai"]),
+        # AI-API health: total OpenAI calls and the average end-to-end latency of
+        # the successful ones (ms). Failed calls carry no meaningful latency, so
+        # they are excluded from the average but still counted in ai_calls_total.
+        "ai_calls_total": int(cost["ai_calls_total"]),
+        "avg_latency_ms": float(cost["avg_latency_ms"]),
+        "failed_calls": int(cost["failed_calls"]),
         "events": events,
     }
 

@@ -5,6 +5,7 @@ import Tab from '@mui/material/Tab';
 import Tabs from '@mui/material/Tabs';
 import PromptPreview from './PromptPreview';
 import PromptVariables from './PromptVariables';
+import RequireProduct from '../components/RequireProduct';
 
 /**
  * The Prompt surface: a read-only Preview of the whole assembled prompt and
@@ -17,6 +18,7 @@ const Prompt = () => {
   const tab = params.get('tab') === 'variables' ? 'variables' : 'preview';
 
   return (
+    <RequireProduct title="Prompt">
     <Box sx={{ p: 2 }}>
       <Title title="Prompt" />
       <Tabs
@@ -29,6 +31,7 @@ const Prompt = () => {
       </Tabs>
       {tab === 'preview' ? <PromptPreview /> : <PromptVariables />}
     </Box>
+    </RequireProduct>
   );
 };
 

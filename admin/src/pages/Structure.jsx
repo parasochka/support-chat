@@ -15,6 +15,7 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { API_URL, httpClient } from '../httpClient';
+import SecretField from '../components/SecretField';
 
 const embedSnippet = (widgetKey) =>
   `<link rel="stylesheet" href="${API_URL}/widget.css">\n` +
@@ -69,8 +70,10 @@ const ProductCard = ({ product, onChanged }) => {
   };
 
   const saveSecrets = async () => {
+    // Only persist fields the operator typed a value into; clearing is the
+    // explicit Clear button (clearSecret), not an empty box.
     const fields = Object.fromEntries(
-      Object.entries(secrets).filter(([, v]) => v !== undefined)
+      Object.entries(secrets).filter(([, v]) => v !== undefined && v !== '')
     );
     if (!Object.keys(fields).length) {
       notify('Nothing to update', { type: 'info' });
@@ -86,6 +89,21 @@ const ProductCard = ({ product, onChanged }) => {
       onChanged();
     } catch (e) {
       notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+    }
+  };
+
+  const clearSecret = async (field, label) => {
+    if (!window.confirm(`Clear ${label}? It falls back to the deploy env value.`)) return;
+    try {
+      await httpClient(`${API_URL}/admin/products/${product.id}/secrets`, {
+        method: 'PUT',
+        body: JSON.stringify({ [field]: '' }),
+      });
+      notify(`${label} cleared`, { type: 'success' });
+      setSecrets((s) => ({ ...s, [field]: '' }));
+      onChanged();
+    } catch (e) {
+      notify(e.body?.detail || e.message || 'Clear failed', { type: 'error' });
     }
   };
 
@@ -179,20 +197,19 @@ const ProductCard = ({ product, onChanged }) => {
           Secrets
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-          Write-only (encrypted at rest). Leave a field untouched to keep the
-          current value; save an empty field to clear it (fall back to env).
+          Write-only (encrypted at rest). A green check means a value is
+          configured. Leave a field untouched to keep it; use Clear to remove it
+          (fall back to env).
         </Typography>
         <Grid container spacing={1}>
           {SECRET_FIELDS.map(([field, label, flag]) => (
             <Grid size={{ xs: 12, sm: 6 }} key={field}>
-              <TextField
-                label={`${label} ${product[flag] ? '· set' : '· not set'}`}
-                type="password"
-                value={secrets[field] ?? ''}
+              <SecretField
+                label={label}
+                set={Boolean(product[flag])}
+                value={secrets[field]}
                 onChange={(e) => setSecrets({ ...secrets, [field]: e.target.value })}
-                fullWidth
-                size="small"
-                autoComplete="new-password"
+                onClear={() => clearSecret(field, label)}
               />
             </Grid>
           ))}
