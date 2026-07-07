@@ -3509,12 +3509,14 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
         "  ('retention_handoff', 'retention_manager_handoff') "
         "  AND created_at >= $1 AND created_at < $2", *args,
     )
+    args_msgs: list[Any] = [dt_from, dt_to]
+    pid_msgs = _pid_where(product_ids, args_msgs, "s.product_id")
     messages = await _pool.fetchrow(
         "SELECT COUNT(*) AS user_msgs, COUNT(DISTINCT s.tg_user_id) AS senders "
         "FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id "
-        f"WHERE s.consumer = 'telegram' AND {_pid_where(product_ids, args, 's.product_id')} "
+        f"WHERE s.consumer = 'telegram' AND {pid_msgs} "
         "  AND m.role = 'user' AND m.created_at >= $1 AND m.created_at < $2",
-        *args,
+        *args_msgs,
     )
     args2: list[Any] = [dt_from, dt_to]
     pid2 = _pid_where(product_ids, args2, "p.product_id")
