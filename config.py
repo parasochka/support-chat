@@ -126,6 +126,16 @@ OPENAI_VERBOSITY: str = _env("OPENAI_VERBOSITY", "low")
 # non-reasoning model — too low and the visible answer can come back empty.
 OPENAI_MAX_OUTPUT_TOKENS: int = _env_int("OPENAI_MAX_OUTPUT_TOKENS", 2000)
 OPENAI_MAX_CONCURRENT_PER_KEY: int = _env_int("OPENAI_MAX_CONCURRENT_PER_KEY", 4)
+# Circuit breaker on the OpenAI dependency. Without it a sustained provider
+# outage makes EVERY request pay the full timeout×attempts×failover cost
+# (~2.5 min worst case) and pile up unbounded coroutines behind the per-key
+# semaphore. After OPENAI_BREAKER_FAIL_THRESHOLD consecutive fully-failed
+# completions the breaker OPENS and completions fail fast (the caller returns
+# the localized "technical hiccup" nudge in milliseconds) for
+# OPENAI_BREAKER_COOLDOWN_SEC, after which ONE trial request is allowed through
+# to probe recovery. 0 threshold disables the breaker.
+OPENAI_BREAKER_FAIL_THRESHOLD: int = _env_int("OPENAI_BREAKER_FAIL_THRESHOLD", 5)
+OPENAI_BREAKER_COOLDOWN_SEC: int = _env_int("OPENAI_BREAKER_COOLDOWN_SEC", 30)
 
 # --- Sessions / limits ------------------------------------------------------
 SESSION_TTL_HOURS: int = _env_int("SESSION_TTL_HOURS", 24)
@@ -137,6 +147,19 @@ MAX_INPUT_CHARS: int = _env_int("MAX_INPUT_CHARS", 2000)
 RATE_LIMIT_WINDOW_SEC: int = _env_int("RATE_LIMIT_WINDOW_SEC", 600)
 RATE_LIMIT_MAX_PER_IP: int = _env_int("RATE_LIMIT_MAX_PER_IP", 20)
 MESSAGE_COOLDOWN_SEC: int = _env_int("MESSAGE_COOLDOWN_SEC", 2)
+
+# --- Database pool / health -------------------------------------------------
+# Bounds on the asyncpg pool so a slow/down Postgres degrades instead of hanging
+# every request forever. DB_CONNECT_TIMEOUT_SEC caps establishing a NEW backend
+# connection (a dead DB then fails fast instead of blocking on connect);
+# DB_ACQUIRE_TIMEOUT_SEC caps waiting for a free pooled connection on the hot
+# request paths (pool exhaustion surfaces as an error the client can retry, not
+# an unbounded hang); DB_HEALTHCHECK_TIMEOUT_SEC keeps /healthz fail-fast so a
+# stalled DB can't hold the liveness probe open for the platform's whole
+# healthcheck window (which would otherwise drive a restart/crash loop).
+DB_CONNECT_TIMEOUT_SEC: int = _env_int("DB_CONNECT_TIMEOUT_SEC", 10)
+DB_ACQUIRE_TIMEOUT_SEC: int = _env_int("DB_ACQUIRE_TIMEOUT_SEC", 10)
+DB_HEALTHCHECK_TIMEOUT_SEC: int = _env_int("DB_HEALTHCHECK_TIMEOUT_SEC", 5)
 
 # --- Low-content / junk guard -----------------------------------------------
 # Stops messages with no answerable content (a lone character, symbol/emoji-only
@@ -260,11 +283,47 @@ TELEGRAM_WEBHOOK_SECRET_IS_FALLBACK: bool = _env_opt("TELEGRAM_WEBHOOK_SECRET") 
 # to SESSION_JWT_SECRET when unset (dev convenience). Left unset in production
 # that single key would sign admin sessions, encrypt every product's at-rest
 # secrets, AND authenticate the Telegram webhook all at once — leaking any one
-# use compromises the others. So in production we refuse to boot half-secured,
-# mirroring require_env's fail-fast philosophy; dev/test only warns (see
-# main._warn_insecure_config), so local runs still need no secret config.
+# use compromises the others. So we refuse to boot half-secured, mirroring
+# require_env's fail-fast philosophy; a genuinely local run still warns only.
+#
+# The trigger is FAIL-CLOSED. The old control fired only on APP_ENV=production,
+# but APP_ENV defaults to "development" — so a real deploy that simply forgot to
+# set it silently collapsed every purpose-specific secret onto SESSION_JWT_SECRET
+# with nothing but a log line. We now ALSO enforce whenever DATABASE_URL points
+# at a non-local host (a strong signal this is a real deployment, independent of
+# APP_ENV), so a forgotten APP_ENV can no longer disable the check. Only a
+# genuinely local run (loopback DB, not test mode) stays lenient.
+def _db_host_is_local(url: str) -> bool:
+    from urllib.parse import urlsplit
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except Exception:  # noqa: BLE001 - a URL we can't parse is treated as remote
+        return False
+    if host in ("", "localhost", "127.0.0.1", "::1"):
+        return True
+    return host.endswith(".local")
+
+
+# True when the DB is NOT loopback/local — used to fail-closed on secret hygiene
+# even if APP_ENV was left at its "development" default on a real deployment.
+_DB_IS_REMOTE: bool = not _db_host_is_local(DATABASE_URL)
+
+# Minimum length for a real (non-fallback) secret. 32 chars comfortably covers
+# `openssl rand -hex 32` (64 chars), `-hex 16` (32) or `-base64 24` (32) and
+# rejects obvious weak values ("secret", "changeme") that are offline
+# brute-forceable against any issued HS256 token.
+MIN_SECRET_LENGTH: int = 32
+
+
+def _secret_hygiene_active() -> bool:
+    """Whether to hard-enforce secret hygiene at boot (fail-closed)."""
+    if _TEST_MODE:
+        return False
+    return IS_PRODUCTION or _DB_IS_REMOTE
+
+
 def _enforce_production_secrets() -> None:
-    if not IS_PRODUCTION or _TEST_MODE:
+    if not _secret_hygiene_active():
         return
     reused = [name for name, is_fallback in (
         ("ADMIN_JWT_SECRET", ADMIN_JWT_SECRET_IS_FALLBACK),
@@ -273,14 +332,45 @@ def _enforce_production_secrets() -> None:
     ) if is_fallback]
     if reused:
         raise ConfigError(
-            "APP_ENV=production but these secrets are unset and would reuse "
+            "This looks like a real deployment (APP_ENV=production or a non-local "
+            "DATABASE_URL) but these secrets are unset and would reuse "
             f"SESSION_JWT_SECRET: {', '.join(reused)}. Set a DISTINCT strong "
             "value for each (e.g. `openssl rand -hex 32`) — see the README env "
-            "table."
+            "table. (Set APP_ENV=development for an intentional local run.)"
+        )
+
+
+def _enforce_secret_strength() -> None:
+    """Reject weak secrets on a real deployment (fail-closed like distinctness).
+
+    Checks SESSION_JWT_SECRET (the root of the fallback chain) plus every
+    purpose-specific secret that was set explicitly. A fallback secret is not
+    re-checked here — it equals SESSION_JWT_SECRET, which is already checked, and
+    _enforce_production_secrets separately forbids the fallback in this context.
+    """
+    if not _secret_hygiene_active():
+        return
+    candidates = [("SESSION_JWT_SECRET", SESSION_JWT_SECRET)]
+    if not ADMIN_JWT_SECRET_IS_FALLBACK:
+        candidates.append(("ADMIN_JWT_SECRET", ADMIN_JWT_SECRET))
+    if not SECRETS_MASTER_KEY_IS_FALLBACK:
+        candidates.append(("SECRETS_MASTER_KEY", SECRETS_MASTER_KEY))
+    if not TELEGRAM_WEBHOOK_SECRET_IS_FALLBACK:
+        candidates.append(("TELEGRAM_WEBHOOK_SECRET", TELEGRAM_WEBHOOK_SECRET))
+    if WIDGET_HANDSHAKE_SECRET:
+        candidates.append(("WIDGET_HANDSHAKE_SECRET", WIDGET_HANDSHAKE_SECRET))
+    weak = [name for name, value in candidates
+            if len(value or "") < MIN_SECRET_LENGTH]
+    if weak:
+        raise ConfigError(
+            "These secrets are too short to be safe against offline brute force "
+            f"(min {MIN_SECRET_LENGTH} chars): {', '.join(weak)}. Generate strong "
+            "values with `openssl rand -hex 32` — see the README env table."
         )
 
 
 _enforce_production_secrets()
+_enforce_secret_strength()
 # Public base URL of THIS service (e.g. https://chat.example.com), used to build
 # the webhook URL when registering it with Telegram and the media-serving URL.
 # Empty in dev; set on Railway.

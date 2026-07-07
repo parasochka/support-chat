@@ -136,6 +136,21 @@ def check_cooldown(session_id: str) -> None:
     _last_message_at[session_id] = now
 
 
+def clear_cooldown(session_id: str) -> None:
+    """Drop the cooldown mark for a session so its very next message isn't throttled.
+
+    Used after a cross-topic ROUTING-ONLY turn: that turn recorded a cooldown
+    stamp here (it ran the full gate before chat_service decided it was a routing
+    turn), but the widget immediately re-asks the SAME question against the newly
+    switched topic's KB — an automatic follow-up, not player spam. Without this
+    the ~1s re-ask lands inside the 2s cooldown window and 429s, so the player's
+    question is never answered against the right KB and the raw throttle error
+    renders as the assistant's reply. Server-decided (not a client-supplied
+    bypass), and the routing turn still cost a model call + counts toward the cap.
+    """
+    _last_message_at.pop(session_id, None)
+
+
 # ---------------------------------------------------------------------------
 # 7. Input length cap
 # ---------------------------------------------------------------------------

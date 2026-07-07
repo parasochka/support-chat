@@ -10,6 +10,7 @@ tables directly.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections import deque as _deque
@@ -31,8 +32,25 @@ async def connect() -> asyncpg.Pool:
             min_size=1,
             max_size=10,
             command_timeout=30,
+            # Cap establishing a NEW backend connection so a DOWN database fails
+            # fast (raises) instead of blocking the acquire indefinitely on
+            # connect. Query duration is separately bounded by command_timeout.
+            timeout=config.DB_CONNECT_TIMEOUT_SEC,
         )
     return _pool
+
+
+def _acquire(*, timeout: Optional[float] = None):
+    """Acquire a pooled connection with a bounded wait (use as `async with`).
+
+    The convenience helpers (`_pool.fetch/execute/...`) block on acquire with no
+    ceiling, so under pool exhaustion a request would hang forever. Explicit
+    acquire sites on the hot request paths use this so exhaustion surfaces as a
+    retryable error rather than an unbounded hang (default DB_ACQUIRE_TIMEOUT_SEC).
+    """
+    if timeout is None:
+        timeout = config.DB_ACQUIRE_TIMEOUT_SEC
+    return _pool.acquire(timeout=timeout)
 
 
 async def close() -> None:
@@ -646,7 +664,7 @@ async def _migrate_legacy_contact_url(conn, default_product_id: int) -> None:
 async def init_db() -> None:
     """Create the pool, then create tables, run column guards + tenancy adoption."""
     await connect()
-    async with _pool.acquire() as conn:
+    async with _acquire() as conn:
         async with conn.transaction():
             await conn.execute(_SCHEMA)
             await _ensure_columns(conn)
@@ -1021,7 +1039,7 @@ async def set_session_topic(session_id: str, topic_id: int) -> None:
     only messages from the new topic onward. The full transcript is untouched
     (resume/admin views still show everything); only prompt building honours it.
     """
-    async with _pool.acquire() as conn:
+    async with _acquire() as conn:
         async with conn.transaction():
             boundary = await conn.fetchval(
                 "SELECT COALESCE(MAX(id), 0) FROM chat_messages WHERE session_id = $1",
@@ -1124,7 +1142,7 @@ async def persist_turn(
     per-product cost dashboards aggregate without a join.
     """
     ai_meta = ai_meta or {}
-    async with _pool.acquire() as conn:
+    async with _acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 "INSERT INTO chat_messages (session_id, role, content, lang) "
@@ -1229,9 +1247,17 @@ async def record_rate_hit(ip: str) -> None:
 
 
 async def ping() -> bool:
-    """Liveness check for /healthz."""
-    val = await _pool.fetchval("SELECT 1")
-    return val == 1
+    """Fast DB probe for /healthz. Bounded so a stalled/exhausted pool can't hold
+    the liveness probe open for the platform's whole healthcheck window (which
+    would drive a restart/crash loop). Returns False on timeout or any error."""
+    try:
+        val = await asyncio.wait_for(
+            _pool.fetchval("SELECT 1"),
+            timeout=config.DB_HEALTHCHECK_TIMEOUT_SEC,
+        )
+        return val == 1
+    except (asyncio.TimeoutError, Exception):  # noqa: BLE001 - probe fails soft
+        return False
 
 
 # ===========================================================================
@@ -1883,7 +1909,7 @@ async def set_kb_content(topic_id: int, content: str) -> int:
     """Set the topic's KB text (one entry per topic). Updates the existing active
     entry in place, or inserts one when the topic has none. Returns the entry id.
     """
-    async with _pool.acquire() as conn:
+    async with _acquire() as conn:
         async with conn.transaction():
             existing = await conn.fetchval(
                 "SELECT id FROM kb_entries WHERE topic_id = $1 AND active "
@@ -1935,6 +1961,24 @@ def _product_clause(product_ids: Optional[list[int]], args: list[Any],
         return ""
     args.append(product_ids)
     return f" AND {col} = ANY(${len(args)}::int[])"
+
+
+def _scope_clauses(product_ids: Optional[list[int]],
+                   args: list[Any]) -> tuple[str, str]:
+    """Product scope for a query that also uses a scoped cost CTE.
+
+    Appends the product filter ONCE and returns two clause strings referencing
+    the SAME positional arg — one for the outer `chat_sessions s`, one for the
+    CTE's `chat_sessions cs` — so the cost aggregate can be bounded to the same
+    window+scope without double-binding the parameter. Empty strings when no
+    scope is set (global view).
+    """
+    if product_ids is None:
+        return "", ""
+    args.append(product_ids)
+    n = len(args)
+    return (f" AND s.product_id = ANY(${n}::int[])",
+            f" AND cs.product_id = ANY(${n}::int[])")
 
 
 async def overview_aggregates(dt_from: Any, dt_to: Any,
@@ -2058,11 +2102,19 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
 async def by_topic(dt_from: Any, dt_to: Any,
                    product_ids: Optional[list[int]] = None) -> list[dict[str, Any]]:
     args: list[Any] = [dt_from, dt_to]
-    scope = _product_clause(product_ids, args, col="s.product_id")
+    scope, scope_cte = _scope_clauses(product_ids, args)
     rows = await _pool.fetch(
+        # The cost CTE is SCOPED to the same window+product as the outer query (via
+        # a join to chat_sessions) instead of aggregating the entire, unbounded
+        # ai_interaction_logs table on every dashboard load. Per-session totals are
+        # identical (the outer LEFT JOIN only uses in-window sessions anyway); the
+        # scan is now O(sessions in window) and uses the created_at/product indexes.
         "WITH costs AS ("
-        "  SELECT session_id, SUM(cost_usd) AS cost_usd_total "
-        "  FROM ai_interaction_logs GROUP BY session_id"
+        "  SELECT l.session_id, SUM(l.cost_usd) AS cost_usd_total "
+        "  FROM ai_interaction_logs l "
+        "  JOIN chat_sessions cs ON cs.id = l.session_id "
+        f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
+        "  GROUP BY l.session_id"
         ") "
         "SELECT t.slug, t.title, "
         # Count only engaged sessions (>= 1 message): greeting-only "zero" sessions
@@ -2096,11 +2148,16 @@ async def by_language(dt_from: Any, dt_to: Any,
                       product_ids: Optional[list[int]] = None
                       ) -> list[dict[str, Any]]:
     args: list[Any] = [dt_from, dt_to]
-    scope = _product_clause(product_ids, args, col="s.product_id")
+    scope, scope_cte = _scope_clauses(product_ids, args)
     rows = await _pool.fetch(
+        # Cost CTE scoped to the same window+product (see by_topic) — no full-table
+        # scan of the unbounded ai_interaction_logs on every dashboard load.
         "WITH costs AS ("
-        "  SELECT session_id, SUM(cost_usd) AS cost_usd_total "
-        "  FROM ai_interaction_logs GROUP BY session_id"
+        "  SELECT l.session_id, SUM(l.cost_usd) AS cost_usd_total "
+        "  FROM ai_interaction_logs l "
+        "  JOIN chat_sessions cs ON cs.id = l.session_id "
+        f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
+        "  GROUP BY l.session_id"
         ") "
         "SELECT COALESCE(s.lang, 'unknown') AS lang, "
         # Engaged sessions only — exclude greeting-only "zero" sessions (no OpenAI
@@ -2166,8 +2223,14 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
         f"  COALESCE(c.cost_usd_total, 0) AS cost_usd_total "
         f"FROM chat_sessions s LEFT JOIN kb_topics t ON t.id = s.topic_id "
         f"LEFT JOIN products p ON p.id = s.product_id "
-        f"LEFT JOIN (SELECT session_id, SUM(cost_usd) AS cost_usd_total "
-        f"           FROM ai_interaction_logs GROUP BY session_id) c "
+        # Bound the cost aggregate to the same date window ($1/$2) rather than
+        # scanning the whole unbounded ai_interaction_logs — per-session totals
+        # for the (windowed, paginated) rows shown are unchanged.
+        f"LEFT JOIN (SELECT l.session_id, SUM(l.cost_usd) AS cost_usd_total "
+        f"           FROM ai_interaction_logs l "
+        f"           JOIN chat_sessions cs ON cs.id = l.session_id "
+        f"           WHERE cs.created_at >= $1 AND cs.created_at < $2 "
+        f"           GROUP BY l.session_id) c "
         f"  ON c.session_id = s.id "
         f"WHERE {where_sql} ORDER BY s.created_at DESC "
         f"LIMIT ${len(args)+1} OFFSET ${len(args)+2}",
@@ -2253,11 +2316,16 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any,
     chats with at least one user turn. Resolved sessions are excluded.
     """
     args: list[Any] = [dt_from, dt_to]
-    scope = _product_clause(product_ids, args, col="s.product_id")
+    scope, scope_cte = _scope_clauses(product_ids, args)
     rows = await _pool.fetch(
+        # Cost CTE scoped to the same window+product (see by_topic) — no full-table
+        # scan of the unbounded ai_interaction_logs on every load.
         "WITH costs AS ("
-        "  SELECT session_id, SUM(cost_usd) AS cost_usd_total "
-        "  FROM ai_interaction_logs GROUP BY session_id"
+        "  SELECT l.session_id, SUM(l.cost_usd) AS cost_usd_total "
+        "  FROM ai_interaction_logs l "
+        "  JOIN chat_sessions cs ON cs.id = l.session_id "
+        f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
+        "  GROUP BY l.session_id"
         ") "
         "SELECT COALESCE(t.slug, 'unknown') AS topic, "
         "  COALESCE(t.title, '{}'::jsonb) AS title, "
@@ -2483,7 +2551,7 @@ async def record_retention_photo_view(rid: int, photo_id: int,
     Resets the daily counter when the stored day is not today, resets the
     proactive-cooldown counter, all in one transaction.
     """
-    async with _pool.acquire() as conn:
+    async with _acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 "INSERT INTO retention_photo_views "
@@ -2721,7 +2789,7 @@ async def set_retention_kb_text(product_id: int, text: str,
     An empty text simply clears the KB (the retention prompt then carries no
     Layer-2 block).
     """
-    async with _pool.acquire() as conn:
+    async with _acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 "DELETE FROM retention_kb WHERE product_id = $1", product_id)
@@ -2826,7 +2894,7 @@ async def assign_round_robin_manager(product_id: int, retention_user_id: int
     Otherwise the least-loaded active manager is chosen, its assigned_count bumped,
     and stored on the player. Returns the manager, or None when the pool is empty.
     """
-    async with _pool.acquire() as conn:
+    async with _acquire() as conn:
         async with conn.transaction():
             ru = await conn.fetchrow(
                 "SELECT assigned_manager_id FROM retention_users WHERE id = $1 "
@@ -2988,8 +3056,12 @@ async def list_retention_sessions(product_id: int, *, page: int = 1,
         "FROM chat_sessions s "
         "LEFT JOIN retention_users u "
         "  ON u.product_id = s.product_id AND u.tg_user_id = s.tg_user_id "
+        # Scope the cost aggregate to THIS product's logs (product_id = $1, an
+        # indexed column) instead of scanning the whole unbounded
+        # ai_interaction_logs table for every page load.
         "LEFT JOIN (SELECT session_id, SUM(cost_usd) AS cost_usd_total "
-        "           FROM ai_interaction_logs GROUP BY session_id) c "
+        "           FROM ai_interaction_logs WHERE product_id = $1 "
+        "           GROUP BY session_id) c "
         "  ON c.session_id = s.id "
         "WHERE s.product_id = $1 AND s.consumer = 'telegram' "
         "ORDER BY s.updated_at DESC LIMIT $2 OFFSET $3",

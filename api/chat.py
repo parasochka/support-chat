@@ -496,6 +496,14 @@ async def send_message(req: Request, body: MessageSend,
     # -> build prompt, call model, persist turn atomically, return
     log.info("chat_message_dispatching_generation session_id=%s", body.session_id)
     result = await chat_service.handle_message(session, body.text, closing=body.closing)
+    # A cross-topic routing-only turn (suggested_topic set, empty reply) triggers
+    # an IMMEDIATE automatic re-ask from the widget against the switched topic.
+    # That re-ask would otherwise land inside this session's message cooldown
+    # window and 429 — so the original question is never answered. Release the
+    # cooldown for the automated follow-up (the routing turn still burned a model
+    # call; this is not a spam bypass).
+    if result.suggested_topic:
+        antispam.clear_cooldown(body.session_id)
     log.info(
         "chat_message_response_ready session_id=%s reply_chars=%s lang=%s escalation_active=%s message_count=%s",
         body.session_id, len(result.reply or ""), result.lang,
