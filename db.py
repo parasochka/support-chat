@@ -1434,11 +1434,14 @@ async def create_product(partner_id: int, slug: str, name: str
     """Insert a product and seed its brand-neutral baseline.
 
     A new casino starts working out of the box: widget key generated, the KB
-    variables registry, the generic starter topics + KB texts (starter_kb.py)
-    and the full prompt-variables set (template defaults, brand_name = the
-    product's name) are all seeded into the PRODUCT layer — so nothing is
-    inherited from another brand's global overrides. The owner then
-    translates/uniquifies everything from the admin panel.
+    variables registry, the generic starter topics + KB texts (starter_kb.py),
+    the starter retention-KB document and the full prompt-variables set
+    (template defaults, brand_name = the product's name) are all seeded into
+    the PRODUCT layer — so nothing is inherited from another brand's global
+    overrides. The owner then translates/uniquifies everything from the admin
+    panel. (Translations and the retention settings group need no seed: their
+    English/five-language defaults ship in the registries and resolve for
+    every product until overridden.)
 
     Returns None when the slug is already taken.
     """
@@ -1454,6 +1457,7 @@ async def create_product(partner_id: int, slug: str, name: str
         return None
     await seed_kb_variables(product_id=row["id"])
     await seed_starter_kb(row["id"])
+    await seed_starter_retention_kb(row["id"])
     await set_product_setting(row["id"], "prompt_variables",
                               starter_kb.starter_prompt_variables(name),
                               updated_by="starter-seed")
@@ -2659,6 +2663,81 @@ async def delete_retention_kb(entry_id: int) -> bool:
     return row is not None
 
 
+# The retention KB is edited as ONE free-text document per product (like a
+# support topic's KB text). It is stored as a single retention_kb row whose
+# title is this sentinel; retention_kb_block emits its body verbatim (no "##"
+# header). Legacy structured entries (title/when/body/links rows from the old
+# per-entry editor) still render, and are folded into the document on the
+# first save through set_retention_kb_text.
+RETENTION_KB_DOC_TITLE = "__retention_kb_document__"
+
+
+def _legacy_retention_entry_text(entry: dict[str, Any]) -> str:
+    """Render one legacy structured entry in the same shape the prompt used."""
+    block = [f"## {entry['title']}"]
+    if entry.get("trigger_when"):
+        block.append(f"When: {entry['trigger_when']}")
+    block.append(entry["body"])
+    links = entry.get("links") or []
+    if links:
+        block.append("Links: " + ", ".join(str(l) for l in links))
+    return "\n".join(block)
+
+
+async def get_retention_kb_text(product_id: int) -> str:
+    """The retention KB as one editable text document.
+
+    Single-doc storage returns the body as-is; legacy structured entries are
+    rendered into the same text shape the prompt received, so nothing is lost
+    when the owner edits and re-saves them as one document.
+    """
+    entries = await list_retention_kb(product_id)
+    if len(entries) == 1 and entries[0]["title"] == RETENTION_KB_DOC_TITLE:
+        return entries[0]["body"]
+    return "\n\n".join(_legacy_retention_entry_text(e) for e in entries)
+
+
+async def set_retention_kb_text(product_id: int, text: str,
+                                updated_by: Optional[str] = None) -> None:
+    """Replace the product's whole retention KB with one text document.
+
+    Atomic: the legacy rows (or the previous document) and the new document
+    swap in one transaction, so the prompt never sees a half-written KB.
+    An empty text simply clears the KB (the retention prompt then carries no
+    Layer-2 block).
+    """
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM retention_kb WHERE product_id = $1", product_id)
+            if text.strip():
+                await conn.execute(
+                    "INSERT INTO retention_kb "
+                    "(product_id, title, body, links, updated_by) "
+                    "VALUES ($1, $2, $3, '[]'::jsonb, $4)",
+                    product_id, RETENTION_KB_DOC_TITLE, text, updated_by,
+                )
+
+
+async def seed_starter_retention_kb(product_id: int) -> None:
+    """Seed a new product's retention KB with the generic starter document.
+
+    Mirrors seed_starter_kb: runs only from create_product, inserts only when
+    the product has no retention KB at all — it can never overwrite content.
+    """
+    import starter_kb  # local import (starter_kb → prompts) to avoid a cycle
+
+    existing = await _pool.fetchval(
+        "SELECT count(*) FROM retention_kb WHERE product_id = $1", product_id)
+    if existing:
+        return
+    await _pool.execute(
+        "INSERT INTO retention_kb (product_id, title, body, links, updated_by) "
+        "VALUES ($1, $2, $3, '[]'::jsonb, 'starter-seed')",
+        product_id, RETENTION_KB_DOC_TITLE, starter_kb.STARTER_RETENTION_KB,
+    )
+
+
 # --- retention_managers ----------------------------------------------------
 def _row_to_manager(row: asyncpg.Record) -> dict[str, Any]:
     d = dict(row)
@@ -2865,12 +2944,9 @@ async def retention_kb_block(product_id: int) -> str:
     entries = await list_retention_kb(product_id, active_only=True)
     parts: list[str] = []
     for e in entries:
-        block = [f"## {e['title']}"]
-        if e.get("trigger_when"):
-            block.append(f"When: {e['trigger_when']}")
-        block.append(e["body"])
-        links = e.get("links") or []
-        if links:
-            block.append("Links: " + ", ".join(str(l) for l in links))
-        parts.append("\n".join(block))
+        if e["title"] == RETENTION_KB_DOC_TITLE:
+            # Single-document storage: the body IS the block (no header).
+            parts.append(e["body"].strip())
+            continue
+        parts.append(_legacy_retention_entry_text(e))
     return "\n\n".join(parts)
