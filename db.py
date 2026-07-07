@@ -1944,6 +1944,89 @@ async def product_ids_for_partners(partner_ids: list[int]) -> list[int]:
 
 
 # ---------------------------------------------------------------------------
+# admin_api_keys (machine credentials for the /admin API — external panels)
+# ---------------------------------------------------------------------------
+_API_KEY_COLS = ("id, name, token_hint, role, scope_type, partner_id, "
+                 "product_id, active, created_by, created_at, last_used_at")
+
+
+def _row_to_api_key(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    d["id"] = int(d["id"])
+    for ts in ("created_at", "last_used_at"):
+        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
+            d[ts] = d[ts].isoformat()
+    return d
+
+
+def _hash_api_token(token: str) -> str:
+    import hashlib
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def create_admin_api_key(*, name: str, role: str, scope_type: str,
+                               partner_id: Optional[int],
+                               product_id: Optional[int],
+                               created_by: Optional[str]
+                               ) -> tuple[dict[str, Any], str]:
+    """Mint a service key. Returns (row, PLAINTEXT token) — the token is shown
+    exactly once at creation; only its SHA-256 hash is stored."""
+    import secrets as _secrets
+    token = "sak_" + _secrets.token_urlsafe(32)
+    row = await _pool.fetchrow(
+        "INSERT INTO admin_api_keys "
+        "(name, token_hash, token_hint, role, scope_type, partner_id, "
+        " product_id, created_by) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+        f"RETURNING {_API_KEY_COLS}",
+        name, _hash_api_token(token), token[-4:], role, scope_type,
+        partner_id, product_id, created_by,
+    )
+    return _row_to_api_key(row), token
+
+
+async def list_admin_api_keys() -> list[dict[str, Any]]:
+    rows = await _pool.fetch(
+        f"SELECT {_API_KEY_COLS} FROM admin_api_keys ORDER BY id")
+    return [_row_to_api_key(r) for r in rows]
+
+
+async def get_admin_api_key(key_id: int) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        f"SELECT {_API_KEY_COLS} FROM admin_api_keys WHERE id = $1", key_id)
+    return _row_to_api_key(row) if row else None
+
+
+async def get_admin_api_key_by_token(token: str) -> Optional[dict[str, Any]]:
+    """Resolve an ACTIVE key row from a presented plaintext token (auth path).
+    Touches last_used_at as a side effect."""
+    row = await _pool.fetchrow(
+        f"UPDATE admin_api_keys SET last_used_at = now() "
+        f"WHERE token_hash = $1 AND active RETURNING {_API_KEY_COLS}",
+        _hash_api_token(token),
+    )
+    return _row_to_api_key(row) if row else None
+
+
+async def update_admin_api_key(key_id: int, *, active: Optional[bool] = None,
+                               name: Optional[str] = None
+                               ) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        "UPDATE admin_api_keys SET active = COALESCE($2, active), "
+        "name = COALESCE($3, name) WHERE id = $1 "
+        f"RETURNING {_API_KEY_COLS}",
+        key_id, active, name,
+    )
+    return _row_to_api_key(row) if row else None
+
+
+async def delete_admin_api_key(key_id: int) -> bool:
+    result = await _pool.execute(
+        "DELETE FROM admin_api_keys WHERE id = $1", key_id)
+    return result.endswith("1")
+
+
+# ---------------------------------------------------------------------------
 # admin_users (named login accounts; password hash never leaves this module)
 # ---------------------------------------------------------------------------
 def _row_to_admin_user(row: asyncpg.Record, *, include_hash: bool = False) -> dict[str, Any]:
