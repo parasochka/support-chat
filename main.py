@@ -252,3 +252,11 @@ async def integration_docs() -> FileResponse:
 async def integration_telegram_docs() -> FileResponse:
     return FileResponse(os.path.join(_FRONTEND_DIR, "integration-telegram.html"),
                         media_type="text/html", headers=_WIDGET_CACHE)
+
+
+# Third sibling guide: integrating an external "master" admin panel with the
+# /admin API (roles model, service API keys, scoping, endpoint reference).
+@app.get("/integration-admin", response_class=HTMLResponse)
+async def integration_admin_docs() -> FileResponse:
+    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-admin.html"),
+                        media_type="text/html", headers=_WIDGET_CACHE)

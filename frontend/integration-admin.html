@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin API — интеграция с общей админкой</title>
+<style>
+  :root {
+    --bg:#0f1320; --panel:#1a2032; --panel2:#232c44; --line:#2e3a57;
+    --text:#e7ecf5; --muted:#9aa7c2; --accent:#4f8cff; --good:#36c08a; --warn:#e8b349;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:32px 20px 80px; }
+  h1 { font-size:26px; margin:0 0 6px; }
+  h2 { font-size:19px; margin:44px 0 10px; padding-top:18px; border-top:1px solid var(--line); }
+  h3 { font-size:15px; margin:24px 0 8px; color:var(--accent); }
+  p, li { color:var(--text); }
+  .muted { color:var(--muted); }
+  code { background:var(--panel2); border:1px solid var(--line); border-radius:5px;
+    padding:1px 6px; font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace; }
+  pre { background:var(--panel); border:1px solid var(--line); border-radius:9px;
+    padding:14px 16px; overflow-x:auto; font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace; }
+  pre code { background:none; border:none; padding:0; }
+  table { width:100%; border-collapse:collapse; margin:10px 0 18px; font-size:13px; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,Menlo,monospace; border-radius:5px;
+    padding:4px 7px; margin-right:6px; }
+  .get { background:rgba(54,192,138,.16); color:var(--good); }
+  .post { background:rgba(79,140,255,.16); color:var(--accent); }
+  .put { background:rgba(232,179,73,.16); color:var(--warn); }
+  .del { background:rgba(224,89,107,.16); color:#e0596b; }
+  .note { background:rgba(79,140,255,.08); border:1px solid var(--line); border-left:3px solid var(--accent);
+    border-radius:8px; padding:10px 14px; margin:14px 0; }
+  .warnbox { background:rgba(232,179,73,.10); border:1px solid var(--warn); color:var(--warn);
+    border-radius:8px; padding:10px 14px; margin:14px 0; }
+  nav { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 18px; margin:22px 0; }
+  nav a { color:var(--accent); text-decoration:none; display:inline-block; margin:2px 14px 2px 0; }
+  nav a:hover { text-decoration:underline; }
+  .endpoint { margin:14px 0 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Интеграция с общей админкой — Admin API</h1>
+<p class="muted">Документация для команд разработки: как «мастер»-админка платформы (или любой партнёрский
+бэкенд) интегрируется с <code>/admin/*</code> API этого сервиса — авторизация людей и систем, модель ролей,
+скоупинг по партнёрам/продуктам и справочник основных групп эндпоинтов. Виджет и публичный Chat API описаны
+на <a href="/integration" style="color:var(--accent)">странице интеграции чата поддержки</a>, Telegram-бот —
+на <a href="/integration-telegram" style="color:var(--accent)">странице retention-бота</a>.
+База URL во всех примерах — адрес этого сервиса.</p>
+
+<nav>
+  <a href="#roles">Модель ролей (6 уровней)</a>
+  <a href="#login">Вход для людей (JWT)</a>
+  <a href="#keys">Сервисные API-ключи sak_</a>
+  <a href="#scope">Скоуп-параметры</a>
+  <a href="#endpoints">Справочник эндпоинтов</a>
+  <a href="#curl">Примеры curl</a>
+  <a href="#openapi">OpenAPI / EXPOSE_API_DOCS</a>
+</nav>
+
+<h2 id="roles">1. Модель ролей — 2 роли × 3 скоупа = 6 уровней доступа</h2>
+<p>Каждый субъект доступа — человек-аккаунт или сервисный ключ — несёт <b>роль в скоупе</b>.
+Ролей две: <code>admin</code> (чтение + запись в пределах скоупа) и <code>manager</code>
+(только чтение). Скоупов три: весь хаб, один партнёр (все его казино) или один продукт (одно казино).</p>
+<table>
+  <tr><th>Скоуп</th><th>admin</th><th>manager</th></tr>
+  <tr><td><b>global</b> — весь хаб</td>
+      <td>всё: партнёры, продукты, секреты, пользователи, глобальные настройки</td>
+      <td>чтение всего</td></tr>
+  <tr><td><b>partner</b> — партнёр и все его казино</td>
+      <td>создание продуктов партнёра, их контент/настройки/секреты, пользователи в скоупе</td>
+      <td>чтение по партнёру</td></tr>
+  <tr><td><b>product</b> — одно казино</td>
+      <td>контент/настройки/секреты этого казино, его пользователи</td>
+      <td>чтение по казино</td></tr>
+</table>
+<p>Человеческим аккаунтам доступы выдаются <b>membership'ами</b> (админка → вкладка <b>Users</b>;
+у аккаунта может быть несколько, например manager глобально + admin одного продукта). Сервисный
+ключ несёт ровно <b>одну</b> роль в <b>одном</b> скоупе. Сервер — единственный источник истины:
+права перепроверяются по БД на каждом запросе, отзыв действует немедленно. Запрос вне своего
+скоупа → <code>403</code>.</p>
+
+<h2 id="login">2. Вход для людей — JWT</h2>
+<div class="endpoint"><span class="tag post">POST</span><code>/admin/login</code></div>
+<p><code>{ email, password }</code> → <code>{ token, role, memberships[] }</code>. Токен —
+bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию 480 мин), передаётся в каждом
+запросе заголовком <code>Authorization: Bearer &lt;token&gt;</code>. Аккаунт, активность и роль
+перепроверяются по БД на каждом запросе — деактивация/понижение применяются сразу, не дожидаясь
+истечения токена. Логин rate-limit'ится; неудачные попытки логируются.</p>
+<div class="note">JWT — для интерактивных сессий людей (наша админка работает именно так). Для
+интеграции «система-к-системе» логин по email/паролю не нужен — используйте сервисные ключи (раздел 3):
+они не истекают и не требуют перевыпуска токена.</div>
+
+<h2 id="keys">3. Сервисные API-ключи <code>sak_…</code> — машинный доступ</h2>
+<p>Сервисный ключ — это долгоживущий bearer-токен вида <code>sak_…</code> для внешних систем
+(мастер-админка платформы, партнёрский бэкенд). Используется <b>точно так же, как человеческий JWT</b>:
+<code>Authorization: Bearer sak_…</code> на любом <code>/admin/*</code> эндпоинте — все проверки
+скоупа применяются без изменений, как будто запрос сделал аккаунт с одним membership'ом.</p>
+<ul>
+  <li><b>Как выпустить:</b> в админке сервиса — раздел <b>System → API keys</b> (или напрямую
+      <code>POST /admin/api-keys</code>). Задаются имя, роль (<code>admin</code> — запись /
+      <code>manager</code> — только чтение) и скоуп (<code>global</code> / <code>partner</code> /
+      <code>product</code>).</li>
+  <li><b>Токен показывается ровно один раз</b> — в ответе на создание. В БД хранится только
+      SHA-256-хэш; восстановить потерянный ключ нельзя, только выпустить новый.</li>
+  <li><b>Управляют ключами только люди:</b> выпуск/деактивация/удаление требуют человеческого
+      admin-аккаунта — утёкший ключ не может наплодить новых ключей. Менеджеры ключей не видят.</li>
+  <li><b>Деактивация и удаление действуют немедленно</b> — ключ перестаёт работать на следующем запросе.</li>
+  <li>Выдавайте ключу <b>минимальный достаточный скоуп</b>: партнёрской интеграции — ключ скоупа
+      partner, витрине одного казино — скоуп product, и <code>manager</code>, если запись не нужна.</li>
+</ul>
+<table>
+  <tr><th>Ручка</th><th>Что делает</th></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/api-keys</code></td>
+      <td>Список ключей в admin-зоне вызывающего (без плейнтекста токенов).</td></tr>
+  <tr><td><span class="tag post">POST</span><code>/admin/api-keys</code></td>
+      <td><code>{name, role, scope_type, partner_id?, product_id?}</code> →
+          <code>{key, token}</code> — единственный ответ с плейнтекстом токена.</td></tr>
+  <tr><td><span class="tag put">PUT</span><code>/admin/api-keys/{id}</code></td>
+      <td><code>{name?, active?}</code> — переименовать / деактивировать-активировать.</td></tr>
+  <tr><td><span class="tag del">DELETE</span><code>/admin/api-keys/{id}</code></td>
+      <td>Удалить ключ (немедленно).</td></tr>
+</table>
+<div class="warnbox">Ключ <code>sak_…</code> — полноценная админская креденшелка своего скоупа.
+Храните его как секрет (vault/env бэкенда), не кладите во фронтенд и не логируйте; при малейшем
+подозрении на утечку — деактивируйте и перевыпустите.</div>
+
+<h2 id="scope">4. Скоуп-параметры запросов</h2>
+<p>Почти все ручки принимают <code>?product_id=N</code> (один продукт) или
+<code>?partner_id=N</code> (агрегат по партнёру). Без параметров запрос покрывает всё, что доступно
+субъекту (у глобального ключа — весь хаб). Правила:</p>
+<ul>
+  <li>Аналитика (<code>/admin/overview</code>, <code>/admin/retention/overview</code>, …) без
+      скоупа агрегирует по всей зоне доступа; с <code>product_id</code>/<code>partner_id</code> —
+      по срезу.</li>
+  <li>Контентные ручки (KB, переводы, prompt-переменные, retention-конфиг) работают <b>per
+      product</b> — передавайте <code>product_id</code> явно.</li>
+  <li><code>/admin/settings/{group}</code> с <code>?product_id=</code> редактирует оверрайд
+      продукта; без — глобальные значения по умолчанию (только глобальный админ).</li>
+  <li>Диапазоны дат: <code>?from=YYYY-MM-DD&amp;to=YYYY-MM-DD</code>; date-only <code>to</code>
+      включает весь указанный день.</li>
+</ul>
+
+<h2 id="endpoints">5. Справочник основных групп эндпоинтов</h2>
+
+<h3>Дашборд / аналитика чата поддержки</h3>
+<table>
+  <tr><th>Ручка</th><th>Что отдаёт</th></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/overview?from=&amp;to=&amp;product_id=</code></td>
+      <td>KPI: сессии, эскалации, стоимость, здоровье AI-API (латентность, ошибки).</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/timeseries?metric=sessions|cost|cost_per_session|escalation_rate</code></td>
+      <td>Ряды по дням/часам.</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/by-topic</code> · <code>/admin/by-language</code></td>
+      <td>Разрезы по темам / языкам (+ стоимость на строку).</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/sessions</code> · <code>/admin/session/{id}</code></td>
+      <td>Список сессий с фильтрами / полный транскрипт с затратами по ходам.</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/unresolved?format=json|csv</code></td>
+      <td>Очередь незакрытых обращений по темам (+ CSV-экспорт).</td></tr>
+</table>
+
+<h3>Аналитика ретеншна (Telegram-бот)</h3>
+<table>
+  <tr><th>Ручка</th><th>Что отдаёт</th></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/retention/overview?from=&amp;to=&amp;product_id=</code></td>
+      <td>KPI за всё время + за период: игроки, сообщения, фото, пинги и reply-rate по ним,
+          хендоффы, стоимость, распределение по стадиям.</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/retention/funnel</code></td>
+      <td>Воронка входа: <code>deeplinks_created → starts → new_users → subscribed →
+          engaged → photo_receivers → handoffs</code>.</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/retention/timeseries</code></td>
+      <td>Дневные ряды: сообщения, активные игроки, фото, пинги, стоимость.</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/retention/pings</code></td>
+      <td>Леджер проактивных пингов: кому, каким правилом, статус, стоимость.</td></tr>
+</table>
+<p class="muted">Все четыре принимают <code>from</code>/<code>to</code> + опциональные
+<code>product_id</code>/<code>partner_id</code>.</p>
+
+<h3>Структура (партнёры / продукты)</h3>
+<table>
+  <tr><th>Ручка</th><th>Что делает</th></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/structure</code></td>
+      <td>Дерево партнёры → продукты, видимое субъекту (+ widget key, флаги секретов).</td></tr>
+  <tr><td><span class="tag post">POST</span><code>/admin/partners</code> ·
+          <span class="tag put">PUT</span><code>/admin/partners/{id}</code></td>
+      <td>Создать / изменить партнёра (глобальный админ).</td></tr>
+  <tr><td><span class="tag post">POST</span><code>/admin/products</code> ·
+          <span class="tag put">PUT</span><code>/admin/products/{id}</code></td>
+      <td>Создать казино (widget key генерируется, стартовая KB сеется) / изменить.</td></tr>
+  <tr><td><span class="tag put">PUT</span><code>/admin/products/{id}/secrets</code></td>
+      <td>Write-only секреты продукта: OpenAI-ключи, handshake, токен Telegram-бота,
+          player-API-ключ, секрет reCaptcha. Хранятся шифрованно; в ответ только has_*-флаги.</td></tr>
+  <tr><td><span class="tag post">POST</span><code>/admin/products/{id}/widget-key</code></td>
+      <td>Ротация widget key (старые сниппеты перестают работать сразу).</td></tr>
+</table>
+
+<h3>Контент и настройки продукта</h3>
+<table>
+  <tr><th>Ручка</th><th>Что редактирует</th></tr>
+  <tr><td><code>/admin/kb/topics</code> · <code>/admin/kb/content</code> · <code>/admin/kb/variables</code></td>
+      <td>Темы, KB-тексты, {placeholder}-переменные базы знаний.</td></tr>
+  <tr><td><code>/admin/prompt-variables</code> · <code>/admin/effective-prompt</code></td>
+      <td>Брендирование промпта (персона, бренд, tone of voice) / read-only собранный промпт.</td></tr>
+  <tr><td><code>/admin/translations</code></td>
+      <td>Все видимые игроку строки по языкам + contact URL эскалации.</td></tr>
+  <tr><td><code>/admin/settings/{group}</code></td>
+      <td>Группы: <code>model</code>, <code>antispam</code>, <code>language</code>,
+          <code>general</code>, <code>escalation</code>, <code>retention</code>.
+          С <code>?product_id=</code> — оверрайд продукта.</td></tr>
+</table>
+
+<h3>Пользователи и доступы</h3>
+<table>
+  <tr><th>Ручка</th><th>Что делает</th></tr>
+  <tr><td><span class="tag get">GET</span> · <span class="tag post">POST</span><code>/admin/users</code></td>
+      <td>Аккаунты в зоне доступа / создание (email + пароль + роль + скоуп).</td></tr>
+  <tr><td><span class="tag post">POST</span> · <span class="tag del">DELETE</span><code>/admin/users/{email}/memberships…</code></td>
+      <td>Выдать / отозвать доступ (скоуп + роль).</td></tr>
+  <tr><td><span class="tag put">PUT</span> · <span class="tag del">DELETE</span><code>/admin/users/{email}</code></td>
+      <td>Пароль/активность / удаление аккаунта (в пределах своего скоупа).</td></tr>
+  <tr><td><code>/admin/api-keys*</code></td>
+      <td>Сервисные ключи — см. раздел 3.</td></tr>
+</table>
+
+<h3>Ретеншн-администрирование (Telegram)</h3>
+<table>
+  <tr><th>Ручка</th><th>Что делает</th></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag put">PUT</span><code>/admin/retention/telegram/{product_id}</code>
+          · <span class="tag post">POST</span><code>/admin/retention/webhook/{product_id}</code></td>
+      <td>Telegram-конфиг продукта (бот, канал, player API, enabled) / регистрация вебхука.</td></tr>
+  <tr><td><code>/admin/retention/kb</code> · <code>/admin/retention/kb/text</code></td>
+      <td>Retention-KB (единый текстовый документ на продукт).</td></tr>
+  <tr><td><code>/admin/retention/photos*</code> · <code>/admin/retention/managers*</code></td>
+      <td>Медиатека (гейты по VIP-тиру × стадии) / пул менеджеров (round-robin, sticky).</td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag post">POST</span><span class="tag put">PUT</span><span class="tag del">DEL</span><code>/admin/retention/pings/rules</code></td>
+      <td>Правила матрицы пингов: триггер (<code>bot_inactivity</code> / <code>casino_inactivity</code> /
+          <code>no_deposit</code>), дни, действие (message/photo), intent, VIP-тиры, cooldown, приоритет.
+          Подробно — на <a href="/integration-telegram#pings" style="color:var(--accent)">странице
+          retention-бота</a>.</td></tr>
+  <tr><td><span class="tag post">POST</span><code>/admin/retention/pings/run</code></td>
+      <td>Прогнать один ограниченный свип пингов немедленно (тест/QA; тихие часы игнорируются,
+          остальные гарантии действуют).</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/retention/users</code> · <code>/admin/retention/sessions</code></td>
+      <td>Игроки бота / Telegram-чаты (транскрипт — через общий <code>GET /admin/session/{id}</code>).</td></tr>
+</table>
+
+<h2 id="curl">6. Примеры curl</h2>
+<h3>Логин человеком → JWT</h3>
+<pre><code>curl -s -X POST https://CHAT_HOST/admin/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"···"}'
+# → { "token": "eyJhbGciOi…", "role": "admin", "memberships": [...] }</code></pre>
+
+<h3>Запрос сервисным ключом (без логина)</h3>
+<pre><code>curl -s "https://CHAT_HOST/admin/structure" \
+  -H "Authorization: Bearer sak_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"</code></pre>
+
+<h3>KPI-обзор по одному продукту за период</h3>
+<pre><code>curl -s "https://CHAT_HOST/admin/overview?from=2026-07-01&amp;to=2026-07-07&amp;product_id=42" \
+  -H "Authorization: Bearer sak_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+# тот же вызов работает и с человеческим JWT вместо sak_-ключа</code></pre>
+
+<h2 id="openapi">7. OpenAPI-схема и /docs</h2>
+<p>Swagger/ReDoc и <code>/openapi.json</code> описывают всю поверхность сервиса (включая
+<code>/admin</code>), поэтому в продакшн-деплое они <b>выключены по умолчанию</b>. Для дев/стейджа
+их можно включить переменной окружения <code>EXPOSE_API_DOCS=1</code> — тогда доступны
+<code>/docs</code>, <code>/redoc</code> и <code>/openapi.json</code>. В прод не включайте.</p>
+
+<p class="muted" style="margin-top:40px">Страница обновляется вместе с сервисом. Смежные гайды:
+<a href="/integration" style="color:var(--accent)">чат поддержки (виджет, handshake, Chat API)</a> ·
+<a href="/integration-telegram" style="color:var(--accent)">retention-бот в Telegram</a>.
+Вопросы по интеграции — к команде support-chat.</p>
+</div>
+</body>
+</html>
