@@ -548,6 +548,29 @@ never leak one brand's contact link into another partner's product, so every non
 gets its URL exclusively from its own admin Translations tab (empty until set; the widget then
 renders the card without a button link).
 
+**Escalation routes INTO the retention bot when the product runs one
+(`escalation.build_payload_for_session`).** The `contact_url` above is the DEFAULT
+target (a form / support group / chat). But when the session's product has
+`retention_enabled` **and** a `telegram_bot_username`, the escalation button is
+**replaced**: instead of the static link it carries a freshly-minted, one-time
+*escalation-entry* retention deeplink (`https://t.me/<bot>?start=<nonce>`,
+`entry_type='escalation'`), so tapping it drops the player into Nika's Telegram bot —
+which runs the **channel-subscription gate** on `/start` (they subscribe on the way in)
+and offers **"go to a manager"** in its menu (the escalation entry). The player's session
+profile snapshot rides in the nonce, so Nika greets them by name. This is the **primary
+channel** behaviour: the WIDGET's own escalation card does the hand-off (the site "Написать
+Нике" button is a secondary, optional integration — see the retention section). The payload
+gains a `retention: true` marker so API consumers / the widget can tell the hand-off leads to
+the bot. It is per-product (the product is resolved from the session's `product_id`, the
+deeplink uses that product's bot + product-scoped nonce settings and stores that product's id)
+and **fully graceful**: retention off, no bot, or any mint failure ⇒ it falls straight back to
+the static `contact_url` (escalation never breaks). Every hand-off path routes through this one
+helper — the pre-model SOFT keyword card, the post-model HARD `[[ESCALATE]]`/decide, the
+message-cap fast path, and the explicit `/escalate` tap — so the bot hand-off is consistent
+everywhere. The nonce is TTL-bounded (`retention.nonce_ttl_sec`, default 120s) and minted at
+response time; raise that knob for a product whose players sit on the card. The
+`CONTACT_FORM_URL`/`contact_url` fallback is otherwise unchanged.
+
 **A transient model failure does NOT escalate.** When the OpenAI call fails outright (retries +
 failover exhausted — e.g. a provider outage), `chat_service` returns a localized model-free
 "technical hiccup, please resend" nudge (`_MODEL_ERROR_REPLY`), persists **no** turn (the player
@@ -747,6 +770,11 @@ an escalation entry, back to site support on a retention entry). Full spec: `RET
   in `retention_users`, and sets `entry_type` (`retention` | `escalation`). No valid nonce ⇒ the
   bot refuses (no organic entry). Then the **channel subscription gate** (`getChatMember`, the bot
   must be a channel admin) before any menu; a product with no channel configured skips the gate.
+  Two things mint that deeplink: (1) the **support-chat widget's escalation button** — when the
+  product runs retention, every escalation hand-off routes the player INTO the bot on the
+  **escalation entry** (`escalation=True` → the manager option in the menu), via
+  `escalation.build_payload_for_session` (see the Escalation section). This is the PRIMARY path —
+  the widget is the main channel. (2) the optional site buttons below (secondary integration).
 - **Profile freshness degrades softly** — all three levels ship: snapshot + re-handshake;
   **lazy pull** (`retention.maybe_pull_profile`, gated by `profile_pull_ttl_sec`) — before a turn,
   if the snapshot is stale and the product has a `player_api_url` + encrypted key, GET the fresh

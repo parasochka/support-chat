@@ -125,7 +125,8 @@ async def handle_message(
             "chat_keyword_escalation session_id=%s reason=%s",
             session_id, keyword_reason,
         )
-        esc_payload = escalation.build_payload(base_lang, final=False)
+        esc_payload = await escalation.build_payload_for_session(
+            session, base_lang, final=False)
         new_count = await db.persist_turn(
             session_id=session_id,
             user_text=user_text,
@@ -382,7 +383,7 @@ async def handle_message(
 
     esc_payload = escalation.inactive_payload()
     if decision.active:
-        esc_payload = escalation.build_payload(answer_lang)
+        esc_payload = await escalation.build_payload_for_session(session, answer_lang)
 
     if not clean_text:
         log.warning(
