@@ -292,11 +292,16 @@ from any live product's KB; (3) the FULL `prompt_variables` set into `product_se
 (template defaults, `brand_name` = the product's name, via
 `starter_kb.starter_prompt_variables`) so a new product never inherits another brand's
 **global** prompt-variable overrides (the API endpoint calls `settings.reload()` after the
-seed so it applies immediately). `db.seed_starter_kb` is idempotent-safe: it inserts only
+seed so it applies immediately); (4) the **starter retention-KB document**
+(`starter_kb.STARTER_RETENTION_KB` via `db.seed_starter_retention_kb` — same brand-neutral
+English contract, seeded only when the product has no retention KB at all) so the Telegram
+bot also works out of the box. Translations and the `retention`/other settings groups need
+**no** per-product seed: their shipped defaults resolve for every product until overridden.
+`db.seed_starter_kb` is idempotent-safe: it inserts only
 topics the product doesn't have and writes a KB entry only for a topic it just created — it
 can never overwrite existing content. The boot-seeded default product is untouched (it goes
 through `_migrate_tenancy`, not `create_product`). Tests in `tests/test_starter_kb.py` pin
-the no-brand-leak contract.
+the no-brand-leak contract (support + retention starters alike).
 
 ### KB variables — `{placeholder}` registry (`db.py` + `kb.render_variables`)
 KB texts may contain `{key}` placeholders (e.g. `{min_deposit}`). The `kb_variables` table holds
@@ -745,7 +750,15 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   (a test asserts it, mirroring the support core). It shares the persona but swaps support
   behaviour for engagement + photos + route-out. **No** KB-grounding / escalation-restraint /
   topic-routing / suggestions here. Layer 2 = the **whole** retention-KB (`db.retention_kb_block`,
-  a flat scenario base, NOT `kb_topics`). Layer 3 (`build_retention_dynamic_prompt`) = full profile
+  NOT `kb_topics`). **The retention KB is edited as ONE free-text document per product** (like a
+  support topic's KB text): stored as a single `retention_kb` row with the sentinel title
+  `db.RETENTION_KB_DOC_TITLE` (its body enters the prompt verbatim, no header);
+  `db.get_retention_kb_text`/`set_retention_kb_text` are the document read/write (the write
+  replaces the product's whole KB in one transaction), exposed via
+  `GET/PUT /admin/retention/kb/text`. Legacy structured rows (the old per-entry editor) still
+  render in the prompt and are folded into the document text on the first save; the per-entry
+  CRUD endpoints remain for API consumers. New products are seeded with
+  `starter_kb.STARTER_RETENTION_KB`. Layer 3 (`build_retention_dynamic_prompt`) = full profile
   personalization + language directive + the **photo-candidate list** + a lighter retention guardrail.
 - **Retention sentinels** (stripped like the support ones): `[[PHOTO:id]]` (send a photo from the
   candidate list the model was shown — backend re-validates the id), `[[STAGE_UP]]` (a hint the
@@ -796,9 +809,18 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `X-Telegram-Bot-Api-Secret-Token` header (NOT in the URL).
 - **Admin**: the SPA **Retention · Telegram** view (sub-tabs: Setup guide — the static
   "how to connect the bot" checklist that replaced `RETENTION_SETUP.md` —, Telegram config,
-  Retention KB, Media, Managers, Analytics); API under `/admin/retention/*` (`api/retention.py`, guarded per
+  Retention KB — the one-document text editor —, **Prompt preview**, Media, Managers, Analytics);
+  API under `/admin/retention/*` (`api/retention.py`, guarded per
   product) + the `retention` group via the generic `/admin/settings/retention`. Retention copy
   (menu/gate/handoff strings, `rtn_*` keys) is in the translations registry (scope `retention`).
+  **Prompt preview** (`GET /admin/retention/effective-prompt`, the SPA's Retention → Prompt
+  preview tab) mirrors the support `GET /admin/effective-prompt`: the whole assembled retention
+  prompt (retention Layer 1 + the KB document as Layer 2 in the system message; the Layer-3
+  user message with the Test-sandbox player, an illustrative photo-candidate row and the
+  guardrails), read-only, per product. It also returns the prompt variables the RETENTION
+  templates actually use (`prompts.retention_prompt_variable_keys()` — the persona/brand set,
+  not `support_scope`) with resolved values; the SPA shows them read-only with a notice that
+  their ONE editor is the support Prompt → Prompt variables sub-tab (no duplicate editor).
 - **All existing invariants hold**: retention turns persist atomically as normal
   `chat_messages` + `ai_interaction_logs`, carry the session's `product_id`, use the product's own
   (encrypted) OpenAI keys with the same failover, and DB access stays behind `db.*` helpers.

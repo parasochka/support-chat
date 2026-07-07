@@ -73,3 +73,28 @@ def test_starter_prompt_variables_blank_name_falls_back():
     values = starter_kb.starter_prompt_variables("   ")
     defaults = {key: default for key, _d, default in PROMPT_VARIABLES}
     assert values["brand_name"] == defaults["brand_name"]
+
+
+# ---------------------------------------------------------------------------
+# Starter RETENTION KB — the single document a new product's bot starts with.
+# Same contract as the support starter: brand-neutral, English, self-contained.
+# ---------------------------------------------------------------------------
+def test_starter_retention_kb_carries_no_brand_data():
+    blob = starter_kb.STARTER_RETENTION_KB.lower()
+    assert "nika" not in blob, "brand leak"
+    assert "http://" not in blob and "https://" not in blob, "URL leak"
+    assert "t.me/" not in blob, "social-handle leak"
+
+
+def test_starter_retention_kb_has_no_variable_placeholders():
+    assert not re.search(r"\{[a-z0-9_]+\}", starter_kb.STARTER_RETENTION_KB)
+
+
+def test_starter_retention_kb_is_substantive():
+    text = starter_kb.STARTER_RETENTION_KB
+    assert len(text.strip()) > 500, "retention starter too thin to be useful"
+    # The two behaviours the retention bot must never get wrong ship covered:
+    # the route-out list and the responsible-gaming stance.
+    lowered = text.lower()
+    assert "route out" in lowered or "hand" in lowered
+    assert "responsible gaming" in lowered

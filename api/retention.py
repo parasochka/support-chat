@@ -29,6 +29,9 @@ import antispam
 import auth
 import config
 import db
+import kb
+import language
+import prompts
 import retention as retention_mod
 import settings as settings_mod
 import tenancy
@@ -278,8 +281,99 @@ async def register_webhook(product_id: int,
 
 
 # ===========================================================================
-# Admin: retention KB (single flat scenario base)
+# Admin: retention effective prompt — READ-ONLY preview (mirrors the support
+# GET /admin/effective-prompt). The retention prompt wording lives in
+# prompts.py (single source of truth); this endpoint shows the whole assembled
+# retention prompt for the product — Layer 1 (byte-stable retention core) +
+# Layer 2 (the retention-KB document) in the system message, and the Layer-3
+# user message (profile, personalization, language, photo candidates,
+# guardrails) — plus the prompt variables the RETENTION templates actually use
+# (their one editor stays the support Prompt → Prompt variables sub-tab).
 # ===========================================================================
+_RETENTION_PREVIEW_USER_TEXT = (
+    "\"...the player's current message will appear here...\"")
+
+# Illustrative photo candidate so the operator sees the block's shape; the real
+# list is selected per turn from the Media tab by retention.select_photo_candidates.
+_RETENTION_PREVIEW_CANDIDATES = [{
+    "id": 1, "stage": 1,
+    "description": "(example) a photo from the Media tab - the real candidate "
+                   "list is selected per turn",
+    "tags": ["example"],
+}]
+
+
+@admin_router.get("/effective-prompt")
+async def retention_effective_prompt(product_id: int,
+                                     admin=Depends(require_admin)) -> JSONResponse:
+    """Read-only: the whole retention prompt as assembled from prompts.py."""
+    from api.admin import _preview_context  # reuse the Test-sandbox preview player
+    await admin_auth.require_product_read(admin, product_id)
+    # Bind the tenancy scope so prompt variables / KB variables / language
+    # resolve for THIS product — each casino previews ITS retention prompt.
+    tenancy.set_current_product(product_id)
+    kb_block: Optional[str] = None
+    try:
+        kb_text = await db.retention_kb_block(product_id)
+        if kb_text:
+            kb_block = await kb.render_variables(kb_text, product_id=product_id)
+    except Exception:  # pragma: no cover - preview must never break the page
+        kb_block = None
+    lang = language.default_code()
+    messages = prompts.build_retention_messages(
+        session={"user_context": _preview_context()},
+        kb_block=kb_block,
+        history=[],
+        user_text=_RETENTION_PREVIEW_USER_TEXT,
+        resolved_lang=lang,
+        photo_candidates=_RETENTION_PREVIEW_CANDIDATES,
+    )
+    values = settings_mod.prompt_variables()
+    descriptions = {k: d for k, d, _v in prompts.PROMPT_VARIABLES}
+    variables = [
+        {"key": key, "description": descriptions.get(key, ""),
+         "value": values.get(key, "")}
+        for key in prompts.retention_prompt_variable_keys()
+    ]
+    return JSONResponse(content={
+        "effective_preview": {
+            "system": messages[0]["content"],
+            "user": messages[-1]["content"],
+            "example": {"lang": lang,
+                        "user_text": _RETENTION_PREVIEW_USER_TEXT},
+        },
+        "variables": variables,
+    })
+
+
+# ===========================================================================
+# Admin: retention KB — ONE free-text document per product (edited like a
+# support topic's KB text). The legacy per-entry CRUD below stays for API
+# consumers; the admin SPA uses only these two document endpoints.
+# ===========================================================================
+class RetentionKBTextWrite(BaseModel):
+    text: str = ""
+
+
+@admin_router.get("/kb/text")
+async def get_kb_text(product_id: int, admin=Depends(require_admin)) -> JSONResponse:
+    await admin_auth.require_product_read(admin, product_id)
+    return JSONResponse(content={"text": await db.get_retention_kb_text(product_id)})
+
+
+@admin_router.put("/kb/text")
+async def put_kb_text(product_id: int, body: RetentionKBTextWrite,
+                      admin=Depends(require_admin_write)) -> JSONResponse:
+    await admin_auth.require_product_write(admin, product_id)
+    await db.set_retention_kb_text(product_id, body.text,
+                                   updated_by=admin.get("email"))
+    await db.log_admin_event(None, "retention_kb_updated",
+                             {"chars": len(body.text.strip()),
+                              "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"text": await db.get_retention_kb_text(product_id)})
+
+
 class RetentionKBWrite(BaseModel):
     title: str
     trigger_when: Optional[str] = None

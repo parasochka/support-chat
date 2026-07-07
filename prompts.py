@@ -1051,6 +1051,21 @@ def _retention_static_directives() -> list[str]:
     ]
 
 
+def retention_prompt_variable_keys() -> list[str]:
+    """Registered prompt-variable keys the RETENTION templates actually use.
+
+    Feeds the admin Retention → Prompt preview tab, which lists only the
+    variables relevant to the retention prompt (the values themselves are
+    edited in one place — the support Prompt → Prompt variables sub-tab).
+    Returned in PROMPT_VARIABLES registry order.
+    """
+    templates = "\n".join([SYSTEM_CORE_RETENTION,
+                           *_retention_static_directives(),
+                           _RETENTION_GUARDRAILS])
+    used = {m.group(1) for m in _PROMPT_VAR_RE.finditer(templates)}
+    return [key for key, _desc, _default in PROMPT_VARIABLES if key in used]
+
+
 def get_retention_system_core() -> str:
     """The byte-stable retention Layer-1 block (persona core + retention directives).
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Title, useNotify } from 'react-admin';
+import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
@@ -87,8 +88,9 @@ const GUIDE_STEPS = [
     title: '5 · Content and tuning',
     body: (
       <>
-        Fill the <Link href="#/retention?tab=kb">Retention KB</Link> (flat scenario
-        base: title + when to apply + what Nika offers), upload photos in{' '}
+        Review the <Link href="#/retention?tab=kb">Retention KB</Link> (one text
+        document — what Nika may offer and talk about; a generic English starter
+        is pre-filled, replace it with the brand&apos;s own), upload photos in{' '}
         <Link href="#/retention?tab=photos">Media</Link> (description grounds the
         caption; <code>level_min</code> = VIP tier, <code>stage</code> =
         explicitness) and add live <Link href="#/retention?tab=managers">Managers</Link>{' '}
@@ -299,119 +301,149 @@ const ConfigTab = ({ productId }) => {
 };
 
 // ---------------------------------------------------------------------------
-// Retention KB tab (flat scenario base — not the support kb_topics)
+// Retention KB tab — ONE free-text document per product, edited exactly like a
+// support topic's KB text: paste, change, save. New products arrive with the
+// generic English starter document already seeded.
 // ---------------------------------------------------------------------------
-const EMPTY_KB = { title: '', trigger_when: '', body: '', links: '', sort_order: 0, active: true };
+const KbTab = ({ productId }) => {
+  const notify = useNotify();
+  const [text, setText] = useState(null);
+  const [saving, setSaving] = useState(false);
 
-const KbEntryForm = ({ initial, onSave, onDelete }) => {
-  const [form, setForm] = useState({
-    ...initial,
-    links: Array.isArray(initial.links) ? initial.links.join('\n') : initial.links || '',
-  });
+  useEffect(() => {
+    httpClient(`${API_URL}/admin/retention/kb/text?product_id=${productId}`)
+      .then(({ json }) => setText(json.text ?? ''))
+      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+  }, [productId, notify]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const { json } = await httpClient(
+        `${API_URL}/admin/retention/kb/text?product_id=${productId}`,
+        { method: 'PUT', body: JSON.stringify({ text }) }
+      );
+      setText(json.text ?? '');
+      notify('Retention KB saved', { type: 'success' });
+    } catch (e) {
+      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (text === null) return <Box sx={{ p: 2 }}>Loading…</Box>;
+
   return (
-    <Card sx={{ mb: 1 }}>
+    <Card>
       <CardContent>
-        <Stack spacing={1}>
-          <TextField label="Title" size="small" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
-          <TextField label="Trigger when (optional)" size="small" value={form.trigger_when || ''} onChange={(e) => setForm({ ...form, trigger_when: e.target.value })} />
-          <TextField label="Body" multiline minRows={3} value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} />
-          <TextField label="Links (one per line)" multiline minRows={2} value={form.links} onChange={(e) => setForm({ ...form, links: e.target.value })} />
-          <Stack direction="row" spacing={1} alignItems="center">
-            <TextField label="Sort order" size="small" type="number" value={form.sort_order} onChange={(e) => setForm({ ...form, sort_order: Number(e.target.value) })} sx={{ width: 120 }} />
-            <FormControlLabel control={<Switch checked={Boolean(form.active)} onChange={(e) => setForm({ ...form, active: e.target.checked })} />} label="Active" />
-            <Button
-              variant="contained"
-              size="small"
-              disabled={!form.title || !form.body}
-              onClick={() =>
-                onSave({
-                  ...form,
-                  links: form.links.split('\n').map((s) => s.trim()).filter(Boolean),
-                })
-              }
-            >
-              Save
-            </Button>
-            {onDelete && (
-              <Button size="small" color="error" onClick={onDelete}>
-                Delete
-              </Button>
-            )}
-          </Stack>
-        </Stack>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          The whole retention knowledge base as one text (Layer 2 of the
+          retention prompt — what Nika may offer and talk about in Telegram).
+          Keep it in English: it is the most token-efficient language for the
+          model, and Nika answers in the player&apos;s language regardless.{' '}
+          <code>{'{placeholders}'}</code> are substituted from KB variables.
+        </Typography>
+        <TextField
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          multiline
+          minRows={20}
+          fullWidth
+        />
+        <Button variant="contained" onClick={save} disabled={saving} sx={{ mt: 1.5 }}>
+          Save
+        </Button>
       </CardContent>
     </Card>
   );
 };
 
-const KbTab = ({ productId }) => {
-  const notify = useNotify();
-  const [items, setItems] = useState([]);
+// ---------------------------------------------------------------------------
+// Prompt preview tab — read-only view of the assembled RETENTION prompt
+// (mirrors the support Prompt → Preview page) + the prompt variables the
+// retention templates use. The values are edited in ONE place — the support
+// Prompt → Prompt variables sub-tab — so this tab only shows them and links there.
+// ---------------------------------------------------------------------------
+const PreviewBlock = ({ title, text }) => (
+  <Card sx={{ mb: 2 }}>
+    <CardContent>
+      <Typography variant="h6" gutterBottom>
+        {title}
+      </Typography>
+      <Typography
+        component="pre"
+        sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 13, m: 0 }}
+      >
+        {text || '—'}
+      </Typography>
+    </CardContent>
+  </Card>
+);
 
-  const load = useCallback(() => {
-    httpClient(`${API_URL}/admin/retention/kb?product_id=${productId}`)
-      .then(({ json }) => setItems(json.items || []))
+const PromptTab = ({ productId }) => {
+  const notify = useNotify();
+  const [preview, setPreview] = useState(null);
+  const [variables, setVariables] = useState([]);
+
+  useEffect(() => {
+    httpClient(`${API_URL}/admin/retention/effective-prompt?product_id=${productId}`)
+      .then(({ json }) => {
+        setPreview(json.effective_preview);
+        setVariables(json.variables || []);
+      })
       .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
   }, [productId, notify]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const create = async (data) => {
-    try {
-      await httpClient(`${API_URL}/admin/retention/kb?product_id=${productId}`, {
-        method: 'POST',
-        body: JSON.stringify(data),
-      });
-      notify('Entry created', { type: 'success' });
-      load();
-    } catch (e) {
-      notify(e.body?.detail || e.message || 'Create failed', { type: 'error' });
-    }
-  };
-
-  const update = async (id, data) => {
-    try {
-      await httpClient(`${API_URL}/admin/retention/kb/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(data),
-      });
-      notify('Entry saved', { type: 'success' });
-      load();
-    } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
-    }
-  };
-
-  const remove = async (id) => {
-    if (!window.confirm('Delete this entry?')) return;
-    try {
-      await httpClient(`${API_URL}/admin/retention/kb/${id}`, { method: 'DELETE' });
-      notify('Entry deleted', { type: 'success' });
-      load();
-    } catch (e) {
-      notify(e.body?.detail || e.message || 'Delete failed', { type: 'error' });
-    }
-  };
-
   return (
-    <Box>
-      <Typography variant="h6" sx={{ mb: 1 }}>
-        New entry
+    <Box sx={{ maxWidth: 1000 }}>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        The complete retention prompt as the model receives it in the Telegram
+        chat (read-only; language: {preview?.example?.lang || '—'}). To change
+        the wording, edit <code>prompts.py</code> and redeploy.
       </Typography>
-      <KbEntryForm initial={EMPTY_KB} onSave={create} />
-      <Typography variant="h6" sx={{ my: 1 }}>
-        Entries ({items.length})
-      </Typography>
-      {items.map((it) => (
-        <KbEntryForm
-          key={it.id}
-          initial={it}
-          onSave={(d) => update(it.id, d)}
-          onDelete={() => remove(it.id)}
-        />
-      ))}
+      <Alert severity="info" sx={{ mb: 2 }}>
+        The prompt variables below are shared with the support chat and are
+        edited in one place: <Link href="#/prompt?tab=variables">Support chat →
+        Prompt → Prompt variables</Link>.
+      </Alert>
+      {variables.length > 0 && (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Prompt variables used by the retention prompt
+            </Typography>
+            <Box sx={{ overflowX: 'auto' }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Variable</TableCell>
+                    <TableCell>Description</TableCell>
+                    <TableCell>Current value</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {variables.map((v) => (
+                    <TableRow key={v.key}>
+                      <TableCell><code>{`{${v.key}}`}</code></TableCell>
+                      <TableCell>{v.description}</TableCell>
+                      <TableCell sx={{ whiteSpace: 'pre-wrap' }}>{v.value}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Box>
+          </CardContent>
+        </Card>
+      )}
+      <PreviewBlock
+        title="System message (retention Layer 1 core + Layer 2 retention KB)"
+        text={preview?.system}
+      />
+      <PreviewBlock
+        title="User message (Layer 3: profile, language, photo candidates, guardrails)"
+        text={preview?.user}
+      />
     </Box>
   );
 };
@@ -868,6 +900,7 @@ const TABS = [
   ['guide', 'Setup guide', GuideTab],
   ['config', 'Telegram config', ConfigTab],
   ['kb', 'Retention KB', KbTab],
+  ['prompt', 'Prompt preview', PromptTab],
   ['photos', 'Media', PhotosTab],
   ['managers', 'Managers', ManagersTab],
   ['analytics', 'Analytics', AnalyticsTab],

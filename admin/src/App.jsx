@@ -113,7 +113,15 @@ const RetentionSubItem = ({ tab, label, icon }) => {
  * ride inside the Knowledge base page (a tab there), so they get no menu item.
  */
 const AppMenu = () => (
-  <Menu>
+  // Icons in the sidebar come from three different sources (resource items,
+  // custom Menu.Items, retention sub-items with fontSize="small") — normalize
+  // every one of them to the same size so the menu reads as one column.
+  <Menu
+    sx={{
+      '& .MuiListItemIcon-root .MuiSvgIcon-root': { fontSize: 20 },
+      '& .MuiListItemIcon-root': { minWidth: 34 },
+    }}
+  >
     <Menu.DashboardItem />
 
     <CollapsibleSection id="support" label="Support chat">
@@ -132,6 +140,7 @@ const AppMenu = () => (
       <RetentionSubItem tab="guide" label="Setup guide" icon={<MenuBookIcon fontSize="small" />} />
       <RetentionSubItem tab="config" label="Telegram config" icon={<TelegramIcon fontSize="small" />} />
       <RetentionSubItem tab="kb" label="Retention KB" icon={<LibraryBooksIcon fontSize="small" />} />
+      <RetentionSubItem tab="prompt" label="Prompt preview" icon={<TuneIcon fontSize="small" />} />
       <RetentionSubItem tab="photos" label="Media" icon={<PhotoLibraryIcon fontSize="small" />} />
       <RetentionSubItem tab="managers" label="Managers" icon={<SupportAgentIcon fontSize="small" />} />
       <RetentionSubItem tab="analytics" label="Analytics" icon={<InsightsIcon fontSize="small" />} />
