@@ -1,3 +1,15 @@
+# --- stage 1: build the React Admin SPA (admin/ -> admin/dist) --------------
+FROM node:20-alpine AS admin-build
+
+WORKDIR /build
+COPY admin/package.json admin/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY admin/ ./
+# No VITE_API_URL: the SPA is served same-origin by the FastAPI service, so
+# API calls use relative URLs.
+RUN npm run build
+
+# --- stage 2: the FastAPI service --------------------------------------------
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -12,6 +24,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the application.
 COPY . .
+
+# The built admin SPA (main.py serves it at /admin when the dir exists).
+COPY --from=admin-build /build/dist ./admin/dist
 
 # Railway provides $PORT; default to 8080 for local runs.
 ENV PORT=8080

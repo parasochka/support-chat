@@ -159,9 +159,28 @@ async def index() -> FileResponse:
 if os.path.isdir(_FRONTEND_DIR):
     app.mount("/static", StaticFiles(directory=_FRONTEND_DIR), name="static")
 
-# The admin UI is the React Admin SPA in /admin (repo root) — a separate
-# static deploy (see admin/README.md). This service serves only the /admin/*
-# JSON API; there is no server-rendered admin page here anymore.
+# --- admin SPA (React Admin) --------------------------------------------------
+# The admin UI is the React Admin app in admin/ (repo root). The Docker build
+# compiles it (node stage -> admin/dist) and this service serves it at /admin,
+# same-origin with the /admin/* JSON API — no CORS needed for the admin. The
+# SPA uses a hash router, so the single index.html covers every admin route;
+# its hashed assets live under /admin/assets (vite base '/admin/'). In local
+# dev without a build the mount is simply skipped (use `npm run dev` instead).
+_ADMIN_DIST = os.path.join(os.path.dirname(__file__), "admin", "dist")
+
+if os.path.isdir(_ADMIN_DIST):
+    @app.get("/admin", include_in_schema=False)
+    @app.get("/admin/", include_in_schema=False)
+    async def admin_spa() -> FileResponse:
+        # no-cache: the HTML references hashed asset URLs, so revalidating the
+        # tiny entry page is what makes a redeploy take effect immediately.
+        return FileResponse(os.path.join(_ADMIN_DIST, "index.html"),
+                            media_type="text/html",
+                            headers={"Cache-Control": "no-cache"})
+
+    app.mount("/admin/assets",
+              StaticFiles(directory=os.path.join(_ADMIN_DIST, "assets")),
+              name="admin-assets")
 
 # The widget files are served at fixed URLs with no build step, so without an
 # explicit Cache-Control browsers apply heuristic caching and can keep serving

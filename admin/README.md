@@ -42,6 +42,19 @@ Notes on how this maps to the backend:
   For development you can instead set `VITE_ADMIN_TOKEN` to a pre-issued JWT
   and skip the login form.
 
+## Deployment (default: single service)
+
+The repo's two-stage `Dockerfile` builds this app (node stage → `admin/dist`)
+and the FastAPI service serves it at **`/admin`**, same-origin with the
+`/admin/*` JSON API — so in production there is nothing to deploy separately,
+no CORS to configure for the admin, and no `VITE_API_URL` to set (the SPA uses
+relative URLs). Just deploy the backend as usual and open `https://<host>/admin`.
+
+A separate static deploy still works if you prefer it: `npm run build` with
+`VITE_API_URL` pointing at the backend, host `dist/` anywhere (note the build
+uses `base: '/admin/'`, so serve it under an `/admin` path), and add the
+static site's origin to the backend's `CORS_ALLOW_ORIGINS`.
+
 ## Install
 
 ```bash
@@ -52,25 +65,22 @@ npm install
 ## Development
 
 ```bash
-cp .env.example .env      # set VITE_API_URL to your backend
-npm run dev               # http://localhost:5173
+cp .env.example .env      # set VITE_API_URL to your backend, e.g. http://localhost:8080
+npm run dev               # http://localhost:5173/admin/
 ```
 
-CORS: the backend must allow the dev origin (`CORS_ALLOW_ORIGINS` env on the
-FastAPI service).
+CORS: for `npm run dev` the backend must allow the dev origin
+(`CORS_ALLOW_ORIGINS=http://localhost:5173` on the FastAPI service).
 
-## Build (Railway)
+## Build
 
 ```bash
 npm run build             # emits static files to admin/dist
 ```
 
-Deploy `admin/dist` as a static site (Railway static build). Set the env vars
-at build time — Vite inlines them into the bundle.
-
 ## Environment variables
 
 | Var | Required | Description |
 | --- | --- | --- |
-| `VITE_API_URL` | yes | Base URL of the FastAPI backend, no trailing slash (e.g. `https://api.example.com`) |
+| `VITE_API_URL` | dev only | Base URL of the FastAPI backend, no trailing slash (e.g. `http://localhost:8080`). Leave unset when the FastAPI service serves the build itself (same-origin relative URLs). |
 | `VITE_ADMIN_TOKEN` | no | Pre-issued admin JWT; when set, the login form is skipped and this token is used for every request (dev convenience only — it is baked into the bundle, never use in production) |

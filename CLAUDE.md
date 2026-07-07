@@ -937,15 +937,18 @@ Map of what lives where:
   context. The profile is **ignored** when a handshake secret is set (the host site is
   authoritative then). This is the single seam for "manage the test player on test, the real
   site supplies it later".
-- **Admin SPA** (`admin/` at the repo root): a React Admin (marmelab) + Vite app,
-  deployed SEPARATELY as a static site (`npm run build` → `admin/dist`; env
-  `VITE_API_URL` points it at this service). The backend serves only the
-  `/admin/*` JSON API — the old hand-rolled SPA (`frontend/admin/`, `/admin` +
-  `/admin-static` routes) was removed. The custom dataProvider
-  (`admin/src/dataProvider.js`) maps react-admin resources onto the real
-  endpoints; auth is `POST /admin/login` → Bearer JWT; the header carries the
-  Partner → Product switcher (selection in localStorage, sent as
-  `product_id`/`partner_id` query params).
+- **Admin SPA** (`admin/` at the repo root): a React Admin (marmelab) + Vite app.
+  The two-stage Dockerfile builds it (node stage → `admin/dist`) and `main.py`
+  serves it at `/admin` (hash router; hashed assets under `/admin/assets`,
+  vite `base: '/admin/'`) — same origin as the `/admin/*` JSON API, so the
+  admin needs no CORS and no `VITE_API_URL` (relative URLs). The old
+  hand-rolled SPA (`frontend/admin/`, `/admin-static`) was removed. The custom
+  dataProvider (`admin/src/dataProvider.js`) maps react-admin resources onto
+  the real endpoints; auth is `POST /admin/login` → Bearer JWT; the header
+  carries the Partner → Product switcher (selection in localStorage, sent as
+  `product_id`/`partner_id` query params). Local dev: `npm run dev` in
+  `admin/` (set `VITE_API_URL` + allow the dev origin in
+  `CORS_ALLOW_ORIGINS`); a separate static deploy also still works.
 
 §16 decisions: unresolved analysis = topic-grouped (no embeddings); contact form =
 host-site button only; admin auth = named `admin_users` accounts only (email + password,
