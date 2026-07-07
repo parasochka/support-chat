@@ -1153,18 +1153,79 @@ _RETENTION_GUARDRAILS = (
 )
 
 
+# How much of one carried-over message survives into the continuity block —
+# enough to recall what was discussed, bounded so the tail can't blow up the
+# first-turn prompt of a fresh chat.
+_PREV_CONTEXT_CHAR_CAP = 240
+
+
+def _previous_context_directive(prev_history: list[dict[str, Any]]) -> Optional[str]:
+    """Layer-3 continuity block for a RETURNING player (fresh chat session).
+
+    When an idle Telegram chat was closed and the player came back, the new
+    session's first prompt carries the tail of the previous conversation — so
+    the model greets them like someone it already knows and can pick threads
+    back up, without the old transcript riding in the history (it is a NEW
+    chat). Approximate recency ("earlier"/"N hours/days ago") is derived from
+    the last carried message's timestamp when present.
+    """
+    turns = [m for m in prev_history or []
+             if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()]
+    if not turns:
+        return None
+    ago = _rough_age_text(turns[-1].get("created_at"))
+    lines = [
+        "=== RETURNING PLAYER — PREVIOUS CONVERSATION (context only) ===",
+        f"You have chatted with this player before; the previous conversation "
+        f"ended {ago}. Its last messages (oldest first) follow as CONTEXT ONLY "
+        "— they are already handled, do not re-answer them:",
+    ]
+    for m in turns:
+        who = "player" if m["role"] == "user" else "you"
+        text = " ".join(str(m["content"]).split())
+        if len(text) > _PREV_CONTEXT_CHAR_CAP:
+            text = text[:_PREV_CONTEXT_CHAR_CAP - 1] + "…"
+        lines.append(f"{who}: {text}")
+    lines.append(
+        "Greet them back warmly as someone you already know (a short welcome-back, "
+        "by name when the personalization block says so) — never re-introduce "
+        "yourself — then pick the conversation up naturally, referencing the "
+        "earlier context only where it genuinely helps."
+    )
+    return "\n".join(lines)
+
+
+def _rough_age_text(created_at: Any) -> str:
+    """'about N hours ago' / 'N days ago' from a timestamp, or 'earlier'."""
+    import datetime as _dt
+    try:
+        dt = (created_at if isinstance(created_at, _dt.datetime)
+              else _dt.datetime.fromisoformat(str(created_at)))
+    except (ValueError, TypeError):
+        return "earlier"
+    now = _dt.datetime.now(dt.tzinfo)
+    hours = max((now - dt).total_seconds() / 3600.0, 0.0)
+    if hours < 1:
+        return "less than an hour ago"
+    if hours < 48:
+        return f"about {int(round(hours))} hours ago"
+    return f"{int(hours // 24)} days ago"
+
+
 def build_retention_dynamic_prompt(
     user_context: dict[str, Any],
     resolved_lang: str,
     user_text: str,
     photo_candidates: Optional[list[dict[str, Any]]] = None,
     first_turn: bool = False,
+    previous_history: Optional[list[dict[str, Any]]] = None,
 ) -> str:
     """Assemble the retention Layer-3 user message.
 
-    Player context (full profile) + personalization + language directive + the
-    photo-candidate list + the player's message + the recency guardrails /
-    forbidden-topics block. No topic routing (a support mechanic).
+    Player context (full profile) + personalization + language directive +
+    (for a returning player's first turn) the previous-conversation continuity
+    block + the photo-candidate list + the player's message + the recency
+    guardrails / forbidden-topics block. No topic routing (a support mechanic).
     """
     ctx = sanitize_user_context(user_context)
     ctx_lines = "\n".join(f"- {k}: {v}" for k, v in ctx.items() if v)
@@ -1177,6 +1238,9 @@ def build_retention_dynamic_prompt(
                                                  first_turn=first_turn)
     if personalization:
         parts += [personalization, ""]
+    prev_block = _previous_context_directive(previous_history or [])
+    if prev_block:
+        parts += [prev_block, ""]
     parts += [_language_directive(resolved_lang), ""]
     photo_block = _photo_candidates_directive(photo_candidates or [])
     if photo_block:
@@ -1201,12 +1265,18 @@ def build_retention_messages(
     resolved_lang: str,
     photo_candidates: Optional[list[dict[str, Any]]] = None,
     history_window: int = 10,
+    previous_history: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, str]]:
     """The OpenAI `messages` array for a retention (Telegram) turn.
 
     - system: retention Layer 1 (+ whole retention-KB Layer 2)
     - history: last `history_window` turns
     - final user message: retention Layer 3 (profile + photo candidates + turn)
+
+    `previous_history` is the continuity tail of the player's PREVIOUS (closed)
+    chat session — only ever passed on the first turn of a fresh session, where
+    it renders as a Layer-3 returning-player block (never as message history:
+    this is a new chat).
     """
     messages: list[dict[str, str]] = [
         {"role": "system", "content": build_retention_system_message(kb_block)}
@@ -1225,6 +1295,7 @@ def build_retention_messages(
             user_text=user_text,
             photo_candidates=photo_candidates,
             first_turn=first_turn,
+            previous_history=previous_history if first_turn else None,
         ),
     })
     return messages

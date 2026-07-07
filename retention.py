@@ -283,20 +283,67 @@ def _user_context_from_ru(ru: dict[str, Any]) -> dict[str, Any]:
     return ctx
 
 
+def session_expired(session: dict[str, Any], *,
+                    now: Optional[Any] = None) -> bool:
+    """True when the Telegram chat has sat idle past `session_idle_minutes`.
+
+    Idleness is measured from the session's `updated_at` (bumped on every
+    persisted turn). 0 disables the lifecycle entirely (one endless session —
+    the pre-lifecycle behaviour). A session with no messages yet never expires
+    (there is nothing to close).
+    """
+    import datetime as _dt
+    idle_min = int(settings.retention()["session_idle_minutes"])
+    if idle_min <= 0 or not session.get("message_count"):
+        return False
+    last = session.get("updated_at")
+    if not last:
+        return False
+    try:
+        last_dt = (last if isinstance(last, _dt.datetime)
+                   else _dt.datetime.fromisoformat(str(last)))
+    except (ValueError, TypeError):
+        return False
+    now_dt = now or _dt.datetime.now(last_dt.tzinfo)
+    return (now_dt - last_dt).total_seconds() >= idle_min * 60
+
+
 async def _ensure_session(product_id: int, ru: dict[str, Any],
                           lang: str) -> dict[str, Any]:
-    """Get or lazily create the telegram chat session backing this player."""
+    """Get or lazily create the telegram chat session backing this player.
+
+    Chat lifecycle: a session is reused only while it is open and not idle past
+    `session_idle_minutes`. An abandoned chat is closed (status='resolved') and
+    the next message starts a FRESH session that points back at the closed one
+    via `prev_session_id` — so the transcripts stay separate chats in the admin,
+    while the first prompt of the new chat can carry a short continuity tail
+    (see chat_service.handle_retention_message / carry_context_turns).
+    """
     sid = ru.get("session_id")
+    prev_id: Optional[str] = None
     if sid:
         session = await db.get_session(sid)
         if session:
-            return session
+            if session.get("status") == "open" and not session_expired(session):
+                return session
+            # Idle or already closed (e.g. by an earlier rollover) — start a
+            # fresh chat. Only a chat that actually happened becomes the
+            # continuity anchor; an empty open session is simply reused.
+            if session.get("message_count"):
+                prev_id = session["id"]
+                if session.get("status") == "open":
+                    await db.close_retention_session(
+                        session["id"], product_id=product_id, reason="idle")
+                    log.info("retention_session_rollover product_id=%s old=%s",
+                             product_id, session["id"])
+            elif session.get("status") == "open":
+                return session
     user_context = _user_context_from_ru(ru)
     new_id = str(uuid.uuid4())
     await db.create_session(
         consumer="telegram", player_id=ru.get("player_id"), lang=lang,
         user_context=user_context, session_id=new_id, product_id=product_id,
-        tg_user_id=ru.get("tg_user_id"),
+        tg_user_id=ru.get("tg_user_id"), prev_session_id=prev_id,
     )
     await db.set_retention_session(int(ru["id"]), new_id)
     return await db.get_session(new_id)

@@ -311,6 +311,15 @@ RETENTION_MAX_STAGE: int = _env_int("RETENTION_MAX_STAGE", 4)
 # has a player_api_url + key, refresh it from the casino before a turn (§8 level 2).
 RETENTION_PROFILE_PULL_TTL_SEC: int = _env_int(
     "RETENTION_PROFILE_PULL_TTL_SEC", 3600)
+# Telegram chat lifecycle: an idle Telegram conversation is closed and the next
+# message starts a FRESH chat session (0 = never close — one endless session).
+RETENTION_SESSION_IDLE_MINUTES: int = _env_int(
+    "RETENTION_SESSION_IDLE_MINUTES", 360)
+# How many trailing turns of the PREVIOUS (closed) Telegram chat are shown to
+# the model on the first turn of the fresh one, so Nika greets a returning
+# player with continuity instead of starting cold (0 = no carry-over).
+RETENTION_CARRY_CONTEXT_TURNS: int = _env_int(
+    "RETENTION_CARRY_CONTEXT_TURNS", 6)
 
 # Convenience: a name shown in logs / health.
 SERVICE_NAME = "nowplix-support-chat"

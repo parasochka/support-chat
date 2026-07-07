@@ -127,6 +127,8 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `RETENTION_MAX_UPLOAD_BYTES` | no | `10485760` | Max size of a retention media upload (the JSON body cap is far smaller; the media-upload path uses this instead). |
 | `RETENTION_NONCE_TTL_SEC` | no | `120` | Retention deeplink nonce lifetime (also a `retention` settings knob). |
 | `RETENTION_PROFILE_PULL_TTL_SEC` | no | `3600` | If a profile snapshot is older than this and the product has a Player API, pull a fresh profile before a turn (also a `retention` settings knob). |
+| `RETENTION_SESSION_IDLE_MINUTES` | no | `360` | Minutes of inactivity before a Telegram chat closes; the player's next message starts a fresh chat (0 = never; also a `retention` settings knob). |
+| `RETENTION_CARRY_CONTEXT_TURNS` | no | `6` | Trailing turns of the previous (closed) Telegram chat shown to the model on the first turn of the fresh one, so a returning player is greeted with continuity (0 = off; also a `retention` settings knob). |
 
 The retention bot's per-product config (bot token, channel, player-API key) lives on the
 product row in the admin **Retention · Telegram** section, not in env; secrets there are

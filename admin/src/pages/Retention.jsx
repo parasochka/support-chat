@@ -7,6 +7,10 @@ import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
 import Chip from '@mui/material/Chip';
+import Dialog from '@mui/material/Dialog';
+import DialogActions from '@mui/material/DialogActions';
+import DialogContent from '@mui/material/DialogContent';
+import DialogTitle from '@mui/material/DialogTitle';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Grid from '@mui/material/Grid';
 import Stack from '@mui/material/Stack';
@@ -794,6 +798,154 @@ const ManagersTab = ({ productId }) => {
 };
 
 // ---------------------------------------------------------------------------
+// Conversations tab — the Telegram chats, logged apart from support. A chat
+// "closes" when it sits idle past the `session_idle_minutes` retention knob
+// (status becomes resolved); the player's next message starts a fresh chat
+// that carries a short continuity tail from the previous one.
+// ---------------------------------------------------------------------------
+const ConversationsTab = ({ productId }) => {
+  const notify = useNotify();
+  const [data, setData] = useState({ items: [], total: 0 });
+  const [page, setPage] = useState(1);
+  const [detail, setDetail] = useState(null); // {session, messages, ...}
+  const pageSize = 25;
+
+  useEffect(() => {
+    httpClient(
+      `${API_URL}/admin/retention/sessions?product_id=${productId}&page=${page}&page_size=${pageSize}`
+    )
+      .then(({ json }) => setData(json))
+      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+  }, [productId, page, notify]);
+
+  const openTranscript = (id) => {
+    httpClient(`${API_URL}/admin/session/${id}`)
+      .then(({ json }) => setDetail(json))
+      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+  };
+
+  const pages = Math.max(1, Math.ceil((data.total || 0) / pageSize));
+
+  return (
+    <Box>
+      <Alert severity="info" sx={{ mb: 2 }}>
+        Telegram chats with Nika, kept apart from the support-widget
+        conversations. An idle chat closes automatically (the “Session idle
+        (min)” knob in Settings → Retention bot); when the player returns, a new
+        chat starts and Nika is shown the tail of the previous one for
+        continuity. Click a row for the transcript.
+      </Alert>
+      <Box sx={{ overflowX: 'auto' }}>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Player</TableCell>
+              <TableCell>TG user</TableCell>
+              <TableCell>Lang</TableCell>
+              <TableCell>Status</TableCell>
+              <TableCell align="right">Msgs</TableCell>
+              <TableCell align="right">Cost $</TableCell>
+              <TableCell>Started</TableCell>
+              <TableCell>Last activity</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {data.items.map((s) => (
+              <TableRow
+                key={s.id}
+                hover
+                sx={{ cursor: 'pointer' }}
+                onClick={() => openTranscript(s.id)}
+              >
+                <TableCell>{s.full_name || s.player_id || '—'}</TableCell>
+                <TableCell>
+                  {s.tg_username ? `@${s.tg_username}` : s.tg_user_id || '—'}
+                </TableCell>
+                <TableCell>{s.lang || '—'}</TableCell>
+                <TableCell>
+                  <Chip
+                    size="small"
+                    label={s.status}
+                    color={s.status === 'open' ? 'success' : 'default'}
+                    variant="outlined"
+                  />
+                </TableCell>
+                <TableCell align="right">{s.message_count}</TableCell>
+                <TableCell align="right">
+                  {s.cost_usd_total ? s.cost_usd_total.toFixed(4) : '0'}
+                </TableCell>
+                <TableCell>{new Date(s.created_at).toLocaleString()}</TableCell>
+                <TableCell>{new Date(s.updated_at).toLocaleString()}</TableCell>
+              </TableRow>
+            ))}
+            {data.items.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={8}>
+                  <Typography color="text.secondary" sx={{ py: 2 }}>
+                    No Telegram chats yet.
+                  </Typography>
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </Box>
+      {pages > 1 && (
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }}>
+          <Button size="small" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+            Prev
+          </Button>
+          <Typography variant="body2">
+            {page} / {pages} · {data.total} chats
+          </Typography>
+          <Button size="small" disabled={page >= pages} onClick={() => setPage(page + 1)}>
+            Next
+          </Button>
+        </Stack>
+      )}
+      <Dialog open={!!detail} onClose={() => setDetail(null)} maxWidth="md" fullWidth>
+        <DialogTitle>
+          Telegram chat · {detail?.session?.id}
+          {detail?.session?.status ? ` · ${detail.session.status}` : ''}
+        </DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={1}>
+            {(detail?.messages || []).map((m, i) => (
+              <Card
+                key={i}
+                variant="outlined"
+                sx={{
+                  maxWidth: '80%',
+                  alignSelf: m.role === 'user' ? 'flex-start' : 'flex-end',
+                  bgcolor: m.role === 'user' ? 'transparent' : 'action.hover',
+                }}
+              >
+                <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
+                  <Typography variant="caption" color="text.secondary">
+                    {m.role} · {new Date(m.created_at).toLocaleString()}
+                    {m.cost_usd ? ` · $${m.cost_usd.toFixed(5)}` : ''}
+                  </Typography>
+                  <Typography sx={{ whiteSpace: 'pre-wrap' }}>{m.content}</Typography>
+                </CardContent>
+              </Card>
+            ))}
+            {(detail?.messages || []).length === 0 && (
+              <Typography color="text.secondary">No messages.</Typography>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Typography variant="caption" color="text.secondary" sx={{ mr: 'auto', ml: 1 }}>
+            Total cost: ${detail?.cost_usd_total ?? 0}
+          </Typography>
+          <Button onClick={() => setDetail(null)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Analytics tab
 // ---------------------------------------------------------------------------
 const AnalyticsTab = ({ productId }) => {
@@ -903,6 +1055,7 @@ const TABS = [
   ['prompt', 'Prompt preview', PromptTab],
   ['photos', 'Media', PhotosTab],
   ['managers', 'Managers', ManagersTab],
+  ['chats', 'Conversations', ConversationsTab],
   ['analytics', 'Analytics', AnalyticsTab],
 ];
 

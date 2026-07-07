@@ -143,6 +143,7 @@ const AppMenu = () => (
       <RetentionSubItem tab="prompt" label="Prompt preview" icon={<TuneIcon fontSize="small" />} />
       <RetentionSubItem tab="photos" label="Media" icon={<PhotoLibraryIcon fontSize="small" />} />
       <RetentionSubItem tab="managers" label="Managers" icon={<SupportAgentIcon fontSize="small" />} />
+      <RetentionSubItem tab="chats" label="Conversations" icon={<ForumIcon fontSize="small" />} />
       <RetentionSubItem tab="analytics" label="Analytics" icon={<InsightsIcon fontSize="small" />} />
     </CollapsibleSection>
 

@@ -597,3 +597,18 @@ async def users(product_id: int, limit: int = 100, offset: int = 0,
     return JSONResponse(content={
         "items": await db.list_retention_users(product_id, limit=min(limit, 500),
                                                offset=offset)})
+
+
+@admin_router.get("/sessions")
+async def sessions(product_id: int, page: int = 1, page_size: int = 25,
+                   admin=Depends(require_admin)) -> JSONResponse:
+    """Telegram chat sessions for a product (the Retention → Conversations tab).
+
+    Support chats never appear here, and Telegram chats never appear in the
+    support Conversations / Unresolved lists — the two channels are logged
+    apart. The transcript of a row is read via the shared
+    GET /admin/session/{id} (same scope check).
+    """
+    await admin_auth.require_product_read(admin, product_id)
+    return JSONResponse(content=await db.list_retention_sessions(
+        product_id, page=page, page_size=min(page_size, 100)))

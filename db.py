@@ -416,6 +416,12 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         # later turn answers in it until they switch again.
         "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
         "conv_lang TEXT",
+        # Telegram chat lifecycle: an idle retention conversation is closed and
+        # a FRESH session is created for the player's next message; the new
+        # session points at the closed one so the first prompt can carry a short
+        # continuity tail (returning-player greeting). NULL everywhere else.
+        "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
+        "prev_session_id UUID REFERENCES chat_sessions(id)",
         # Removed feature: system-prompt versioning + A/B. The prompt is now
         # sourced solely from prompts.py (the file is the single source of truth),
         # so drop the table and the per-session attribution column. Idempotent —
@@ -968,14 +974,16 @@ async def create_session(consumer: str, player_id: Optional[str],
                          lang: Optional[str], user_context: dict[str, Any],
                          session_id: Optional[str] = None,
                          product_id: Optional[int] = None,
-                         tg_user_id: Optional[int] = None) -> str:
+                         tg_user_id: Optional[int] = None,
+                         prev_session_id: Optional[str] = None) -> str:
     sid = session_id or str(uuid.uuid4())
     await _pool.execute(
         "INSERT INTO chat_sessions "
-        "(id, consumer, product_id, player_id, lang, user_context, tg_user_id) "
-        "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)",
+        "(id, consumer, product_id, player_id, lang, user_context, tg_user_id, "
+        " prev_session_id) "
+        "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)",
         sid, consumer, product_id, _as_text(player_id), lang,
-        json.dumps(user_context or {}), tg_user_id,
+        json.dumps(user_context or {}), tg_user_id, prev_session_id,
     )
     return sid
 
@@ -984,7 +992,7 @@ async def get_session(session_id: str) -> Optional[dict[str, Any]]:
     row = await _pool.fetchrow(
         "SELECT id, consumer, product_id, player_id, lang, conv_lang, topic_id, "
         "user_context, status, escalated, message_count, "
-        "context_reset_id, created_at, updated_at "
+        "context_reset_id, prev_session_id, created_at, updated_at "
         "FROM chat_sessions WHERE id = $1",
         session_id,
     )
@@ -992,6 +1000,8 @@ async def get_session(session_id: str) -> Optional[dict[str, Any]]:
         return None
     d = dict(row)
     d["id"] = str(d["id"])
+    if d.get("prev_session_id") is not None:
+        d["prev_session_id"] = str(d["prev_session_id"])
     ctx = d.get("user_context")
     if isinstance(ctx, str):
         d["user_context"] = json.loads(ctx)
@@ -2117,7 +2127,11 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
                         min_messages: Optional[int] = None,
                         product_ids: Optional[list[int]] = None,
                         page: int = 1, page_size: int = 25) -> dict[str, Any]:
-    where = ["s.created_at >= $1", "s.created_at < $2"]
+    # Telegram (retention-bot) chats live in the Retention section of the admin
+    # (list_retention_sessions) — the support Conversations list never mixes
+    # them in.
+    where = ["s.created_at >= $1", "s.created_at < $2",
+             "s.consumer <> 'telegram'"]
     args: list[Any] = [dt_from, dt_to]
     if product_ids is not None:
         args.append(product_ids); where.append(f"s.product_id = ANY(${len(args)}::int[])")
@@ -2256,6 +2270,7 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any,
         "FROM chat_sessions s LEFT JOIN kb_topics t ON t.id = s.topic_id "
         "LEFT JOIN costs ON costs.session_id = s.id "
         "WHERE s.message_count > 0 "
+        "  AND s.consumer <> 'telegram' "
         "  AND (s.escalated OR s.status = 'open') "
         f"  AND s.created_at >= $1 AND s.created_at < $2{scope} "
         "ORDER BY topic, s.created_at DESC",
@@ -2932,6 +2947,64 @@ async def list_retention_users(product_id: int, *, limit: int = 100,
                 d[ts] = d[ts].isoformat()
         out.append(d)
     return out
+
+
+async def close_retention_session(session_id: str,
+                                  product_id: Optional[int] = None,
+                                  reason: str = "idle") -> None:
+    """Close an idle Telegram chat session (lifecycle rollover).
+
+    Sets status='resolved' so the chat reads as finished in the admin; only an
+    'open' session is touched (an escalated one keeps its state). Logged as an
+    admin event (invariant §4 — every state transition leaves a trace).
+    """
+    result = await _pool.execute(
+        "UPDATE chat_sessions SET status = 'resolved', updated_at = now() "
+        "WHERE id = $1 AND status = 'open'",
+        session_id,
+    )
+    if result.endswith("1"):
+        await log_admin_event(session_id, "retention_session_closed",
+                              {"reason": reason}, product_id=product_id)
+
+
+async def list_retention_sessions(product_id: int, *, page: int = 1,
+                                  page_size: int = 25) -> dict[str, Any]:
+    """Telegram (retention-bot) chat sessions for a product, newest activity
+    first, joined with the player identity from retention_users and the summed
+    OpenAI cost. The Retention → Conversations admin tab feeds from this — the
+    support Conversations list excludes consumer='telegram' entirely."""
+    total = await _pool.fetchval(
+        "SELECT COUNT(*) FROM chat_sessions "
+        "WHERE product_id = $1 AND consumer = 'telegram'",
+        product_id,
+    )
+    page = max(page, 1)
+    rows = await _pool.fetch(
+        "SELECT s.id, s.status, s.escalated, s.message_count, "
+        "  COALESCE(s.conv_lang, s.lang) AS lang, s.created_at, s.updated_at, "
+        "  s.tg_user_id, u.tg_username, u.player_id, u.full_name, "
+        "  COALESCE(c.cost_usd_total, 0) AS cost_usd_total "
+        "FROM chat_sessions s "
+        "LEFT JOIN retention_users u "
+        "  ON u.product_id = s.product_id AND u.tg_user_id = s.tg_user_id "
+        "LEFT JOIN (SELECT session_id, SUM(cost_usd) AS cost_usd_total "
+        "           FROM ai_interaction_logs GROUP BY session_id) c "
+        "  ON c.session_id = s.id "
+        "WHERE s.product_id = $1 AND s.consumer = 'telegram' "
+        "ORDER BY s.updated_at DESC LIMIT $2 OFFSET $3",
+        product_id, page_size, (page - 1) * page_size,
+    )
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = str(d["id"])
+        for ts in ("created_at", "updated_at"):
+            if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
+                d[ts] = d[ts].isoformat()
+        d["cost_usd_total"] = round(float(d.get("cost_usd_total") or 0), 6)
+        items.append(d)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 async def retention_kb_block(product_id: int) -> str:
