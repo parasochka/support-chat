@@ -14,8 +14,18 @@ with react-admin), dark mode by default, no SSR.
 | Knowledge base (topics + KB content editor) | `GET/POST /admin/kb/topics`, `GET/PUT/DELETE /admin/kb/content` |
 | KB variables (`{placeholder}` registry) | `GET /admin/kb/variables`, `PUT /admin/kb/variables/{key}` |
 | Users (admin accounts, roles, passwords) | `GET/POST /admin/users`, `PUT/DELETE /admin/users/{email}` |
-| Prompt variables (brand values) | `GET/PUT /admin/prompt-variables` |
+| Prompt preview (read-only assembled prompt) | `GET /admin/effective-prompt` |
+| Prompt variables + escalation keywords + test player | `GET/PUT /admin/prompt-variables`, `PUT /admin/settings/escalation`, `GET/PUT /admin/test-profile` |
+| Translations (player-facing copy per language, incl. `contact_url`) | `GET/PUT /admin/translations` |
 | Settings (runtime groups, JSON editors) | `GET /admin/settings`, `PUT /admin/settings/{key}` |
+| Structure (partners → products, widget keys + embed snippet, write-only secrets) | `GET /admin/structure`, `POST/PUT /admin/partners*`, `POST/PUT /admin/products*`, `PUT /admin/products/{id}/secrets`, `POST /admin/products/{id}/widget-key` |
+| Retention · Telegram (config, retention KB, media, managers, analytics) | `/admin/retention/*` |
+
+The AppBar carries the **Partner → Product switcher** (fed by
+`GET /admin/structure`); the selection persists in localStorage and every
+scoped request sends it as `product_id`/`partner_id`. "All products" = the
+backend default (default product for editors, everything readable for
+dashboards).
 
 Notes on how this maps to the backend:
 

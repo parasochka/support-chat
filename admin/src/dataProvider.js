@@ -1,4 +1,5 @@
 import { API_URL, httpClient } from './httpClient';
+import { getProductId, scopeParams, withProduct } from './productScope';
 
 /**
  * Custom dataProvider mapped onto the existing FastAPI admin API.
@@ -50,12 +51,12 @@ const paginate = (rows, params) => {
 // ---------------------------------------------------------------------------
 
 const fetchTopics = async () => {
-  const { json } = await httpClient(`${API_URL}/admin/kb/topics`);
+  const { json } = await httpClient(withProduct(`${API_URL}/admin/kb/topics`));
   return (json.topics || []).map((t) => ({ ...t, order: t.display_order }));
 };
 
 const fetchKbVariables = async () => {
-  const { json } = await httpClient(`${API_URL}/admin/kb/variables`);
+  const { json } = await httpClient(withProduct(`${API_URL}/admin/kb/variables`));
   return (json.variables || []).map((v) => ({ ...v, id: v.key }));
 };
 
@@ -65,7 +66,7 @@ const fetchUsers = async () => {
 };
 
 const fetchUnresolved = async (filter = {}) => {
-  const query = buildQuery({ from: filter.from, to: filter.to });
+  const query = buildQuery({ from: filter.from, to: filter.to, ...scopeParams() });
   const { json } = await httpClient(`${API_URL}/admin/unresolved${query}`);
   const rows = [];
   (json.groups || []).forEach((g) => {
@@ -88,7 +89,7 @@ const saveTopic = async (data) => {
       title,
       order: data.order ?? 0,
       active: data.active ?? true,
-      product_id: data.product_id ?? null,
+      product_id: data.product_id ?? getProductId() ?? null,
     }),
   });
   return json; // the upserted topic row (with id)
@@ -109,6 +110,7 @@ const dataProvider = {
         escalated: f.escalated,
         q: f.q,
         min_messages: f.min_messages,
+        ...scopeParams(),
       });
       const { json } = await httpClient(`${API_URL}/admin/sessions${query}`);
       // Server page size is fixed at 25; the List component uses perPage=25.

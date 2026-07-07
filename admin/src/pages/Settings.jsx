@@ -8,6 +8,7 @@ import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import { API_URL, httpClient } from '../httpClient';
+import { withProduct } from '../productScope';
 
 // Content-tuning group edited from the prompt-variables area in the legacy
 // SPA; kept out of the generic settings editor to avoid a duplicate editor.
@@ -27,7 +28,7 @@ const Settings = () => {
   const notify = useNotify();
 
   const load = () =>
-    httpClient(`${API_URL}/admin/settings`)
+    httpClient(withProduct(`${API_URL}/admin/settings`))
       .then(({ json }) => {
         const ks = (json.keys || []).filter((k) => !SKIP_GROUPS.includes(k));
         setKeys(ks);
@@ -55,7 +56,7 @@ const Settings = () => {
     }
     setSaving(key);
     try {
-      await httpClient(`${API_URL}/admin/settings/${key}`, {
+      await httpClient(withProduct(`${API_URL}/admin/settings/${key}`), {
         method: 'PUT',
         body: JSON.stringify({ value }),
       });

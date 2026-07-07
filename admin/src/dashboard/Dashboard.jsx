@@ -11,6 +11,7 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
 import { API_URL, httpClient } from '../httpClient';
+import { scopeParams } from '../productScope';
 
 const Kpi = ({ label, value, hint }) => (
   <Grid item xs={12} sm={6} md={3}>
@@ -40,10 +41,12 @@ const Dashboard = () => {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    const scope = new URLSearchParams(scopeParams()).toString();
+    const qs = scope ? `?${scope}` : '';
     Promise.all([
-      httpClient(`${API_URL}/admin/overview`),
-      httpClient(`${API_URL}/admin/by-topic`),
-      httpClient(`${API_URL}/admin/by-language`),
+      httpClient(`${API_URL}/admin/overview${qs}`),
+      httpClient(`${API_URL}/admin/by-topic${qs}`),
+      httpClient(`${API_URL}/admin/by-language${qs}`),
     ])
       .then(([o, t, l]) => {
         setOverview(o.json);

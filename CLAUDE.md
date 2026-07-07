@@ -937,8 +937,15 @@ Map of what lives where:
   context. The profile is **ignored** when a handshake secret is set (the host site is
   authoritative then). This is the single seam for "manage the test player on test, the real
   site supplies it later".
-- **Admin SPA** (`frontend/admin/`, `npadmin-` prefix, hand-rolled inline SVG charts, no
-  build step, no CDN): served at `/admin`, assets under `/admin-static`.
+- **Admin SPA** (`admin/` at the repo root): a React Admin (marmelab) + Vite app,
+  deployed SEPARATELY as a static site (`npm run build` → `admin/dist`; env
+  `VITE_API_URL` points it at this service). The backend serves only the
+  `/admin/*` JSON API — the old hand-rolled SPA (`frontend/admin/`, `/admin` +
+  `/admin-static` routes) was removed. The custom dataProvider
+  (`admin/src/dataProvider.js`) maps react-admin resources onto the real
+  endpoints; auth is `POST /admin/login` → Bearer JWT; the header carries the
+  Partner → Product switcher (selection in localStorage, sent as
+  `product_id`/`partner_id` query params).
 
 §16 decisions: unresolved analysis = topic-grouped (no embeddings); contact form =
 host-site button only; admin auth = named `admin_users` accounts only (email + password,
@@ -968,8 +975,10 @@ settings/secrets/KB/copy, the header switcher. When extending, keep these rules:
 ## Conventions
 
 - Stdlib-only JWT (`auth.py`) — HS256 via `hmac`/`hashlib`/`base64`, no PyJWT.
-- Front-end is vanilla ES modules with **no build step**; widget classes are prefixed
-  `npchat-` to avoid host-page collisions. The admin SPA uses `npadmin-`.
+- The widget front-end is vanilla ES modules with **no build step**; widget classes
+  are prefixed `npchat-` to avoid host-page collisions. The admin SPA is the React
+  Admin app in `admin/` (its own Vite build — the exception to "no build step",
+  since it deploys as its own static site).
 - **Assistant replies render a small, safe Markdown subset** (`widget.js`
   `renderMarkdown`): the model formats answers with light Markdown on its own
   (`**bold**`, numbered/bulleted lists, `code`, links), so rendering them as plain text
