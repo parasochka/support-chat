@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Title, useNotify } from 'react-admin';
+import { useNotify } from 'react-admin';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -28,6 +28,8 @@ const PROFILE_FIELDS = [
  * prompt variables, the escalation keyword lists (the `escalation` settings
  * group — content tuning, edited here and only here), and the test player
  * profile that stands in for the host-site handshake in dev.
+ *
+ * Rendered as the Variables tab of the Prompt page (pages/Prompt.jsx).
  */
 const PromptVariables = () => {
   const notify = useNotify();
@@ -134,8 +136,7 @@ const PromptVariables = () => {
   };
 
   return (
-    <Box sx={{ p: 2, maxWidth: 900 }}>
-      <Title title="Prompt variables" />
+    <Box sx={{ maxWidth: 900 }}>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         Brand values substituted into the shared prompt template. Empty values
         fall back to the built-in defaults. The prompt wording itself is edited

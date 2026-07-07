@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Title, useNotify } from 'react-admin';
+import { useNotify } from 'react-admin';
 import Box from '@mui/material/Box';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
@@ -33,6 +33,8 @@ const Block = ({ title, text }) => (
  * the system message (Layer 1 core + static directives + Layer 2 KB) and the
  * Layer-3 user message, prompt variables already substituted. The wording
  * itself lives in prompts.py and is not editable here by design.
+ *
+ * Rendered as the Preview tab of the Prompt page (pages/Prompt.jsx).
  */
 const PromptPreview = () => {
   const [preview, setPreview] = useState(null);
@@ -45,8 +47,7 @@ const PromptPreview = () => {
   }, [notify]);
 
   return (
-    <Box sx={{ p: 2, maxWidth: 1000 }}>
-      <Title title="Prompt preview" />
+    <Box sx={{ maxWidth: 1000 }}>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         The complete prompt as the model receives it (read-only; example topic:{' '}
         {preview?.example?.topic || '—'}, language: {preview?.example?.lang || '—'}).
