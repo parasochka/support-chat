@@ -42,6 +42,10 @@ def _patch_common(monkeypatch, tg):
     monkeypatch.setattr(retention.db, "get_product_telegram_token", _token)
     monkeypatch.setattr(retention, "TelegramClient", lambda *a, **k: tg)
 
+    async def _set_conv_lang(rid, lang):
+        pass
+    monkeypatch.setattr(retention.db, "set_retention_conv_lang", _set_conv_lang)
+
 
 PRODUCT = {"id": 1, "active": True, "retention_enabled": True,
            "telegram_bot_username": "nika_bot", "telegram_channel_id": None,
@@ -76,7 +80,7 @@ async def test_start_valid_nonce_shows_menu(monkeypatch):
     async def _upsert(product_id, tg_user_id, **kw):
         captured.update(kw)
         return {"id": 10, "tg_user_id": tg_user_id, "entry_type": kw["entry_type"],
-                "conv_lang": None}
+                "conv_lang": None, "full_name": kw["profile"].get("full_name")}
     monkeypatch.setattr(retention.db, "upsert_retention_user", _upsert)
 
     async def _sub(rid, val):
@@ -90,10 +94,50 @@ async def test_start_valid_nonce_shows_menu(monkeypatch):
     # escalation entry -> the manager button is offered alongside Nika
     assert captured["entry_type"] == "escalation"
     assert tg.messages, "menu expected"
+    # the menu opens with a personalized persona greeting (first name only)
+    text = tg.messages[-1][1]
+    assert "Andrey" in text and "Nika" in text
     markup = tg.messages[-1][2]
     labels = [b["text"] for row in markup["inline_keyboard"] for b in row]
     assert any("manager" in l.lower() or "менеджер" in l.lower() for l in labels)
     assert any("nika" in l.lower() or "ник" in l.lower() for l in labels)
+
+
+async def test_start_adopts_deeplink_language(monkeypatch):
+    """A nonce minted from a Russian conversation opens the bot in Russian: the
+    payload's `lang` is persisted as the retention user's conv_lang and the menu
+    is localized to it (not to the Telegram client language)."""
+    tg = FakeTelegram()
+    _patch_common(monkeypatch, tg)
+
+    async def _redeem(nonce):
+        return {"product_id": 1, "payload": {"id": "p9", "full_name": "Андрей",
+                "lang": "ru"}, "escalation": False}
+    monkeypatch.setattr(retention.db, "redeem_retention_nonce", _redeem)
+
+    async def _upsert(product_id, tg_user_id, **kw):
+        return {"id": 10, "tg_user_id": tg_user_id, "entry_type": kw["entry_type"],
+                "conv_lang": None, "full_name": "Андрей Иванов"}
+    monkeypatch.setattr(retention.db, "upsert_retention_user", _upsert)
+
+    saved = {}
+
+    async def _set_conv_lang(rid, lang):
+        saved["lang"] = lang
+    monkeypatch.setattr(retention.db, "set_retention_conv_lang", _set_conv_lang)
+
+    async def _sub(rid, val):
+        pass
+    monkeypatch.setattr(retention.db, "set_retention_subscribed", _sub)
+
+    await retention.handle_update(PRODUCT, {"message": {
+        "from": {"id": 7, "language_code": "en"}, "chat": {"id": 7},
+        "text": "/start goodnonce"}})
+
+    assert saved["lang"] == "ru"
+    text = tg.messages[-1][1]
+    assert "Привет" in text and "Андрей" in text  # RU greeting, first name only
+    assert "Иванов" not in text
 
 
 async def test_callback_nika_starts_chat(monkeypatch):

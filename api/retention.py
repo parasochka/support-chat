@@ -95,6 +95,9 @@ class DeeplinkReq(BaseModel):
     signed_context: Optional[str] = None
     user_context: dict[str, Any] = Field(default_factory=dict)
     escalation: bool = False
+    # The language the player's conversation/UI was already running in (a code
+    # or a locale like "ru-RU"). Rides in the nonce so the bot opens in it.
+    lang: Optional[str] = None
 
 
 async def _resolve_product(widget_key: Optional[str]) -> Optional[dict[str, Any]]:
@@ -151,7 +154,9 @@ async def create_deeplink(req: Request, body: DeeplinkReq) -> JSONResponse:
         else:
             context = body.user_context or {}
 
-    link = await retention_mod.create_deeplink(product, context, body.escalation)
+    link_lang = language.locale_to_lang(body.lang) if body.lang else None
+    link = await retention_mod.create_deeplink(product, context, body.escalation,
+                                               lang=link_lang)
     if not link["deep_link"]:
         return _err(409, "no_bot", "This product has no Telegram bot username set.")
     return JSONResponse(content=link)

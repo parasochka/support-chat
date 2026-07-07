@@ -258,7 +258,10 @@ async def build_payload_for_session(session: dict, lang: str,
     tenancy.set_current_product(product_id)  # scope the nonce settings
     try:
         context = session.get("user_context") or {}
-        link = await retention.create_deeplink(product, context, escalation=True)
+        # `lang` is the turn's answer language (conv drift included) — ride it in
+        # the nonce so the bot opens in the language the chat was running in.
+        link = await retention.create_deeplink(product, context, escalation=True,
+                                               lang=lang)
     except Exception:  # noqa: BLE001 — fall back to the static contact link
         log.warning("escalation_retention_deeplink_mint_failed product_id=%s",
                     product_id, exc_info=True)

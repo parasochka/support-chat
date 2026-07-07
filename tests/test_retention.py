@@ -28,6 +28,45 @@ def test_retention_core_differs_from_support_core():
     assert prompts.get_retention_system_core() != prompts.get_system_core()
 
 
+def test_retention_core_uses_telegram_plain_text_formatting():
+    """Telegram renders retention replies as plain text (no parse_mode), so the
+    retention Layer 1 must carry the plain-text directive, NOT the widget's
+    Markdown directive (whose markup would leak to the player as literal chars)."""
+    core = prompts.get_retention_system_core()
+    assert "PLAIN TEXT" in core
+    assert "Always use light Markdown" not in core
+    # the support core keeps asking for the widget's Markdown subset
+    assert "Always use light Markdown" in prompts.get_system_core()
+
+
+def test_retention_core_has_own_tone_variable():
+    """Retention tone is tuned independently from the support tone."""
+    assert "{retention_tone_of_voice}" in prompts.SYSTEM_CORE_RETENTION
+    assert "{tone_of_voice}" not in prompts.SYSTEM_CORE_RETENTION
+    assert "{tone_of_voice}" in prompts.SYSTEM_CORE
+
+
+async def test_create_deeplink_carries_lang(monkeypatch):
+    """The site conversation's language rides in the nonce payload (supported
+    codes only) so /start can adopt it as the bot's conversation language."""
+    captured = {}
+
+    async def _create_nonce(nonce, product_id, payload, escalation, ttl):
+        captured.update(payload=payload, escalation=escalation)
+    monkeypatch.setattr(retention.db, "create_retention_nonce", _create_nonce)
+
+    product = {"id": 1, "telegram_bot_username": "nika_bot"}
+    link = await retention.create_deeplink(product, {"full_name": "Andrey"},
+                                           escalation=True, lang="ru")
+    assert link["deep_link"].startswith("https://t.me/nika_bot?start=")
+    assert captured["payload"]["lang"] == "ru"
+    assert captured["payload"]["full_name"] == "Andrey"
+
+    # an unsupported code is dropped, not stored
+    await retention.create_deeplink(product, {}, escalation=False, lang="xx")
+    assert "lang" not in captured["payload"]
+
+
 def test_strip_photo_tag():
     clean, pid = prompts.strip_photo_tag("[[PHOTO:42]]\nlook at this")
     assert pid == 42 and clean == "look at this"
