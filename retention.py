@@ -169,7 +169,7 @@ async def select_photo_candidates(product_id: int, ru: dict[str, Any],
                                   user_text: str) -> list[dict[str, Any]]:
     """The allowed photo set for this turn (empty = no photo this turn).
 
-    Gates (RETENTION_BOT_SPEC §5/§6):
+    Gates:
       - daily cap: at/over -> empty (hard limit, reactive included);
       - proactive cooldown: unless the player explicitly asked, require
         msgs_since_photo >= cooldown;
@@ -210,7 +210,7 @@ async def maybe_advance_stage(ru: dict[str, Any], stage_up_hint: bool) -> Option
     """Apply the backend stage-advance gate. Returns the new stage or None.
 
     The model only HINTS; the backend decides on threshold + tier ceiling +
-    spacing (RETENTION_BOT_SPEC §6). `ru` must be the freshly-bumped row.
+    spacing. `ru` must be the freshly-bumped row.
     """
     cfg = settings.retention()
     unlocked = int(ru.get("unlocked_stage") or 1)

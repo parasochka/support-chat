@@ -729,7 +729,9 @@ A **second front-end over the same AI core**: from the site a player deep-links 
 Telegram bot where **Nika runs retention only** (warm, flirtatious engagement + photos under
 the player's profile). She does **not** handle support — any support/complaint/account-block/
 deposit-withdrawal/responsible-gaming/ask-for-a-human topic is routed **out** (to a manager on
-an escalation entry, back to site support on a retention entry). Full spec: `RETENTION_BOT_SPEC.md`.
+an escalation entry, back to site support on a retention entry). This section IS the spec (the
+old `RETENTION_BOT_SPEC.md`/`RETENTION_SETUP.md` files were removed); the operator's setup
+checklist lives in the admin — the **Retention · Telegram → Setup guide** tab.
 
 - **Transport vs. brain vs. AI turn are separated on purpose** so the transport can be lifted
   into its own service later: `telegram_transport.py` (HTTP to the Bot API + update parsing,
@@ -792,8 +794,9 @@ an escalation entry, back to site support on a retention entry). Full spec: `RET
   `telegram_channel_url`, `player_api_url`, `retention_enabled`. Webhook auth is two-layer: the
   routing token in the path + the deploy-wide `TELEGRAM_WEBHOOK_SECRET` in the
   `X-Telegram-Bot-Api-Secret-Token` header (NOT in the URL).
-- **Admin**: the SPA **Retention · Telegram** view (sub-tabs: Telegram config, Retention KB, Media,
-  Managers, Settings, Analytics); API under `/admin/retention/*` (`api/retention.py`, guarded per
+- **Admin**: the SPA **Retention · Telegram** view (sub-tabs: Setup guide — the static
+  "how to connect the bot" checklist that replaced `RETENTION_SETUP.md` —, Telegram config,
+  Retention KB, Media, Managers, Analytics); API under `/admin/retention/*` (`api/retention.py`, guarded per
   product) + the `retention` group via the generic `/admin/settings/retention`. Retention copy
   (menu/gate/handoff strings, `rtn_*` keys) is in the translations registry (scope `retention`).
 - **All existing invariants hold**: retention turns persist atomically as normal
