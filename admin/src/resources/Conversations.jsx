@@ -6,6 +6,7 @@ import {
   DateInput,
   List,
   NumberField,
+  NumberInput,
   SelectInput,
   Show,
   TextField,
@@ -18,6 +19,7 @@ import CardContent from '@mui/material/CardContent';
 import Chip from '@mui/material/Chip';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
+import { useSupportedLanguages } from '../lib/meta';
 
 const STATUS_CHOICES = [
   { id: 'open', name: 'Open' },
@@ -25,21 +27,37 @@ const STATUS_CHOICES = [
   { id: 'resolved', name: 'Resolved' },
 ];
 
-const LANG_CHOICES = ['en', 'ru', 'es', 'tr', 'pt'].map((l) => ({ id: l, name: l }));
-
-const filters = [
-  <TextInput key="q" source="q" label="Search in messages" alwaysOn />,
-  <TextInput key="topic" source="topic" label="Topic slug" />,
-  <SelectInput key="lang" source="lang" label="Language" choices={LANG_CHOICES} />,
-  <SelectInput key="status" source="status" choices={STATUS_CHOICES} />,
-  <BooleanInput key="escalated" source="escalated" label="Escalated" />,
-  <DateInput key="from" source="from" label="From" />,
-  <DateInput key="to" source="to" label="To" />,
-];
+const useFilters = () => {
+  const langs = useSupportedLanguages();
+  return [
+    <TextInput key="q" source="q" label="Search in messages" alwaysOn />,
+    <NumberInput
+      key="min_messages"
+      source="min_messages"
+      label="Min messages"
+      min={0}
+      alwaysOn
+    />,
+    <TextInput key="topic" source="topic" label="Topic slug" />,
+    <SelectInput
+      key="lang"
+      source="lang"
+      label="Language"
+      choices={langs.map((l) => ({ id: l.code, name: `${l.name} (${l.code})` }))}
+    />,
+    <SelectInput key="status" source="status" choices={STATUS_CHOICES} />,
+    <BooleanInput key="escalated" source="escalated" label="Escalated" />,
+    <DateInput key="from" source="from" label="From" />,
+    <DateInput key="to" source="to" label="To" />,
+  ];
+};
 
 export const ConversationList = () => (
   <List
-    filters={filters}
+    filters={useFilters()}
+    // Hide empty sessions (opened widget, never wrote) by default — clear the
+    // "Min messages" filter to see them.
+    filterDefaultValues={{ min_messages: 1 }}
     perPage={25}
     pagination={false}
     exporter={false}

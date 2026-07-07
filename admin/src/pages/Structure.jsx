@@ -4,14 +4,16 @@ import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
-import Chip from '@mui/material/Chip';
-import Collapse from '@mui/material/Collapse';
 import Divider from '@mui/material/Divider';
 import FormControlLabel from '@mui/material/FormControlLabel';
+import Grid from '@mui/material/Grid';
+import IconButton from '@mui/material/IconButton';
+import InputAdornment from '@mui/material/InputAdornment';
 import Stack from '@mui/material/Stack';
 import Switch from '@mui/material/Switch';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { API_URL, httpClient } from '../httpClient';
 
 const embedSnippet = (widgetKey) =>
@@ -27,10 +29,11 @@ const SECRET_FIELDS = [
   ['player_api_key', 'Player API key', 'has_player_api_key'],
 ];
 
-const ProductRow = ({ product, onChanged }) => {
+const mono = { fontFamily: 'monospace', fontSize: 13 };
+
+const ProductCard = ({ product, onChanged }) => {
   const notify = useNotify();
   const [name, setName] = useState(product.name);
-  const [open, setOpen] = useState(false);
   const [secrets, setSecrets] = useState({});
 
   const saveProduct = async (fields) => {
@@ -60,9 +63,9 @@ const ProductRow = ({ product, onChanged }) => {
     }
   };
 
-  const copySnippet = async () => {
-    await navigator.clipboard.writeText(embedSnippet(product.widget_key));
-    notify('Embed snippet copied', { type: 'info' });
+  const copy = async (text, message) => {
+    await navigator.clipboard.writeText(text);
+    notify(message, { type: 'info' });
   };
 
   const saveSecrets = async () => {
@@ -87,62 +90,118 @@ const ProductRow = ({ product, onChanged }) => {
   };
 
   return (
-    <Box sx={{ pl: 2, py: 1 }}>
-      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-        <TextField
-          size="small"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          label={`Product · ${product.slug}`}
-        />
-        <Button size="small" onClick={() => saveProduct({ name })}>
-          Rename
-        </Button>
-        <FormControlLabel
-          control={
-            <Switch
-              size="small"
-              checked={product.active}
-              onChange={(e) => saveProduct({ active: e.target.checked })}
-            />
-          }
-          label="Active"
-        />
-        <Chip size="small" label={product.widget_key} />
-        <Button size="small" onClick={copySnippet}>
-          Copy embed snippet
-        </Button>
-        <Button size="small" color="warning" onClick={rotateKey}>
-          Rotate key
-        </Button>
-        <Button size="small" onClick={() => setOpen(!open)}>
-          {open ? 'Hide secrets' : 'Secrets…'}
-        </Button>
-      </Stack>
-      <Collapse in={open}>
-        <Box sx={{ pl: 1, pt: 1, maxWidth: 560 }}>
-          <Typography variant="body2" color="text.secondary">
-            Write-only (encrypted at rest). Leave a field untouched to keep the
-            current value; save an empty field to clear it (fall back to env).
-          </Typography>
-          {SECRET_FIELDS.map(([field, label, flag]) => (
-            <TextField
-              key={field}
-              label={`${label} ${product[flag] ? '· set' : '· not set'}`}
-              type="password"
-              value={secrets[field] ?? ''}
-              onChange={(e) => setSecrets({ ...secrets, [field]: e.target.value })}
-              fullWidth
-              margin="dense"
-              autoComplete="new-password"
-            />
-          ))}
-          <Button variant="contained" size="small" onClick={saveSecrets} sx={{ mt: 1 }}>
-            Save secrets
+    <Card variant="outlined" sx={{ mb: 2 }}>
+      <CardContent>
+        {/* --- identity row ------------------------------------------------ */}
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          flexWrap="wrap"
+          useFlexGap
+          sx={{ mb: 2 }}
+        >
+          <TextField
+            size="small"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            label={`Product · ${product.slug}`}
+            sx={{ minWidth: 220 }}
+          />
+          <Button size="small" variant="outlined" onClick={() => saveProduct({ name })}>
+            Rename
           </Button>
-        </Box>
-      </Collapse>
-    </Box>
+          <FormControlLabel
+            control={
+              <Switch
+                size="small"
+                checked={product.active}
+                onChange={(e) => saveProduct({ active: e.target.checked })}
+              />
+            }
+            label="Active"
+          />
+        </Stack>
+
+        {/* --- widget key + embed snippet ---------------------------------- */}
+        <Typography variant="subtitle2" gutterBottom>
+          Widget key & embed
+        </Typography>
+        <TextField
+          value={product.widget_key || ''}
+          label="Widget key"
+          fullWidth
+          size="small"
+          margin="dense"
+          slotProps={{
+            input: {
+              readOnly: true,
+              sx: mono,
+              endAdornment: (
+                <InputAdornment position="end">
+                  <IconButton
+                    size="small"
+                    onClick={() => copy(product.widget_key, 'Widget key copied')}
+                    aria-label="Copy widget key"
+                  >
+                    <ContentCopyIcon fontSize="small" />
+                  </IconButton>
+                </InputAdornment>
+              ),
+            },
+          }}
+        />
+        <TextField
+          value={embedSnippet(product.widget_key)}
+          label="Embed snippet"
+          fullWidth
+          multiline
+          size="small"
+          margin="dense"
+          slotProps={{ input: { readOnly: true, sx: mono } }}
+        />
+        <Stack direction="row" spacing={1} sx={{ mt: 1, mb: 2 }} flexWrap="wrap" useFlexGap>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<ContentCopyIcon fontSize="small" />}
+            onClick={() => copy(embedSnippet(product.widget_key), 'Embed snippet copied')}
+          >
+            Copy embed snippet
+          </Button>
+          <Button size="small" color="warning" variant="outlined" onClick={rotateKey}>
+            Rotate key
+          </Button>
+        </Stack>
+
+        {/* --- secrets (write-only, open by default) ----------------------- */}
+        <Typography variant="subtitle2" gutterBottom>
+          Secrets
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          Write-only (encrypted at rest). Leave a field untouched to keep the
+          current value; save an empty field to clear it (fall back to env).
+        </Typography>
+        <Grid container spacing={1}>
+          {SECRET_FIELDS.map(([field, label, flag]) => (
+            <Grid size={{ xs: 12, sm: 6 }} key={field}>
+              <TextField
+                label={`${label} ${product[flag] ? '· set' : '· not set'}`}
+                type="password"
+                value={secrets[field] ?? ''}
+                onChange={(e) => setSecrets({ ...secrets, [field]: e.target.value })}
+                fullWidth
+                size="small"
+                autoComplete="new-password"
+              />
+            </Grid>
+          ))}
+        </Grid>
+        <Button variant="contained" size="small" onClick={saveSecrets} sx={{ mt: 1.5 }}>
+          Save secrets
+        </Button>
+      </CardContent>
+    </Card>
   );
 };
 
@@ -167,9 +226,19 @@ const NewProductForm = ({ partnerId, onChanged }) => {
   };
 
   return (
-    <Stack direction="row" spacing={1} sx={{ pl: 2, pt: 1 }}>
-      <TextField size="small" label="New product slug" value={slug} onChange={(e) => setSlug(e.target.value)} />
-      <TextField size="small" label="Name" value={name} onChange={(e) => setName(e.target.value)} />
+    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ pt: 1 }}>
+      <TextField
+        size="small"
+        label="New product slug"
+        value={slug}
+        onChange={(e) => setSlug(e.target.value)}
+      />
+      <TextField
+        size="small"
+        label="Name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+      />
       <Button size="small" variant="outlined" onClick={create} disabled={!slug || !name}>
         Add product
       </Button>
@@ -195,16 +264,23 @@ const PartnerCard = ({ partner, onChanged }) => {
   };
 
   return (
-    <Card sx={{ mb: 2 }}>
+    <Card sx={{ mb: 3 }}>
       <CardContent>
-        <Stack direction="row" spacing={1} alignItems="center">
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          flexWrap="wrap"
+          useFlexGap
+        >
           <TextField
             size="small"
             value={name}
             onChange={(e) => setName(e.target.value)}
             label={`Partner · ${partner.slug}`}
+            sx={{ minWidth: 220 }}
           />
-          <Button size="small" onClick={() => savePartner({ name })}>
+          <Button size="small" variant="outlined" onClick={() => savePartner({ name })}>
             Rename
           </Button>
           <FormControlLabel
@@ -218,9 +294,9 @@ const PartnerCard = ({ partner, onChanged }) => {
             label="Active"
           />
         </Stack>
-        <Divider sx={{ my: 1 }} />
+        <Divider sx={{ my: 2 }} />
         {(partner.products || []).map((p) => (
-          <ProductRow key={p.id} product={p} onChanged={onChanged} />
+          <ProductCard key={p.id} product={p} onChanged={onChanged} />
         ))}
         <NewProductForm partnerId={partner.id} onChanged={onChanged} />
       </CardContent>
@@ -268,7 +344,7 @@ const Structure = () => {
     <Box sx={{ p: 2, maxWidth: 1000 }}>
       <Title title="Structure" />
       {structure.global_role === 'admin' && (
-        <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
           <TextField
             size="small"
             label="New partner slug"

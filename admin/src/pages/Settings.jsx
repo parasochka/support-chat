@@ -90,7 +90,7 @@ const Settings = () => {
                 fullWidth
                 multiline
                 minRows={6}
-                InputProps={{ sx: { fontFamily: 'monospace', fontSize: 13 } }}
+                slotProps={{ input: { sx: { fontFamily: 'monospace', fontSize: 13 } } }}
               />
               <Button
                 variant="contained"

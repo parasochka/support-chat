@@ -7,6 +7,7 @@ import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
 import Chip from '@mui/material/Chip';
 import FormControlLabel from '@mui/material/FormControlLabel';
+import Grid from '@mui/material/Grid';
 import Stack from '@mui/material/Stack';
 import Switch from '@mui/material/Switch';
 import Tab from '@mui/material/Tab';
@@ -304,8 +305,23 @@ const PhotoPreview = ({ photoId }) => {
       .catch(() => {});
     return () => url && URL.revokeObjectURL(url);
   }, [photoId]);
-  if (!src) return <Box sx={{ width: 96, height: 96, bgcolor: 'action.hover' }} />;
-  return <img src={src} alt="" style={{ width: 96, height: 96, objectFit: 'cover' }} />;
+  const frame = {
+    width: '100%',
+    height: 180,
+    bgcolor: 'action.hover',
+    borderRadius: 1,
+    overflow: 'hidden',
+  };
+  if (!src) return <Box sx={frame} />;
+  return (
+    <Box sx={frame}>
+      <img
+        src={src}
+        alt=""
+        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+      />
+    </Box>
+  );
 };
 
 const PhotosTab = ({ productId }) => {
@@ -375,42 +391,147 @@ const PhotosTab = ({ productId }) => {
     <Box>
       <Card sx={{ mb: 2 }}>
         <CardContent>
-          <Typography variant="h6">Upload photo</Typography>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ my: 1 }}>
+          <Typography variant="h6" gutterBottom>
+            Upload photo
+          </Typography>
+          <Grid container spacing={1.5} sx={{ mb: 1 }}>
+            <Grid size={{ xs: 12 }}>
+              <TextField
+                size="small"
+                label="Description (grounds the caption the model writes)"
+                value={upload.description}
+                onChange={(e) => setUpload({ ...upload, description: e.target.value })}
+                fullWidth
+                multiline
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+              <TextField
+                size="small"
+                label="Tags (comma-separated)"
+                value={upload.tags}
+                onChange={(e) => setUpload({ ...upload, tags: e.target.value })}
+                fullWidth
+              />
+            </Grid>
+            <Grid size={{ xs: 6, sm: 3, md: 2 }}>
+              <TextField
+                size="small"
+                type="number"
+                label="Level min (VIP tier)"
+                value={upload.level_min}
+                onChange={(e) => setUpload({ ...upload, level_min: Number(e.target.value) })}
+                fullWidth
+              />
+            </Grid>
+            <Grid size={{ xs: 6, sm: 3, md: 2 }}>
+              <TextField
+                size="small"
+                type="number"
+                label="Stage (explicitness)"
+                value={upload.stage}
+                onChange={(e) => setUpload({ ...upload, stage: Number(e.target.value) })}
+                fullWidth
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6, md: 4 }}>
+              <TextField
+                size="small"
+                label="Category"
+                value={upload.category}
+                onChange={(e) => setUpload({ ...upload, category: e.target.value })}
+                fullWidth
+              />
+            </Grid>
+          </Grid>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
             <Button variant="outlined" component="label">
               {file ? file.name : 'Choose file'}
               <input hidden type="file" accept="image/*" onChange={(e) => setFile(e.target.files[0])} />
             </Button>
-            <TextField size="small" label="Description (grounds the caption)" value={upload.description} onChange={(e) => setUpload({ ...upload, description: e.target.value })} sx={{ minWidth: 280 }} />
-            <TextField size="small" label="Tags (csv)" value={upload.tags} onChange={(e) => setUpload({ ...upload, tags: e.target.value })} />
-            <TextField size="small" type="number" label="Level min (VIP tier)" value={upload.level_min} onChange={(e) => setUpload({ ...upload, level_min: Number(e.target.value) })} sx={{ width: 140 }} />
-            <TextField size="small" type="number" label="Stage" value={upload.stage} onChange={(e) => setUpload({ ...upload, stage: Number(e.target.value) })} sx={{ width: 100 }} />
-            <TextField size="small" label="Category" value={upload.category} onChange={(e) => setUpload({ ...upload, category: e.target.value })} />
             <Button variant="contained" onClick={doUpload} disabled={!file}>
               Upload
             </Button>
           </Stack>
         </CardContent>
       </Card>
-      <Stack spacing={1}>
+
+      {items.length === 0 && (
+        <Typography variant="body2" color="text.secondary">
+          No photos yet — upload the first one above.
+        </Typography>
+      )}
+      <Grid container spacing={2} alignItems="stretch">
         {items.map((ph) => (
-          <Card key={ph.id}>
-            <CardContent>
-              <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Grid size={{ xs: 12, sm: 6, md: 4 }} key={ph.id}>
+            <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+              <CardContent sx={{ flexGrow: 1 }}>
                 <PhotoPreview photoId={ph.id} />
-                <TextField size="small" label="Description" defaultValue={ph.description || ''} onBlur={(e) => e.target.value !== (ph.description || '') && patch(ph.id, { description: e.target.value })} sx={{ minWidth: 260 }} />
-                <TextField size="small" type="number" label="Level min" defaultValue={ph.level_min} onBlur={(e) => Number(e.target.value) !== ph.level_min && patch(ph.id, { level_min: Number(e.target.value) })} sx={{ width: 110 }} />
-                <TextField size="small" type="number" label="Stage" defaultValue={ph.stage} onBlur={(e) => Number(e.target.value) !== ph.stage && patch(ph.id, { stage: Number(e.target.value) })} sx={{ width: 90 }} />
-                <FormControlLabel control={<Switch checked={Boolean(ph.active)} onChange={(e) => patch(ph.id, { active: e.target.checked })} />} label="Active" />
-                {ph.telegram_file_id && <Chip size="small" label="cached in TG" />}
-                <Button size="small" color="error" onClick={() => remove(ph.id)}>
-                  Delete
-                </Button>
-              </Stack>
-            </CardContent>
-          </Card>
+                <Stack spacing={1.5} sx={{ mt: 1.5 }}>
+                  <TextField
+                    size="small"
+                    label="Description"
+                    defaultValue={ph.description || ''}
+                    onBlur={(e) =>
+                      e.target.value !== (ph.description || '') &&
+                      patch(ph.id, { description: e.target.value })
+                    }
+                    fullWidth
+                    multiline
+                  />
+                  <Stack direction="row" spacing={1}>
+                    <TextField
+                      size="small"
+                      type="number"
+                      label="Level min"
+                      defaultValue={ph.level_min}
+                      onBlur={(e) =>
+                        Number(e.target.value) !== ph.level_min &&
+                        patch(ph.id, { level_min: Number(e.target.value) })
+                      }
+                      fullWidth
+                    />
+                    <TextField
+                      size="small"
+                      type="number"
+                      label="Stage"
+                      defaultValue={ph.stage}
+                      onBlur={(e) =>
+                        Number(e.target.value) !== ph.stage &&
+                        patch(ph.id, { stage: Number(e.target.value) })
+                      }
+                      fullWidth
+                    />
+                  </Stack>
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    justifyContent="space-between"
+                    flexWrap="wrap"
+                    useFlexGap
+                  >
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          size="small"
+                          checked={Boolean(ph.active)}
+                          onChange={(e) => patch(ph.id, { active: e.target.checked })}
+                        />
+                      }
+                      label="Active"
+                    />
+                    {ph.telegram_file_id && <Chip size="small" label="cached in TG" />}
+                    <Button size="small" color="error" onClick={() => remove(ph.id)}>
+                      Delete
+                    </Button>
+                  </Stack>
+                </Stack>
+              </CardContent>
+            </Card>
+          </Grid>
         ))}
-      </Stack>
+      </Grid>
     </Box>
   );
 };
@@ -470,39 +591,41 @@ const ManagersTab = ({ productId }) => {
 
   return (
     <Box>
-      <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
+      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
         <TextField size="small" label="Display name" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
         <TextField size="small" label="Telegram username (without @)" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
         <Button variant="outlined" onClick={create} disabled={!form.display_name || !form.username}>
           Add manager
         </Button>
       </Stack>
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell>Name</TableCell>
-            <TableCell>Username</TableCell>
-            <TableCell>Active</TableCell>
-            <TableCell />
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {items.map((m) => (
-            <TableRow key={m.id}>
-              <TableCell>{m.display_name}</TableCell>
-              <TableCell>@{m.username}</TableCell>
-              <TableCell>
-                <Switch size="small" checked={Boolean(m.active)} onChange={(e) => patch(m.id, { active: e.target.checked })} />
-              </TableCell>
-              <TableCell>
-                <Button size="small" color="error" onClick={() => remove(m.id)}>
-                  Delete
-                </Button>
-              </TableCell>
+      <Box sx={{ overflowX: 'auto' }}>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Name</TableCell>
+              <TableCell>Username</TableCell>
+              <TableCell>Active</TableCell>
+              <TableCell />
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </TableHead>
+          <TableBody>
+            {items.map((m) => (
+              <TableRow key={m.id}>
+                <TableCell>{m.display_name}</TableCell>
+                <TableCell>@{m.username}</TableCell>
+                <TableCell>
+                  <Switch size="small" checked={Boolean(m.active)} onChange={(e) => patch(m.id, { active: e.target.checked })} />
+                </TableCell>
+                <TableCell>
+                  <Button size="small" color="error" onClick={() => remove(m.id)}>
+                    Delete
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </Box>
     </Box>
   );
 };
@@ -524,43 +647,85 @@ const AnalyticsTab = ({ productId }) => {
       .catch(() => {});
   }, [productId, notify]);
 
+  const kpis = [
+    ['Linked players', overview?.users_total, 'total deeplink entries'],
+    ['Subscribed', overview?.users_subscribed, 'passed the channel gate'],
+    ['Active (30d)', overview?.users_active, 'wrote in the period'],
+    ['Avg stage', overview?.avg_stage, 'photo explicitness unlocked'],
+    ['Photos sent (30d)', overview?.photos_sent],
+    ['Hand-offs (30d)', overview?.handoffs, 'to manager / site support'],
+  ];
+
   return (
     <Box>
-      <Card sx={{ mb: 2 }}>
-        <CardContent>
-          <Typography variant="h6">Overview (30d)</Typography>
-          <Typography component="pre" sx={{ fontFamily: 'monospace', fontSize: 13, whiteSpace: 'pre-wrap' }}>
-            {overview ? JSON.stringify(overview, null, 2) : '…'}
-          </Typography>
-        </CardContent>
-      </Card>
+      <Grid container spacing={2} alignItems="stretch" sx={{ mb: 2 }}>
+        {kpis.map(([label, value, hint]) => (
+          <Grid size={{ xs: 6, sm: 4, md: 2 }} key={label}>
+            <Card sx={{ height: '100%' }}>
+              <CardContent
+                sx={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 0.5 }}
+              >
+                <Typography
+                  variant="overline"
+                  color="text.secondary"
+                  sx={{ lineHeight: 1.4 }}
+                >
+                  {label}
+                </Typography>
+                <Typography variant="h5" sx={{ fontWeight: 600 }}>
+                  {value ?? '—'}
+                </Typography>
+                {hint && (
+                  <Typography variant="caption" color="text.secondary" sx={{ mt: 'auto' }}>
+                    {hint}
+                  </Typography>
+                )}
+              </CardContent>
+            </Card>
+          </Grid>
+        ))}
+      </Grid>
       <Typography variant="h6" sx={{ mb: 1 }}>
         Linked players ({users.length})
       </Typography>
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell>Player</TableCell>
-            <TableCell>TG user</TableCell>
-            <TableCell>Entry</TableCell>
-            <TableCell>Stage</TableCell>
-            <TableCell>Msgs</TableCell>
-            <TableCell>Last seen</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {users.map((u, i) => (
-            <TableRow key={i}>
-              <TableCell>{u.player_id}</TableCell>
-              <TableCell>{u.tg_user_id}</TableCell>
-              <TableCell>{u.entry_type}</TableCell>
-              <TableCell>{u.unlocked_stage}</TableCell>
-              <TableCell>{u.message_count}</TableCell>
-              <TableCell>{u.last_seen_at}</TableCell>
+      <Box sx={{ overflowX: 'auto' }}>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Player</TableCell>
+              <TableCell>TG user</TableCell>
+              <TableCell>Entry</TableCell>
+              <TableCell>VIP</TableCell>
+              <TableCell align="right">Stage</TableCell>
+              <TableCell align="right">Msgs</TableCell>
+              <TableCell align="right">Photos</TableCell>
+              <TableCell>Manager</TableCell>
+              <TableCell>Last active</TableCell>
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </TableHead>
+          <TableBody>
+            {users.map((u, i) => (
+              <TableRow key={u.id ?? i}>
+                <TableCell>{u.player_id}</TableCell>
+                <TableCell>
+                  {u.tg_username ? `@${u.tg_username}` : u.tg_user_id}
+                </TableCell>
+                <TableCell>{u.entry_type}</TableCell>
+                <TableCell>{u.vip_level || '—'}</TableCell>
+                <TableCell align="right">{u.unlocked_stage}</TableCell>
+                <TableCell align="right">{u.meaningful_msgs}</TableCell>
+                <TableCell align="right">{u.photos_total}</TableCell>
+                <TableCell>{u.manager_name || '—'}</TableCell>
+                <TableCell>
+                  {u.last_active_at
+                    ? new Date(u.last_active_at).toLocaleString()
+                    : '—'}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </Box>
     </Box>
   );
 };
