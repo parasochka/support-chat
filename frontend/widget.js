@@ -23,8 +23,11 @@ export const CONFIG = {
       (document.querySelector("script[data-widget-key]") || { dataset: {} })
         .dataset.widgetKey) ||
     "",
-  // reCaptcha v3 site key. Leave "" to skip captcha (dev).
-  RECAPTCHA_SITE_KEY: "6LfNeistAAAAADIKPj_VP-AcInrFei0FLqabNK8X",
+  // reCaptcha v3 site key. Normally left "" — the widget adopts the PRODUCT's
+  // own site key served by GET /api/chat/i18n (each client domain runs its own
+  // reCAPTCHA property, configured in the admin Structure tab). A host page may
+  // still pin one explicitly via mount({ RECAPTCHA_SITE_KEY: "..." }).
+  RECAPTCHA_SITE_KEY: "",
   // Sample user_context for the test build. In production the host page supplies this.
   // `language` is the account/profile language. It is the strongest signal for the
   // widget chrome (after an explicit LANG), so a Russian account on an English
@@ -260,6 +263,13 @@ async function fetchI18n() {
     ? `?widget_key=${encodeURIComponent(CONFIG.WIDGET_KEY)}` : "";
   const { ok, data } = await api(`/api/chat/i18n${qs}`, { method: "GET" });
   if (!ok || !data || !data.strings) return;
+  // Adopt the product's reCAPTCHA site key (served with the copy) unless the
+  // host page pinned its own — then pre-load the script so the first topic tap
+  // doesn't pay for it.
+  if (!CONFIG.RECAPTCHA_SITE_KEY && data.recaptcha_site_key) {
+    CONFIG.RECAPTCHA_SITE_KEY = data.recaptcha_site_key;
+    loadRecaptcha(CONFIG.RECAPTCHA_SITE_KEY);
+  }
   for (const [code, dict] of Object.entries(data.strings)) {
     I18N[code] = Object.assign({}, I18N[code] || I18N.en, dict);
   }

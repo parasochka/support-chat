@@ -40,14 +40,17 @@ class AntiSpamError(Exception):
 # ---------------------------------------------------------------------------
 # 1. reCaptcha v3 (verified at session create)
 # ---------------------------------------------------------------------------
-async def verify_recaptcha(token: Optional[str], remote_ip: Optional[str] = None
-                           ) -> dict[str, object]:
+async def verify_recaptcha(token: Optional[str], remote_ip: Optional[str] = None,
+                           secret: Optional[str] = None) -> dict[str, object]:
     """Return {'ok': bool, 'skipped': bool, 'score': float|None, 'reason': str}.
 
-    Skips gracefully (ok=True, skipped=True) when RECAPTCHA_SECRET is unset (dev),
-    so the caller can log that verification was skipped.
+    `secret` is the PRODUCT's own reCAPTCHA secret when it has one (each client
+    domain runs its own reCAPTCHA property); the deploy env RECAPTCHA_SECRET is
+    only the fallback. Skips gracefully (ok=True, skipped=True) when neither is
+    set (dev), so the caller can log that verification was skipped.
     """
-    if not config.RECAPTCHA_SECRET:
+    effective_secret = secret or config.RECAPTCHA_SECRET
+    if not effective_secret:
         return {"ok": True, "skipped": True, "score": None, "reason": "no_secret_dev_mode"}
 
     if not token:
@@ -58,7 +61,7 @@ async def verify_recaptcha(token: Optional[str], remote_ip: Optional[str] = None
             resp = await client.post(
                 "https://www.google.com/recaptcha/api/siteverify",
                 data={
-                    "secret": config.RECAPTCHA_SECRET,
+                    "secret": effective_secret,
                     "response": token,
                     **({"remoteip": remote_ip} if remote_ip else {}),
                 },

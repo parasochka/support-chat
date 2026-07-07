@@ -1649,7 +1649,8 @@ async def set_product_secrets(product_id: int, *,
                               openai_key_fallback: Any = UNSET,
                               handshake_secret: Any = UNSET,
                               telegram_bot_token: Any = UNSET,
-                              player_api_key: Any = UNSET) -> bool:
+                              player_api_key: Any = UNSET,
+                              recaptcha_secret: Any = UNSET) -> bool:
     """Write per-product secrets (encrypted at rest). Empty string clears one.
 
     Values are encrypted with secretbox before they touch the table; the
@@ -1665,7 +1666,8 @@ async def set_product_secrets(product_id: int, *,
                      ("openai_key_fallback_enc", openai_key_fallback),
                      ("handshake_secret_enc", handshake_secret),
                      ("telegram_bot_token_enc", telegram_bot_token),
-                     ("player_api_key_enc", player_api_key)):
+                     ("player_api_key_enc", player_api_key),
+                     ("recaptcha_secret_enc", recaptcha_secret)):
         if val is UNSET:
             continue
         args.append(secretbox.encrypt(val.strip()) if isinstance(val, str)
@@ -1816,6 +1818,38 @@ async def get_product_handshake_secret(product_id: int) -> Optional[str]:
             product_id,
         )
         return None
+
+
+async def get_product_recaptcha_secret(product_id: int) -> Optional[str]:
+    """Decrypted per-product reCAPTCHA secret, or None (env fallback applies)."""
+    import logging
+
+    import secretbox
+    enc = await _pool.fetchval(
+        "SELECT recaptcha_secret_enc FROM products WHERE id = $1", product_id
+    )
+    if not enc:
+        return None
+    try:
+        return secretbox.decrypt(enc)
+    except secretbox.SecretBoxError:
+        logging.getLogger(__name__).warning(
+            "product_secret_undecryptable product_id=%s kind=recaptcha",
+            product_id,
+        )
+        return None
+
+
+async def set_product_recaptcha_site_key(product_id: int,
+                                         site_key: Optional[str]
+                                         ) -> Optional[dict[str, Any]]:
+    """Set the NON-secret reCAPTCHA site key (public widget config)."""
+    row = await _pool.fetchrow(
+        f"UPDATE products SET recaptcha_site_key = $2, updated_at = now() "
+        f"WHERE id = $1 RETURNING {_PRODUCT_COLS}",
+        product_id, (site_key or "").strip() or None,
+    )
+    return _row_to_product(row) if row else None
 
 
 # ---------------------------------------------------------------------------

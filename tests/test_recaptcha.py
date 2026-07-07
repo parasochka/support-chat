@@ -89,3 +89,31 @@ async def test_success_above_threshold(monkeypatch):
     out = await antispam.verify_recaptcha(token="tok")
     assert out["ok"] is True and out["skipped"] is False
     assert out["reason"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Per-product secret (each client domain runs its own reCAPTCHA property)
+# ---------------------------------------------------------------------------
+async def test_product_secret_activates_verification(monkeypatch):
+    """With no env secret at all, a PRODUCT secret still turns verification on
+    (so a product-configured reCAPTCHA never silently degrades to dev mode)."""
+    monkeypatch.setattr(config, "RECAPTCHA_SECRET", "")
+    out = await antispam.verify_recaptcha(token=None, secret="product-secret")
+    assert out["ok"] is False and out["reason"] == "missing_token"
+
+
+async def test_product_secret_wins_over_env(monkeypatch):
+    """The product's own secret is what gets POSTed to Google, not the env one."""
+    monkeypatch.setattr(config, "RECAPTCHA_SECRET", "env-secret")
+    seen = {}
+
+    class _CapturingClient(_FakeAsyncClient):
+        async def post(self, url, data=None):
+            seen.update(data or {})
+            return _FakeResp({"success": True, "score": 0.9})
+
+    monkeypatch.setattr(antispam.httpx, "AsyncClient",
+                        lambda *a, **k: _CapturingClient())
+    out = await antispam.verify_recaptcha(token="tok", secret="product-secret")
+    assert out["ok"] is True
+    assert seen["secret"] == "product-secret"
