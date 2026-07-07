@@ -22,12 +22,14 @@ const embedSnippet = (widgetKey) =>
   `<script type="module" src="${API_URL}/widget.js"\n` +
   `        data-widget-key="${widgetKey}"></script>`;
 
+// [field, label, has-flag, we-mint-it?] — generatable secrets are the ones this
+// service signs with (random keys), not externally-issued API credentials.
 const SECRET_FIELDS = [
-  ['openai_key_primary', 'OpenAI key (primary)', 'has_openai_key'],
-  ['openai_key_fallback', 'OpenAI key (fallback)', 'has_openai_key_fallback'],
-  ['handshake_secret', 'Widget handshake secret', 'has_handshake_secret'],
-  ['telegram_bot_token', 'Telegram bot token', 'has_telegram_bot_token'],
-  ['player_api_key', 'Player API key', 'has_player_api_key'],
+  ['openai_key_primary', 'OpenAI key (primary)', 'has_openai_key', false],
+  ['openai_key_fallback', 'OpenAI key (fallback)', 'has_openai_key_fallback', false],
+  ['handshake_secret', 'Widget handshake secret', 'has_handshake_secret', true],
+  ['telegram_bot_token', 'Telegram bot token', 'has_telegram_bot_token', false],
+  ['player_api_key', 'Player API key', 'has_player_api_key', false],
 ];
 
 const mono = { fontFamily: 'monospace', fontSize: 13 };
@@ -124,12 +126,18 @@ const ProductCard = ({ product, onChanged }) => {
             value={name}
             onChange={(e) => setName(e.target.value)}
             label={`Product · ${product.slug}`}
-            sx={{ minWidth: 220 }}
+            sx={{ minWidth: 220, flex: '1 1 260px' }}
           />
-          <Button size="small" variant="outlined" onClick={() => saveProduct({ name })}>
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={() => saveProduct({ name })}
+            sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+          >
             Rename
           </Button>
           <FormControlLabel
+            sx={{ flexShrink: 0 }}
             control={
               <Switch
                 size="small"
@@ -202,7 +210,7 @@ const ProductCard = ({ product, onChanged }) => {
           (fall back to env).
         </Typography>
         <Grid container spacing={1}>
-          {SECRET_FIELDS.map(([field, label, flag]) => (
+          {SECRET_FIELDS.map(([field, label, flag, minted]) => (
             <Grid size={{ xs: 12, sm: 6 }} key={field}>
               <SecretField
                 label={label}
@@ -210,6 +218,11 @@ const ProductCard = ({ product, onChanged }) => {
                 value={secrets[field]}
                 onChange={(e) => setSecrets({ ...secrets, [field]: e.target.value })}
                 onClear={() => clearSecret(field, label)}
+                onGenerate={
+                  minted
+                    ? (v) => setSecrets((s) => ({ ...s, [field]: v }))
+                    : undefined
+                }
               />
             </Grid>
           ))}
@@ -243,20 +256,35 @@ const NewProductForm = ({ partnerId, onChanged }) => {
   };
 
   return (
-    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ pt: 1 }}>
+    <Stack
+      direction="row"
+      spacing={1}
+      alignItems="center"
+      flexWrap="wrap"
+      useFlexGap
+      sx={{ pt: 1 }}
+    >
       <TextField
         size="small"
         label="New product slug"
         value={slug}
         onChange={(e) => setSlug(e.target.value)}
+        sx={{ flex: '1 1 220px', maxWidth: 360 }}
       />
       <TextField
         size="small"
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        sx={{ flex: '1 1 220px', maxWidth: 360 }}
       />
-      <Button size="small" variant="outlined" onClick={create} disabled={!slug || !name}>
+      <Button
+        size="small"
+        variant="outlined"
+        onClick={create}
+        disabled={!slug || !name}
+        sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+      >
         Add product
       </Button>
     </Stack>
@@ -295,12 +323,18 @@ const PartnerCard = ({ partner, onChanged }) => {
             value={name}
             onChange={(e) => setName(e.target.value)}
             label={`Partner · ${partner.slug}`}
-            sx={{ minWidth: 220 }}
+            sx={{ minWidth: 220, flex: '1 1 260px' }}
           />
-          <Button size="small" variant="outlined" onClick={() => savePartner({ name })}>
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={() => savePartner({ name })}
+            sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+          >
             Rename
           </Button>
           <FormControlLabel
+            sx={{ flexShrink: 0 }}
             control={
               <Switch
                 size="small"
@@ -361,23 +395,34 @@ const Structure = () => {
     <Box sx={{ p: 2, maxWidth: 1000 }}>
       <Title title="Structure" />
       {structure.global_role === 'admin' && (
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          flexWrap="wrap"
+          useFlexGap
+          sx={{ mb: 2 }}
+        >
           <TextField
             size="small"
             label="New partner slug"
             value={newPartner.slug}
             onChange={(e) => setNewPartner({ ...newPartner, slug: e.target.value })}
+            sx={{ flex: '1 1 220px', maxWidth: 360 }}
           />
           <TextField
             size="small"
             label="Name"
             value={newPartner.name}
             onChange={(e) => setNewPartner({ ...newPartner, name: e.target.value })}
+            sx={{ flex: '1 1 220px', maxWidth: 360 }}
           />
           <Button
+            size="small"
             variant="outlined"
             onClick={createPartner}
             disabled={!newPartner.slug || !newPartner.name}
+            sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
           >
             Add partner
           </Button>

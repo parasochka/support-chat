@@ -17,7 +17,15 @@ import { getProductId } from '../productScope';
 const RequireProduct = ({ title, children }) => {
   if (getProductId()) return children;
   return (
-    <Box sx={{ p: 2 }}>
+    <Box
+      sx={{
+        p: 2,
+        minHeight: '60vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
       {title && <Title title={title} />}
       <Alert severity="info" sx={{ maxWidth: 640 }}>
         <AlertTitle>Please select a product</AlertTitle>

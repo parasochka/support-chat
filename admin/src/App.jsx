@@ -9,6 +9,7 @@ import {
   defaultLightTheme,
 } from 'react-admin';
 import { Navigate, Route, useLocation, useNavigate } from 'react-router-dom';
+import Box from '@mui/material/Box';
 import Collapse from '@mui/material/Collapse';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
@@ -75,7 +76,11 @@ const CollapsibleSection = ({ id, label, children }) => {
         {open ? <ExpandLess fontSize="small" /> : <ExpandMore fontSize="small" />}
       </ListItemButton>
       <Collapse in={open} timeout="auto" unmountOnExit>
-        {children}
+        {/* Every child of a section is a nested entry — indent uniformly so the
+            hierarchy reads at a glance (matches the Retention sub-items). */}
+        <Box sx={{ '& .MuiMenuItem-root, & .MuiListItemButton-root': { pl: 4 } }}>
+          {children}
+        </Box>
       </Collapse>
     </>
   );
