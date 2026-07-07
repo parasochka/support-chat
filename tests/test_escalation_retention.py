@@ -78,6 +78,24 @@ def test_retention_off_falls_back_to_static_contact_url(monkeypatch):
     assert "retention" not in payload
 
 
+def test_inactive_product_falls_back(monkeypatch):
+    """A deactivated product must not route players into its bot (mirrors the
+    deeplink endpoint's gating)."""
+    product = {"id": 1, "active": False, "retention_enabled": True,
+               "telegram_bot_username": "nika_bot"}
+
+    async def _get_product(pid):
+        return product
+    monkeypatch.setattr("db.get_product", _get_product)
+
+    def _boom(*a, **k):
+        raise AssertionError("inactive product -> no deeplink mint")
+    monkeypatch.setattr(retention, "create_deeplink", _boom)
+
+    payload = _run(escalation.build_payload_for_session(_session(), "ru"))
+    assert "retention" not in payload
+
+
 def test_retention_on_but_no_bot_falls_back(monkeypatch):
     """Retention enabled but no bot username configured -> static fallback."""
     product = {"id": 1, "active": True, "retention_enabled": True,
