@@ -43,15 +43,36 @@ in mind for every change:
   `GET /topics`, `GET /i18n` resolve the product from it (absent key → the default
   product, so single-product deployments keep working). Unknown/inactive key → 403.
   The session row stores `product_id`; every later turn re-enters that scope.
-- **Per-product secrets**: OpenAI keys (1–2, same two-key failover) and the
-  handshake secret live on the product row, **encrypted at rest** via
+- **Per-product secrets**: OpenAI keys (1–2, same two-key failover), the
+  handshake secret and the **reCAPTCHA secret** live on the product row,
+  **encrypted at rest** via
   `secretbox.py` (stdlib HMAC-CTR keystream + encrypt-then-MAC; master key =
   `SECRETS_MASTER_KEY` env, falling back to `SESSION_JWT_SECRET` with a startup
   warning). They are write-only through the API (`PUT /admin/products/{id}/secrets`
   → only `has_*` flags come back); `db.get_product_openai_keys` /
-  `get_product_handshake_secret` are the only decrypting readers. A product without
+  `get_product_handshake_secret` / `get_product_recaptcha_secret` are the only
+  decrypting readers. A product without
   its own keys falls back to the deploy env keys
   (`openai_client.client_for_product`, cached per product + key fingerprint).
+- **Per-product reCAPTCHA**: each product (domain) runs its own reCAPTCHA v3
+  property — the PUBLIC `recaptcha_site_key` on the product row (edited in
+  Structure; `PUT /admin/products/{id}` body field) is served to the widget via
+  `GET /api/chat/i18n` and adopted automatically (`widget.js fetchI18n` — no
+  embed change; a host page may still pin its own via `mount()`), and the
+  secret is a normal encrypted product secret. `create_session` resolves the
+  product FIRST and verifies against the product secret
+  (`antispam.verify_recaptcha(secret=...)`); the deploy env
+  `RECAPTCHA_SITE_KEY`/`RECAPTCHA_SECRET` pair is only the fallback.
+- **Machine admin credentials** (`admin_api_keys`): service API keys for an
+  external master admin panel — Bearer `sak_…` tokens on the same `/admin/*`
+  surface. Only the SHA-256 hash + a 4-char hint are stored; the plaintext is
+  returned exactly once by `POST /admin/api-keys`. Each key carries ONE role at
+  ONE scope (global/partner/product) and `require_admin` translates it into a
+  synthetic membership, so every scope helper works unchanged; deactivation
+  applies on the next request. Key management (`/admin/api-keys*`) is
+  restricted to HUMAN admin accounts within their scope (a leaked key cannot
+  mint keys). `/openapi.json`, `/docs`, `/redoc` are NOT served unless
+  `EXPOSE_API_DOCS=1`.
 - **Authorization** (`api/admin_auth.py`): accounts (`admin_users`) get roles via
   `admin_memberships` — one role per scope: `global`, `partner` (all its products)
   or `product`; role `admin` writes within the scope, `manager` reads. All checks
@@ -68,10 +89,13 @@ in mind for every change:
 - **Integration docs**: `GET /integration` serves a public, self-contained HTML
   guide (Russian) for partner/CMS dev teams — embed contract, handshake signing
   samples, chat + admin API reference. `GET /integration-telegram` is its SEPARATE
-  sibling for the Telegram retention bot (deeplink contract, profile pull/push,
-  admin setup) — same style, the two cross-link. The example page (`frontend/test.html`)
+  sibling for the Telegram retention bot (deeplink contract, profile pull/push +
+  activity timestamps, ping matrix, admin setup), and `GET /integration-admin`
+  is the THIRD sibling for wiring an external master admin panel (roles model,
+  JWT login, `sak_…` service keys, the `/admin/*` endpoint reference) — same
+  style, all three cross-link. The example page (`frontend/test.html`)
   carries exactly one link to each. Update the matching page when a public contract
-  changes; keep the two in the same house style.
+  changes; keep the three in the same house style.
 - **The prompt template stays the one shared, deploy-level artifact** — brands
   differ only via prompt variables + KB + translations + settings, never per-tenant
   prompt forks.
@@ -844,7 +868,45 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   profile and update the snapshot (best-effort: a failure leaves the snapshot untouched); and
   **push webhook** `POST /partner/{product_id}/player-update` (authorized with the product's
   handshake secret as the shared partner secret). Partial updates only. A product with no Player
-  API just lives on the snapshot — the schema degrades, never breaks.
+  API just lives on the snapshot — the schema degrades, never breaks. Both pull and push now
+  also accept the **casino activity timestamps** `last_login_at` / `last_played_at` /
+  `last_deposit_at` (ISO-8601, parsed + validated in `db.update_retention_profile`; unparsable
+  values are dropped) — the ping matrix keys on them.
+- **PING MATRIX — proactive re-engagement (`retention_pings.py`)**: the one place the bot ever
+  writes FIRST. Admin-managed `retention_rules` per product (Retention → Pings tab):
+  `trigger_kind` (`bot_inactivity` / `casino_inactivity` / `no_deposit` — the casino triggers
+  only fire when the partner feeds the activity timestamps above), `inactivity_days`, `action`
+  (`message` | `photo`), free-text English `intent` for the model, `vip_tiers` filter,
+  `cooldown_days` (per player per rule, tracked in the `retention_pings` ledger), `priority`.
+  A worker loop (started in `main.py` lifespan, deploy switch `RETENTION_SCHEDULER_ENABLED`,
+  interval `RETENTION_PING_INTERVAL_SEC`) sweeps under a Postgres **advisory lock** (multi-
+  instance safe); each product opts in via the hot `retention.pings_enabled` setting.
+  **Anti-annoyance is enforced by the worker, not trusted to rules**: per-player daily cap
+  (`ping_daily_cap`) + minimum gap (`ping_min_gap_hours`) via `db.eligible_ping_users`, local
+  **quiet hours** (`quiet_hours_start/end` + `quiet_hours_utc_offset`), batch bound
+  (`ping_batch_size`), the `/stop` opt-out (`pings_muted`; `/resume` re-enables — model-free
+  command handling in `_handle_message`), and the blocked-bot flag (`unreachable`, set on a
+  Telegram 403 via `send_message_verbose`, cleared when the player writes again). The message is
+  generated by the SAME retention prompt stack (`prompts.build_retention_ping_messages` — normal
+  Layer 1 + KB + history, the Layer-3 PROACTIVE TASK block with idle days/reason/intent;
+  `chat_service.generate_retention_ping` returns a `PingDraft` WITHOUT persisting) — the worker
+  sends first and persists only a delivered message (`db.persist_ping_turn`, assistant-only
+  atomic variant); an undelivered draft still gets its AI cost logged (invariant §4). Every
+  attempt lands in the `retention_pings` ledger + a `retention_ping` admin event. Manual bounded
+  test run: `POST /admin/retention/pings/run` (ignores quiet hours only). A photo-action rule
+  bypasses the proactive photo cooldown (`select_photo_candidates(bypass_cooldown=True)`) but
+  never the daily photo cap, and falls back to a text ping when no candidate is sendable.
+- **Telegram anti-spam gate** (`retention._handle_message`, mirrors the widget gate): per-user
+  rate limit (`antispam.check_rate_limit("tg:{pid}:{uid}")`, SILENT drop + sampled event),
+  overlong input truncated (not rejected), low-content guard → localized model-free nudge
+  (`rtn_low_content_reply`), injection scan → sampled audit + (with `injection_hard_block`) a
+  model-free in-persona deflection (`rtn_injection_reply`). Same `antispam` settings knobs as
+  the widget. The **subscription check is cached** (positive results only, 10 min,
+  `retention._sub_cache`; the explicit "I subscribed" button re-checks live with
+  `use_cache=False`). `is_photo_request` matches stems at word START (regex `\b`), so "epic"
+  can't bypass the photo cooldown. A photo turn never sends a bare image — an empty caption
+  falls back to `rtn_photo_caption`. The retention-entry `[[HANDOFF]]` route-out now carries the
+  per-language `contact_url` as an inline button when configured.
 - **Managers** (`retention_managers`): round-robin, **sticky** (a returning player keeps their
   manager); the hand-off is a `t.me/<username>` link; only the fact is logged
   (`retention_manager_handoff`).
@@ -855,9 +917,23 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `telegram_channel_url`, `player_api_url`, `retention_enabled`. Webhook auth is two-layer: the
   routing token in the path + the deploy-wide `TELEGRAM_WEBHOOK_SECRET` in the
   `X-Telegram-Bot-Api-Secret-Token` header (NOT in the URL).
+- **Retention analytics** (`db.retention_overview` / `retention_funnel` /
+  `retention_timeseries`): the overview separates LIFETIME player-base numbers (`users` block:
+  total/subscribed/muted/unreachable/avg stage) from RANGE activity (`range` block: active/new
+  players, player messages, photos, handoffs, pings sent/failed, **ping reply rate** — a sent
+  ping answered by a player message within 48h —, telegram AI cost) plus a per-stage
+  `stage_distribution`; the **funnel** (deeplinks → starts → linked → subscribed → engaged →
+  photo receivers → handoffs) is backed by durable `retention_deeplink_created` /
+  `retention_start` admin events (the nonce table is reaped on expiry, so it can never be the
+  denominator); the **timeseries** is daily messages/actives/photos/pings/cost. Endpoints
+  `GET /admin/retention/overview|funnel|timeseries` take `from`/`to` + an OPTIONAL
+  `product_id`/`partner_id` — omitted, they aggregate the caller's whole accessible scope
+  (the global dashboard's retention block), following the support dashboard's
+  `resolve_scope_filter` convention.
 - **Admin**: the SPA **Retention · Telegram** view (sub-tabs: Setup guide — the static
   "how to connect the bot" checklist that replaced `RETENTION_SETUP.md` —, Telegram config,
   Retention KB — the one-document text editor —, **Prompt preview**, Media, Managers,
+  **Pings** — the ping-matrix rules editor + ledger + run-now —,
   **Conversations** — the Telegram chat list + transcript dialog, see the lifecycle bullet
   above —, Analytics);
   API under `/admin/retention/*` (`api/retention.py`, guarded per
