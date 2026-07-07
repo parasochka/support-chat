@@ -637,3 +637,108 @@ async def handle_retention_message(
         reply=clean_text, lang=answer_lang, message_count=new_count,
         photo_id=photo_id, handoff=handoff, stage_up_hint=stage_up,
     )
+
+
+@dataclass
+class PingDraft:
+    """A generated (NOT yet persisted) proactive ping message.
+
+    The worker sends it first and persists only what was actually delivered
+    (db.persist_ping_turn); on a send failure it logs the AI cost directly so
+    invariant §4 (every OpenAI call -> ai_interaction_logs) still holds.
+    """
+    text: str
+    lang: str
+    photo_id: Optional[int]
+    ai_meta: dict[str, Any]
+
+
+async def generate_retention_ping(
+    session: dict[str, Any],
+    *,
+    idle_days: int,
+    reason: str,
+    intent: str,
+    photo_candidates: Optional[list[dict[str, Any]]] = None,
+) -> Optional[PingDraft]:
+    """Generate ONE proactive re-engagement message for a matched ping rule.
+
+    Returns None on a transient model failure — the worker then simply skips
+    the player this run (a ping is never replaced by a canned broadcast; the
+    whole point is a personal message). The failure is AI-logged here.
+    """
+    session_id = session["id"]
+    product_id = session.get("product_id")
+    tenancy.set_current_product(product_id)
+    candidates = photo_candidates or []
+    candidate_ids = {int(c["id"]) for c in candidates}
+    lang = (session.get("conv_lang") or session.get("lang")
+            or language.default_code())
+
+    kb_text = await db.retention_kb_block(product_id) if product_id else ""
+    kb_block = await kb.render_variables(kb_text, product_id=product_id) if kb_text else None
+    history = await db.get_history(
+        session_id, limit=settings.general()["history_max_turns"],
+    )
+    messages = prompts.build_retention_ping_messages(
+        session=session,
+        kb_block=kb_block,
+        history=history,
+        resolved_lang=lang,
+        idle_days=idle_days,
+        reason=reason,
+        intent=intent,
+        photo_candidates=candidates,
+    )
+    client = await openai_client.client_for_product(product_id)
+    try:
+        result = await client.complete(
+            messages, session_id=session_id, on_failover=_on_failover
+        )
+        raw_text = result.text
+    except Exception as exc:  # noqa: BLE001
+        error = f"{exc.__class__.__name__}: {exc}"
+        log.exception("retention_ping_model_failed session_id=%s error=%s",
+                      session_id, error)
+        await db.log_ai_interaction(
+            session_id, settings.model()["model"], "none",
+            0, 0, 0, 0.0, 0, False, error, product_id=product_id,
+        )
+        await db.log_admin_event_sampled(session_id, "model_error",
+                                         {"error": error[:300], "ping": True})
+        return None
+
+    clean_text = raw_text or ""
+    detected_lang: Optional[str] = None
+    photo_id: Optional[int] = None
+    if clean_text:
+        clean_text, detected_lang = prompts.strip_language_tag(clean_text)
+        # A ping never hands off or advances stages; strip defensively anyway.
+        clean_text, _ = prompts.strip_handoff_tag(clean_text)
+        clean_text, _ = prompts.strip_stage_up_tag(clean_text)
+        clean_text, photo_id = prompts.strip_photo_tag(clean_text)
+    if detected_lang and detected_lang not in language.supported_codes():
+        detected_lang = None
+    if photo_id is not None and photo_id not in candidate_ids:
+        photo_id = None
+    if not clean_text and photo_id is None:
+        # Nothing usable came back — treat like a failure, skip the ping.
+        log.warning("retention_ping_empty session_id=%s", session_id)
+        return None
+
+    cost = openai_client.compute_cost(
+        result.model, result.tokens_in, result.tokens_out, result.cached_in
+    )
+    answer_lang = detected_lang or lang
+    return PingDraft(
+        text=clean_text,
+        lang=answer_lang,
+        photo_id=photo_id,
+        ai_meta={
+            "model": result.model, "key_used": result.key_used,
+            "tokens_in": result.tokens_in, "tokens_out": result.tokens_out,
+            "cached_in": result.cached_in, "cost_usd": cost,
+            "latency_ms": result.latency_ms, "ok": True, "error": None,
+            "lang": answer_lang,
+        },
+    )

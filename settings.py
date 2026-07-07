@@ -322,6 +322,22 @@ def retention() -> dict[str, Any]:
                                          config.RETENTION_SESSION_IDLE_MINUTES),
         "carry_context_turns": db_v.get("carry_context_turns",
                                         config.RETENTION_CARRY_CONTEXT_TURNS),
+        # Proactive pings (the "retention matrix"): per-product opt-in + the
+        # anti-annoyance guardrails the worker enforces on every send.
+        "pings_enabled": db_v.get("pings_enabled",
+                                  config.RETENTION_PINGS_ENABLED),
+        "ping_daily_cap": db_v.get("ping_daily_cap",
+                                   config.RETENTION_PING_DAILY_CAP),
+        "ping_min_gap_hours": db_v.get("ping_min_gap_hours",
+                                       config.RETENTION_PING_MIN_GAP_HOURS),
+        "quiet_hours_start": db_v.get("quiet_hours_start",
+                                      config.RETENTION_QUIET_HOURS_START),
+        "quiet_hours_end": db_v.get("quiet_hours_end",
+                                    config.RETENTION_QUIET_HOURS_END),
+        "quiet_hours_utc_offset": db_v.get(
+            "quiet_hours_utc_offset", config.RETENTION_QUIET_HOURS_UTC_OFFSET),
+        "ping_batch_size": db_v.get("ping_batch_size",
+                                    config.RETENTION_PING_BATCH_SIZE),
     }
 
 
@@ -446,6 +462,13 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "profile_pull_ttl_sec", 0, 604_800)  # <= 1 week
         _require_int(value, "session_idle_minutes", 0, 525_600)  # 0 = never close
         _require_int(value, "carry_context_turns", 0, 50)
+        _require_bool(value, "pings_enabled")
+        _require_int(value, "ping_daily_cap", 1, 24)
+        _require_int(value, "ping_min_gap_hours", 1, 720)   # <= 30 days
+        _require_int(value, "quiet_hours_start", 0, 23)
+        _require_int(value, "quiet_hours_end", 0, 23)
+        _require_int(value, "quiet_hours_utc_offset", -12, 14)
+        _require_int(value, "ping_batch_size", 1, 500)
         if "stage_advance_msgs" in value:
             v = value["stage_advance_msgs"]
             if (not isinstance(v, list)

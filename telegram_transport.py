@@ -141,6 +141,33 @@ class TelegramClient:
             payload["parse_mode"] = parse_mode
         return await self._call("sendMessage", payload)
 
+    async def send_message_verbose(self, chat_id: int, text: str, *,
+                                   reply_markup: Optional[dict[str, Any]] = None
+                                   ) -> tuple[Optional[dict[str, Any]],
+                                              Optional[int], Optional[str]]:
+        """send_message that also surfaces (error_code, description) on failure.
+
+        The proactive ping worker needs to tell 'the player blocked the bot'
+        (403 — mark unreachable, stop pinging) apart from a transient error
+        (retry next run); the fire-and-forget send_message hides that.
+        """
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": text,
+                                   "disable_web_page_preview": True}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.post(self._url("sendMessage"), json=payload)
+            data = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("telegram_api_call_failed method=sendMessage error=%s", exc)
+            return None, None, str(exc)
+        if not data.get("ok"):
+            log.warning("telegram_api_error method=sendMessage desc=%s",
+                        data.get("description"))
+            return None, data.get("error_code"), data.get("description")
+        return data.get("result"), None, None
+
     async def send_photo_file_id(self, chat_id: int, file_id: str, *,
                                  caption: Optional[str] = None
                                  ) -> Optional[dict[str, Any]]:

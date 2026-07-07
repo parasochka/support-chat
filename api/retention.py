@@ -174,6 +174,11 @@ class PlayerUpdateReq(BaseModel):
     balance: Optional[str] = None
     vip_level: Optional[str] = None
     registration_date: Optional[str] = None
+    # Casino-side activity signals (ISO-8601 timestamps) — the ping matrix keys
+    # on them ("hasn't logged in for a week", "no deposit in 30 days", ...).
+    last_login_at: Optional[str] = None
+    last_played_at: Optional[str] = None
+    last_deposit_at: Optional[str] = None
 
 
 @public_router.post("/partner/{product_id}/player-update")
@@ -574,6 +579,123 @@ async def delete_manager(manager_id: int,
     await admin_auth.require_product_write(admin, mgr["product_id"])
     await db.delete_retention_manager(manager_id)
     return JSONResponse(content={"ok": True})
+
+
+# ===========================================================================
+# Admin: ping matrix (proactive re-engagement rules + ledger + run-now)
+# ===========================================================================
+_RULE_TRIGGERS = ("bot_inactivity", "casino_inactivity", "no_deposit")
+_RULE_ACTIONS = ("message", "photo")
+
+
+class RuleWrite(BaseModel):
+    name: Optional[str] = None
+    enabled: Optional[bool] = None
+    trigger_kind: Optional[str] = None
+    inactivity_days: Optional[int] = Field(default=None, ge=1, le=365)
+    action: Optional[str] = None
+    intent: Optional[str] = None
+    vip_tiers: Optional[list[str]] = None
+    cooldown_days: Optional[int] = Field(default=None, ge=0, le=365)
+    priority: Optional[int] = Field(default=None, ge=-1000, le=1000)
+
+    def clean_fields(self) -> dict[str, Any]:
+        fields = {k: v for k, v in self.model_dump().items() if v is not None}
+        if "trigger_kind" in fields and fields["trigger_kind"] not in _RULE_TRIGGERS:
+            raise HTTPException(status_code=400,
+                                detail=f"trigger_kind must be one of "
+                                       f"{', '.join(_RULE_TRIGGERS)}.")
+        if "action" in fields and fields["action"] not in _RULE_ACTIONS:
+            raise HTTPException(status_code=400,
+                                detail=f"action must be one of "
+                                       f"{', '.join(_RULE_ACTIONS)}.")
+        if "vip_tiers" in fields:
+            fields["vip_tiers"] = [str(t).strip().lower()
+                                   for t in fields["vip_tiers"] if str(t).strip()]
+        if "intent" in fields:
+            fields["intent"] = fields["intent"].strip()
+        return fields
+
+
+@admin_router.get("/pings/rules")
+async def list_ping_rules(product_id: int,
+                          admin=Depends(require_admin)) -> JSONResponse:
+    await admin_auth.require_product_read(admin, product_id)
+    return JSONResponse(content={
+        "items": await db.list_retention_rules(product_id)})
+
+
+@admin_router.post("/pings/rules")
+async def create_ping_rule(product_id: int, body: RuleWrite,
+                           admin=Depends(require_admin_write)) -> JSONResponse:
+    await admin_auth.require_product_write(admin, product_id)
+    fields = body.clean_fields()
+    if not (fields.get("name") or "").strip():
+        raise HTTPException(status_code=400, detail="Rule name is required.")
+    fields["name"] = fields["name"].strip()
+    rule = await db.create_retention_rule(product_id, fields,
+                                          updated_by=admin.get("email"))
+    await db.log_admin_event(None, "retention_rule_created",
+                             {"id": rule["id"], "name": rule["name"],
+                              "by": admin.get("email")}, product_id=product_id)
+    return JSONResponse(content={"rule": rule})
+
+
+@admin_router.put("/pings/rules/{rule_id}")
+async def update_ping_rule(rule_id: int, product_id: int, body: RuleWrite,
+                           admin=Depends(require_admin_write)) -> JSONResponse:
+    await admin_auth.require_product_write(admin, product_id)
+    fields = body.clean_fields()
+    if not fields:
+        raise HTTPException(status_code=400, detail="Nothing to update.")
+    rule = await db.update_retention_rule(rule_id, product_id, fields,
+                                          updated_by=admin.get("email"))
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    return JSONResponse(content={"rule": rule})
+
+
+@admin_router.delete("/pings/rules/{rule_id}")
+async def delete_ping_rule(rule_id: int, product_id: int,
+                           admin=Depends(require_admin_write)) -> JSONResponse:
+    await admin_auth.require_product_write(admin, product_id)
+    ok = await db.delete_retention_rule(rule_id, product_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    return JSONResponse(content={"ok": True})
+
+
+@admin_router.get("/pings")
+async def list_pings(product_id: int, page: int = 1, page_size: int = 50,
+                     admin=Depends(require_admin)) -> JSONResponse:
+    """The ping ledger: what was sent to whom, by which rule, at what cost."""
+    await admin_auth.require_product_read(admin, product_id)
+    return JSONResponse(content=await db.list_retention_pings(
+        product_id, page=page, page_size=min(page_size, 200)))
+
+
+@admin_router.post("/pings/run")
+async def run_pings_now(product_id: int,
+                        admin=Depends(require_admin_write)) -> JSONResponse:
+    """Run one bounded sweep for this product immediately (test/QA button).
+
+    Quiet hours are ignored (the operator is explicitly asking); every other
+    guard — per-player caps, gaps, rule cooldowns, opt-outs — still applies.
+    """
+    import retention_pings
+    await admin_auth.require_product_write(admin, product_id)
+    product = await db.get_product(product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    if not product.get("retention_enabled"):
+        raise HTTPException(status_code=409,
+                            detail="Retention is not enabled for this product.")
+    stats = await retention_pings.run_product_pings(
+        product, ignore_quiet_hours=True)
+    await db.log_admin_event(None, "retention_ping_run_manual",
+                             {"stats": stats, "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"stats": stats})
 
 
 # ===========================================================================

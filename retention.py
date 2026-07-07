@@ -14,10 +14,12 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+import time
 import unicodedata
 import uuid
 from typing import Any, Optional
 
+import antispam
 import chat_service
 import db
 import language
@@ -42,6 +44,11 @@ _PHOTO_REQUEST_STEMS = (
     "photo", "pic", "picture", "selfie", "show", "send me",
     "foto", "muestra", "envía", "fotoğraf", "göster", "resim",
 )
+# Word-START matching (not raw substring): "pic" matches "pictures" but never
+# "epic"/"topic", so an unrelated word can't accidentally bypass the proactive
+# photo cooldown (the daily cap holds regardless).
+_PHOTO_REQUEST_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(s) for s in _PHOTO_REQUEST_STEMS) + r")")
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +137,13 @@ async def maybe_pull_profile(product: dict[str, Any], ru: dict[str, Any]
     except Exception as exc:  # noqa: BLE001 - a pull failure must not break the turn
         log.warning("retention_profile_pull_failed error=%s", exc)
         return ru
-    profile = _profile_from_payload(data if isinstance(data, dict) else {})
+    payload = data if isinstance(data, dict) else {}
+    profile = _profile_from_payload(payload)
+    # The Player API may also report casino activity (the ping matrix keys on
+    # these); pass the timestamps through — db parses/validates them.
+    for f in ("last_login_at", "last_played_at", "last_deposit_at"):
+        if payload.get(f) is not None:
+            profile[f] = payload[f]
     if not profile:
         return ru
     await db.update_retention_profile(product["id"], player_id, profile, "pull")
@@ -162,8 +175,7 @@ def _normalize(text: str) -> str:
 
 
 def is_photo_request(text: str) -> bool:
-    norm = _normalize(text)
-    return any(stem in norm for stem in _PHOTO_REQUEST_STEMS)
+    return bool(_PHOTO_REQUEST_RE.search(_normalize(text)))
 
 
 def is_meaningful(text: str) -> bool:
@@ -176,7 +188,9 @@ def is_meaningful(text: str) -> bool:
 # Photo candidate selection (pre-model)
 # ---------------------------------------------------------------------------
 async def select_photo_candidates(product_id: int, ru: dict[str, Any],
-                                  user_text: str) -> list[dict[str, Any]]:
+                                  user_text: str, *,
+                                  bypass_cooldown: bool = False
+                                  ) -> list[dict[str, Any]]:
     """The allowed photo set for this turn (empty = no photo this turn).
 
     Gates:
@@ -198,8 +212,10 @@ async def select_photo_candidates(product_id: int, ru: dict[str, Any],
         sent_today = 0
     if sent_today >= int(cfg["daily_photo_cap"]):
         return []
-    # Proactive cooldown unless the player asked.
-    reactive = is_photo_request(user_text)
+    # Proactive cooldown unless the player asked (or the caller — the ping
+    # worker on a photo-action rule — explicitly bypasses it; the daily cap
+    # above still holds).
+    reactive = bypass_cooldown or is_photo_request(user_text)
     if not reactive and int(ru.get("msgs_since_photo") or 0) < int(
             cfg["proactive_photo_cooldown_msgs"]):
         return []
@@ -352,14 +368,43 @@ async def _ensure_session(product_id: int, ru: dict[str, Any],
 # ---------------------------------------------------------------------------
 # Subscription gate
 # ---------------------------------------------------------------------------
+# Positive getChatMember results are cached briefly so an active conversation
+# doesn't cost one Telegram API round-trip per message. Only YES is cached (an
+# unsubscribed player who just subscribed must pass the re-check instantly);
+# the explicit "I subscribed" button always re-checks live (use_cache=False).
+_SUB_CACHE_TTL_SEC = 600
+_SUB_CACHE_PRUNE_THRESHOLD = 50_000
+_sub_cache: dict[tuple[int, int], float] = {}  # (product_id, tg_user_id) -> expiry
+
+
 async def check_subscription(client: TelegramClient, product: dict[str, Any],
-                             tg_user_id: int) -> bool:
+                             tg_user_id: int, *, use_cache: bool = True) -> bool:
     """True when the player is subscribed to the product's channel (or no channel
     is configured — a product without a channel skips the gate)."""
     channel = product.get("telegram_channel_id")
     if not channel:
         return True
-    return await client.is_subscribed(channel, tg_user_id)
+    key = (int(product["id"]), int(tg_user_id))
+    now = time.monotonic()
+    if use_cache:
+        expiry = _sub_cache.get(key)
+        if expiry is not None and expiry > now:
+            return True
+    ok = await client.is_subscribed(channel, tg_user_id)
+    if ok:
+        if len(_sub_cache) > _SUB_CACHE_PRUNE_THRESHOLD:
+            stale = [k for k, exp in _sub_cache.items() if exp <= now]
+            for k in stale:
+                _sub_cache.pop(k, None)
+        _sub_cache[key] = now + _SUB_CACHE_TTL_SEC
+    else:
+        _sub_cache.pop(key, None)
+    return ok
+
+
+def reset_state() -> None:
+    """Test helper: clear the in-memory subscription cache."""
+    _sub_cache.clear()
 
 
 def _persona_name() -> str:
@@ -462,6 +507,19 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
         await _handle_start(client, product, pu)
         return
 
+    # --- Anti-spam gate, Telegram flavour of the widget's /message gate -----
+    # Rate limit FIRST (before any DB/Telegram round-trip) and drop silently: a
+    # hammering user gets no reply, burns no tokens, and can't grow the log
+    # unboundedly (the admin event is sampled).
+    spam_key = f"tg:{product['id']}:{pu.tg_user_id}"
+    try:
+        antispam.check_rate_limit(spam_key)
+    except antispam.AntiSpamError:
+        await db.log_admin_event_sampled(
+            None, "rate_limited",
+            {"channel": "telegram", "tg_user_id": pu.tg_user_id})
+        return
+
     ru = await db.get_retention_user(product["id"], pu.tg_user_id)
     if ru is None:
         # Never entered via a deeplink — require the site.
@@ -471,7 +529,23 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
         return
 
     lang = resolve_user_lang(ru, pu.language_code)
-    # Subscription gate applies to every turn.
+
+    # They wrote to us — whatever blocked state we recorded is stale.
+    if ru.get("unreachable"):
+        await db.set_retention_unreachable(int(ru["id"]), False)
+
+    # Proactive-ping opt-out/in commands (model-free).
+    command = (pu.text or "").strip().lower()
+    if command in ("/stop", "stop"):
+        await db.set_retention_pings_muted(int(ru["id"]), True)
+        await client.send_message(pu.chat_id, _rtn_text("rtn_pings_stopped", lang))
+        return
+    if command == "/resume":
+        await db.set_retention_pings_muted(int(ru["id"]), False)
+        await client.send_message(pu.chat_id, _rtn_text("rtn_pings_resumed", lang))
+        return
+
+    # Subscription gate applies to every turn (positive results briefly cached).
     if not await check_subscription(client, product, pu.tg_user_id):
         await db.set_retention_subscribed(int(ru["id"]), False)
         await client.send_message(pu.chat_id,
@@ -481,7 +555,32 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
     if not ru.get("subscribed"):
         await db.set_retention_subscribed(int(ru["id"]), True)
 
-    await _run_nika_turn(client, product, ru, pu, lang)
+    # Input gates: overlong text is truncated (not rejected — chats are human);
+    # junk/no-content messages and injection attempts get a canned in-persona
+    # line and never reach the model.
+    cfg = settings.antispam()
+    text = pu.text or ""
+    max_chars = int(cfg["max_input_chars"])
+    if len(text) > max_chars:
+        text = text[:max_chars]
+    try:
+        antispam.check_low_content(text)
+    except antispam.AntiSpamError:
+        await db.log_admin_event_sampled(
+            None, "low_content_blocked", {"channel": "telegram"})
+        await client.send_message(pu.chat_id,
+                                  _rtn_text("rtn_low_content_reply", lang))
+        return
+    if antispam.scan_injection(text):
+        await db.log_admin_event_sampled(
+            None, "injection_blocked",
+            {"channel": "telegram", "tg_user_id": pu.tg_user_id})
+        if cfg["injection_hard_block"]:
+            await client.send_message(pu.chat_id,
+                                      _rtn_text("rtn_injection_reply", lang))
+            return
+
+    await _run_nika_turn(client, product, ru, pu, lang, text=text)
 
 
 async def _handle_start(client: TelegramClient, product: dict[str, Any],
@@ -533,7 +632,8 @@ async def _handle_callback(client: TelegramClient, product: dict[str, Any],
                                   _rtn_text("rtn_need_deeplink", lang))
         return
     if pu.callback_data == CB_CHECK_SUB:
-        if await check_subscription(client, product, pu.tg_user_id):
+        if await check_subscription(client, product, pu.tg_user_id,
+                                    use_cache=False):
             await db.set_retention_subscribed(int(ru["id"]), True)
             await _send_menu(client, pu.chat_id, ru, lang)
         else:
@@ -555,7 +655,8 @@ async def _handle_callback(client: TelegramClient, product: dict[str, Any],
 
 
 async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
-                         ru: dict[str, Any], pu: ParsedUpdate, lang: str) -> None:
+                         ru: dict[str, Any], pu: ParsedUpdate, lang: str,
+                         text: Optional[str] = None) -> None:
     """One AI retention turn: candidates -> model -> photo/handoff/stage/send."""
     # Lazy profile refresh (§8 level 2): pull a fresh profile from the casino's
     # Player API when the snapshot is stale, so targeting uses current VIP/balance.
@@ -563,7 +664,8 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
     session = await _ensure_session(product["id"], ru, lang)
     if session is None:
         return
-    text = pu.text or ""
+    if text is None:
+        text = pu.text or ""
     meaningful = is_meaningful(text)
     # Bump engagement counters BEFORE selecting candidates (so the proactive
     # cooldown counter reflects this message); returns the refreshed row.
@@ -595,13 +697,26 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
             await _route_to_manager(client, product, ru, pu.chat_id, reply.lang,
                                     reason="handoff")
         else:
+            # Give the route-out a real destination: the product's per-language
+            # support contact URL (the same translations `contact_url` the widget
+            # escalation card uses) as an inline button, when one is configured.
+            markup = None
+            url = (translations.text("contact_url", reply.lang) or "").strip()
+            if url.startswith(("http://", "https://")):
+                markup = inline_keyboard([[{
+                    "text": translations.text("escalation_button", reply.lang),
+                    "url": url}]])
             await client.send_message(
-                pu.chat_id, _rtn_text("rtn_handoff_support", reply.lang))
+                pu.chat_id, _rtn_text("rtn_handoff_support", reply.lang),
+                reply_markup=markup)
         return
 
     # Photo delivery (file_id cache; first send uploads + caches the id).
     if reply.photo_id is not None:
-        await _send_photo(client, product, ru, pu.chat_id, reply.photo_id, reply.reply)
+        # Never send a bare image: fall back to a short localized caption when
+        # the model returned a photo with no text.
+        caption = reply.reply or _rtn_text("rtn_photo_caption", reply.lang)
+        await _send_photo(client, product, ru, pu.chat_id, reply.photo_id, caption)
     elif reply.reply:
         await client.send_message(pu.chat_id, reply.reply)
 
@@ -612,13 +727,17 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
 
 async def _send_photo(client: TelegramClient, product: dict[str, Any],
                       ru: dict[str, Any], chat_id: int, photo_id: int,
-                      caption: str) -> None:
-    """Send a media-library photo, using the cached file_id or uploading once."""
+                      caption: str) -> bool:
+    """Send a media-library photo, using the cached file_id or uploading once.
+
+    Returns True when the photo itself was delivered (the ping worker keys its
+    ledger on it); a caption-only fallback returns False.
+    """
     photo = await db.get_retention_photo(photo_id)
     if not photo or not photo.get("active"):
         if caption:
             await client.send_message(chat_id, caption)
-        return
+        return False
     file_id = photo.get("telegram_file_id")
     result = None
     if file_id:
@@ -629,7 +748,7 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
         if content is None:
             if caption:
                 await client.send_message(chat_id, caption)
-            return
+            return False
         result = await client.send_photo_bytes(
             chat_id, content, photo.get("storage_ref") or "photo.jpg",
             caption=caption or None)
@@ -638,6 +757,8 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
             await db.set_photo_file_id(photo_id, new_file_id)
     if result is not None:
         await db.record_retention_photo_view(int(ru["id"]), photo_id, product["id"])
+        return True
+    return False
 
 
 def _read_media(storage_ref: Optional[str]) -> Optional[bytes]:
