@@ -16,6 +16,7 @@ import Typography from '@mui/material/Typography';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { API_URL, httpClient } from '../httpClient';
 import SecretField from '../components/SecretField';
+import SetBadge from '../components/SetBadge';
 
 const embedSnippet = (widgetKey) =>
   `<link rel="stylesheet" href="${API_URL}/widget.css">\n` +
@@ -28,6 +29,7 @@ const SECRET_FIELDS = [
   ['openai_key_primary', 'OpenAI key (primary)', 'has_openai_key', false],
   ['openai_key_fallback', 'OpenAI key (fallback)', 'has_openai_key_fallback', false],
   ['handshake_secret', 'Widget handshake secret', 'has_handshake_secret', true],
+  ['recaptcha_secret', 'reCAPTCHA secret key', 'has_recaptcha_secret', false],
   ['telegram_bot_token', 'Telegram bot token', 'has_telegram_bot_token', false],
   ['player_api_key', 'Player API key', 'has_player_api_key', false],
 ];
@@ -37,6 +39,9 @@ const mono = { fontFamily: 'monospace', fontSize: 13 };
 const ProductCard = ({ product, onChanged }) => {
   const notify = useNotify();
   const [name, setName] = useState(product.name);
+  const [recaptchaSiteKey, setRecaptchaSiteKey] = useState(
+    product.recaptcha_site_key || ''
+  );
   const [secrets, setSecrets] = useState({});
 
   const saveProduct = async (fields) => {
@@ -197,6 +202,50 @@ const ProductCard = ({ product, onChanged }) => {
           </Button>
           <Button size="small" color="warning" variant="outlined" onClick={rotateKey}>
             Rotate key
+          </Button>
+        </Stack>
+
+        {/* --- reCAPTCHA (per client domain) -------------------------------- */}
+        <Typography variant="subtitle2" gutterBottom>
+          reCAPTCHA
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          Each client domain runs its own reCAPTCHA v3 property — set that
+          property&apos;s site key here (the secret key goes into Secrets below).
+          Leave empty to fall back to the deploy env keys.
+        </Typography>
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          flexWrap="wrap"
+          useFlexGap
+          sx={{ mb: 2 }}
+        >
+          <TextField
+            size="small"
+            label="reCAPTCHA site key"
+            value={recaptchaSiteKey}
+            onChange={(e) => setRecaptchaSiteKey(e.target.value)}
+            sx={{ minWidth: 220, flex: '1 1 320px' }}
+            slotProps={{
+              input: {
+                sx: mono,
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <SetBadge set={Boolean(product.recaptcha_site_key)} />
+                  </InputAdornment>
+                ),
+              },
+            }}
+          />
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={() => saveProduct({ recaptcha_site_key: recaptchaSiteKey })}
+            sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+          >
+            Save site key
           </Button>
         </Stack>
 
