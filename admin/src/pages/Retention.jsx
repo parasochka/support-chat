@@ -458,9 +458,11 @@ const VariablesTab = ({ productId }) => {
 };
 
 // ---------------------------------------------------------------------------
-// Prompt preview tab — read-only view of the assembled RETENTION prompt
-// (mirrors the support Prompt → Preview page) + the retention prompt variables
-// it renders with. The values are edited on the Prompt variables tab.
+// Prompt preview tab — read-only view of the assembled RETENTION prompt.
+// Mirrors the support Prompt → Preview page exactly: it shows ONLY the
+// assembled prompt (no variables table — those already-resolved values just
+// took up space here). The variable VALUES are edited on the Prompt variables
+// tab, same as the support prompt.
 // ---------------------------------------------------------------------------
 const PreviewBlock = ({ title, text }) => (
   <Card sx={{ mb: 2 }}>
@@ -481,14 +483,10 @@ const PreviewBlock = ({ title, text }) => (
 const PromptTab = ({ productId }) => {
   const notify = useNotify();
   const [preview, setPreview] = useState(null);
-  const [variables, setVariables] = useState([]);
 
   useEffect(() => {
     httpClient(`${API_URL}/admin/retention/effective-prompt?product_id=${productId}`)
-      .then(({ json }) => {
-        setPreview(json.effective_preview);
-        setVariables(json.variables || []);
-      })
+      .then(({ json }) => setPreview(json.effective_preview))
       .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
   }, [productId, notify]);
 
@@ -497,53 +495,10 @@ const PromptTab = ({ productId }) => {
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         The complete retention prompt as the model receives it in the Telegram
         chat (read-only; language: {preview?.example?.lang || '—'}). To change
-        the wording, edit <code>prompts.py</code> and redeploy.
+        the wording, edit <code>prompts.py</code> and redeploy; the brand values
+        are on the{' '}
+        <Link href="#/retention?tab=variables">Prompt variables</Link> tab.
       </Typography>
-      <Alert severity="info" sx={{ mb: 2 }}>
-        The retention prompt variables below are edited on the{' '}
-        <Link href="#/retention?tab=variables">Prompt variables</Link> tab; an
-        empty override uses the built-in retention default (independent of the
-        support chat).
-      </Alert>
-      {variables.length > 0 && (
-        <Card sx={{ mb: 2 }}>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>
-              Prompt variables used by the retention prompt
-            </Typography>
-            <Box sx={{ overflowX: 'auto' }}>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Variable</TableCell>
-                    <TableCell>Description</TableCell>
-                    <TableCell>Effective value</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {variables.map((v) => (
-                    <TableRow key={v.key}>
-                      <TableCell>
-                        <code>{`{${v.key}}`}</code>
-                        {!v.value && (
-                          <Chip
-                            size="small"
-                            label="default"
-                            variant="outlined"
-                            sx={{ ml: 1 }}
-                          />
-                        )}
-                      </TableCell>
-                      <TableCell>{v.description}</TableCell>
-                      <TableCell sx={{ whiteSpace: 'pre-wrap' }}>{v.resolved}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </Box>
-          </CardContent>
-        </Card>
-      )}
       <PreviewBlock
         title="System message (retention Layer 1 core + Layer 2 retention KB)"
         text={preview?.system}
