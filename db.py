@@ -2252,9 +2252,20 @@ def _scope_clauses(product_ids: Optional[list[int]],
 async def overview_aggregates(dt_from: Any, dt_to: Any,
                               product_ids: Optional[list[int]] = None
                               ) -> dict[str, Any]:
-    """Raw aggregate counters for the dashboard overview within [from, to)."""
+    """Raw aggregate counters for the dashboard overview within [from, to).
+
+    This is the SUPPORT (web-widget) dashboard: telegram/retention data is
+    excluded end-to-end. Sessions filter `consumer <> 'telegram'`; the cost
+    aggregate joins `chat_sessions` so it counts only non-telegram turns and
+    drops the `session_id IS NULL` photo-metadata calls (those are retention —
+    they belong to the Telegram cost panels, not here). The retention side has
+    its own `retention_overview` / `retention_timeseries`.
+    """
     args: list[Any] = [dt_from, dt_to]
     scope = _product_clause(product_ids, args)
+    # The cost query joins chat_sessions, so its product filter must qualify the
+    # log table; sess/ev keep the bare `scope` (one table each). Same $n param.
+    scope_l = scope.replace("product_id", "l.product_id")
     sess = await _pool.fetchrow(
         "SELECT "
         "  COUNT(*) AS sessions_total, "
@@ -2263,20 +2274,23 @@ async def overview_aggregates(dt_from: Any, dt_to: Any,
         "  COUNT(*) FILTER (WHERE escalated) AS sessions_escalated, "
         "  COALESCE(AVG(message_count) FILTER (WHERE message_count > 0), 0) "
         "    AS avg_messages_per_session "
-        f"FROM chat_sessions WHERE created_at >= $1 AND created_at < $2{scope}",
+        "FROM chat_sessions WHERE created_at >= $1 AND created_at < $2 "
+        f"  AND consumer <> 'telegram'{scope}",
         *args,
     )
     cost = await _pool.fetchrow(
         "SELECT "
-        "  COALESCE(SUM(cost_usd), 0) AS cost_usd_total, "
-        "  COALESCE(SUM(cached_in), 0) AS cached_in_total, "
-        "  COALESCE(SUM(tokens_in), 0) AS tokens_in_total, "
-        "  COUNT(DISTINCT session_id) AS sessions_with_ai, "
+        "  COALESCE(SUM(l.cost_usd), 0) AS cost_usd_total, "
+        "  COALESCE(SUM(l.cached_in), 0) AS cached_in_total, "
+        "  COALESCE(SUM(l.tokens_in), 0) AS tokens_in_total, "
+        "  COUNT(DISTINCT l.session_id) AS sessions_with_ai, "
         "  COUNT(*) AS ai_calls_total, "
-        "  COALESCE(AVG(latency_ms) FILTER "
-        "    (WHERE ok AND latency_ms IS NOT NULL), 0) AS avg_latency_ms, "
-        "  COUNT(*) FILTER (WHERE NOT ok) AS failed_calls "
-        f"FROM ai_interaction_logs WHERE created_at >= $1 AND created_at < $2{scope}",
+        "  COALESCE(AVG(l.latency_ms) FILTER "
+        "    (WHERE l.ok AND l.latency_ms IS NOT NULL), 0) AS avg_latency_ms, "
+        "  COUNT(*) FILTER (WHERE NOT l.ok) AS failed_calls "
+        "FROM ai_interaction_logs l "
+        "JOIN chat_sessions s ON s.id = l.session_id AND s.consumer <> 'telegram' "
+        f"WHERE l.created_at >= $1 AND l.created_at < $2{scope_l}",
         *args,
     )
     ev = await _pool.fetch(
@@ -2313,15 +2327,27 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
                      bucket: str = "day",
                      product_ids: Optional[list[int]] = None
                      ) -> list[dict[str, Any]]:
-    """Per-bucket series for sessions | cost | cost_per_session | escalation_rate."""
+    """Per-bucket series for sessions | cost | cost_per_session | escalation_rate.
+
+    SUPPORT (web-widget) only — telegram/retention is excluded the same way as
+    `overview_aggregates`: the two cost metrics join `chat_sessions` (so the
+    telegram turns and the `session_id IS NULL` photo-metadata calls drop out),
+    and the session metrics filter `consumer <> 'telegram'`. Telegram spend has
+    its own series in `retention_timeseries`.
+    """
     trunc = "day" if bucket not in ("hour", "day", "week", "month") else bucket
     args: list[Any] = [dt_from, dt_to]
     scope = _product_clause(product_ids, args)
+    # Cost metrics join chat_sessions, so their product filter qualifies the log
+    # table; session metrics keep the bare `scope`. Same positional param.
+    scope_l = scope.replace("product_id", "l.product_id")
     if metric == "cost":
         rows = await _pool.fetch(
-            f"SELECT date_trunc('{trunc}', created_at) AS bucket, "
-            "COALESCE(SUM(cost_usd), 0) AS value "
-            f"FROM ai_interaction_logs WHERE created_at >= $1 AND created_at < $2{scope} "
+            f"SELECT date_trunc('{trunc}', l.created_at) AS bucket, "
+            "COALESCE(SUM(l.cost_usd), 0) AS value "
+            "FROM ai_interaction_logs l "
+            "JOIN chat_sessions s ON s.id = l.session_id AND s.consumer <> 'telegram' "
+            f"WHERE l.created_at >= $1 AND l.created_at < $2{scope_l} "
             "GROUP BY bucket ORDER BY bucket",
             *args,
         )
@@ -2329,10 +2355,12 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
         # Average spend per session per bucket: total cost / distinct sessions that
         # had at least one OpenAI call in the bucket. The "average price per day".
         rows = await _pool.fetch(
-            f"SELECT date_trunc('{trunc}', created_at) AS bucket, "
-            "COALESCE(SUM(cost_usd), 0) AS cost, "
-            "COUNT(DISTINCT session_id) AS sessions "
-            f"FROM ai_interaction_logs WHERE created_at >= $1 AND created_at < $2{scope} "
+            f"SELECT date_trunc('{trunc}', l.created_at) AS bucket, "
+            "COALESCE(SUM(l.cost_usd), 0) AS cost, "
+            "COUNT(DISTINCT l.session_id) AS sessions "
+            "FROM ai_interaction_logs l "
+            "JOIN chat_sessions s ON s.id = l.session_id AND s.consumer <> 'telegram' "
+            f"WHERE l.created_at >= $1 AND l.created_at < $2{scope_l} "
             "GROUP BY bucket ORDER BY bucket",
             *args,
         )
@@ -2346,7 +2374,8 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
             f"SELECT date_trunc('{trunc}', created_at) AS bucket, "
             "COUNT(*) FILTER (WHERE message_count > 0) AS engaged, "
             "COUNT(*) FILTER (WHERE escalated) AS escalated "
-            f"FROM chat_sessions WHERE created_at >= $1 AND created_at < $2{scope} "
+            "FROM chat_sessions WHERE created_at >= $1 AND created_at < $2 "
+            f"  AND consumer <> 'telegram'{scope} "
             "GROUP BY bucket ORDER BY bucket",
             *args,
         )
@@ -2359,7 +2388,8 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
         rows = await _pool.fetch(
             f"SELECT date_trunc('{trunc}', created_at) AS bucket, "
             "COUNT(*) AS value "
-            f"FROM chat_sessions WHERE created_at >= $1 AND created_at < $2{scope} "
+            "FROM chat_sessions WHERE created_at >= $1 AND created_at < $2 "
+            f"  AND consumer <> 'telegram'{scope} "
             "GROUP BY bucket ORDER BY bucket",
             *args,
         )
@@ -2382,6 +2412,7 @@ async def by_topic(dt_from: Any, dt_to: Any,
         "  FROM ai_interaction_logs l "
         "  JOIN chat_sessions cs ON cs.id = l.session_id "
         f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
+        "    AND cs.consumer <> 'telegram' "
         "  GROUP BY l.session_id"
         ") "
         "SELECT t.slug, t.title, "
@@ -2394,6 +2425,7 @@ async def by_topic(dt_from: Any, dt_to: Any,
         "FROM chat_sessions s JOIN kb_topics t ON t.id = s.topic_id "
         "LEFT JOIN costs ON costs.session_id = s.id "
         f"WHERE s.created_at >= $1 AND s.created_at < $2{scope} "
+        "  AND s.consumer <> 'telegram' "
         "GROUP BY t.slug, t.title ORDER BY sessions DESC",
         *args,
     )
@@ -2425,6 +2457,7 @@ async def by_language(dt_from: Any, dt_to: Any,
         "  FROM ai_interaction_logs l "
         "  JOIN chat_sessions cs ON cs.id = l.session_id "
         f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
+        "    AND cs.consumer <> 'telegram' "
         "  GROUP BY l.session_id"
         ") "
         "SELECT COALESCE(s.lang, 'unknown') AS lang, "
@@ -2435,6 +2468,7 @@ async def by_language(dt_from: Any, dt_to: Any,
         "  COALESCE(SUM(costs.cost_usd_total), 0) AS cost_usd_total "
         "FROM chat_sessions s LEFT JOIN costs ON costs.session_id = s.id "
         f"WHERE s.created_at >= $1 AND s.created_at < $2{scope} "
+        "  AND s.consumer <> 'telegram' "
         "GROUP BY COALESCE(s.lang, 'unknown') ORDER BY sessions DESC",
         *args,
     )
@@ -3628,7 +3662,11 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
     args2: list[Any] = [dt_from, dt_to]
     pid2 = _pid_where(product_ids, args2, "p.product_id")
     args3: list[Any] = [dt_from, dt_to]
-    pid3 = _pid_where(product_ids, args3, "s.product_id")
+    # Telegram cost is scoped on the LOG row's product so it captures both the
+    # dialog turns (a telegram session) AND the photo-metadata vision calls,
+    # which log with session_id IS NULL (no session to join). Split the two out
+    # so the admin can see the drivers apart.
+    pid3 = _pid_where(product_ids, args3, "l.product_id")
     args4: list[Any] = []
     pid4 = _pid_where(product_ids, args4)
     # Independent aggregates — run them concurrently (this feeds the admin's
@@ -3675,10 +3713,17 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
                 "    AS replied "
                 f"FROM retention_pings p WHERE {pid2} "
                 "  AND p.created_at >= $1 AND p.created_at < $2", *args2),
-            _pool.fetchval(
-                "SELECT COALESCE(SUM(l.cost_usd), 0) FROM ai_interaction_logs l "
-                "JOIN chat_sessions s ON s.id = l.session_id "
-                f"WHERE s.consumer = 'telegram' AND {pid3} "
+            _pool.fetchrow(
+                "SELECT "
+                "  COALESCE(SUM(l.cost_usd) FILTER "
+                "    (WHERE l.session_id IS NOT NULL), 0) AS dialog, "
+                "  COALESCE(SUM(l.cost_usd) FILTER "
+                "    (WHERE l.session_id IS NULL), 0) AS photo, "
+                "  COALESCE(SUM(l.cost_usd), 0) AS total "
+                "FROM ai_interaction_logs l "
+                "LEFT JOIN chat_sessions s ON s.id = l.session_id "
+                f"WHERE {pid3} "
+                "  AND (s.consumer = 'telegram' OR l.session_id IS NULL) "
                 "  AND l.created_at >= $1 AND l.created_at < $2", *args3),
             _pool.fetch(
                 "SELECT unlocked_stage AS stage, COUNT(*) AS users "
@@ -3705,7 +3750,12 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
             "pings_failed": int(pings["failed"] or 0) if pings else 0,
             "ping_replies": replied,
             "ping_reply_rate": round(replied / sent, 3) if sent else None,
-            "cost_usd": round(float(cost or 0), 4),
+            # Total telegram AI spend for the range, plus the two drivers:
+            # engagement dialog turns vs the on-demand photo-metadata vision
+            # calls. cost_usd = cost_dialog_usd + cost_photo_usd.
+            "cost_usd": round(float(cost["total"] if cost else 0), 4),
+            "cost_dialog_usd": round(float(cost["dialog"] if cost else 0), 4),
+            "cost_photo_usd": round(float(cost["photo"] if cost else 0), 4),
         },
         "stage_distribution": [
             {"stage": int(r["stage"]), "users": int(r["users"])}
@@ -3809,20 +3859,31 @@ async def retention_timeseries(product_ids: Optional[list[int]], dt_from: Any,
             "  AND created_at >= $1 AND created_at < $2 GROUP BY 1", *args):
         out.setdefault(_day(r["day"]), {})["pings"] = int(r["n"])
 
+    # Telegram AI cost per day, scoped on the LOG product so it captures both the
+    # dialog turns and the session-less photo-metadata calls (split out below).
     args = [dt_from, dt_to]
-    pid = _pid_where(product_ids, args, "s.product_id")
+    pid = _pid_where(product_ids, args, "l.product_id")
     for r in await _pool.fetch(
             "SELECT date_trunc('day', l.created_at) AS day, "
+            "  COALESCE(SUM(l.cost_usd) FILTER "
+            "    (WHERE l.session_id IS NOT NULL), 0) AS dialog, "
+            "  COALESCE(SUM(l.cost_usd) FILTER "
+            "    (WHERE l.session_id IS NULL), 0) AS photo, "
             "  COALESCE(SUM(l.cost_usd), 0) AS cost "
-            "FROM ai_interaction_logs l JOIN chat_sessions s ON s.id = l.session_id "
-            f"WHERE s.consumer = 'telegram' AND {pid} "
+            "FROM ai_interaction_logs l "
+            "LEFT JOIN chat_sessions s ON s.id = l.session_id "
+            f"WHERE {pid} AND (s.consumer = 'telegram' OR l.session_id IS NULL) "
             "  AND l.created_at >= $1 AND l.created_at < $2 GROUP BY 1", *args):
-        out.setdefault(_day(r["day"]), {})["cost_usd"] = round(float(r["cost"]), 4)
+        d = out.setdefault(_day(r["day"]), {})
+        d["cost_usd"] = round(float(r["cost"]), 4)
+        d["cost_dialog_usd"] = round(float(r["dialog"]), 4)
+        d["cost_photo_usd"] = round(float(r["photo"]), 4)
 
     series = []
     for day in sorted(out):
         row = {"date": day, "messages": 0, "active_users": 0, "photos": 0,
-               "pings": 0, "cost_usd": 0.0}
+               "pings": 0, "cost_usd": 0.0, "cost_dialog_usd": 0.0,
+               "cost_photo_usd": 0.0}
         row.update(out[day])
         series.append(row)
     return series

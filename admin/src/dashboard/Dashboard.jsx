@@ -15,7 +15,12 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
 import LineChart from '../components/LineChart';
-import { CHART_COLORS, FunnelBars, SeriesLineChart } from '../components/charts';
+import {
+  CHART_COLORS,
+  FunnelBars,
+  SeriesLineChart,
+  TelegramCostCharts,
+} from '../components/charts';
 import { API_URL, httpClient } from '../httpClient';
 import { getProductId, scopeParams } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
@@ -367,7 +372,11 @@ const RetentionBlock = () => {
         />
         <Kpi label="Photos sent" value={num(inRange?.photos_sent)} />
         <Kpi label="Hand-offs" value={num(inRange?.handoffs)} hint="to manager / support" />
-        <Kpi label="Cost (USD)" value={usd(inRange?.cost_usd)} hint="Telegram AI turns" />
+        <Kpi
+          label="Cost (USD)"
+          value={usd(inRange?.cost_usd)}
+          hint="TG turns + photo metadata"
+        />
       </Grid>
       <Grid container spacing={2} sx={{ mt: 2 }} alignItems="stretch">
         <Grid size={{ xs: 12, md: 6 }}>
@@ -396,6 +405,9 @@ const RetentionBlock = () => {
           </Card>
         </Grid>
       </Grid>
+      <Box sx={{ mt: 2 }}>
+        <TelegramCostCharts data={series} height={190} />
+      </Box>
     </>
   );
 };

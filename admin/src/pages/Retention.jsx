@@ -29,7 +29,12 @@ import Typography from '@mui/material/Typography';
 import Link from '@mui/material/Link';
 import { API_URL, httpClient, getToken } from '../httpClient';
 import { getProductId } from '../productScope';
-import { FunnelBars, MiniBarChart, SeriesLineChart } from '../components/charts';
+import {
+  FunnelBars,
+  MiniBarChart,
+  SeriesLineChart,
+  TelegramCostCharts,
+} from '../components/charts';
 import RequireProduct from '../components/RequireProduct';
 import SecretField from '../components/SecretField';
 
@@ -2074,7 +2079,7 @@ const AnalyticsTab = ({ productId }) => {
         <KpiCard
           label="Cost (USD)"
           value={inRange?.cost_usd != null ? `$${Number(inRange.cost_usd).toFixed(4)}` : undefined}
-          hint="OpenAI spend, Telegram turns"
+          hint="TG dialog + photo metadata"
         />
       </Grid>
 
@@ -2086,6 +2091,10 @@ const AnalyticsTab = ({ productId }) => {
           <SeriesLineChart data={series} series={TIMESERIES_SERIES} />
         </CardContent>
       </Card>
+
+      <Box sx={{ mb: 2 }}>
+        <TelegramCostCharts data={series} height={220} />
+      </Box>
 
       <Grid container spacing={2} alignItems="stretch" sx={{ mb: 2 }}>
         <Grid size={{ xs: 12, md: 7 }}>
