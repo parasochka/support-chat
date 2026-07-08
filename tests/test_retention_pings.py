@@ -122,7 +122,8 @@ class FakeTelegram:
         self.sent: list = []
         self.fail_code = None
 
-    async def send_message_verbose(self, chat_id, text, *, reply_markup=None):
+    async def send_message_verbose(self, chat_id, text, *, reply_markup=None,
+                                   parse_mode=None):
         if self.fail_code:
             return None, self.fail_code, "bot was blocked by the user"
         self.sent.append((chat_id, text))

@@ -24,12 +24,28 @@ import chat_service
 import db
 import language
 import settings
+import telegram_format
 import tenancy
 import translations
 from telegram_transport import (ParsedUpdate, TelegramClient, inline_keyboard,
                                 parse_update)
 
 log = logging.getLogger(__name__)
+
+
+async def _send_ai_text(client: TelegramClient, chat_id: int, text: str, *,
+                        reply_markup: Optional[dict[str, Any]] = None) -> None:
+    """Send model-generated retention text with the light HTML markup rendered.
+
+    The retention persona may use a touch of **bold**/*italic*; telegram_format
+    converts that to balanced Telegram HTML. If Telegram rejects the HTML for any
+    reason, fall back to the plain text so a delivery never silently fails.
+    """
+    html = telegram_format.to_html(text)
+    result = await client.send_message(
+        chat_id, html, reply_markup=reply_markup, parse_mode="HTML")
+    if result is None and html != text:
+        await client.send_message(chat_id, text, reply_markup=reply_markup)
 
 # Callback-data constants for the inline menu (short + stable).
 CB_CHECK_SUB = "rtn:checksub"
@@ -708,7 +724,7 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
              "target": "manager" if ru.get("entry_type") == "escalation" else "support"},
             product_id=product["id"])
         if reply.reply:
-            await client.send_message(pu.chat_id, reply.reply)
+            await _send_ai_text(client, pu.chat_id, reply.reply)
         if ru.get("entry_type") == "escalation":
             await _route_to_manager(client, product, ru, pu.chat_id, reply.lang,
                                     reason="handoff")
@@ -735,7 +751,7 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
         await _send_photo(client, product, ru, pu.chat_id, reply.photo_id,
                           caption, session_id=session["id"])
     elif reply.reply:
-        await client.send_message(pu.chat_id, reply.reply)
+        await _send_ai_text(client, pu.chat_id, reply.reply)
 
     # Stage progression gate (model hint + backend gate).
     if meaningful:
@@ -751,25 +767,28 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
     ledger on it); a caption-only fallback returns False. `session_id` links the
     delivery to the chat session so the admin transcript can show it inline.
     """
+    # Render the (model-generated) caption's light markup as Telegram HTML.
+    caption_html = telegram_format.to_html(caption) if caption else None
     photo = await db.get_retention_photo(photo_id)
     if not photo or not photo.get("active"):
         if caption:
-            await client.send_message(chat_id, caption)
+            await _send_ai_text(client, chat_id, caption)
         return False
     file_id = photo.get("telegram_file_id")
     result = None
     if file_id:
-        result = await client.send_photo_file_id(chat_id, file_id, caption=caption or None)
+        result = await client.send_photo_file_id(
+            chat_id, file_id, caption=caption_html, parse_mode="HTML")
     if result is None:
         # No cached id (or the cached id failed) — upload from the Volume.
         content = _read_media(photo.get("storage_ref"))
         if content is None:
             if caption:
-                await client.send_message(chat_id, caption)
+                await _send_ai_text(client, chat_id, caption)
             return False
         result = await client.send_photo_bytes(
             chat_id, content, photo.get("storage_ref") or "photo.jpg",
-            caption=caption or None)
+            caption=caption_html, parse_mode="HTML")
         new_file_id = TelegramClient.extract_photo_file_id(result)
         if new_file_id:
             await db.set_photo_file_id(photo_id, new_file_id)

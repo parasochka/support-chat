@@ -32,6 +32,7 @@ import config
 import db
 import retention
 import settings
+import telegram_format
 import tenancy
 from telegram_transport import TelegramClient
 
@@ -249,8 +250,15 @@ async def _send_ping(client: TelegramClient, product: dict[str, Any],
         if not delivered:
             detail = "photo_send_failed"
     else:
+        # Render the persona's light markup as Telegram HTML; keep the verbose
+        # result so a 403 (bot blocked) is still detected.
+        ping_html = telegram_format.to_html(draft.text)
         result, err_code, err_desc = await client.send_message_verbose(
-            chat_id, draft.text)
+            chat_id, ping_html, parse_mode="HTML")
+        if result is None and ping_html != draft.text and err_code != 403:
+            # Bad HTML (never a block) — retry once as plain text.
+            result, err_code, err_desc = await client.send_message_verbose(
+                chat_id, draft.text)
         delivered = result is not None
         if not delivered:
             detail = f"{err_code}: {err_desc}" if err_desc else "send_failed"

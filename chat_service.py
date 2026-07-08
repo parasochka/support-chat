@@ -19,6 +19,7 @@ import language
 import openai_client
 import prompts
 import settings
+import telegram_format
 import tenancy
 import translations
 
@@ -594,6 +595,9 @@ async def handle_retention_message(
         clean_text, handoff = prompts.strip_handoff_tag(clean_text)
         clean_text, stage_up = prompts.strip_stage_up_tag(clean_text)
         clean_text, photo_id = prompts.strip_photo_tag(clean_text)
+        # Deterministically scrub the "AI-tell" typography (em dashes, guillemet
+        # quotes) the persona is told to avoid but the model keeps emitting.
+        clean_text = telegram_format.normalize_punctuation(clean_text)
     if detected_lang and detected_lang not in language.supported_codes():
         detected_lang = None
     # Only honour a photo id from the allowed candidate set.
@@ -717,6 +721,7 @@ async def generate_retention_ping(
         clean_text, _ = prompts.strip_handoff_tag(clean_text)
         clean_text, _ = prompts.strip_stage_up_tag(clean_text)
         clean_text, photo_id = prompts.strip_photo_tag(clean_text)
+        clean_text = telegram_format.normalize_punctuation(clean_text)
     if detected_lang and detected_lang not in language.supported_codes():
         detected_lang = None
     if photo_id is not None and photo_id not in candidate_ids:
