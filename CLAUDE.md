@@ -86,16 +86,23 @@ in mind for every change:
   SPA re-scopes every tab; the **Structure** tab manages partners/products, widget
   keys (+ copyable embed snippet), and product secrets; the **Users** tab manages
   accounts + memberships. `GET /admin/structure` feeds the switcher.
-- **Integration docs**: `GET /integration` serves a public, self-contained HTML
-  guide (Russian) for partner/CMS dev teams — embed contract, handshake signing
-  samples, chat + admin API reference. `GET /integration-telegram` is its SEPARATE
-  sibling for the Telegram retention bot (deeplink contract, profile pull/push +
-  activity timestamps, ping matrix, admin setup), and `GET /integration-admin`
-  is the THIRD sibling for wiring an external master admin panel (roles model,
-  JWT login, `sak_…` service keys, the `/admin/*` endpoint reference) — same
-  style, all three cross-link. The example page (`frontend/test.html`)
-  carries exactly one link to each. Update the matching page when a public contract
-  changes; keep the three in the same house style.
+- **Integration docs**: a FAMILY of public, self-contained HTML guides (Russian)
+  for partner/CMS dev teams, split by task. `GET /integration` is the HUB
+  (overview, architecture/multi-tenancy, deploy env vars, docs index); its
+  per-topic siblings are `GET /integration-widget` (embedding the ready-made
+  widget: snippet, widget key, reCaptcha, CORS), `GET /integration-data` (player
+  data transfer & sync — the ONE home for the whitelist fields, signed-handshake
+  format + signing samples, the lazy-pull Player API contract, the push webhook
+  and the activity timestamps; other pages link here instead of duplicating the
+  contracts), `GET /integration-chat-api` (the public Chat API reference + the
+  mandatory client logic for a custom UI), `GET /integration-telegram` (the
+  Telegram retention bot: deeplink contract, subscription gate, ping matrix,
+  admin setup), and `GET /integration-admin` (wiring an external master admin
+  panel: roles model, JWT login, `sak_…` service keys, the `/admin/*` endpoint
+  reference) — same house style, all cross-link via header + footer. The example
+  page (`frontend/test.html`) carries exactly one link to each. Update the
+  matching page when a public contract changes; keep the family in the same
+  house style.
 - **The prompt template stays the one shared, deploy-level artifact** — brands
   differ only via prompt variables + KB + translations + settings, never per-tenant
   prompt forks.

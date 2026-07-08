@@ -233,27 +233,43 @@ async def test_html() -> FileResponse:
 
 
 # --- integration docs ---------------------------------------------------------
-# Public, self-contained API/integration guide for partner dev teams: how to
-# embed the widget (widget key), sign the player handshake, and talk to the
-# chat/admin APIs. Static HTML, no auth (it documents the public contract and
-# contains no secrets); shareable as <host>/integration.
+# Public, self-contained integration guides for partner dev teams. Static HTML,
+# no auth (they document the public contract and contain no secrets); shareable
+# as <host>/integration. Split by task into a family of same-style pages that
+# cross-link each other: /integration is the hub (overview, architecture, env
+# vars, docs index); the siblings cover the widget embed, player data transfer
+# & sync, the public Chat API / custom UI contract, the Telegram retention bot,
+# and the external "master" admin panel integration.
 @app.get("/integration", response_class=HTMLResponse)
 async def integration_docs() -> FileResponse:
     return FileResponse(os.path.join(_FRONTEND_DIR, "integration.html"),
                         media_type="text/html", headers=_WIDGET_CACHE)
 
 
-# Separate, self-contained integration guide for the Telegram retention bot
-# (the second facade). Kept as its own page — matching the /integration style —
-# so the support-chat guide stays focused; the two cross-link each other.
+@app.get("/integration-widget", response_class=HTMLResponse)
+async def integration_widget_docs() -> FileResponse:
+    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-widget.html"),
+                        media_type="text/html", headers=_WIDGET_CACHE)
+
+
+@app.get("/integration-data", response_class=HTMLResponse)
+async def integration_data_docs() -> FileResponse:
+    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-data.html"),
+                        media_type="text/html", headers=_WIDGET_CACHE)
+
+
+@app.get("/integration-chat-api", response_class=HTMLResponse)
+async def integration_chat_api_docs() -> FileResponse:
+    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-chat-api.html"),
+                        media_type="text/html", headers=_WIDGET_CACHE)
+
+
 @app.get("/integration-telegram", response_class=HTMLResponse)
 async def integration_telegram_docs() -> FileResponse:
     return FileResponse(os.path.join(_FRONTEND_DIR, "integration-telegram.html"),
                         media_type="text/html", headers=_WIDGET_CACHE)
 
 
-# Third sibling guide: integrating an external "master" admin panel with the
-# /admin API (roles model, service API keys, scoping, endpoint reference).
 @app.get("/integration-admin", response_class=HTMLResponse)
 async def integration_admin_docs() -> FileResponse:
     return FileResponse(os.path.join(_FRONTEND_DIR, "integration-admin.html"),

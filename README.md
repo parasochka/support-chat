@@ -6,14 +6,18 @@ sportsbook brands. It is API-isolated: other modules talk to it over HTTP/JSON b
 
 > Developer/agent guidance lives in **[`CLAUDE.md`](./CLAUDE.md)** — architecture,
 > invariants, and conventions. This README is the human-facing overview.
-> Integration guide for partner/CMS dev teams is served by the app itself at
-> **`/integration`** (embed contract, handshake signing, API reference), the
-> Telegram retention bot has its own guide at **`/integration-telegram`** (deeplink
-> contract, player profile sync, proactive pings, admin setup); its step-by-step
-> setup checklist lives in the admin panel — **Retention · Telegram → Setup guide**.
-> A third sibling page, **`/integration-admin`**, documents integrating an external
-> "master" admin panel with the `/admin` API (roles model, service API keys,
-> scoping, endpoint reference).
+> Integration docs for partner/CMS dev teams are served by the app itself as a
+> family of same-style pages: **`/integration`** is the hub (overview,
+> architecture, env vars, docs index), **`/integration-widget`** covers embedding
+> the ready-made widget, **`/integration-data`** covers player data transfer &
+> sync (signed handshake, lazy pull, push webhook, activity timestamps),
+> **`/integration-chat-api`** documents the public Chat API + the mandatory
+> client logic for a custom UI, **`/integration-telegram`** covers the Telegram
+> retention bot (deeplink contract, proactive pings, admin setup; its
+> step-by-step setup checklist lives in the admin panel — **Retention ·
+> Telegram → Setup guide**), and **`/integration-admin`** documents integrating
+> an external "master" admin panel with the `/admin` API (roles model, service
+> API keys, scoping, endpoint reference).
 
 ## Multi-tenancy
 
