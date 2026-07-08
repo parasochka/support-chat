@@ -570,9 +570,9 @@ const PhotoPreview = ({ photoId }) => {
 const META_CHUNK = 10;
 
 // Photos shown per page. The whole library is loaded once (filtering is
-// client-side); paginating the grid keeps only ~20 previews fetching at a
+// client-side); paginating the grid keeps only ~21 previews fetching at a
 // time instead of every photo at once.
-const PHOTOS_PER_PAGE = 20;
+const PHOTOS_PER_PAGE = 21;
 
 const PhotosTab = ({ productId }) => {
   const notify = useNotify();
