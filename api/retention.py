@@ -352,10 +352,10 @@ async def retention_effective_prompt(product_id: int,
 # ===========================================================================
 # Admin: retention prompt variables — the Telegram-persona uniquification
 # values (retention_persona_name / _role / _brand / _products / tone). Stored
-# under their own product-settings key; every non-tone key INHERITS the
-# resolved support prompt variable when left empty (the Telegram persona
-# mirrors the support chat by default and is overridden only where it should
-# differ). The one editor is the Retention → Prompt variables tab.
+# under their own product-settings key; every key ships its OWN retention
+# default and an empty override falls back to that default — the Telegram
+# persona is a SEPARATE prompt, never inheriting from the support chat. The
+# one editor is the Retention → Prompt variables tab.
 # ===========================================================================
 class RetentionPromptVariablesWrite(BaseModel):
     value: Any = Field(...)
@@ -364,22 +364,21 @@ class RetentionPromptVariablesWrite(BaseModel):
 def _retention_variables_payload() -> list[dict[str, Any]]:
     """The variables list for the admin editor (scope already bound).
 
-    `value` is the raw stored override ('' = inherited), `inherited` the value
-    that applies when the override is empty (the support counterpart or the
-    registry default), `resolved` what the prompt actually renders with.
+    `value` is the raw stored override ('' = using the default), `default` the
+    retention default that applies when the override is empty (the Telegram
+    persona is independent of the support chat — no support inheritance),
+    `resolved` what the prompt actually renders with.
     """
     overrides = settings_mod.retention_prompt_variable_overrides()
     resolved = settings_mod.retention_prompt_variables()
-    support = settings_mod.prompt_variables()
     out = []
-    for key, desc, default, inherits in prompts.RETENTION_PROMPT_VARIABLES:
-        inherited = default if default is not None else support.get(inherits or "", "")
+    for key, desc, default, _renders in prompts.RETENTION_PROMPT_VARIABLES:
+        default = default or ""
         out.append({
             "key": key, "description": desc,
-            "inherits_from": inherits,
-            "inherited": inherited,
+            "default": default,
             "value": overrides.get(key, ""),
-            "resolved": resolved.get(key, inherited),
+            "resolved": resolved.get(key, default),
         })
     return out
 
