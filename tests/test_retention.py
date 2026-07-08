@@ -402,6 +402,12 @@ async def test_maybe_pull_profile_stale_pulls(monkeypatch):
     import httpx
     monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
 
+    # This test exercises the pull logic, not the SSRF guard — the fake host
+    # doesn't resolve, so bypass the guard here (a dedicated test below covers it).
+    async def _safe(url):
+        return True
+    monkeypatch.setattr(retention, "is_safe_outbound_url", _safe)
+
     async def _key(pid):
         return "apikey"
     monkeypatch.setattr(retention.db, "get_product_player_api_key", _key)
@@ -431,3 +437,35 @@ async def test_maybe_pull_profile_no_url_noop(monkeypatch):
     ru = {"id": 1, "tg_user_id": 7, "player_id": "p1"}
     out = await retention.maybe_pull_profile(product, ru)
     assert out is ru
+
+
+async def test_maybe_pull_profile_blocks_ssrf(monkeypatch):
+    """A player_api_url pointed at an internal / metadata address is not fetched."""
+    import httpx
+
+    def _boom(*a, **k):  # any outbound attempt is a failure of the guard
+        raise AssertionError("SSRF guard let an unsafe URL through")
+    monkeypatch.setattr(httpx, "AsyncClient", _boom)
+
+    async def _key(pid):
+        return "apikey"
+    monkeypatch.setattr(retention.db, "get_product_player_api_key", _key)
+
+    for bad in ("http://169.254.169.254/latest/meta-data/",
+                "http://127.0.0.1:8080/admin",
+                "http://localhost/internal",
+                "ftp://example.com/x"):
+        product = {"id": 1, "player_api_url": bad}
+        ru = {"id": 1, "tg_user_id": 7, "player_id": "p1",
+              "profile_updated_at": "2000-01-01T00:00:00+00:00"}
+        out = await retention.maybe_pull_profile(product, ru)
+        assert out is ru  # unchanged snapshot, no fetch
+
+
+async def test_is_safe_outbound_url_rejects_private_and_bad_scheme():
+    assert await retention.is_safe_outbound_url("http://169.254.169.254/") is False
+    assert await retention.is_safe_outbound_url("http://127.0.0.1/") is False
+    assert await retention.is_safe_outbound_url("http://10.0.0.5/") is False
+    assert await retention.is_safe_outbound_url("http://192.168.1.1/") is False
+    assert await retention.is_safe_outbound_url("ftp://example.com/") is False
+    assert await retention.is_safe_outbound_url("not a url") is False

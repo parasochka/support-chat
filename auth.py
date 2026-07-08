@@ -149,9 +149,12 @@ def verify_admin_token(token: str) -> dict[str, Any]:
     if not hmac.compare_digest(expected, provided):
         raise TokenError("signature mismatch")
     try:
+        header = json.loads(_b64url_decode(header_b64))
         payload = json.loads(_b64url_decode(payload_b64))
     except Exception as exc:  # noqa: BLE001
         raise TokenError("undecodable token body") from exc
+    if header.get("alg") != _ALG:
+        raise TokenError("unexpected alg")
     exp = payload.get("exp")
     if exp is None or int(time.time()) >= int(exp):
         raise TokenError("token expired")
