@@ -246,8 +246,9 @@ def render_site_map_block(pages: Any, brand_name: str = "") -> str:
     lines = [
         f"=== SITE MAP (official {brand} pages) ===",
         f"These are official {brand} website pages. When one of them is relevant "
-        "to the player's question, give its exact URL from the list below and "
-        "treat it as an official link; never invent any other page address.",
+        "to the player's question, give it as a clickable [descriptive text](URL) "
+        "link built from its exact URL in the list below - never as a bare URL and "
+        "never with an invented address.",
     ]
     for p in items:
         title = str(p.get("title", "")).strip()
@@ -566,6 +567,12 @@ _FORMATTING_DIRECTIVE = (
     "player as stray characters. Keep structure minimal: avoid lists unless truly "
     "needed, never more than 3 short items, and do not split a simple answer into "
     "many sections.\n"
+    "- ALWAYS write every link as Markdown [descriptive text](https://...): a short "
+    "human label in the brackets and the exact URL in the parentheses. NEVER paste a "
+    "bare URL on its own. A bare URL is not clickable in the chat - it renders as "
+    "plain text the player must copy by hand and it looks broken - while "
+    "[text](url) becomes a proper clickable link inside the sentence. This applies "
+    "to EVERY link you give: knowledge-base links and the SITE MAP pages alike.\n"
     "- NEVER use an em dash (—), en dash (–) or guillemet / angle quotes (« », "
     "‹ ›): use a plain hyphen (-) for any dash and straight quotes (\"...\") "
     "instead. These typographic characters are an instant tell that the text is "
@@ -1206,18 +1213,22 @@ _RETENTION_PHOTO_DIRECTIVE = (
 # Formatting directive (STATIC → retention Layer-1). The retention channel is
 # TELEGRAM: replies are rendered with a light HTML subset (the backend converts
 # **bold**/*italic* → <b>/<i> and sends with parse_mode=HTML, see
-# telegram_format.py), so the model may use a TOUCH of emphasis. It must still
-# stay a chat, not a document: no lists/headings/tables, bare URLs (no
-# [text](url) link markup — that would leak). This replaces the widget's
-# _FORMATTING_DIRECTIVE in the retention Layer-1 assembly.
+# telegram_format.py), plus [text](url) link markup that the backend converts to
+# a clickable <a href> anchor. So the model may use a TOUCH of emphasis and MUST
+# wrap links as [text](url). It must still stay a chat, not a document: no
+# lists/headings/tables. This replaces the widget's _FORMATTING_DIRECTIVE in the
+# retention Layer-1 assembly.
 _RETENTION_FORMATTING_DIRECTIVE = (
     "FORMATTING (TELEGRAM):\n"
     "- You write short chat messages, not documents. You MAY add a LIGHT touch of "
     "emphasis with **bold** or *italic* on a word or two when it feels natural - "
     "sparingly, never more than once or twice in a message, never a whole "
-    "sentence. Do NOT use headings, bulleted or numbered lists, tables, "
-    "`backticks`, or [text](url) link markup - when you share a link, paste the "
-    "bare URL as-is.\n"
+    "sentence. Do NOT use headings, bulleted or numbered lists, tables, or "
+    "`backticks`.\n"
+    "- ALWAYS write every link as [descriptive text](https://...): a short human "
+    "label in the brackets and the exact URL in the parentheses. NEVER paste a bare "
+    "URL on its own - it looks broken and unclickable. Written as [text](url) it "
+    "becomes a proper clickable link inside the sentence.\n"
     "- NEVER use an em dash (—), en dash (–) or guillemet / angle quotes (« », "
     "‹ ›): use a plain hyphen (-) for any dash and straight vertical quotes "
     "(\"...\" or '...') for any quotation. These typographic characters are an "
