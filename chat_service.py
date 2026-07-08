@@ -274,6 +274,13 @@ async def handle_message(
         clean_text, detected_lang = prompts.strip_language_tag(clean_text)
         clean_text, suggestions = prompts.strip_suggestions(clean_text)
         clean_text, resolved = prompts.strip_resolved_tag(clean_text)
+        # Mechanically scrub the typographic "AI tells" the FORMATTING directive
+        # forbids (em/en dashes, guillemet/curly quotes) in case the model emitted
+        # them anyway - the same deterministic pass the retention channel applies,
+        # so a stray dash or « » never reaches the widget even when the prompt rule
+        # was not perfectly followed. The persisted transcript matches what the
+        # player saw (the scrub runs before both).
+        clean_text = telegram_format.normalize_punctuation(clean_text)
     # Only trust a [[LANG:xx]] code the model can actually answer in.
     if detected_lang and detected_lang not in language.supported_codes():
         detected_lang = None
