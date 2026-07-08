@@ -558,22 +558,37 @@ const PromptTab = ({ productId }) => {
 // ---------------------------------------------------------------------------
 // Photos tab (media library; binary preview needs the auth header -> blob)
 // ---------------------------------------------------------------------------
+// Session-lived cache of the fetched preview object URLs, keyed by photo id.
+// The binary is immutable per id, so once fetched a preview is reused across
+// re-renders, pagination and filter changes instead of re-downloading — the
+// slow-loading complaint. The URLs are intentionally never revoked: they live
+// for the tab's lifetime (bounded by how many distinct photos exist).
+const photoUrlCache = new Map();
+
 const PhotoPreview = ({ photoId }) => {
-  const [src, setSrc] = useState(null);
+  const [src, setSrc] = useState(() => photoUrlCache.get(photoId) || null);
   useEffect(() => {
-    let url;
+    const cached = photoUrlCache.get(photoId);
+    if (cached) {
+      setSrc(cached);
+      return undefined;
+    }
+    let cancelled = false;
     fetch(`${API_URL}/admin/retention/photos/${photoId}/file`, {
       headers: { Authorization: `Bearer ${getToken()}` },
     })
       .then((r) => (r.ok ? r.blob() : null))
       .then((blob) => {
-        if (blob) {
-          url = URL.createObjectURL(blob);
+        if (blob && !cancelled) {
+          const url = URL.createObjectURL(blob);
+          photoUrlCache.set(photoId, url);
           setSrc(url);
         }
       })
       .catch(() => {});
-    return () => url && URL.revokeObjectURL(url);
+    return () => {
+      cancelled = true;
+    };
   }, [photoId]);
   const frame = {
     width: '100%',
@@ -598,6 +613,11 @@ const PhotoPreview = ({ photoId }) => {
 // chunked client-side so a slow vision batch can't hit the request timeout.
 const META_CHUNK = 10;
 
+// Photos shown per page. The whole library is loaded once (filtering is
+// client-side); paginating the grid keeps only ~20 previews fetching at a
+// time instead of every photo at once.
+const PHOTOS_PER_PAGE = 20;
+
 const PhotosTab = ({ productId }) => {
   const notify = useNotify();
   const [items, setItems] = useState([]);
@@ -608,6 +628,7 @@ const PhotosTab = ({ productId }) => {
   const [generating, setGenerating] = useState(false);
   const [genProgress, setGenProgress] = useState('');
   const [filters, setFilters] = useState({ q: '', stage: 'all', level: 'all', status: 'all' });
+  const [page, setPage] = useState(1);
 
   const load = useCallback(() => {
     httpClient(`${API_URL}/admin/retention/photos?product_id=${productId}`)
@@ -695,6 +716,22 @@ const PhotosTab = ({ productId }) => {
   });
   const stageOptions = [...new Set(items.map((ph) => Number(ph.stage)))].sort((a, b) => a - b);
   const levelOptions = [...new Set(items.map((ph) => Number(ph.level_min)))].sort((a, b) => a - b);
+
+  // --- client-side pagination over the filtered set ---
+  const pageCount = Math.max(1, Math.ceil(visible.length / PHOTOS_PER_PAGE));
+  const safePage = Math.min(page, pageCount);
+  const pageItems = visible.slice(
+    (safePage - 1) * PHOTOS_PER_PAGE,
+    safePage * PHOTOS_PER_PAGE
+  );
+  // A filter change can shrink the list below the current page; snap back.
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+  const setFilter = (patch) => {
+    setFilters((f) => ({ ...f, ...patch }));
+    setPage(1);
+  };
 
   // --- selection + AI metadata generation ---
   const toggleSelect = (id) =>
@@ -853,7 +890,7 @@ const PhotosTab = ({ productId }) => {
               size="small"
               label="Search (description, tags, category)"
               value={filters.q}
-              onChange={(e) => setFilters({ ...filters, q: e.target.value })}
+              onChange={(e) => setFilter({ q: e.target.value })}
               sx={{ minWidth: 240 }}
             />
             <TextField
@@ -861,7 +898,7 @@ const PhotosTab = ({ productId }) => {
               size="small"
               label="Stage"
               value={filters.stage}
-              onChange={(e) => setFilters({ ...filters, stage: e.target.value })}
+              onChange={(e) => setFilter({ stage: e.target.value })}
               sx={{ minWidth: 110 }}
             >
               <MenuItem value="all">all</MenuItem>
@@ -876,7 +913,7 @@ const PhotosTab = ({ productId }) => {
               size="small"
               label="Level min"
               value={filters.level}
-              onChange={(e) => setFilters({ ...filters, level: e.target.value })}
+              onChange={(e) => setFilter({ level: e.target.value })}
               sx={{ minWidth: 110 }}
             >
               <MenuItem value="all">all</MenuItem>
@@ -891,7 +928,7 @@ const PhotosTab = ({ productId }) => {
               size="small"
               label="Status"
               value={filters.status}
-              onChange={(e) => setFilters({ ...filters, status: e.target.value })}
+              onChange={(e) => setFilter({ status: e.target.value })}
               sx={{ minWidth: 110 }}
             >
               <MenuItem value="all">all</MenuItem>
@@ -944,7 +981,7 @@ const PhotosTab = ({ productId }) => {
         </Typography>
       )}
       <Grid container spacing={2} alignItems="stretch">
-        {visible.map((ph) => (
+        {pageItems.map((ph) => (
           <Grid size={{ xs: 12, sm: 6, md: 4 }} key={ph.id}>
             <Card
               sx={{
@@ -1068,6 +1105,33 @@ const PhotosTab = ({ productId }) => {
           </Grid>
         ))}
       </Grid>
+      {pageCount > 1 && (
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          justifyContent="center"
+          sx={{ mt: 2 }}
+        >
+          <Button
+            size="small"
+            disabled={safePage <= 1}
+            onClick={() => setPage(safePage - 1)}
+          >
+            Prev
+          </Button>
+          <Typography variant="body2">
+            {safePage} / {pageCount} · {visible.length} photos
+          </Typography>
+          <Button
+            size="small"
+            disabled={safePage >= pageCount}
+            onClick={() => setPage(safePage + 1)}
+          >
+            Next
+          </Button>
+        </Stack>
+      )}
     </Box>
   );
 };
@@ -1816,25 +1880,47 @@ const ConversationsTab = ({ productId }) => {
         </DialogTitle>
         <DialogContent dividers>
           <Stack spacing={1}>
-            {(detail?.messages || []).map((m, i) => (
-              <Card
-                key={i}
-                variant="outlined"
-                sx={{
-                  maxWidth: '80%',
-                  alignSelf: m.role === 'user' ? 'flex-start' : 'flex-end',
-                  bgcolor: m.role === 'user' ? 'transparent' : 'action.hover',
-                }}
-              >
-                <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
-                  <Typography variant="caption" color="text.secondary">
-                    {m.role} · {new Date(m.created_at).toLocaleString()}
-                    {m.cost_usd ? ` · $${m.cost_usd.toFixed(5)}` : ''}
-                  </Typography>
-                  <Typography sx={{ whiteSpace: 'pre-wrap' }}>{m.content}</Typography>
-                </CardContent>
-              </Card>
-            ))}
+            {[
+              ...(detail?.messages || []).map((m) => ({ ...m, _kind: 'message' })),
+              ...(detail?.photos || []).map((p) => ({ ...p, _kind: 'photo' })),
+            ]
+              .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+              .map((item, i) =>
+                item._kind === 'photo' ? (
+                  <Box
+                    key={`p${i}`}
+                    sx={{ maxWidth: '80%', alignSelf: 'flex-end', width: 240 }}
+                  >
+                    <Typography variant="caption" color="text.secondary">
+                      photo · {new Date(item.created_at).toLocaleString()}
+                    </Typography>
+                    <PhotoPreview photoId={item.photo_id} />
+                    {item.description && (
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        {item.description}
+                      </Typography>
+                    )}
+                  </Box>
+                ) : (
+                  <Card
+                    key={`m${i}`}
+                    variant="outlined"
+                    sx={{
+                      maxWidth: '80%',
+                      alignSelf: item.role === 'user' ? 'flex-start' : 'flex-end',
+                      bgcolor: item.role === 'user' ? 'transparent' : 'action.hover',
+                    }}
+                  >
+                    <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
+                      <Typography variant="caption" color="text.secondary">
+                        {item.role} · {new Date(item.created_at).toLocaleString()}
+                        {item.cost_usd ? ` · $${item.cost_usd.toFixed(5)}` : ''}
+                      </Typography>
+                      <Typography sx={{ whiteSpace: 'pre-wrap' }}>{item.content}</Typography>
+                    </CardContent>
+                  </Card>
+                )
+              )}
             {(detail?.messages || []).length === 0 && (
               <Typography color="text.secondary">No messages.</Typography>
             )}

@@ -9,6 +9,7 @@ import {
   List,
   NumberField,
   NumberInput,
+  Pagination,
   SelectInput,
   Show,
   TextField,
@@ -30,6 +31,10 @@ const STATUS_CHOICES = [
   { id: 'escalated', name: 'Escalated' },
   { id: 'resolved', name: 'Resolved' },
 ];
+
+// The backend page size is fixed at 25, so the per-page selector is hidden
+// (an operator-picked size would desync from what the server actually returns).
+const SessionsPagination = () => <Pagination rowsPerPageOptions={[]} />;
 
 const useFilters = () => {
   const langs = useSupportedLanguages();
@@ -69,7 +74,7 @@ export const ConversationList = () => {
         // "Min messages" filter to see them.
         filterDefaultValues={{ min_messages: 1 }}
         perPage={25}
-        pagination={false}
+        pagination={<SessionsPagination />}
         exporter={false}
         title="Conversations"
         sort={{ field: 'created_at', order: 'DESC' }}
