@@ -1,9 +1,11 @@
 import {
   BooleanField,
   BooleanInput,
+  BulkDeleteButton,
   Datagrid,
   DateField,
   DateInput,
+  DeleteButton,
   List,
   NumberField,
   NumberInput,
@@ -11,6 +13,7 @@ import {
   Show,
   TextField,
   TextInput,
+  usePermissions,
   useRecordContext,
 } from 'react-admin';
 import Box from '@mui/material/Box';
@@ -53,37 +56,51 @@ const useFilters = () => {
   ];
 };
 
-export const ConversationList = () => (
-  <RequireProduct title="Conversations">
-  <List
-    filters={useFilters()}
-    // Hide empty sessions (opened widget, never wrote) by default — clear the
-    // "Min messages" filter to see them.
-    filterDefaultValues={{ min_messages: 1 }}
-    perPage={25}
-    pagination={false}
-    exporter={false}
-    title="Conversations"
-    sort={{ field: 'created_at', order: 'DESC' }}
-  >
-    <Datagrid rowClick="show" bulkActionButtons={false}>
-      <TextField source="id" label="Session" sortable={false} />
-      <TextField source="topic" sortable={false} />
-      <TextField source="lang" label="Lang" sortable={false} />
-      <TextField source="status" sortable={false} />
-      <BooleanField source="escalated" sortable={false} />
-      <NumberField source="message_count" label="Msgs" sortable={false} />
-      <NumberField
-        source="cost_usd_total"
-        label="Cost $"
-        options={{ maximumFractionDigits: 4 }}
-        sortable={false}
-      />
-      <DateField source="created_at" showTime sortable={false} />
-    </Datagrid>
-  </List>
-  </RequireProduct>
-);
+export const ConversationList = () => {
+  // Deleting a conversation is an admin-only, destructive action; managers get
+  // no per-row or bulk delete controls (the server refuses them anyway).
+  const { permissions } = usePermissions();
+  const isAdmin = permissions === 'admin';
+  return (
+    <RequireProduct title="Conversations">
+      <List
+        filters={useFilters()}
+        // Hide empty sessions (opened widget, never wrote) by default — clear the
+        // "Min messages" filter to see them.
+        filterDefaultValues={{ min_messages: 1 }}
+        perPage={25}
+        pagination={false}
+        exporter={false}
+        title="Conversations"
+        sort={{ field: 'created_at', order: 'DESC' }}
+      >
+        <Datagrid
+          rowClick="show"
+          bulkActionButtons={
+            isAdmin ? <BulkDeleteButton mutationMode="pessimistic" /> : false
+          }
+        >
+          <TextField source="id" label="Session" sortable={false} />
+          <TextField source="topic" sortable={false} />
+          <TextField source="lang" label="Lang" sortable={false} />
+          <TextField source="status" sortable={false} />
+          <BooleanField source="escalated" sortable={false} />
+          <NumberField source="message_count" label="Msgs" sortable={false} />
+          <NumberField
+            source="cost_usd_total"
+            label="Cost $"
+            options={{ maximumFractionDigits: 4 }}
+            sortable={false}
+          />
+          <DateField source="created_at" showTime sortable={false} />
+          {isAdmin && (
+            <DeleteButton mutationMode="pessimistic" redirect={false} />
+          )}
+        </Datagrid>
+      </List>
+    </RequireProduct>
+  );
+};
 
 const MessageThread = () => {
   const record = useRecordContext();

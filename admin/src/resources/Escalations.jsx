@@ -1,12 +1,15 @@
 import {
   BooleanField,
+  BulkDeleteButton,
   Datagrid,
   DateField,
   DateInput,
+  DeleteButton,
   List,
   NumberField,
   TextField,
   TextInput,
+  usePermissions,
   useRedirect,
 } from 'react-admin';
 import Alert from '@mui/material/Alert';
@@ -26,6 +29,9 @@ const filters = [
  */
 export const EscalationList = () => {
   const redirect = useRedirect();
+  // Delete is admin-only and destructive; managers keep the read-only queue.
+  const { permissions } = usePermissions();
+  const isAdmin = permissions === 'admin';
   return (
     <RequireProduct title="Escalations / unresolved">
       <Alert severity="info" sx={{ mt: 2 }}>
@@ -40,7 +46,9 @@ export const EscalationList = () => {
         title="Escalations / unresolved"
       >
         <Datagrid
-          bulkActionButtons={false}
+          bulkActionButtons={
+            isAdmin ? <BulkDeleteButton mutationMode="pessimistic" /> : false
+          }
           rowClick={(id) => {
             redirect('show', 'sessions', id);
             return false;
@@ -59,6 +67,9 @@ export const EscalationList = () => {
           />
           <TextField source="first_message" label="First message" />
           <DateField source="created_at" showTime />
+          {isAdmin && (
+            <DeleteButton mutationMode="pessimistic" redirect={false} />
+          )}
         </Datagrid>
       </List>
     </RequireProduct>
