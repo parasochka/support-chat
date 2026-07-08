@@ -807,7 +807,18 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `consumer='telegram'` entirely; the Telegram chats live in their own **Retention · Telegram →
   Conversations** tab (`GET /admin/retention/sessions` → `db.list_retention_sessions`, joined
   with the `retention_users` identity + summed cost; the transcript opens via the shared
-  `GET /admin/session/{id}`, same scope check).
+  `GET /admin/session/{id}`, same scope check). **Deleting a Telegram conversation
+  (`DELETE /admin/session/{id}` → `db.delete_session`) also PURGES the linked player**: after
+  the transcript rows (chat_messages / session-linked ai_interaction_logs / admin_events /
+  chat_sessions) go, `_purge_retention_player` deletes that player's `retention_photo_views`,
+  `retention_pings` and the `retention_users` row (keyed by the session's product + `tg_user_id`,
+  so it fires even for an old rolled-over session). Without this the player kept showing up in
+  the retention dashboards after their chat was deleted — the analytics draw from
+  `retention_users`/`retention_photo_views`/`retention_pings`, not the transcript. Product-level
+  historical counters logged session-less (funnel `retention_deeplink_created`/`retention_start`,
+  the photo-metadata generation cost) are NOT attributable to one player and stay. Support
+  session deletes need no such extra step — every support metric is keyed to `session_id`, so the
+  transcript delete already zeroes them out.
 - **Telegram chat lifecycle — idle rollover + returning-player continuity.** A Telegram
   conversation has no "close the widget" moment, so a chat "ends" by INACTIVITY: on the next
   incoming message `retention._ensure_session` reuses the linked session only while it is

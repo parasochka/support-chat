@@ -1730,8 +1730,8 @@ const ConversationsTab = ({ productId }) => {
     if (
       !window.confirm(
         many
-          ? `Delete ${ids.length} Telegram chats? This removes their messages and logs permanently.`
-          : 'Delete this Telegram chat? This removes its messages and logs permanently.'
+          ? `Delete ${ids.length} Telegram chats? This permanently removes their messages and logs AND purges each linked player (identity, seen photos, pings) from analytics.`
+          : 'Delete this Telegram chat? This permanently removes its messages and logs AND purges the linked player (identity, seen photos, pings) from analytics.'
       )
     ) {
       return;

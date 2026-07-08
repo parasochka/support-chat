@@ -2626,6 +2626,40 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
     }
 
 
+async def _purge_retention_player(conn, product_id: Optional[int],
+                                  tg_user_id: Optional[int]) -> None:
+    """Delete a Telegram player's whole analytics footprint under one product:
+    the seen-photo ledger and the ping ledger (both FK NOT NULL to
+    `retention_users`, so they go first), then the `retention_users` row itself.
+
+    Keyed by (product_id, tg_user_id) — the durable player identity — NOT by the
+    session, so it fires even when the deleted conversation is an old rolled-over
+    one whose `retention_users.session_id` already points at a newer session.
+    Product-level historical counters (deeplinks minted / /start redemptions —
+    logged session-less, not attributable to one player) are intentionally left
+    untouched.
+    """
+    if product_id is None or tg_user_id is None:
+        return
+    ids = [r["id"] for r in await conn.fetch(
+        "SELECT id FROM retention_users WHERE product_id = $1 AND tg_user_id = $2",
+        product_id, tg_user_id,
+    )]
+    if not ids:
+        return
+    await conn.execute(
+        "DELETE FROM retention_photo_views WHERE retention_user_id = ANY($1::bigint[])",
+        ids,
+    )
+    await conn.execute(
+        "DELETE FROM retention_pings WHERE retention_user_id = ANY($1::bigint[])",
+        ids,
+    )
+    await conn.execute(
+        "DELETE FROM retention_users WHERE id = ANY($1::bigint[])", ids
+    )
+
+
 async def delete_session(session_id: str) -> bool:
     """Hard-delete a chat/retention session and everything hanging off it.
 
@@ -2635,13 +2669,20 @@ async def delete_session(session_id: str) -> bool:
     row itself. `ai_interaction_logs` / `admin_events` carry a bare (unconstrained)
     `session_id`, so their rows are removed by value. Used by the admin
     Conversations / Unresolved / Telegram-chats delete controls.
+
+    For a Telegram/retention conversation the delete also **purges the linked
+    player** (identity, seen photos, pings) via `_purge_retention_player`, so the
+    player disappears from the retention dashboards too — a retention session is
+    just one facade over a durable player, and leaving the player behind made a
+    deleted conversation keep showing up in analytics.
     """
     async with _pool.acquire() as conn:
         async with conn.transaction():
-            exists = await conn.fetchval(
-                "SELECT 1 FROM chat_sessions WHERE id = $1", session_id
+            srow = await conn.fetchrow(
+                "SELECT consumer, product_id, tg_user_id "
+                "FROM chat_sessions WHERE id = $1", session_id
             )
-            if not exists:
+            if srow is None:
                 return False
             # Detach references that would otherwise block the delete.
             await conn.execute(
@@ -2665,6 +2706,9 @@ async def delete_session(session_id: str) -> bool:
             await conn.execute(
                 "DELETE FROM chat_sessions WHERE id = $1", session_id
             )
+            if srow["consumer"] == "telegram":
+                await _purge_retention_player(
+                    conn, srow["product_id"], srow["tg_user_id"])
     return True
 
 
