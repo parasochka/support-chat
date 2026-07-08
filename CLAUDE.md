@@ -954,8 +954,26 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
 - **Retention sentinels** (stripped like the support ones): `[[PHOTO:id]]` (send a photo from the
   candidate list the model was shown — backend re-validates the id), `[[STAGE_UP]]` (a hint the
   player is ready for the next explicitness stage — the backend gate decides), `[[HANDOFF]]`
-  (route out; writes `admin_events('retention_handoff')`), `[[LANG:xx]]` (as everywhere). Strip
-  helpers: `prompts.strip_photo_tag` / `strip_stage_up_tag` / `strip_handoff_tag`.
+  (route out; writes `admin_events('retention_handoff')`), `[[LINK:url]]` (a site-map CTA button —
+  next bullet), `[[LANG:xx]]` (as everywhere). Strip helpers: `prompts.strip_photo_tag` /
+  `strip_stage_up_tag` / `strip_handoff_tag` / `strip_link_tag`.
+- **Site-map CTA button (`[[LINK:url]]`) + the periodic play reminder.** When retention Nika
+  invites the player somewhere concrete on the site (come play, deposit, check the balance), she
+  emits `[[LINK:url]]` with a URL copied EXACTLY from the Layer-1 SITE MAP block (static directive
+  `prompts._RETENTION_LINK_DIRECTIVE`; at most one per reply, never pasted into the visible text).
+  The backend re-validates it (`chat_service.resolve_site_link` — an EXACT match against
+  `settings.site_map()`, so the model can never button-ify an invented address; the page `title`
+  becomes the button label, falling back to the url) and the message ships with ONE inline
+  url-button (`retention._run_nika_turn`; `_send_ai_text`/`_send_photo` and the transport photo
+  senders all take `reply_markup`). A `[[HANDOFF]]` turn drops the link (the player is leaving for
+  support). On top of the organic invites, the **`retention.play_reminder_every_msgs` knob**
+  (default 5, 0 = off; env `RETENTION_PLAY_REMINDER_EVERY_MSGS`) paces a deliberate nudge:
+  `chat_service.play_nudge_due` keys on the session's `message_count` (one bump per persisted
+  turn; never the very first reply — the engagement directive forbids an opening pitch), and every
+  N-th reply carries the Layer-3 `prompts._PLAY_NUDGE_DIRECTIVE`: continue the conversation
+  normally, weave in ONE light in-context invitation to play, attach the best-fitting site-map
+  page as the button, and skip it entirely in a complaint/money/sensitive moment. Tests:
+  `tests/test_retention_cta.py`.
 - **Media library + file_id cache**: `retention_photos` gates by `level_min` (VIP-tier ordinal) ×
   `stage` (explicitness). **Both values are bounded to the product's real ranges on EVERY write**
   — `stage` to 1..`max_stage`, `level_min` to 0..(last tier ordinal) — whether the value is
@@ -1007,7 +1025,10 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `persona_name` prompt variable + the player's first name from the profile snapshot) above the
   `rtn_menu_prompt` line; all `rtn_*` copy supports a `{persona}` placeholder
   (`retention._rtn_text`), and the default button labels carry emoji icons (📢/✅/👤/💬) so the
-  buttons read at a glance.
+  buttons read at a glance. The menu ships **structured**: `retention._menu_html` sends the
+  greeting as a bold HTML line above the plain prompt (both HTML-escaped — the copy is
+  admin-edited text and the name is player data), with an automatic plain-text resend if
+  Telegram rejects the HTML.
   Two things mint that deeplink: (1) the **support-chat widget's escalation button** — when the
   product runs retention, every escalation hand-off routes the player INTO the bot on the
   **escalation entry** (`escalation=True` → the manager option in the menu), via
@@ -1050,6 +1071,12 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   test run: `POST /admin/retention/pings/run` (ignores quiet hours only). A photo-action rule
   bypasses the proactive photo cooldown (`select_photo_candidates(bypass_cooldown=True)`) but
   never the daily photo cap, and falls back to a text ping when no candidate is sendable.
+  **A ping is visually set apart + carries a CTA**: a text ping goes out with the localized
+  italic `rtn_ping_header` line ("✨ A little note from {persona}", translations registry, admin-
+  editable per language) above the generated text — the header is chrome, only the model text is
+  persisted — and when the model attached a `[[LINK:url]]` matching the rule's intent (come back
+  and play → games page, deposit → cashier, balance → account), the validated site-map page rides
+  under the ping (or the ping photo) as ONE inline button (`PingDraft.link_url/link_label`).
 - **Telegram anti-spam gate** (`retention._handle_message`, mirrors the widget gate): per-user
   rate limit with its OWN chat-paced allowance — `antispam.check_rate_limit("tg:{pid}:{uid}",
   cfg["tg_rate_limit_max_per_user"])` (`antispam` group knob, env `TG_RATE_LIMIT_MAX_PER_USER`,
@@ -1276,7 +1303,13 @@ Map of what lives where:
   `contact_url` key, http(s)-validated; empty = no button link — only the default product
   falls back to the `CONTACT_FORM_URL` env default), and the
   per-language topic titles (via the existing
-  `POST /admin/kb/topics` upsert). See "Translations" above. The admin panel itself stays English.
+  `POST /admin/kb/topics` upsert). See "Translations" above. The SPA renders the registry in
+  FOUR fixed blocks (`Translations.jsx` `SECTIONS`, keyed on scope + the client-side
+  `SERVICE_KEYS` list): the general widget interface, the support bot's messages to the player,
+  the Telegram retention bot's messages, and the service/error notices — so the owner tunes the
+  bots' actual voice without wading through technical fallbacks. A new registry key lands in a
+  bot-messages block automatically unless it is added to `SERVICE_KEYS` (do that for any new
+  error/guard nudge). The admin panel itself stays English.
 - **KB editing** (`db.*` helpers, `api/admin.py` `/admin/kb/*`): **one KB text per topic**,
   single-language. `GET /admin/kb/content?topic_id=` reads it, `PUT /admin/kb/content` sets it
   (updates the topic's active entry in place, or inserts one), `DELETE /admin/kb/content?topic_id=`

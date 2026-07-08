@@ -11,6 +11,7 @@ webhook handler, which resolved it from the bot's webhook routing token.
 """
 from __future__ import annotations
 
+import html
 import logging
 import re
 import secrets
@@ -484,12 +485,27 @@ def _menu_text(ru: dict[str, Any], lang: str) -> str:
     return f"{greeting}\n\n{_rtn_text('rtn_menu_prompt', lang)}"
 
 
+def _menu_html(ru: dict[str, Any], lang: str) -> str:
+    """The menu message with light HTML structure: a bold greeting line above
+    the plain menu prompt, both HTML-escaped (the copy is admin-edited text)."""
+    full_name = str(ru.get("full_name") or "").strip()
+    first_name = full_name.split()[0] if full_name else ""
+    key = "rtn_menu_greeting" if first_name else "rtn_menu_greeting_noname"
+    greeting = _rtn_text(key, lang).replace("{name}", first_name)
+    prompt = _rtn_text("rtn_menu_prompt", lang)
+    return f"<b>{html.escape(greeting)}</b>\n\n{html.escape(prompt)}"
+
+
 async def _send_menu(client: TelegramClient, chat_id: int, ru: dict[str, Any],
                      lang: str) -> None:
-    await client.send_message(
-        chat_id, _menu_text(ru, lang),
-        reply_markup=_menu_markup(ru.get("entry_type", "retention"), lang),
-    )
+    markup = _menu_markup(ru.get("entry_type", "retention"), lang)
+    # Structured (bold greeting) first; if Telegram rejects the HTML for any
+    # reason, fall back to the plain text so the menu always arrives.
+    result = await client.send_message(chat_id, _menu_html(ru, lang),
+                                       reply_markup=markup, parse_mode="HTML")
+    if result is None:
+        await client.send_message(chat_id, _menu_text(ru, lang),
+                                  reply_markup=markup)
 
 
 async def _route_to_manager(client: TelegramClient, product: dict[str, Any],
@@ -804,15 +820,24 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
                 reply_markup=markup)
         return
 
+    # A validated site-map CTA ([[LINK:url]]) becomes one inline button under
+    # the message — the play-nudge / engagement invitations land here.
+    markup = None
+    if reply.link_url:
+        markup = inline_keyboard([[{"text": reply.link_label or reply.link_url,
+                                    "url": reply.link_url}]])
+
     # Photo delivery (file_id cache; first send uploads + caches the id).
     if reply.photo_id is not None:
         # Never send a bare image: fall back to a short localized caption when
         # the model returned a photo with no text.
         caption = reply.reply or _rtn_text("rtn_photo_caption", reply.lang)
         await _send_photo(client, product, ru, pu.chat_id, reply.photo_id,
-                          caption, session_id=session["id"])
+                          caption, session_id=session["id"],
+                          reply_markup=markup)
     elif reply.reply:
-        await _send_ai_text(client, pu.chat_id, reply.reply)
+        await _send_ai_text(client, pu.chat_id, reply.reply,
+                            reply_markup=markup)
 
     # Stage progression gate (model hint + backend gate).
     if meaningful:
@@ -821,35 +846,42 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
 
 async def _send_photo(client: TelegramClient, product: dict[str, Any],
                       ru: dict[str, Any], chat_id: int, photo_id: int,
-                      caption: str, session_id: Optional[str] = None) -> bool:
+                      caption: str, session_id: Optional[str] = None,
+                      reply_markup: Optional[dict[str, Any]] = None) -> bool:
     """Send a media-library photo, using the cached file_id or uploading once.
 
     Returns True when the photo itself was delivered (the ping worker keys its
     ledger on it); a caption-only fallback returns False. `session_id` links the
     delivery to the chat session so the admin transcript can show it inline.
+    `reply_markup` (a validated CTA button) rides on whatever message actually
+    goes out — the photo or the caption-only fallback.
     """
     # Render the (model-generated) caption's light markup as Telegram HTML.
     caption_html = telegram_format.to_html(caption) if caption else None
     photo = await db.get_retention_photo(photo_id)
     if not photo or not photo.get("active"):
         if caption:
-            await _send_ai_text(client, chat_id, caption)
+            await _send_ai_text(client, chat_id, caption,
+                                reply_markup=reply_markup)
         return False
     file_id = photo.get("telegram_file_id")
     result = None
     if file_id:
         result = await client.send_photo_file_id(
-            chat_id, file_id, caption=caption_html, parse_mode="HTML")
+            chat_id, file_id, caption=caption_html, parse_mode="HTML",
+            reply_markup=reply_markup)
     if result is None:
         # No cached id (or the cached id failed) — upload from the Volume.
         content = _read_media(photo.get("storage_ref"))
         if content is None:
             if caption:
-                await _send_ai_text(client, chat_id, caption)
+                await _send_ai_text(client, chat_id, caption,
+                                    reply_markup=reply_markup)
             return False
         result = await client.send_photo_bytes(
             chat_id, content, photo.get("storage_ref") or "photo.jpg",
-            caption=caption_html, parse_mode="HTML")
+            caption=caption_html, parse_mode="HTML",
+            reply_markup=reply_markup)
         new_file_id = TelegramClient.extract_photo_file_id(result)
         if new_file_id:
             await db.set_photo_file_id(photo_id, new_file_id)

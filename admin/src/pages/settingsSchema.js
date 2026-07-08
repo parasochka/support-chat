@@ -68,6 +68,7 @@ export const GROUP_FIELDS = {
     { name: 'profile_pull_ttl_sec', label: 'Profile pull TTL (sec)', type: 'int', min: 0, max: 604800, help: 'How long a pulled player profile stays fresh before a re-pull.' },
     { name: 'session_idle_minutes', label: 'Session idle (min)', type: 'int', min: 0, max: 525600, help: 'Idle minutes before a Telegram chat closes; the next message starts a fresh chat (0 = never close).' },
     { name: 'carry_context_turns', label: 'Carry-over context turns', type: 'int', min: 0, max: 50, help: 'Trailing turns of the previous chat shown to the model when a returning player starts a fresh one (0 = off).' },
+    { name: 'play_reminder_every_msgs', label: 'Play reminder every N replies', type: 'int', min: 0, max: 1000, help: 'Every N-th of Nika’s Telegram replies weaves in a light in-context invitation to play, with a one-tap site button picked from the Site map by intent (0 = off).' },
     { name: 'pings_enabled', label: 'Proactive pings enabled', type: 'bool', help: 'Master switch for the ping matrix (Retention → Pings). Off = no proactive messages at all.' },
     { name: 'ping_daily_cap', label: 'Ping daily cap', type: 'int', min: 1, max: 24, help: 'Max proactive pings one player may receive per day.' },
     { name: 'ping_min_gap_hours', label: 'Ping min gap (hours)', type: 'int', min: 1, max: 720, help: 'Minimum hours between two pings to the same player (up to 30 days).' },
