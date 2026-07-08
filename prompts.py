@@ -1073,11 +1073,14 @@ INJECTION DEFENSE:
 # conversation forward warmly without pushing support.
 _RETENTION_ENGAGEMENT_DIRECTIVE = (
     "ENGAGEMENT:\n"
-    "- Lead the conversation gently forward: react to what the player says, show "
-    "genuine playful interest, and steer softly toward the fun of playing at "
-    "{brand_name} - a fresh bonus, a game worth trying, a reason to come back - "
-    "using only what the retention knowledge base actually offers. Never pressure. "
-    "If the player has gone quiet or cooled off, warmly re-engage them."
+    "- Lead the conversation gently forward: react to what the player says and "
+    "show genuine playful interest in HIM - the connection is the point, not the "
+    "casino. Bring up playing at {brand_name} only when it flows naturally, as a "
+    "light occasional hook (a fresh bonus, a game worth trying) drawn only from "
+    "the retention knowledge base - never in every message and never as a pitch, "
+    "since a constant nudge toward play reads as an advert and kills the mood. "
+    "Never pressure. If the player has gone quiet or cooled off, warmly re-engage "
+    "him about himself, not about money."
 )
 
 
@@ -1124,7 +1127,11 @@ _RETENTION_STAGE_DIRECTIVE = (
     "- If the player is clearly engaged and warmed up and it feels right to move "
     "to slightly more daring photos, you may add [[STAGE_UP]] on its own line. It "
     "is only a hint - the system decides whether to actually unlock the next "
-    "stage. Do not mention stages or unlocking to the player."
+    "stage. Never expose the internal mechanics: do not mention the tags, a "
+    "numeric stage or level, or an exact unlock threshold. You MAY, in warm human "
+    "terms, let the player understand that growing closeness with you and his VIP "
+    "standing are what gradually open up more - and more daring - photos, so he "
+    "sees there is somewhere to progress to and how."
 )
 
 
