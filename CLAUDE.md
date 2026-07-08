@@ -815,7 +815,18 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `consumer='telegram'` entirely; the Telegram chats live in their own **Retention · Telegram →
   Conversations** tab (`GET /admin/retention/sessions` → `db.list_retention_sessions`, joined
   with the `retention_users` identity + summed cost; the transcript opens via the shared
-  `GET /admin/session/{id}`, same scope check).
+  `GET /admin/session/{id}`, same scope check). **Deleting a Telegram conversation
+  (`DELETE /admin/session/{id}` → `db.delete_session`) also PURGES the linked player**: after
+  the transcript rows (chat_messages / session-linked ai_interaction_logs / admin_events /
+  chat_sessions) go, `_purge_retention_player` deletes that player's `retention_photo_views`,
+  `retention_pings` and the `retention_users` row (keyed by the session's product + `tg_user_id`,
+  so it fires even for an old rolled-over session). Without this the player kept showing up in
+  the retention dashboards after their chat was deleted — the analytics draw from
+  `retention_users`/`retention_photo_views`/`retention_pings`, not the transcript. Product-level
+  historical counters logged session-less (funnel `retention_deeplink_created`/`retention_start`,
+  the photo-metadata generation cost) are NOT attributable to one player and stay. Support
+  session deletes need no such extra step — every support metric is keyed to `session_id`, so the
+  transcript delete already zeroes them out.
 - **Telegram chat lifecycle — idle rollover + returning-player continuity.** A Telegram
   conversation has no "close the widget" moment, so a chat "ends" by INACTIVITY: on the next
   incoming message `retention._ensure_session` reuses the linked session only while it is
@@ -977,11 +988,14 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `retention_timeseries`): the overview separates LIFETIME player-base numbers (`users` block:
   total/subscribed/muted/unreachable/avg stage) from RANGE activity (`range` block: active/new
   players, player messages, photos, handoffs, pings sent/failed, **ping reply rate** — a sent
-  ping answered by a player message within 48h —, telegram AI cost) plus a per-stage
+  ping answered by a player message within 48h —, **telegram AI cost** `cost_usd` split into
+  `cost_dialog_usd` + `cost_photo_usd`, the latter the session-less photo-metadata vision
+  calls, so the whole Telegram spend the support dashboard excludes lands here) plus a per-stage
   `stage_distribution`; the **funnel** (deeplinks → starts → linked → subscribed → engaged →
   photo receivers → handoffs) is backed by durable `retention_deeplink_created` /
   `retention_start` admin events (the nonce table is reaped on expiry, so it can never be the
-  denominator); the **timeseries** is daily messages/actives/photos/pings/cost. Endpoints
+  denominator); the **timeseries** is daily messages/actives/photos/pings/cost (cost also split
+  `cost_dialog_usd`/`cost_photo_usd` per day — the `TelegramCostCharts` panels). Endpoints
   `GET /admin/retention/overview|funnel|timeseries` take `from`/`to` + an OPTIONAL
   `product_id`/`partner_id` — omitted, they aggregate the caller's whole accessible scope
   (the global dashboard's retention block), following the support dashboard's
@@ -1105,7 +1119,19 @@ Map of what lives where:
 - **Dashboard data API** (`api/admin.py` + `db.py` aggregation + `metrics.py` derived
   rates): overview/timeseries/by-topic/by-language/sessions/session/unresolved.
   `resolution_rate` is a documented PROXY (counts "not escalated", incl. abandoned →
-  `sessions_open` tracked separately). The overview also carries AI-API health:
+  `sessions_open` tracked separately). **The support dashboard is SUPPORT-only: every
+  aggregate excludes `consumer='telegram'`** so retention/Telegram spend and sessions
+  never inflate it. Session counts filter `consumer <> 'telegram'`; the cost aggregates
+  (`overview_aggregates`, `timeseries` `cost`/`cost_per_session`) **join `chat_sessions`**
+  so they count only non-telegram turns AND drop the `session_id IS NULL` photo-metadata
+  vision calls (those are retention); `by_topic`/`by_language` add the same exclusion. The
+  Telegram module has its own home — `retention_overview`/`retention_timeseries` — whose
+  cost is scoped on the LOG row's product so it INCLUDES the session-less photo-metadata
+  calls, and is split into `cost_dialog_usd` (engagement turns) + `cost_photo_usd`
+  (photo-metadata generation), summing to `cost_usd`. The SPA renders that split as the two
+  **Telegram cost** panels (`components/charts.jsx` `TelegramCostCharts`: total-over-time +
+  cost-by-source stacked bars), shown on both the dashboard Retention block and Retention →
+  Analytics. The overview also carries AI-API health:
   `avg_latency_ms` (mean end-to-end latency of the SUCCESSFUL OpenAI calls — failures
   carry no meaningful latency, so they are excluded from the average), `ai_calls_total`
   and `failed_calls` (from `ai_interaction_logs`). The SPA renders the KPI tiles as two

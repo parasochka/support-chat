@@ -1,5 +1,8 @@
 import { useTheme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
+import Card from '@mui/material/Card';
+import CardContent from '@mui/material/CardContent';
+import Grid from '@mui/material/Grid';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import {
@@ -14,6 +17,9 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+
+// Fractional-dollar formatter for cost axes/tooltips (spend is cents, not units).
+const usd = (v) => (v == null ? '—' : `$${Number(v).toFixed(4)}`);
 
 /**
  * Theme-aware recharts wrappers shared by the dashboard and the retention
@@ -64,8 +70,16 @@ const useChartChrome = () => {
  * Multi-series daily line chart over [{ <xKey>: 'YYYY-MM-DD', ...metrics }].
  * `series` = [{ key, label }] in fixed palette order; a legend appears for
  * two or more series (a single series is named by the panel title).
+ * `valueFormatter` (e.g. currency) formats the Y axis + tooltip and implies
+ * decimals; without it the axis stays integer (counts).
  */
-export const SeriesLineChart = ({ data, series, xKey = 'date', height = 220 }) => {
+export const SeriesLineChart = ({
+  data,
+  series,
+  xKey = 'date',
+  height = 220,
+  valueFormatter,
+}) => {
   const colors = useChartColors();
   const chrome = useChartChrome();
   if (!data || !data.length) return <EmptyNote />;
@@ -81,13 +95,18 @@ export const SeriesLineChart = ({ data, series, xKey = 'date', height = 220 }) =
           tickLine={false}
         />
         <YAxis
-          allowDecimals={false}
+          allowDecimals={!!valueFormatter}
+          tickFormatter={valueFormatter}
           tick={{ fontSize: 10, fill: chrome.text }}
           stroke={chrome.grid}
           tickLine={false}
-          width={44}
+          width={valueFormatter ? 60 : 44}
         />
-        <Tooltip labelFormatter={fmtDay} contentStyle={chrome.tooltip} />
+        <Tooltip
+          labelFormatter={fmtDay}
+          formatter={valueFormatter ? (v) => valueFormatter(v) : undefined}
+          contentStyle={chrome.tooltip}
+        />
         {series.length > 1 && (
           <Legend wrapperStyle={{ fontSize: 12 }} iconType="plainline" />
         )}
@@ -107,6 +126,120 @@ export const SeriesLineChart = ({ data, series, xKey = 'date', height = 220 }) =
     </ResponsiveContainer>
   );
 };
+
+/**
+ * Stacked daily bar chart over [{ <xKey>: 'YYYY-MM-DD', ...metrics }] — the
+ * series stack into one bar per day so a total reads at a glance while its
+ * composition stays visible. `series` = [{ key, label }] in palette order.
+ * `valueFormatter` formats the Y axis + tooltip (and implies decimals).
+ */
+export const StackedBarChart = ({
+  data,
+  series,
+  xKey = 'date',
+  height = 220,
+  valueFormatter,
+}) => {
+  const colors = useChartColors();
+  const chrome = useChartChrome();
+  if (!data || !data.length) return <EmptyNote />;
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: -12 }}>
+        <CartesianGrid stroke={chrome.grid} vertical={false} />
+        <XAxis
+          dataKey={xKey}
+          tickFormatter={fmtDay}
+          tick={{ fontSize: 10, fill: chrome.text }}
+          stroke={chrome.grid}
+          tickLine={false}
+        />
+        <YAxis
+          allowDecimals={!!valueFormatter}
+          tickFormatter={valueFormatter}
+          tick={{ fontSize: 10, fill: chrome.text }}
+          stroke={chrome.grid}
+          tickLine={false}
+          width={valueFormatter ? 60 : 44}
+        />
+        <Tooltip
+          labelFormatter={fmtDay}
+          formatter={valueFormatter ? (v) => valueFormatter(v) : undefined}
+          contentStyle={chrome.tooltip}
+          cursor={{ fill: 'transparent' }}
+        />
+        {series.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
+        {series.map((s, i) => (
+          <Bar
+            key={s.key}
+            dataKey={s.key}
+            name={s.label}
+            stackId="a"
+            fill={colors[i % colors.length]}
+            maxBarSize={48}
+          />
+        ))}
+      </BarChart>
+    </ResponsiveContainer>
+  );
+};
+
+/**
+ * The two Telegram-module cost panels, shown identically on the dashboard
+ * Retention block and on Retention → Analytics. Telegram AI spend is kept OUT
+ * of the support dashboard (it carries the photo-metadata vision calls and the
+ * long engagement chats), so these are its dedicated home:
+ *   1. total TG cost per day;
+ *   2. the same cost split by driver — engagement dialog vs the on-demand
+ *      photo-metadata generation — so the two read apart.
+ * `data` = the retention timeseries rows (cost_usd / cost_dialog_usd /
+ * cost_photo_usd per day).
+ */
+export const TelegramCostCharts = ({ data, height = 200 }) => (
+  <Grid container spacing={2} alignItems="stretch">
+    <Grid size={{ xs: 12, md: 6 }}>
+      <Card sx={{ height: '100%' }}>
+        <CardContent>
+          <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+            Telegram cost over time
+          </Typography>
+          <SeriesLineChart
+            data={data}
+            series={[{ key: 'cost_usd', label: 'Cost (USD)' }]}
+            height={height}
+            valueFormatter={usd}
+          />
+        </CardContent>
+      </Card>
+    </Grid>
+    <Grid size={{ xs: 12, md: 6 }}>
+      <Card sx={{ height: '100%' }}>
+        <CardContent>
+          <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+            Telegram cost by source
+          </Typography>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            display="block"
+            sx={{ mb: 1 }}
+          >
+            Engagement dialog vs on-demand photo-metadata generation.
+          </Typography>
+          <StackedBarChart
+            data={data}
+            series={[
+              { key: 'cost_dialog_usd', label: 'Dialog' },
+              { key: 'cost_photo_usd', label: 'Photo metadata' },
+            ]}
+            height={height}
+            valueFormatter={usd}
+          />
+        </CardContent>
+      </Card>
+    </Grid>
+  </Grid>
+);
 
 /**
  * Small vertical bar chart for a short categorical distribution
