@@ -514,6 +514,37 @@ class PhotoWrite(BaseModel):
     active: Optional[bool] = None
 
 
+def _photo_gate_bounds(product_id: int) -> tuple[list[str], int]:
+    """The product's real (vip_tiers, max_stage) — the gate a photo must fit.
+
+    Binds the tenancy scope so the `retention` settings group resolves per
+    product (the same resolution the delivery gate and metadata generation use).
+    """
+    tenancy.set_current_product(product_id)
+    rt = settings_mod.retention()
+    vip_tiers = [str(t) for t in rt.get("vip_tiers") or ["none"]]
+    return vip_tiers, int(rt.get("max_stage") or 1)
+
+
+def _clamp_photo_gate(*, stage: Optional[int], level_min: Optional[int],
+                      vip_tiers: list[str], max_stage: int) -> dict[str, int]:
+    """Clamp a hand-entered photo stage/level_min into the product's real ranges.
+
+    stage: 1..max_stage (explicitness — 1 is the softest, there is nothing above
+    max_stage). level_min: 0..top-tier ordinal (the minimum VIP tier to unlock).
+    Mirrors _parse_photo_meta so a value typed in the media library (or posted by
+    an API consumer) can never sit outside what the delivery gate can ever serve
+    — a stage of 0 or 6, or a tier index past the last tier, is impossible.
+    """
+    out: dict[str, int] = {}
+    top_tier = max(len(vip_tiers or ["none"]) - 1, 0)
+    if stage is not None:
+        out["stage"] = min(max(int(stage), 1), max(int(max_stage), 1))
+    if level_min is not None:
+        out["level_min"] = min(max(int(level_min), 0), top_tier)
+    return out
+
+
 @admin_router.get("/photos")
 async def list_photos(product_id: int, admin=Depends(require_admin)) -> JSONResponse:
     await admin_auth.require_product_read(admin, product_id)
@@ -556,6 +587,13 @@ async def create_photo(product_id: int = Form(...),
         exts.append(ext)
     os.makedirs(config.RETENTION_MEDIA_DIR, exist_ok=True)
     tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+    # Keep the gate values inside the product's real ranges (stage 1..max_stage,
+    # level 0..top tier) so a bad hand-entered number can't create an unservable
+    # photo — the same clamp the AI-metadata path applies.
+    vip_tiers, max_stage = _photo_gate_bounds(product_id)
+    gate = _clamp_photo_gate(stage=stage, level_min=level_min,
+                             vip_tiers=vip_tiers, max_stage=max_stage)
+    level_min, stage = gate["level_min"], gate["stage"]
     photos = []
     for up, ext in zip(uploads, exts):
         storage_ref = f"{product_id}_{uuid.uuid4().hex}{ext}"
@@ -719,6 +757,13 @@ async def update_photo(photo_id: int, body: PhotoWrite,
         raise HTTPException(status_code=404, detail="Photo not found.")
     await admin_auth.require_product_write(admin, photo["product_id"])
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    # Clamp any stage/level_min edit into the product's real ranges (see
+    # _clamp_photo_gate) so the row can never gate outside the delivery gate.
+    if "stage" in fields or "level_min" in fields:
+        vip_tiers, max_stage = _photo_gate_bounds(photo["product_id"])
+        fields.update(_clamp_photo_gate(
+            stage=fields.get("stage"), level_min=fields.get("level_min"),
+            vip_tiers=vip_tiers, max_stage=max_stage))
     updated = await db.update_retention_photo(photo_id, **fields)
     return JSONResponse(content={"photo": updated})
 

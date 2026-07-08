@@ -168,7 +168,7 @@ def test_retention_settings_defaults():
     r = settings.retention()
     assert r["daily_photo_cap"] == 10
     assert r["candidate_list_size"] == 6
-    assert r["stage_advance_msgs"] == [20, 45, 80]
+    assert r["stage_advance_msgs"] == [20, 40, 80, 160]
     assert "vip_tiers" in r and isinstance(r["max_stage_by_tier"], dict)
 
 
@@ -259,8 +259,8 @@ async def test_stage_advance_respects_tier_ceiling(monkeypatch):
         calls.append((rid, new_stage))
 
     monkeypatch.setattr(retention.db, "advance_retention_stage", _fake_advance)
-    # "none" tier ceiling is 2; can't advance to stage 3.
-    ru = {"id": 3, "unlocked_stage": 2, "vip_level": "none",
+    # "none" tier ceiling is 3; already at the ceiling, can't advance to stage 4.
+    ru = {"id": 3, "unlocked_stage": 3, "vip_level": "none",
           "meaningful_msgs": 200, "last_stage_advance_at": None}
     assert await retention.maybe_advance_stage(ru, True) is None
     assert calls == []
@@ -304,7 +304,8 @@ async def test_candidates_reactive_bypasses_cooldown(monkeypatch):
           "photos_sent_today": 0, "photos_day": None, "msgs_since_photo": 0}
     out = await retention.select_photo_candidates(1, ru, "покажи фото пожалуйста")
     assert out == [{"id": 5}]
-    # teaser: max_stage = min(unlocked+1, ceiling); gold ceiling 4 -> 3
+    # teaser: max_stage = min(unlocked+1, ceiling); unlocked 2 -> 3 (below the
+    # gold ceiling of 5, so the teaser step is what caps it)
     assert seen["max_stage"] == 3
 
 

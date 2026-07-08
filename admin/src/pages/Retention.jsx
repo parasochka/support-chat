@@ -630,6 +630,10 @@ const PhotosTab = ({ productId }) => {
   const [genProgress, setGenProgress] = useState('');
   const [filters, setFilters] = useState({ q: '', stage: 'all', level: 'all', status: 'all' });
   const [page, setPage] = useState(1);
+  // The product's real gate ranges — Stage 1..maxStage, Level 0..tiers-1 — so
+  // the pickers below can only offer values the delivery gate can actually serve
+  // (no stage 0 or 6, no VIP tier past the last one).
+  const [gate, setGate] = useState({ tiers: ['none'], maxStage: 5 });
 
   const load = useCallback(() => {
     httpClient(`${API_URL}/admin/retention/photos?product_id=${productId}`)
@@ -640,6 +644,21 @@ const PhotosTab = ({ productId }) => {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    httpClient(`${API_URL}/admin/settings?product_id=${productId}`)
+      .then(({ json }) => {
+        const rt = json?.resolved?.retention || {};
+        setGate({
+          tiers: (rt.vip_tiers || ['none']).map((t) => String(t)),
+          maxStage: Math.max(1, Number(rt.max_stage) || 5),
+        });
+      })
+      .catch(() => {});
+  }, [productId]);
+
+  const stageChoices = Array.from({ length: gate.maxStage }, (_, i) => i + 1);
+  const levelChoices = gate.tiers.map((t, i) => ({ value: i, label: `${i} · ${t}` }));
 
   const doUpload = async () => {
     if (!files.length) return;
@@ -830,23 +849,33 @@ const PhotosTab = ({ productId }) => {
             </Grid>
             <Grid size={{ xs: 6, sm: 3, md: 2 }}>
               <TextField
+                select
                 size="small"
-                type="number"
-                label="Level min (VIP tier)"
+                label="Level (min VIP tier)"
                 value={upload.level_min}
                 onChange={(e) => setUpload({ ...upload, level_min: Number(e.target.value) })}
+                helperText="VIP tier to unlock"
                 fullWidth
-              />
+              >
+                {levelChoices.map((o) => (
+                  <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>
+                ))}
+              </TextField>
             </Grid>
             <Grid size={{ xs: 6, sm: 3, md: 2 }}>
               <TextField
+                select
                 size="small"
-                type="number"
                 label="Stage (explicitness)"
                 value={upload.stage}
                 onChange={(e) => setUpload({ ...upload, stage: Number(e.target.value) })}
+                helperText="1 = softest"
                 fullWidth
-              />
+              >
+                {stageChoices.map((s) => (
+                  <MenuItem key={s} value={s}>{`Stage ${s}`}</MenuItem>
+                ))}
+              </TextField>
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 4 }}>
               <TextField
@@ -1055,27 +1084,41 @@ const PhotosTab = ({ productId }) => {
                   />
                   <Stack direction="row" spacing={1}>
                     <TextField
+                      select
                       size="small"
-                      type="number"
-                      label="Level min"
-                      defaultValue={ph.level_min}
-                      onBlur={(e) =>
+                      label="Level (min VIP)"
+                      value={ph.level_min}
+                      onChange={(e) =>
                         Number(e.target.value) !== ph.level_min &&
                         patch(ph.id, { level_min: Number(e.target.value) })
                       }
                       fullWidth
-                    />
+                    >
+                      {levelChoices.map((o) => (
+                        <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>
+                      ))}
+                      {!levelChoices.some((o) => o.value === ph.level_min) && (
+                        <MenuItem value={ph.level_min}>{`${ph.level_min} · (?)`}</MenuItem>
+                      )}
+                    </TextField>
                     <TextField
+                      select
                       size="small"
-                      type="number"
                       label="Stage"
-                      defaultValue={ph.stage}
-                      onBlur={(e) =>
+                      value={ph.stage}
+                      onChange={(e) =>
                         Number(e.target.value) !== ph.stage &&
                         patch(ph.id, { stage: Number(e.target.value) })
                       }
                       fullWidth
-                    />
+                    >
+                      {stageChoices.map((s) => (
+                        <MenuItem key={s} value={s}>{`Stage ${s}`}</MenuItem>
+                      ))}
+                      {!stageChoices.includes(ph.stage) && (
+                        <MenuItem value={ph.stage}>{`Stage ${ph.stage}`}</MenuItem>
+                      )}
+                    </TextField>
                   </Stack>
                   <Stack
                     direction="row"

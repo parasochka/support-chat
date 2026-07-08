@@ -405,7 +405,7 @@ RETENTION_PROACTIVE_COOLDOWN_MSGS: int = _env_int(
 RETENTION_CANDIDATE_LIST_SIZE: int = _env_int("RETENTION_CANDIDATE_LIST_SIZE", 6)
 RETENTION_STAGE_ADVANCE_MIN_HOURS: int = _env_int(
     "RETENTION_STAGE_ADVANCE_MIN_HOURS", 24)
-RETENTION_MAX_STAGE: int = _env_int("RETENTION_MAX_STAGE", 4)
+RETENTION_MAX_STAGE: int = _env_int("RETENTION_MAX_STAGE", 5)
 # Lazy profile-pull freshness: if the snapshot is older than this and the product
 # has a player_api_url + key, refresh it from the casino before a turn (§8 level 2).
 RETENTION_PROFILE_PULL_TTL_SEC: int = _env_int(

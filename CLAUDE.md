@@ -903,7 +903,12 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   (route out; writes `admin_events('retention_handoff')`), `[[LANG:xx]]` (as everywhere). Strip
   helpers: `prompts.strip_photo_tag` / `strip_stage_up_tag` / `strip_handoff_tag`.
 - **Media library + file_id cache**: `retention_photos` gates by `level_min` (VIP-tier ordinal) ×
-  `stage` (explicitness). The first send uploads the binary from the media dir (Railway Volume,
+  `stage` (explicitness). **Both values are bounded to the product's real ranges on EVERY write**
+  — `stage` to 1..`max_stage`, `level_min` to 0..(last tier ordinal) — whether the value is
+  AI-generated OR hand-entered/API-posted (`api.retention._clamp_photo_gate`, applied in
+  `create_photo` + `update_photo`; the SPA Media pickers offer only in-range choices), so a
+  photo can never gate outside what the delivery gate can serve (no stage 0/6, no tier past the
+  ladder). The first send uploads the binary from the media dir (Railway Volume,
   `RETENTION_MEDIA_DIR`); Telegram returns a `file_id` cached on the row so later sends skip the
   re-upload/egress. **Upload is bulk-friendly** (`POST /admin/retention/photos` takes any number
   of `files` in one request; the single `file` field stays for older consumers) and metadata is
@@ -913,7 +918,8 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   group, using the prompt in `prompts.build_photo_meta_messages` (wording in `prompts.py`, the
   single source of truth), and fills `description`/`tags`/`stage`/`level_min`; the reply is
   strict JSON, parsed + **clamped against the product's real `vip_tiers`/`max_stage`**
-  (`api.retention._parse_photo_meta`) so a hallucinated number can never unlock a photo beyond
+  (`api.retention._parse_photo_meta`, sharing the same bounds as the write-time
+  `_clamp_photo_gate`) so a hallucinated number can never unlock a photo beyond
   the delivery gate, every call lands in `ai_interaction_logs` (invariant §4, `session_id=NULL`),
   and one failed photo never kills the batch. The SPA Media tab adds checkbox selection +
   "Generate metadata" and client-side filters (search/stage/level/status).

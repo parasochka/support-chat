@@ -25,7 +25,7 @@ export const GROUP_HELP = {
   general:
     'Operational limits with no other home: session/token lifetimes, the message cap, prompt-history window and the request body cap.',
   retention:
-    'Telegram retention-bot pacing: photo caps, cooldowns, explicitness-stage progression and profile freshness.',
+    'Telegram retention-bot pacing: photo caps, cooldowns, the photo-unlock progression and profile freshness.',
   language:
     'Which languages the assistant supports and the default. Answers follow the player; the widget chrome follows the browser.',
 };
@@ -64,7 +64,6 @@ export const GROUP_FIELDS = {
     { name: 'proactive_photo_cooldown_msgs', label: 'Proactive photo cooldown (msgs)', type: 'int', min: 1, max: 10000, help: 'Messages between UNPROMPTED photos (a direct ask bypasses it).' },
     { name: 'candidate_list_size', label: 'Photo candidate list size', type: 'int', min: 1, max: 50, help: 'How many photo candidates the model is offered to choose from.' },
     { name: 'stage_advance_min_hours', label: 'Stage advance min hours', type: 'int', min: 0, max: 8760, help: 'Minimum spacing between explicitness-stage advances.' },
-    { name: 'max_stage', label: 'Max stage', type: 'int', min: 1, max: 20, help: 'Global ceiling on the explicitness stage.' },
     { name: 'nonce_ttl_sec', label: 'Deeplink nonce TTL (sec)', type: 'int', min: 10, max: 3600, help: 'Lifetime of a one-time deeplink nonce.' },
     { name: 'profile_pull_ttl_sec', label: 'Profile pull TTL (sec)', type: 'int', min: 0, max: 604800, help: 'How long a pulled player profile stays fresh before a re-pull.' },
     { name: 'session_idle_minutes', label: 'Session idle (min)', type: 'int', min: 0, max: 525600, help: 'Idle minutes before a Telegram chat closes; the next message starts a fresh chat (0 = never close).' },
@@ -76,8 +75,9 @@ export const GROUP_FIELDS = {
     { name: 'quiet_hours_end', label: 'Quiet hours end (0–23)', type: 'int', min: 0, max: 23, help: 'Hour when the no-ping window ends and pings may resume.' },
     { name: 'quiet_hours_utc_offset', label: 'Quiet hours UTC offset', type: 'int', min: -12, max: 14, help: 'Timezone offset the quiet hours are evaluated in (e.g. 3 = UTC+3).' },
     { name: 'ping_batch_size', label: 'Ping batch size', type: 'int', min: 1, max: 500, help: 'Max pings sent in one sweep run — bounds the burst on Telegram and OpenAI.' },
-    { name: 'stage_advance_msgs', label: 'Stage advance thresholds', type: 'intlist', help: 'Accumulated meaningful messages required for stages 2 / 3 / 4 … (one per line).' },
-    { name: 'vip_tiers', label: 'VIP tiers (ordered)', type: 'strlist', help: 'Ordered tier names; a tier’s index is its ordinal (one per line).' },
-    { name: 'max_stage_by_tier', label: 'Max stage by tier', type: 'intmap', help: 'Highest photo stage each VIP tier may unlock.' },
+    { name: 'max_stage', label: 'Max stage (top explicitness)', type: 'int', min: 1, max: 20, section: 'progression', help: 'The hottest stage that exists. Photos and tier ceilings can never go above it — there is nothing beyond this number.' },
+    { name: 'stage_advance_msgs', label: 'Messages to reach each stage', type: 'stagethresholds', section: 'progression', help: 'How many meaningful messages a player must send to unlock each stage. Stage 1 is free; the more they chat, the hotter the stage they reach (still capped by their VIP tier below).' },
+    { name: 'vip_tiers', label: 'VIP tiers (lowest → highest)', type: 'strlist', section: 'progression', help: 'The VIP ladder, one tier per line, from lowest to highest. Order matters: a tier’s position is its Level number a photo can require.' },
+    { name: 'max_stage_by_tier', label: 'Stage ceiling per VIP tier (Level → highest Stage)', type: 'intmap', section: 'progression', orderByField: 'vip_tiers', min: 1, help: 'The highest stage each VIP tier is allowed to reach, no matter how much they chat. Higher VIP = hotter photos unlocked.' },
   ],
 };
