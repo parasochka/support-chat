@@ -28,12 +28,15 @@ def test_retention_core_differs_from_support_core():
     assert prompts.get_retention_system_core() != prompts.get_system_core()
 
 
-def test_retention_core_uses_telegram_plain_text_formatting():
-    """Telegram renders retention replies as plain text (no parse_mode), so the
-    retention Layer 1 must carry the plain-text directive, NOT the widget's
-    Markdown directive (whose markup would leak to the player as literal chars)."""
+def test_retention_core_uses_telegram_formatting():
+    """Retention replies are rendered with a LIGHT Telegram-HTML subset
+    (telegram_format converts **bold**/*italic* and sends parse_mode=HTML), so
+    the retention Layer 1 carries the telegram formatting directive — allowing a
+    touch of emphasis but no lists/tables, and forbidding em dashes / guillemets.
+    It must NOT carry the widget's own Markdown directive."""
     core = prompts.get_retention_system_core()
-    assert "PLAIN TEXT" in core
+    assert "FORMATTING (TELEGRAM)" in core
+    assert "em dash" in core and "guillemet" in core.lower()
     assert "Always use light Markdown" not in core
     # the support core keeps asking for the widget's Markdown subset
     assert "Always use light Markdown" in prompts.get_system_core()

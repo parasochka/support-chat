@@ -849,11 +849,20 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   + retention static directives (`get_retention_system_core()`), byte-stable per **product × mode**
   (a test asserts it, mirroring the support core). It shares the persona but swaps support
   behaviour for engagement + photos + route-out. **No** KB-grounding / escalation-restraint /
-  topic-routing / suggestions here — and **no widget Markdown**: retention replies go to
-  Telegram as plain text (no `parse_mode`), so the retention Layer 1 carries its OWN
-  `_RETENTION_FORMATTING_DIRECTIVE` (plain text only, bare URLs, no Markdown/HTML of any
-  kind) instead of the support `_FORMATTING_DIRECTIVE` (which ASKS for the widget's Markdown
-  subset and would leak literal `**`/`[]()` characters to the player). The retention core
+  topic-routing / suggestions here — and its OWN **light** Telegram formatting: retention
+  replies are sent with `parse_mode=HTML`, so the retention Layer 1 carries its OWN
+  `_RETENTION_FORMATTING_DIRECTIVE` (a TOUCH of `**bold**`/`*italic*` allowed, no
+  lists/headings/tables/link-markup, bare URLs, and — a hard rule — NO em/en dashes or
+  guillemet/angle quotes) instead of the support `_FORMATTING_DIRECTIVE`. The persona's
+  emphasis is rendered by **`telegram_format.to_html`** (Markdown-subset → balanced,
+  HTML-escaped Telegram HTML; bare URLs + code spans stashed so their punctuation survives),
+  applied at every retention AI-text send site (`retention._send_ai_text`, photo captions,
+  the ping worker) with a plain-text fallback so a bad-HTML send never silently drops. The
+  "AI-tell" typography the model keeps emitting despite the rule is ALSO scrubbed
+  deterministically after the model turn (`telegram_format.normalize_punctuation` in
+  `chat_service` — em/en dashes → `-`, guillemet/curly quotes → straight ASCII), so the
+  persisted transcript and the sent message match. The persona MAY use at most ONE flirty
+  emoji per message (support Nika still uses none). The retention core
   renders with the **retention prompt-variable set**
   (`prompts.render_retention_prompt_variables` — retention override > retention default, a
   SEPARATE prompt with NO support inheritance, incl. its OWN tone `{retention_tone_of_voice}`)
