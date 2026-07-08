@@ -171,7 +171,12 @@ LOW_CONTENT_BLOCK: bool = _env_bool("LOW_CONTENT_BLOCK", True)
 MIN_MEANINGFUL_CHARS: int = _env_int("MIN_MEANINGFUL_CHARS", 2)
 
 # --- reCaptcha --------------------------------------------------------------
+# Deploy-level DEFAULT pair. Each product (domain) can carry its OWN reCaptcha
+# site key + secret (products.recaptcha_site_key / recaptcha_secret_enc, edited
+# in the admin Structure tab); these env values are only the fallback for
+# products that haven't configured their own (and for the default product).
 RECAPTCHA_SECRET: str | None = _env_opt("RECAPTCHA_SECRET")
+RECAPTCHA_SITE_KEY: str | None = _env_opt("RECAPTCHA_SITE_KEY")
 RECAPTCHA_MIN_SCORE: float = _env_float("RECAPTCHA_MIN_SCORE", 0.5)
 
 # --- Escalation -------------------------------------------------------------
@@ -410,6 +415,31 @@ RETENTION_SESSION_IDLE_MINUTES: int = _env_int(
 # player with continuity instead of starting cold (0 = no carry-over).
 RETENTION_CARRY_CONTEXT_TURNS: int = _env_int(
     "RETENTION_CARRY_CONTEXT_TURNS", 6)
+
+# --- Proactive pings (the "retention matrix") --------------------------------
+# Env defaults for the `retention` settings group's ping knobs (hot-reloadable
+# per product). PINGS master switch ships OFF: a product opts in from the admin.
+RETENTION_PINGS_ENABLED: bool = _env_bool("RETENTION_PINGS_ENABLED", False)
+# Hard per-player caps so the matrix can never spam: at most this many pings a
+# day and never two pings closer than the gap, regardless of how many rules match.
+RETENTION_PING_DAILY_CAP: int = _env_int("RETENTION_PING_DAILY_CAP", 1)
+RETENTION_PING_MIN_GAP_HOURS: int = _env_int("RETENTION_PING_MIN_GAP_HOURS", 48)
+# Local quiet hours (no pings sent between start and end, e.g. 22 -> 9). The
+# offset shifts "local" from UTC for the product's audience.
+RETENTION_QUIET_HOURS_START: int = _env_int("RETENTION_QUIET_HOURS_START", 22)
+RETENTION_QUIET_HOURS_END: int = _env_int("RETENTION_QUIET_HOURS_END", 9)
+RETENTION_QUIET_HOURS_UTC_OFFSET: int = _env_int(
+    "RETENTION_QUIET_HOURS_UTC_OFFSET", 0)
+# How many players one worker run may ping per product (cost guard), and how
+# often the worker wakes up. The scheduler switch is deploy-level (not a
+# setting): it decides whether this instance runs the loop at all.
+RETENTION_PING_BATCH_SIZE: int = _env_int("RETENTION_PING_BATCH_SIZE", 30)
+RETENTION_PING_INTERVAL_SEC: int = _env_int("RETENTION_PING_INTERVAL_SEC", 300)
+RETENTION_SCHEDULER_ENABLED: bool = _env_bool("RETENTION_SCHEDULER_ENABLED", True)
+
+# Serve /docs, /redoc and /openapi.json (they describe the WHOLE API surface,
+# /admin included) — off by default; enable only on dev/stage deployments.
+EXPOSE_API_DOCS: bool = _env_bool("EXPOSE_API_DOCS", False)
 
 # Convenience: a name shown in logs / health.
 SERVICE_NAME = "nowplix-support-chat"

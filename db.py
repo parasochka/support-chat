@@ -324,6 +324,17 @@ CREATE TABLE IF NOT EXISTS retention_users (
   conv_lang            TEXT,
   session_id           UUID REFERENCES chat_sessions(id),
   last_active_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- casino-side activity signals (fed by the partner push webhook / Player-API
+  -- pull; the ping matrix keys on them). NULL until the casino supplies them.
+  last_login_at        TIMESTAMPTZ,
+  last_played_at       TIMESTAMPTZ,
+  last_deposit_at      TIMESTAMPTZ,
+  -- proactive-ping state (the "don't annoy the player" ledger head)
+  pings_muted          BOOLEAN NOT NULL DEFAULT FALSE,  -- /stop opt-out
+  unreachable          BOOLEAN NOT NULL DEFAULT FALSE,  -- bot blocked by user
+  last_ping_at         TIMESTAMPTZ,
+  pings_day            DATE,
+  pings_sent_today     INT NOT NULL DEFAULT 0,
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -386,6 +397,68 @@ CREATE TABLE IF NOT EXISTS retention_nonces (
   expires_at  TIMESTAMPTZ NOT NULL
 );
 
+-- PING MATRIX ---------------------------------------------------------
+-- Proactive re-engagement rules: the per-product, admin-managed
+-- condition -> action schedule the ping worker evaluates (NOT the KB —
+-- rules are settings-like structured data, edited in Retention -> Pings).
+CREATE TABLE IF NOT EXISTS retention_rules (
+  id               BIGSERIAL PRIMARY KEY,
+  product_id       INT NOT NULL REFERENCES products(id),
+  name             TEXT NOT NULL,
+  enabled          BOOLEAN NOT NULL DEFAULT TRUE,
+  -- what idleness triggers the rule:
+  --   'bot_inactivity'    days since the player last wrote to the bot
+  --   'casino_inactivity' days since last_login_at/last_played_at (casino feed)
+  --   'no_deposit'        days since last_deposit_at (casino feed)
+  trigger_kind     TEXT NOT NULL DEFAULT 'bot_inactivity',
+  inactivity_days  INT NOT NULL DEFAULT 7,
+  action           TEXT NOT NULL DEFAULT 'message',  -- 'message' | 'photo'
+  -- English hint the model receives ("miss them, suggest the weekly slots
+  -- tournament", ...); free text, rendered into the ping prompt.
+  intent           TEXT NOT NULL DEFAULT '',
+  -- limit the rule to specific VIP tiers (lowercased names); [] = all tiers.
+  vip_tiers        JSONB NOT NULL DEFAULT '[]',
+  cooldown_days    INT NOT NULL DEFAULT 14,  -- per player per rule
+  priority         INT NOT NULL DEFAULT 0,   -- higher wins when several match
+  updated_by       TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Ledger of proactive pings: one row per attempted outbound send, so the
+-- worker can enforce per-rule cooldowns / caps and the admin can audit what
+-- was sent to whom (and what it cost).
+CREATE TABLE IF NOT EXISTS retention_pings (
+  id                BIGSERIAL PRIMARY KEY,
+  product_id        INT NOT NULL REFERENCES products(id),
+  retention_user_id BIGINT NOT NULL REFERENCES retention_users(id),
+  rule_id           BIGINT REFERENCES retention_rules(id),
+  action            TEXT NOT NULL,             -- 'message' | 'photo'
+  status            TEXT NOT NULL,             -- 'sent' | 'failed' | 'skipped'
+  detail            TEXT,
+  cost_usd          NUMERIC(12, 6),
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- MACHINE ADMIN CREDENTIALS -------------------------------------------
+-- Service API keys for the /admin API (an external master admin panel, a
+-- partner backend). Bearer 'sak_...' tokens; only the SHA-256 hash is stored.
+-- Scoped exactly like admin_memberships: one role at one scope per key.
+CREATE TABLE IF NOT EXISTS admin_api_keys (
+  id           BIGSERIAL PRIMARY KEY,
+  name         TEXT NOT NULL,
+  token_hash   TEXT NOT NULL UNIQUE,
+  token_hint   TEXT NOT NULL DEFAULT '',     -- last 4 chars, for display only
+  role         TEXT NOT NULL DEFAULT 'manager',  -- 'admin' | 'manager'
+  scope_type   TEXT NOT NULL DEFAULT 'global',   -- 'global'|'partner'|'product'
+  partner_id   INT REFERENCES partners(id),
+  product_id   INT REFERENCES products(id),
+  active       BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by   TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_used_at TIMESTAMPTZ
+);
+
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_kb_entries_topic ON kb_entries(topic_id) WHERE active;
 CREATE INDEX IF NOT EXISTS idx_kb_variables_updated ON kb_variables(updated_at);
@@ -406,6 +479,12 @@ CREATE INDEX IF NOT EXISTS idx_retention_photo_views_user
   ON retention_photo_views(retention_user_id, photo_id);
 CREATE INDEX IF NOT EXISTS idx_retention_managers_product
   ON retention_managers(product_id) WHERE active;
+CREATE INDEX IF NOT EXISTS idx_retention_rules_product
+  ON retention_rules(product_id, priority) WHERE enabled;
+CREATE INDEX IF NOT EXISTS idx_retention_pings_product
+  ON retention_pings(product_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_retention_pings_user
+  ON retention_pings(retention_user_id, rule_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_retention_nonces_expires
   ON retention_nonces(expires_at);
 """
@@ -524,6 +603,37 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         # sessions; web sessions leave it NULL.
         "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
         "tg_user_id BIGINT",
+        # --- Ping matrix (proactive retention) -------------------------------
+        # Casino-side activity signals + proactive-ping state on the player row.
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "last_login_at TIMESTAMPTZ",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "last_played_at TIMESTAMPTZ",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "last_deposit_at TIMESTAMPTZ",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "pings_muted BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "unreachable BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "last_ping_at TIMESTAMPTZ",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "pings_day DATE",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "pings_sent_today INT NOT NULL DEFAULT 0",
+        # Retention analytics + the Telegram-session join key on the ping
+        # reply-rate metric probe by (product, tg_user).
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_product_tg "
+        "ON chat_sessions(product_id, tg_user_id) WHERE tg_user_id IS NOT NULL",
+        # --- Per-product reCAPTCHA -------------------------------------------
+        # Each product (domain) runs its own reCAPTCHA site: the site key is
+        # public config served to the widget; the secret is encrypted at rest
+        # like every product secret. NULL = fall back to the deploy env pair
+        # (RECAPTCHA_SITE_KEY/RECAPTCHA_SECRET) — default product behaviour.
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "recaptcha_site_key TEXT",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "recaptcha_secret_enc TEXT",
     ]
     for stmt in alters:
         await conn.execute(stmt)
@@ -1367,6 +1477,10 @@ def _row_to_product(row: asyncpg.Record) -> dict[str, Any]:
         "player_api_url": row["player_api_url"],
         "has_player_api_key": row["player_api_key_enc"] is not None,
         "retention_enabled": row["retention_enabled"],
+        # Per-product reCAPTCHA: the site key is public widget config; the
+        # secret (encrypted) surfaces as a presence flag only.
+        "recaptcha_site_key": row["recaptcha_site_key"],
+        "has_recaptcha_secret": row["recaptcha_secret_enc"] is not None,
         "created_at": _iso(row["created_at"]),
         "updated_at": _iso(row["updated_at"]),
     }
@@ -1378,6 +1492,7 @@ _PRODUCT_COLS = ("id, partner_id, slug, name, widget_key, active, "
                  "telegram_bot_username, telegram_webhook_secret, "
                  "telegram_channel_id, telegram_channel_url, player_api_url, "
                  "player_api_key_enc, retention_enabled, "
+                 "recaptcha_site_key, recaptcha_secret_enc, "
                  "created_at, updated_at")
 
 
@@ -1460,6 +1575,15 @@ async def get_default_product() -> Optional[dict[str, Any]]:
     return _row_to_product(row) if row else None
 
 
+async def list_retention_products() -> list[dict[str, Any]]:
+    """Active products running the retention bot (the ping worker's sweep set)."""
+    rows = await _pool.fetch(
+        f"SELECT {_PRODUCT_COLS} FROM products "
+        "WHERE active AND retention_enabled ORDER BY id"
+    )
+    return [_row_to_product(r) for r in rows]
+
+
 def _new_widget_key() -> str:
     import secrets as _secrets
     return "wk_" + _secrets.token_urlsafe(24)
@@ -1529,7 +1653,8 @@ async def set_product_secrets(product_id: int, *,
                               openai_key_fallback: Any = UNSET,
                               handshake_secret: Any = UNSET,
                               telegram_bot_token: Any = UNSET,
-                              player_api_key: Any = UNSET) -> bool:
+                              player_api_key: Any = UNSET,
+                              recaptcha_secret: Any = UNSET) -> bool:
     """Write per-product secrets (encrypted at rest). Empty string clears one.
 
     Values are encrypted with secretbox before they touch the table; the
@@ -1545,7 +1670,8 @@ async def set_product_secrets(product_id: int, *,
                      ("openai_key_fallback_enc", openai_key_fallback),
                      ("handshake_secret_enc", handshake_secret),
                      ("telegram_bot_token_enc", telegram_bot_token),
-                     ("player_api_key_enc", player_api_key)):
+                     ("player_api_key_enc", player_api_key),
+                     ("recaptcha_secret_enc", recaptcha_secret)):
         if val is UNSET:
             continue
         args.append(secretbox.encrypt(val.strip()) if isinstance(val, str)
@@ -1698,6 +1824,38 @@ async def get_product_handshake_secret(product_id: int) -> Optional[str]:
         return None
 
 
+async def get_product_recaptcha_secret(product_id: int) -> Optional[str]:
+    """Decrypted per-product reCAPTCHA secret, or None (env fallback applies)."""
+    import logging
+
+    import secretbox
+    enc = await _pool.fetchval(
+        "SELECT recaptcha_secret_enc FROM products WHERE id = $1", product_id
+    )
+    if not enc:
+        return None
+    try:
+        return secretbox.decrypt(enc)
+    except secretbox.SecretBoxError:
+        logging.getLogger(__name__).warning(
+            "product_secret_undecryptable product_id=%s kind=recaptcha",
+            product_id,
+        )
+        return None
+
+
+async def set_product_recaptcha_site_key(product_id: int,
+                                         site_key: Optional[str]
+                                         ) -> Optional[dict[str, Any]]:
+    """Set the NON-secret reCAPTCHA site key (public widget config)."""
+    row = await _pool.fetchrow(
+        f"UPDATE products SET recaptcha_site_key = $2, updated_at = now() "
+        f"WHERE id = $1 RETURNING {_PRODUCT_COLS}",
+        product_id, (site_key or "").strip() or None,
+    )
+    return _row_to_product(row) if row else None
+
+
 # ---------------------------------------------------------------------------
 # Admin memberships (user <-> scope <-> role)
 # ---------------------------------------------------------------------------
@@ -1787,6 +1945,102 @@ async def product_ids_for_partners(partner_ids: list[int]) -> list[int]:
         "SELECT id FROM products WHERE partner_id = ANY($1::int[])", partner_ids
     )
     return [r["id"] for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# admin_api_keys (machine credentials for the /admin API — external panels)
+# ---------------------------------------------------------------------------
+_API_KEY_COLS = ("id, name, token_hint, role, scope_type, partner_id, "
+                 "product_id, active, created_by, created_at, last_used_at")
+
+
+def _row_to_api_key(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    d["id"] = int(d["id"])
+    for ts in ("created_at", "last_used_at"):
+        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
+            d[ts] = d[ts].isoformat()
+    return d
+
+
+def _hash_api_token(token: str) -> str:
+    import hashlib
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def create_admin_api_key(*, name: str, role: str, scope_type: str,
+                               partner_id: Optional[int],
+                               product_id: Optional[int],
+                               created_by: Optional[str]
+                               ) -> tuple[dict[str, Any], str]:
+    """Mint a service key. Returns (row, PLAINTEXT token) — the token is shown
+    exactly once at creation; only its SHA-256 hash is stored."""
+    import secrets as _secrets
+    token = "sak_" + _secrets.token_urlsafe(32)
+    row = await _pool.fetchrow(
+        "INSERT INTO admin_api_keys "
+        "(name, token_hash, token_hint, role, scope_type, partner_id, "
+        " product_id, created_by) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+        f"RETURNING {_API_KEY_COLS}",
+        name, _hash_api_token(token), token[-4:], role, scope_type,
+        partner_id, product_id, created_by,
+    )
+    return _row_to_api_key(row), token
+
+
+async def list_admin_api_keys() -> list[dict[str, Any]]:
+    rows = await _pool.fetch(
+        f"SELECT {_API_KEY_COLS} FROM admin_api_keys ORDER BY id")
+    return [_row_to_api_key(r) for r in rows]
+
+
+async def get_admin_api_key(key_id: int) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        f"SELECT {_API_KEY_COLS} FROM admin_api_keys WHERE id = $1", key_id)
+    return _row_to_api_key(row) if row else None
+
+
+async def get_admin_api_key_by_token(token: str) -> Optional[dict[str, Any]]:
+    """Resolve an ACTIVE key row from a presented plaintext token (auth path).
+
+    last_used_at is refreshed at most once a minute: an external panel polling
+    with a key would otherwise rewrite the same tuple on every request (WAL +
+    vacuum churn in the hot path of every keyed admin call).
+    """
+    h = _hash_api_token(token)
+    row = await _pool.fetchrow(
+        f"SELECT {_API_KEY_COLS} FROM admin_api_keys "
+        "WHERE token_hash = $1 AND active", h,
+    )
+    if row is None:
+        return None
+    import datetime as _dt
+    if (row["last_used_at"] is None
+            or (_dt.datetime.now(_dt.timezone.utc)
+                - row["last_used_at"]).total_seconds() > 60):
+        await _pool.execute(
+            "UPDATE admin_api_keys SET last_used_at = now() "
+            "WHERE token_hash = $1", h)
+    return _row_to_api_key(row)
+
+
+async def update_admin_api_key(key_id: int, *, active: Optional[bool] = None,
+                               name: Optional[str] = None
+                               ) -> Optional[dict[str, Any]]:
+    row = await _pool.fetchrow(
+        "UPDATE admin_api_keys SET active = COALESCE($2, active), "
+        "name = COALESCE($3, name) WHERE id = $1 "
+        f"RETURNING {_API_KEY_COLS}",
+        key_id, active, name,
+    )
+    return _row_to_api_key(row) if row else None
+
+
+async def delete_admin_api_key(key_id: int) -> bool:
+    result = await _pool.execute(
+        "DELETE FROM admin_api_keys WHERE id = $1", key_id)
+    return result.endswith("1")
 
 
 # ---------------------------------------------------------------------------
@@ -2384,7 +2638,8 @@ def _row_to_retention_user(row: asyncpg.Record) -> dict[str, Any]:
     if d.get("session_id") is not None:
         d["session_id"] = str(d["session_id"])
     for ts in ("profile_updated_at", "last_stage_advance_at", "last_active_at",
-               "created_at", "updated_at", "photos_day"):
+               "created_at", "updated_at", "photos_day", "last_login_at",
+               "last_played_at", "last_deposit_at", "last_ping_at", "pings_day"):
         if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
             d[ts] = d[ts].isoformat()
     return d
@@ -2396,8 +2651,29 @@ _RU_COLS = (
     "registration_date, profile_source, profile_updated_at, unlocked_stage, "
     "last_stage_advance_at, assigned_manager_id, subscribed, meaningful_msgs, "
     "msgs_since_photo, photos_day, photos_sent_today, conv_lang, session_id, "
-    "last_active_at, created_at, updated_at"
+    "last_active_at, last_login_at, last_played_at, last_deposit_at, "
+    "pings_muted, unreachable, last_ping_at, pings_day, pings_sent_today, "
+    "created_at, updated_at"
 )
+
+# Casino-side activity timestamps accepted from the partner feed (push webhook /
+# Player-API pull) alongside the TEXT profile snapshot. ISO-8601 strings are
+# parsed; unparsable values are dropped (never break a partial update).
+_RETENTION_ACTIVITY_FIELDS = ("last_login_at", "last_played_at", "last_deposit_at")
+
+
+def _as_ts(value: Any) -> Optional[Any]:
+    """Coerce an incoming activity value to a tz-aware datetime (or None)."""
+    import datetime as _dt
+    if value is None or isinstance(value, _dt.datetime):
+        return value
+    try:
+        dt = _dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_dt.timezone.utc)
+    return dt
 
 
 async def get_retention_user(product_id: int, tg_user_id: int
@@ -2473,15 +2749,25 @@ async def upsert_retention_user(product_id: int, tg_user_id: int, *,
 async def update_retention_profile(product_id: int, player_id: str,
                                    profile: dict[str, Any],
                                    profile_source: str = "push") -> int:
-    """Partial profile update by player_id (Player-API pull / push). Returns rows."""
+    """Partial profile update by player_id (Player-API pull / push). Returns rows.
+
+    Accepts the TEXT snapshot fields plus the casino activity timestamps
+    (last_login_at / last_played_at / last_deposit_at, ISO-8601); an activity
+    value that doesn't parse is dropped rather than failing the update.
+    """
     prof_cols = [f for f in _RETENTION_PROFILE_FIELDS if f in profile]
-    if not prof_cols:
+    act_cols = [f for f in _RETENTION_ACTIVITY_FIELDS
+                if f in profile and _as_ts(profile.get(f)) is not None]
+    if not prof_cols and not act_cols:
         return 0
     sets = ["profile_source = $3", "profile_updated_at = now()",
             "updated_at = now()"]
     args: list[Any] = [product_id, player_id, profile_source]
     for f in prof_cols:
         args.append(_as_text(profile.get(f)))
+        sets.append(f"{f} = ${len(args)}")
+    for f in act_cols:
+        args.append(_as_ts(profile.get(f)))
         sets.append(f"{f} = ${len(args)}")
     result = await _pool.execute(
         f"UPDATE retention_users SET {', '.join(sets)} "
@@ -2515,6 +2801,259 @@ async def set_retention_conv_lang(rid: int, conv_lang: str) -> None:
         "UPDATE retention_users SET conv_lang = $2, updated_at = now() "
         "WHERE id = $1", rid, conv_lang,
     )
+
+
+async def set_retention_pings_muted(rid: int, muted: bool) -> None:
+    """Player opt-out/in for proactive pings (/stop and /resume)."""
+    await _pool.execute(
+        "UPDATE retention_users SET pings_muted = $2, updated_at = now() "
+        "WHERE id = $1", rid, muted,
+    )
+
+
+async def set_retention_unreachable(rid: int, unreachable: bool = True) -> None:
+    """Mark a player the bot can no longer message (blocked the bot). The next
+    inbound message from them clears the flag (they are reachable again)."""
+    await _pool.execute(
+        "UPDATE retention_users SET unreachable = $2, updated_at = now() "
+        "WHERE id = $1", rid, unreachable,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ping matrix: rules CRUD + eligibility + ledger
+# ---------------------------------------------------------------------------
+_RULE_COLS = ("id, product_id, name, enabled, trigger_kind, inactivity_days, "
+              "action, intent, vip_tiers, cooldown_days, priority, updated_by, "
+              "created_at, updated_at")
+
+
+def _row_to_rule(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    d["id"] = int(d["id"])
+    tiers = d.get("vip_tiers")
+    if isinstance(tiers, str):
+        try:
+            d["vip_tiers"] = json.loads(tiers)
+        except ValueError:
+            d["vip_tiers"] = []
+    for ts in ("created_at", "updated_at"):
+        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
+            d[ts] = d[ts].isoformat()
+    return d
+
+
+async def list_retention_rules(product_id: int,
+                               only_enabled: bool = False) -> list[dict[str, Any]]:
+    q = (f"SELECT {_RULE_COLS} FROM retention_rules WHERE product_id = $1 "
+         + ("AND enabled " if only_enabled else "")
+         + "ORDER BY priority DESC, id")
+    rows = await _pool.fetch(q, product_id)
+    return [_row_to_rule(r) for r in rows]
+
+
+async def create_retention_rule(product_id: int, fields: dict[str, Any],
+                                updated_by: Optional[str] = None) -> dict[str, Any]:
+    row = await _pool.fetchrow(
+        "INSERT INTO retention_rules (product_id, name, enabled, trigger_kind, "
+        " inactivity_days, action, intent, vip_tiers, cooldown_days, priority, "
+        " updated_by) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
+        f"RETURNING {_RULE_COLS}",
+        product_id, fields["name"], bool(fields.get("enabled", True)),
+        fields.get("trigger_kind", "bot_inactivity"),
+        int(fields.get("inactivity_days", 7)),
+        fields.get("action", "message"), fields.get("intent", ""),
+        json.dumps(fields.get("vip_tiers") or []),
+        int(fields.get("cooldown_days", 14)), int(fields.get("priority", 0)),
+        updated_by,
+    )
+    return _row_to_rule(row)
+
+
+async def update_retention_rule(rule_id: int, product_id: int,
+                                fields: dict[str, Any],
+                                updated_by: Optional[str] = None
+                                ) -> Optional[dict[str, Any]]:
+    """Partial update; only supplied fields change. Scoped by product_id."""
+    sets = ["updated_at = now()", "updated_by = $3"]
+    args: list[Any] = [rule_id, product_id, updated_by]
+    scalar = {"name": str, "trigger_kind": str, "action": str, "intent": str}
+    for f, cast in scalar.items():
+        if f in fields:
+            args.append(cast(fields[f]))
+            sets.append(f"{f} = ${len(args)}")
+    for f in ("inactivity_days", "cooldown_days", "priority"):
+        if f in fields:
+            args.append(int(fields[f]))
+            sets.append(f"{f} = ${len(args)}")
+    if "enabled" in fields:
+        args.append(bool(fields["enabled"]))
+        sets.append(f"enabled = ${len(args)}")
+    if "vip_tiers" in fields:
+        args.append(json.dumps(fields.get("vip_tiers") or []))
+        sets.append(f"vip_tiers = ${len(args)}")
+    row = await _pool.fetchrow(
+        f"UPDATE retention_rules SET {', '.join(sets)} "
+        f"WHERE id = $1 AND product_id = $2 RETURNING {_RULE_COLS}",
+        *args,
+    )
+    return _row_to_rule(row) if row else None
+
+
+async def delete_retention_rule(rule_id: int, product_id: int) -> bool:
+    # The ledger keeps history: detach its rows instead of failing on the FK.
+    async with _acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE retention_pings SET rule_id = NULL WHERE rule_id = $1",
+                rule_id)
+            result = await conn.execute(
+                "DELETE FROM retention_rules WHERE id = $1 AND product_id = $2",
+                rule_id, product_id)
+    return result.endswith("1")
+
+
+async def eligible_ping_users(product_id: int, *, min_gap_hours: int,
+                              daily_cap: int, limit: int = 50
+                              ) -> list[dict[str, Any]]:
+    """Players the worker may consider this run: subscribed, not opted out, not
+    unreachable, past the global inter-ping gap and under the daily ping cap.
+    Most-idle first. Per-rule thresholds/cooldowns are evaluated by the caller.
+    """
+    rows = await _pool.fetch(
+        f"SELECT {_RU_COLS} FROM retention_users "
+        "WHERE product_id = $1 AND subscribed AND NOT pings_muted "
+        "  AND NOT unreachable "
+        "  AND (last_ping_at IS NULL "
+        "       OR last_ping_at < now() - make_interval(hours => $2)) "
+        "  AND (pings_day IS DISTINCT FROM CURRENT_DATE "
+        "       OR pings_sent_today < $3) "
+        "ORDER BY last_active_at ASC LIMIT $4",
+        product_id, int(min_gap_hours), int(daily_cap), int(limit),
+    )
+    return [_row_to_retention_user(r) for r in rows]
+
+
+async def ping_rule_recently_fired(rid: int, rule_id: int,
+                                   cooldown_days: int) -> bool:
+    """True when this rule already pinged this player within its cooldown."""
+    val = await _pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM retention_pings "
+        "WHERE retention_user_id = $1 AND rule_id = $2 AND status = 'sent' "
+        "AND created_at > now() - make_interval(days => $3))",
+        rid, rule_id, int(cooldown_days),
+    )
+    return bool(val)
+
+
+async def record_retention_ping(product_id: int, rid: int,
+                                rule_id: Optional[int], action: str,
+                                status: str, detail: Optional[str] = None,
+                                cost_usd: Optional[float] = None) -> None:
+    """Ledger row + the per-player ping state, atomically.
+
+    `last_ping_at` is stamped on EVERY outcome (it means "last attempt"): a
+    failed ping must also wait out `ping_min_gap_hours`, otherwise a player
+    whose sends persistently fail would be retried — with a fresh model call —
+    on every worker sweep, forever. The daily counter only counts real sends.
+    """
+    async with _acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "INSERT INTO retention_pings (product_id, retention_user_id, "
+                " rule_id, action, status, detail, cost_usd) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                product_id, rid, rule_id, action, status, detail, cost_usd,
+            )
+            if status == "sent":
+                await conn.execute(
+                    "UPDATE retention_users SET last_ping_at = now(), "
+                    "pings_sent_today = CASE WHEN pings_day = CURRENT_DATE "
+                    "  THEN pings_sent_today + 1 ELSE 1 END, "
+                    "pings_day = CURRENT_DATE, updated_at = now() "
+                    "WHERE id = $1", rid,
+                )
+            else:
+                await conn.execute(
+                    "UPDATE retention_users SET last_ping_at = now(), "
+                    "updated_at = now() WHERE id = $1", rid,
+                )
+
+
+async def list_retention_pings(product_id: int, page: int = 1,
+                               page_size: int = 50) -> dict[str, Any]:
+    """The ping ledger for the admin (joined with player + rule names)."""
+    offset = max(page - 1, 0) * page_size
+    total = await _pool.fetchval(
+        "SELECT COUNT(*) FROM retention_pings WHERE product_id = $1", product_id)
+    rows = await _pool.fetch(
+        "SELECT p.id, p.retention_user_id, p.rule_id, p.action, p.status, "
+        "       p.detail, p.cost_usd, p.created_at, "
+        "       u.tg_username, u.full_name, u.player_id, r.name AS rule_name "
+        "FROM retention_pings p "
+        "JOIN retention_users u ON u.id = p.retention_user_id "
+        "LEFT JOIN retention_rules r ON r.id = p.rule_id "
+        "WHERE p.product_id = $1 "
+        "ORDER BY p.id DESC LIMIT $2 OFFSET $3",
+        product_id, page_size, offset,
+    )
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        d["retention_user_id"] = int(d["retention_user_id"])
+        if d.get("rule_id") is not None:
+            d["rule_id"] = int(d["rule_id"])
+        if d.get("cost_usd") is not None:
+            d["cost_usd"] = float(d["cost_usd"])
+        if hasattr(d.get("created_at"), "isoformat"):
+            d["created_at"] = d["created_at"].isoformat()
+        items.append(d)
+    return {"items": items, "total": int(total or 0)}
+
+
+async def persist_ping_turn(session_id: str, assistant_text: str,
+                            ai_meta: Optional[dict[str, Any]] = None,
+                            product_id: Optional[int] = None) -> int:
+    """Persist a PROACTIVE assistant message (a ping has no user turn).
+
+    Same atomic contract as persist_turn — assistant message + AI log +
+    message_count bump in one transaction — minus the user row.
+    """
+    ai_meta = ai_meta or {}
+    async with _acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "INSERT INTO chat_messages "
+                "(session_id, role, content, lang, model, key_used, tokens_in, "
+                " tokens_out, cached_in, cost_usd) "
+                "VALUES ($1, 'assistant', $2, $3, $4, $5, $6, $7, $8, $9)",
+                session_id, assistant_text, ai_meta.get("lang"),
+                ai_meta.get("model"), ai_meta.get("key_used"),
+                ai_meta.get("tokens_in"), ai_meta.get("tokens_out"),
+                ai_meta.get("cached_in"), ai_meta.get("cost_usd"),
+            )
+            if ai_meta.get("model"):
+                await conn.execute(
+                    "INSERT INTO ai_interaction_logs "
+                    "(session_id, product_id, model, key_used, tokens_in, "
+                    " tokens_out, cached_in, cost_usd, latency_ms, ok, error) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                    session_id, product_id,
+                    ai_meta.get("model"), ai_meta.get("key_used"),
+                    ai_meta.get("tokens_in"), ai_meta.get("tokens_out"),
+                    ai_meta.get("cached_in"), ai_meta.get("cost_usd"),
+                    ai_meta.get("latency_ms"), ai_meta.get("ok", True),
+                    ai_meta.get("error"),
+                )
+            row = await conn.fetchrow(
+                "UPDATE chat_sessions "
+                "SET message_count = message_count + 1, updated_at = now() "
+                "WHERE id = $1 RETURNING message_count",
+                session_id,
+            )
+            return row["message_count"]
 
 
 async def bump_retention_activity(rid: int, *, meaningful: bool) -> dict[str, Any]:
@@ -2959,36 +3498,226 @@ async def redeem_retention_nonce(nonce: str) -> Optional[dict[str, Any]]:
 
 
 # --- retention analytics ---------------------------------------------------
-async def retention_overview(product_id: int, dt_from: Any, dt_to: Any
-                             ) -> dict[str, Any]:
-    users = await _pool.fetchrow(
-        "SELECT COUNT(*) AS total, "
-        "  COUNT(*) FILTER (WHERE subscribed) AS subscribed, "
-        "  COUNT(*) FILTER (WHERE last_active_at >= $2 AND last_active_at < $3) "
-        "    AS active_in_range, "
-        "  COALESCE(AVG(unlocked_stage), 0) AS avg_stage "
-        "FROM retention_users WHERE product_id = $1", product_id, dt_from, dt_to,
-    )
-    photos = await _pool.fetchval(
-        "SELECT COUNT(*) FROM retention_photo_views "
-        "WHERE product_id = $1 AND viewed_at >= $2 AND viewed_at < $3",
-        product_id, dt_from, dt_to,
-    )
-    handoffs = await _pool.fetchval(
-        "SELECT COUNT(*) FROM admin_events "
-        "WHERE product_id = $1 AND type IN "
-        "  ('retention_handoff', 'retention_manager_handoff') "
-        "  AND created_at >= $2 AND created_at < $3",
-        product_id, dt_from, dt_to,
-    )
+def _pid_where(product_ids: Optional[list[int]], args: list[Any],
+               col: str = "product_id") -> str:
+    """SQL filter for a product-id scope: None = all, [] = match nothing."""
+    if product_ids is None:
+        return "TRUE"
+    args.append(product_ids)
+    return f"{col} = ANY(${len(args)}::int[])"
+
+
+async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
+                             dt_to: Any) -> dict[str, Any]:
+    """Retention KPIs, split into LIFETIME numbers (the player base as it is
+    now) and RANGE numbers (what happened between dt_from and dt_to) so the
+    two are never mixed in one row. `product_ids` follows the dashboard scope
+    convention: None = all accessible, [] = none."""
+    args: list[Any] = [dt_from, dt_to]
+    pid = _pid_where(product_ids, args)
+    args_msgs: list[Any] = [dt_from, dt_to]
+    pid_msgs = _pid_where(product_ids, args_msgs, "s.product_id")
+    args2: list[Any] = [dt_from, dt_to]
+    pid2 = _pid_where(product_ids, args2, "p.product_id")
+    args3: list[Any] = [dt_from, dt_to]
+    pid3 = _pid_where(product_ids, args3, "s.product_id")
+    args4: list[Any] = []
+    pid4 = _pid_where(product_ids, args4)
+    # Independent aggregates — run them concurrently (this feeds the admin's
+    # landing dashboard, so wall time matters more than anywhere else).
+    users, photos, handoffs, messages, pings, cost, stage_rows = \
+        await asyncio.gather(
+            _pool.fetchrow(
+                "SELECT COUNT(*) AS total, "
+                "  COUNT(*) FILTER (WHERE subscribed) AS subscribed, "
+                "  COUNT(*) FILTER (WHERE pings_muted) AS pings_muted, "
+                "  COUNT(*) FILTER (WHERE unreachable) AS unreachable, "
+                "  COUNT(*) FILTER (WHERE last_active_at >= $1 "
+                "    AND last_active_at < $2) AS active_in_range, "
+                "  COUNT(*) FILTER (WHERE created_at >= $1 AND created_at < $2) "
+                "    AS new_in_range, "
+                "  COALESCE(AVG(unlocked_stage), 0) AS avg_stage "
+                f"FROM retention_users WHERE {pid}", *args),
+            _pool.fetchval(
+                "SELECT COUNT(*) FROM retention_photo_views "
+                f"WHERE {pid} AND viewed_at >= $1 AND viewed_at < $2", *args),
+            _pool.fetchval(
+                "SELECT COUNT(*) FROM admin_events "
+                f"WHERE {pid} AND type IN "
+                "  ('retention_handoff', 'retention_manager_handoff') "
+                "  AND created_at >= $1 AND created_at < $2", *args),
+            _pool.fetchrow(
+                "SELECT COUNT(*) AS user_msgs, "
+                "  COUNT(DISTINCT s.tg_user_id) AS senders "
+                "FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id "
+                f"WHERE s.consumer = 'telegram' AND {pid_msgs} "
+                "  AND m.role = 'user' AND m.created_at >= $1 "
+                "  AND m.created_at < $2", *args_msgs),
+            _pool.fetchrow(
+                "SELECT COUNT(*) FILTER (WHERE p.status = 'sent') AS sent, "
+                "  COUNT(*) FILTER (WHERE p.status = 'failed') AS failed, "
+                "  COUNT(*) FILTER (WHERE p.status = 'sent' AND EXISTS ("
+                "    SELECT 1 FROM chat_messages m "
+                "    JOIN chat_sessions s ON s.id = m.session_id "
+                "    JOIN retention_users u ON u.id = p.retention_user_id "
+                "    WHERE s.tg_user_id = u.tg_user_id "
+                "      AND s.product_id = p.product_id "
+                "      AND m.role = 'user' AND m.created_at > p.created_at "
+                "      AND m.created_at < p.created_at + interval '48 hours')) "
+                "    AS replied "
+                f"FROM retention_pings p WHERE {pid2} "
+                "  AND p.created_at >= $1 AND p.created_at < $2", *args2),
+            _pool.fetchval(
+                "SELECT COALESCE(SUM(l.cost_usd), 0) FROM ai_interaction_logs l "
+                "JOIN chat_sessions s ON s.id = l.session_id "
+                f"WHERE s.consumer = 'telegram' AND {pid3} "
+                "  AND l.created_at >= $1 AND l.created_at < $2", *args3),
+            _pool.fetch(
+                "SELECT unlocked_stage AS stage, COUNT(*) AS users "
+                f"FROM retention_users WHERE {pid4} "
+                "GROUP BY unlocked_stage ORDER BY unlocked_stage", *args4),
+        )
+    sent = int(pings["sent"] or 0) if pings else 0
+    replied = int(pings["replied"] or 0) if pings else 0
     return {
-        "users_total": users["total"] if users else 0,
-        "users_subscribed": users["subscribed"] if users else 0,
-        "users_active": users["active_in_range"] if users else 0,
-        "avg_stage": round(float(users["avg_stage"]), 2) if users else 0.0,
+        "users": {
+            "total": int(users["total"] or 0),
+            "subscribed": int(users["subscribed"] or 0),
+            "pings_muted": int(users["pings_muted"] or 0),
+            "unreachable": int(users["unreachable"] or 0),
+            "avg_stage": round(float(users["avg_stage"] or 0), 2),
+        },
+        "range": {
+            "active_users": int(users["active_in_range"] or 0),
+            "new_users": int(users["new_in_range"] or 0),
+            "user_messages": int(messages["user_msgs"] or 0) if messages else 0,
+            "photos_sent": int(photos or 0),
+            "handoffs": int(handoffs or 0),
+            "pings_sent": sent,
+            "pings_failed": int(pings["failed"] or 0) if pings else 0,
+            "ping_replies": replied,
+            "ping_reply_rate": round(replied / sent, 3) if sent else None,
+            "cost_usd": round(float(cost or 0), 4),
+        },
+        "stage_distribution": [
+            {"stage": int(r["stage"]), "users": int(r["users"])}
+            for r in stage_rows
+        ],
+        # Legacy flat keys (pre-split API consumers).
+        "users_total": int(users["total"] or 0),
+        "users_subscribed": int(users["subscribed"] or 0),
+        "users_active": int(users["active_in_range"] or 0),
+        "avg_stage": round(float(users["avg_stage"] or 0), 2),
         "photos_sent": int(photos or 0),
         "handoffs": int(handoffs or 0),
     }
+
+
+async def retention_funnel(product_ids: Optional[list[int]], dt_from: Any,
+                           dt_to: Any) -> dict[str, Any]:
+    """The entry funnel for the range: deeplinks minted -> /start redemptions ->
+    new linked players -> subscribed -> engaged (wrote a message) -> got a photo
+    -> handed off. Sources: durable admin_events for the two event steps (the
+    nonce table is reaped on expiry, so it cannot be the denominator), the
+    retention tables for the rest."""
+    args: list[Any] = [dt_from, dt_to]
+    pid = _pid_where(product_ids, args)
+    events = await _pool.fetchrow(
+        "SELECT COUNT(*) FILTER (WHERE type = 'retention_deeplink_created') "
+        "    AS deeplinks, "
+        "  COUNT(*) FILTER (WHERE type = 'retention_start') AS starts, "
+        "  COUNT(*) FILTER (WHERE type IN ('retention_handoff', "
+        "    'retention_manager_handoff')) AS handoffs "
+        f"FROM admin_events WHERE {pid} "
+        "  AND created_at >= $1 AND created_at < $2", *args,
+    )
+    users = await _pool.fetchrow(
+        "SELECT COUNT(*) AS new_users, "
+        "  COUNT(*) FILTER (WHERE subscribed) AS subscribed "
+        f"FROM retention_users WHERE {pid} "
+        "  AND created_at >= $1 AND created_at < $2", *args,
+    )
+    args2: list[Any] = [dt_from, dt_to]
+    pid2 = _pid_where(product_ids, args2, "s.product_id")
+    engaged = await _pool.fetchval(
+        "SELECT COUNT(DISTINCT s.tg_user_id) "
+        "FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id "
+        f"WHERE s.consumer = 'telegram' AND {pid2} AND m.role = 'user' "
+        "  AND m.created_at >= $1 AND m.created_at < $2", *args2,
+    )
+    args3: list[Any] = [dt_from, dt_to]
+    pid3 = _pid_where(product_ids, args3)
+    photo_receivers = await _pool.fetchval(
+        "SELECT COUNT(DISTINCT retention_user_id) FROM retention_photo_views "
+        f"WHERE {pid3} AND viewed_at >= $1 AND viewed_at < $2", *args3,
+    )
+    return {
+        "deeplinks_created": int(events["deeplinks"] or 0) if events else 0,
+        "starts": int(events["starts"] or 0) if events else 0,
+        "new_users": int(users["new_users"] or 0) if users else 0,
+        "subscribed": int(users["subscribed"] or 0) if users else 0,
+        "engaged": int(engaged or 0),
+        "photo_receivers": int(photo_receivers or 0),
+        "handoffs": int(events["handoffs"] or 0) if events else 0,
+    }
+
+
+async def retention_timeseries(product_ids: Optional[list[int]], dt_from: Any,
+                               dt_to: Any) -> list[dict[str, Any]]:
+    """Daily retention activity: player messages + distinct active players,
+    photos delivered, proactive pings sent, and OpenAI cost of telegram turns.
+    One merged row per day (days with no activity in any source are omitted)."""
+    out: dict[str, dict[str, Any]] = {}
+
+    def _day(row_day: Any) -> str:
+        return str(row_day)[:10]
+
+    args: list[Any] = [dt_from, dt_to]
+    pid = _pid_where(product_ids, args, "s.product_id")
+    for r in await _pool.fetch(
+            "SELECT date_trunc('day', m.created_at) AS day, "
+            "  COUNT(*) AS msgs, COUNT(DISTINCT s.tg_user_id) AS actives "
+            "FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id "
+            f"WHERE s.consumer = 'telegram' AND {pid} AND m.role = 'user' "
+            "  AND m.created_at >= $1 AND m.created_at < $2 "
+            "GROUP BY 1", *args):
+        d = out.setdefault(_day(r["day"]), {})
+        d["messages"] = int(r["msgs"])
+        d["active_users"] = int(r["actives"])
+
+    args = [dt_from, dt_to]
+    pid = _pid_where(product_ids, args)
+    for r in await _pool.fetch(
+            "SELECT date_trunc('day', viewed_at) AS day, COUNT(*) AS n "
+            f"FROM retention_photo_views WHERE {pid} "
+            "  AND viewed_at >= $1 AND viewed_at < $2 GROUP BY 1", *args):
+        out.setdefault(_day(r["day"]), {})["photos"] = int(r["n"])
+
+    args = [dt_from, dt_to]
+    pid = _pid_where(product_ids, args)
+    for r in await _pool.fetch(
+            "SELECT date_trunc('day', created_at) AS day, COUNT(*) AS n "
+            f"FROM retention_pings WHERE {pid} AND status = 'sent' "
+            "  AND created_at >= $1 AND created_at < $2 GROUP BY 1", *args):
+        out.setdefault(_day(r["day"]), {})["pings"] = int(r["n"])
+
+    args = [dt_from, dt_to]
+    pid = _pid_where(product_ids, args, "s.product_id")
+    for r in await _pool.fetch(
+            "SELECT date_trunc('day', l.created_at) AS day, "
+            "  COALESCE(SUM(l.cost_usd), 0) AS cost "
+            "FROM ai_interaction_logs l JOIN chat_sessions s ON s.id = l.session_id "
+            f"WHERE s.consumer = 'telegram' AND {pid} "
+            "  AND l.created_at >= $1 AND l.created_at < $2 GROUP BY 1", *args):
+        out.setdefault(_day(r["day"]), {})["cost_usd"] = round(float(r["cost"]), 4)
+
+    series = []
+    for day in sorted(out):
+        row = {"date": day, "messages": 0, "active_users": 0, "photos": 0,
+               "pings": 0, "cost_usd": 0.0}
+        row.update(out[day])
+        series.append(row)
+    return series
 
 
 async def list_retention_users(product_id: int, *, limit: int = 100,

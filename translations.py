@@ -73,6 +73,16 @@ KEYS: tuple[tuple[str, str, str], ...] = (
     ("rtn_handoff_support", "retention",
      "Route-out on a retention-entry chat (send the player back to site support)"),
     ("rtn_nika_start", "retention", "First line when the player opens the Nika chat"),
+    ("rtn_low_content_reply", "retention",
+     "Nudge for a Telegram message with nothing to answer (model-free)"),
+    ("rtn_injection_reply", "retention",
+     "Deflection for an injection/jailbreak attempt in Telegram (model-free)"),
+    ("rtn_photo_caption", "retention",
+     "Fallback photo caption when the model returned a photo with no text"),
+    ("rtn_pings_stopped", "retention",
+     "Confirmation after /stop: the bot will no longer message first"),
+    ("rtn_pings_resumed", "retention",
+     "Confirmation after /resume: proactive messages are back on"),
 )
 
 # Built-in default copy per language. This is the single shipped source for the
@@ -121,6 +131,11 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "rtn_manager_none": "All our managers are busy right now. Please try again a little later.",
         "rtn_handoff_support": "That's something our support team on the site handles best - please reach out to them there and they'll sort it out for you.",
         "rtn_nika_start": "Hey! I'm so glad you're here. What are you up to today?",
+        "rtn_low_content_reply": "Tell me a bit more - I want to hear what's on your mind.",
+        "rtn_injection_reply": "Let's just talk like people do. So, what's on your mind today?",
+        "rtn_photo_caption": "This one is just for you.",
+        "rtn_pings_stopped": "Got it, I won't message you first anymore. Send /resume if you change your mind - I'll be around.",
+        "rtn_pings_resumed": "I'm so glad you're back! I'll drop you a line from time to time.",
     },
     "ru": {
         "support": "Поддержка",
@@ -156,6 +171,11 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "rtn_manager_none": "Все менеджеры сейчас заняты. Попробуй, пожалуйста, чуть позже.",
         "rtn_handoff_support": "С этим лучше помогут в поддержке на сайте - напиши им там, и они всё решат.",
         "rtn_nika_start": "Привет! Как здорово, что ты заглянул. Чем занимаешься сегодня?",
+        "rtn_low_content_reply": "Расскажи чуть подробнее - мне интересно, что у тебя на уме.",
+        "rtn_injection_reply": "Давай просто пообщаемся по-человечески. Так что у тебя сегодня?",
+        "rtn_photo_caption": "Это только для тебя.",
+        "rtn_pings_stopped": "Поняла, больше не буду писать первой. Если передумаешь - отправь /resume, я рядом.",
+        "rtn_pings_resumed": "Как здорово, что ты вернулся! Буду иногда писать тебе первой.",
     },
     "es": {
         "support": "Soporte",
@@ -191,6 +211,11 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "rtn_manager_none": "Todos nuestros gestores están ocupados ahora. Inténtalo un poco más tarde, por favor.",
         "rtn_handoff_support": "Con eso te ayudará mejor el soporte del sitio - escríbeles allí y lo resolverán.",
         "rtn_nika_start": "¡Hola! Qué bien que estés aquí. ¿Qué haces hoy?",
+        "rtn_low_content_reply": "Cuéntame un poco más - quiero saber qué tienes en mente.",
+        "rtn_injection_reply": "Hablemos como personas normales. ¿Qué tal tu día?",
+        "rtn_photo_caption": "Esta es solo para ti.",
+        "rtn_pings_stopped": "Entendido, ya no te escribiré primero. Si cambias de opinión, envía /resume - aquí estaré.",
+        "rtn_pings_resumed": "¡Qué alegría tenerte de vuelta! Te escribiré de vez en cuando.",
     },
     "tr": {
         "support": "Destek",
@@ -226,6 +251,11 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "rtn_manager_none": "Şu anda tüm yöneticilerimiz meşgul. Lütfen biraz sonra tekrar dene.",
         "rtn_handoff_support": "Bu konuda en iyi sitedeki destek ekibi yardımcı olur - onlara oradan yaz, çözerler.",
         "rtn_nika_start": "Merhaba! Burada olmana çok sevindim. Bugün neler yapıyorsun?",
+        "rtn_low_content_reply": "Biraz daha anlat - aklından geçenleri duymak istiyorum.",
+        "rtn_injection_reply": "Hadi normal insanlar gibi sohbet edelim. Bugün neler yapıyorsun?",
+        "rtn_photo_caption": "Bu sadece senin için.",
+        "rtn_pings_stopped": "Anladım, artık önce ben yazmayacağım. Fikrini değiştirirsen /resume gönder - buradayım.",
+        "rtn_pings_resumed": "Geri dönmene çok sevindim! Arada sana yazacağım.",
     },
     "pt": {
         "support": "Suporte",
@@ -261,6 +291,11 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "rtn_manager_none": "Todos os nossos gerentes estão ocupados agora. Tente de novo daqui a pouco, por favor.",
         "rtn_handoff_support": "Com isso o suporte do site ajuda melhor - escreva para eles lá e eles resolvem.",
         "rtn_nika_start": "Oi! Que bom ter você aqui. O que está fazendo hoje?",
+        "rtn_low_content_reply": "Me conta um pouco mais - quero saber o que você está pensando.",
+        "rtn_injection_reply": "Vamos só conversar como gente. E aí, como está seu dia?",
+        "rtn_photo_caption": "Essa é só para você.",
+        "rtn_pings_stopped": "Entendi, não vou mais escrever primeiro. Se mudar de ideia, mande /resume - estarei por aqui.",
+        "rtn_pings_resumed": "Que bom ter você de volta! Vou te escrever de vez em quando.",
     },
 }
 

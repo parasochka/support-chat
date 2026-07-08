@@ -44,7 +44,16 @@ def _client_ip(request: Request) -> str:
 
 
 async def require_admin(authorization: Optional[str] = Header(default=None)) -> dict:
-    """FastAPI dependency: verify the admin JWT or raise 401. Guards /admin/* data.
+    """FastAPI dependency: verify the admin JWT (or a service API key) or raise
+    401. Guards /admin/* data.
+
+    Two credential kinds share the Bearer header:
+      - `sak_...` — a service API key (admin_api_keys row, for machine callers
+        like an external master admin panel). Resolved by hash on every request
+        (deactivating a key applies immediately); its single scoped role is
+        translated into a synthetic membership so every scope helper below
+        works unchanged.
+      - anything else — a human admin JWT from /admin/login.
 
     Beyond the signature/expiry check, the named account is re-checked against
     `admin_users` on every request: a JWT has no revocation, so without this a
@@ -55,6 +64,22 @@ async def require_admin(authorization: Optional[str] = Header(default=None)) -> 
     """
     try:
         token = auth.extract_bearer(authorization)
+    except auth.TokenError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    if token.startswith("sak_"):
+        key = await db.get_admin_api_key_by_token(token)
+        if key is None:
+            raise HTTPException(status_code=401, detail="invalid API key")
+        membership = {"role": key["role"], "scope_type": key["scope_type"],
+                      "partner_id": key.get("partner_id"),
+                      "product_id": key.get("product_id")}
+        return {
+            "email": f"apikey:{key['name']}",
+            "role": key["role"] if key["role"] in WRITE_ROLES else "manager",
+            "memberships": [membership],
+            "api_key_id": key["id"],
+        }
+    try:
         payload = auth.verify_admin_token(token)
     except auth.TokenError as exc:
         raise HTTPException(status_code=401, detail=str(exc))

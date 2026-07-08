@@ -7,6 +7,7 @@ import {
   Resource,
   defaultDarkTheme,
   defaultLightTheme,
+  usePermissions,
 } from 'react-admin';
 import { Navigate, Route, useLocation, useNavigate } from 'react-router-dom';
 import Box from '@mui/material/Box';
@@ -15,9 +16,11 @@ import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
+import CampaignIcon from '@mui/icons-material/Campaign';
 import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
 import ForumIcon from '@mui/icons-material/Forum';
+import VpnKeyIcon from '@mui/icons-material/VpnKey';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import InsightsIcon from '@mui/icons-material/Insights';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
@@ -32,6 +35,7 @@ import TuneIcon from '@mui/icons-material/Tune';
 
 import authProvider from './authProvider';
 import dataProvider from './dataProvider';
+import ApiKeys from './pages/ApiKeys';
 import Dashboard from './dashboard/Dashboard';
 import ScopeAppBar from './layout/ScopeAppBar';
 import { ConversationList, ConversationShow } from './resources/Conversations';
@@ -112,48 +116,63 @@ const RetentionSubItem = ({ tab, label, icon }) => {
  * system-wide management. Section open/closed state is remembered. KB variables
  * ride inside the Knowledge base page (a tab there), so they get no menu item.
  */
-const AppMenu = () => (
-  // Icons in the sidebar come from three different sources (resource items,
-  // custom Menu.Items, retention sub-items with fontSize="small") — normalize
-  // every one of them to the same size so the menu reads as one column.
-  <Menu
-    sx={{
-      '& .MuiListItemIcon-root .MuiSvgIcon-root': { fontSize: 20 },
-      '& .MuiListItemIcon-root': { minWidth: 34 },
-    }}
-  >
-    <Menu.DashboardItem />
+const AppMenu = () => {
+  // API keys are credentials — the entry is admin-only (the server refuses
+  // managers anyway; hiding it mirrors that, like the page itself does).
+  const { permissions } = usePermissions();
+  return (
+    // Icons in the sidebar come from three different sources (resource items,
+    // custom Menu.Items, retention sub-items with fontSize="small") — normalize
+    // every one of them to the same size so the menu reads as one column.
+    <Menu
+      sx={{
+        '& .MuiListItemIcon-root .MuiSvgIcon-root': { fontSize: 20 },
+        '& .MuiListItemIcon-root': { minWidth: 34 },
+      }}
+    >
+      <Menu.DashboardItem primaryText="Dashboard" />
 
-    <CollapsibleSection id="support" label="Support chat">
-      <Menu.ResourceItem name="sessions" />
-      <Menu.ResourceItem name="unresolved" />
-      <Menu.ResourceItem name="kb" />
-      <Menu.Item to="/prompt" primaryText="Prompt" leftIcon={<TuneIcon />} />
-      <Menu.Item
-        to="/translations"
-        primaryText="Translations"
-        leftIcon={<TranslateIcon />}
-      />
-    </CollapsibleSection>
+      <CollapsibleSection id="support" label="Support chat">
+        <Menu.ResourceItem name="sessions" />
+        <Menu.ResourceItem name="unresolved" />
+        <Menu.ResourceItem name="kb" />
+        <Menu.Item to="/prompt" primaryText="Prompt" leftIcon={<TuneIcon />} />
+        <Menu.Item
+          to="/translations"
+          primaryText="Translations"
+          leftIcon={<TranslateIcon />}
+        />
+        {/* The combined dashboard narrowed to the support block. */}
+        <Menu.Item
+          to="/?module=support"
+          primaryText="Analytics"
+          leftIcon={<InsightsIcon />}
+        />
+      </CollapsibleSection>
 
-    <CollapsibleSection id="retention" label="Telegram · Retention">
-      <RetentionSubItem tab="guide" label="Setup guide" icon={<MenuBookIcon fontSize="small" />} />
-      <RetentionSubItem tab="config" label="Telegram config" icon={<TelegramIcon fontSize="small" />} />
-      <RetentionSubItem tab="kb" label="Retention KB" icon={<LibraryBooksIcon fontSize="small" />} />
-      <RetentionSubItem tab="prompt" label="Prompt preview" icon={<TuneIcon fontSize="small" />} />
-      <RetentionSubItem tab="photos" label="Media" icon={<PhotoLibraryIcon fontSize="small" />} />
-      <RetentionSubItem tab="managers" label="Managers" icon={<SupportAgentIcon fontSize="small" />} />
-      <RetentionSubItem tab="chats" label="Conversations" icon={<ForumIcon fontSize="small" />} />
-      <RetentionSubItem tab="analytics" label="Analytics" icon={<InsightsIcon fontSize="small" />} />
-    </CollapsibleSection>
+      <CollapsibleSection id="retention" label="Telegram · Retention">
+        <RetentionSubItem tab="guide" label="Setup guide" icon={<MenuBookIcon fontSize="small" />} />
+        <RetentionSubItem tab="config" label="Telegram config" icon={<TelegramIcon fontSize="small" />} />
+        <RetentionSubItem tab="kb" label="Retention KB" icon={<LibraryBooksIcon fontSize="small" />} />
+        <RetentionSubItem tab="prompt" label="Prompt preview" icon={<TuneIcon fontSize="small" />} />
+        <RetentionSubItem tab="photos" label="Media" icon={<PhotoLibraryIcon fontSize="small" />} />
+        <RetentionSubItem tab="managers" label="Managers" icon={<SupportAgentIcon fontSize="small" />} />
+        <RetentionSubItem tab="pings" label="Pings" icon={<CampaignIcon fontSize="small" />} />
+        <RetentionSubItem tab="chats" label="Conversations" icon={<ForumIcon fontSize="small" />} />
+        <RetentionSubItem tab="analytics" label="Analytics" icon={<InsightsIcon fontSize="small" />} />
+      </CollapsibleSection>
 
-    <CollapsibleSection id="system" label="System">
-      <Menu.Item to="/structure" primaryText="Structure" leftIcon={<AccountTreeIcon />} />
-      <Menu.Item to="/settings" primaryText="Settings" leftIcon={<SettingsIcon />} />
-      <Menu.ResourceItem name="users" />
-    </CollapsibleSection>
-  </Menu>
-);
+      <CollapsibleSection id="system" label="System">
+        <Menu.Item to="/structure" primaryText="Structure" leftIcon={<AccountTreeIcon />} />
+        <Menu.Item to="/settings" primaryText="Settings" leftIcon={<SettingsIcon />} />
+        <Menu.ResourceItem name="users" />
+        {permissions === 'admin' && (
+          <Menu.Item to="/api-keys" primaryText="API keys" leftIcon={<VpnKeyIcon />} />
+        )}
+      </CollapsibleSection>
+    </Menu>
+  );
+};
 
 const AppLayout = ({ children }) => (
   <Layout menu={AppMenu} appBar={ScopeAppBar}>
@@ -220,6 +239,7 @@ const App = () => (
       <Route path="/settings" element={<Settings />} />
       <Route path="/structure" element={<Structure />} />
       <Route path="/retention" element={<Retention />} />
+      <Route path="/api-keys" element={<ApiKeys />} />
     </CustomRoutes>
   </Admin>
 );

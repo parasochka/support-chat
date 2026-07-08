@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Title } from 'react-admin';
 import { useTheme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
@@ -14,6 +15,7 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
 import LineChart from '../components/LineChart';
+import { CHART_COLORS, SeriesLineChart } from '../components/charts';
 import { API_URL, httpClient } from '../httpClient';
 import { scopeParams } from '../productScope';
 
@@ -24,13 +26,6 @@ const num = (v) => (v == null ? '—' : String(v));
 // for a reasoning-model turn that often runs several seconds.
 const ms = (v) =>
   v == null ? '—' : v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)} ms`;
-
-// Chart series colors: validated categorical slots (dataviz reference palette),
-// stepped per theme mode so contrast holds on both surfaces.
-const CHART_COLORS = {
-  light: ['#2a78d6', '#1baf7a', '#eda100', '#008300'],
-  dark: ['#3987e5', '#199e70', '#c98500', '#008300'],
-};
 
 const CHARTS = [
   ['sessions', 'Sessions over time', (v) => String(Math.round(v))],
@@ -140,12 +135,26 @@ const BreakdownTable = ({ title, rows, nameLabel, nameOf }) => (
   </Grid>
 );
 
+// Section heading between the two dashboard blocks.
+const SectionTitle = ({ children }) => (
+  <Typography variant="h6" sx={{ fontWeight: 600, mb: 1.5 }}>
+    {children}
+  </Typography>
+);
+
+// Quiet per-block failure note — one block failing must never break the page.
+const BlockError = ({ label, error }) => (
+  <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+    {label} metrics could not be loaded ({error}).
+  </Typography>
+);
+
 /**
- * KPI dashboard over GET /admin/overview + the four daily time-series charts
- * (/admin/timeseries) + by-topic / by-language breakdowns. Everything follows
- * the header product scope; the default range is the backend's last 30 days.
+ * Support-chat block: GET /admin/overview KPIs + the four daily time-series
+ * charts (/admin/timeseries) + by-topic / by-language breakdowns. Follows the
+ * header product scope; the default range is the backend's last 30 days.
  */
-const Dashboard = () => {
+const SupportBlock = () => {
   const theme = useTheme();
   const [overview, setOverview] = useState(null);
   const [charts, setCharts] = useState({});
@@ -167,7 +176,7 @@ const Dashboard = () => {
         setTopics(t.json.topics || []);
         setLanguages(l.json.languages || []);
       })
-      .catch((e) => setError(e.message || 'Failed to load dashboard'));
+      .catch((e) => setError(e.message || 'load failed'));
     CHARTS.forEach(([metric]) => {
       httpClient(`${API_URL}/admin/timeseries${qs}${amp}metric=${metric}&bucket=day`)
         .then(({ json }) =>
@@ -179,11 +188,10 @@ const Dashboard = () => {
 
   const colors = CHART_COLORS[theme.palette.mode] || CHART_COLORS.dark;
 
-  return (
-    <Box sx={{ p: 2 }}>
-      <Title title="Dashboard" />
-      {error && <Typography color="error">{error}</Typography>}
+  if (error) return <BlockError label="Support chat" error={error} />;
 
+  return (
+    <>
       {/* Row 1 — sessions & engagement (6 tiles). */}
       <Grid container spacing={2} alignItems="stretch">
         <Kpi label="Sessions (30d)" value={num(overview?.sessions_total)} />
@@ -287,6 +295,105 @@ const Dashboard = () => {
           nameOf={(r) => r.lang}
         />
       </Grid>
+    </>
+  );
+};
+
+// Daily retention activity on the dashboard: player messages vs pings sent.
+const RETENTION_SERIES = [
+  { key: 'messages', label: 'Messages' },
+  { key: 'pings', label: 'Pings' },
+];
+
+/**
+ * Retention · Telegram block: GET /admin/retention/overview + /timeseries in
+ * the same header scope as the support block (product / partner / everything
+ * the caller may read). The deep KPIs and the funnel live on
+ * Retention → Analytics; this block is the at-a-glance summary.
+ */
+const RetentionBlock = () => {
+  const [overview, setOverview] = useState(null);
+  const [series, setSeries] = useState([]);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const scope = new URLSearchParams(scopeParams()).toString();
+    const qs = scope ? `?${scope}` : '';
+    httpClient(`${API_URL}/admin/retention/overview${qs}`)
+      .then(({ json }) => setOverview(json))
+      .catch((e) => setError(e.message || 'load failed'));
+    httpClient(`${API_URL}/admin/retention/timeseries${qs}`)
+      .then(({ json }) => setSeries(json.series || []))
+      .catch(() => setSeries([]));
+  }, []);
+
+  if (error) return <BlockError label="Retention" error={error} />;
+
+  const base = overview?.users;
+  const inRange = overview?.range;
+
+  return (
+    <>
+      <Grid container spacing={2} alignItems="stretch">
+        <Kpi
+          label="Linked players"
+          value={num(base?.total)}
+          hint={
+            base?.subscribed != null ? `${base.subscribed} subscribed` : 'lifetime'
+          }
+        />
+        <Kpi label="Active (30d)" value={num(inRange?.active_users)} hint="wrote in the bot" />
+        <Kpi
+          label="Pings sent"
+          value={num(inRange?.pings_sent)}
+          hint={`reply rate ${pct(inRange?.ping_reply_rate)}`}
+        />
+        <Kpi label="Photos sent" value={num(inRange?.photos_sent)} />
+        <Kpi label="Hand-offs" value={num(inRange?.handoffs)} hint="to manager / support" />
+        <Kpi label="Cost (USD)" value={usd(inRange?.cost_usd)} hint="Telegram AI turns" />
+      </Grid>
+      <Grid container spacing={2} sx={{ mt: 2 }} alignItems="stretch">
+        <Grid size={{ xs: 12, md: 6 }}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+                Messages & pings over time
+              </Typography>
+              <SeriesLineChart data={series} series={RETENTION_SERIES} height={190} />
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+    </>
+  );
+};
+
+/**
+ * The combined dashboard: the support-chat block and the Retention · Telegram
+ * block, each resilient on its own. ?module=support / ?module=retention
+ * narrows the page to one block (the sidebar Analytics entries deep-link it).
+ */
+const Dashboard = () => {
+  const [params] = useSearchParams();
+  const module = params.get('module');
+  const showSupport = module !== 'retention';
+  const showRetention = module !== 'support';
+
+  return (
+    <Box sx={{ p: 2 }}>
+      <Title title="Dashboard" />
+      {showSupport && (
+        <Box sx={{ mb: showRetention ? 4 : 0 }}>
+          <SectionTitle>Support chat</SectionTitle>
+          <SupportBlock />
+        </Box>
+      )}
+      {showRetention && (
+        <Box>
+          <SectionTitle>Retention · Telegram</SectionTitle>
+          <RetentionBlock />
+        </Box>
+      )}
     </Box>
   );
 };

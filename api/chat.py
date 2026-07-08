@@ -158,9 +158,22 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
                                          {"ip": ip, "scope": "session"})
         return _err(exc.status, exc.code, exc.detail)
 
+    # --- resolve the product (multi-tenancy) ---------------------------------
+    # The widget key names the casino; everything below (reCaptcha secret,
+    # handshake secret, test profile, language set, topics) resolves for it.
+    product, err = await _resolve_product(body.widget_key)
+    if err:
+        await db.log_admin_event(None, "widget_key_rejected", {"ip": ip})
+        return err
+    tenancy.set_current_product(product["id"])
+
     # reCaptcha (skips gracefully in dev; logs the skip, sampled — it fires on
-    # EVERY dev session create otherwise)
-    captcha = await antispam.verify_recaptcha(body.recaptcha_token, ip)
+    # EVERY dev session create otherwise). Verified against the PRODUCT's own
+    # reCAPTCHA secret when it has one (each client domain runs its own
+    # reCAPTCHA property); the deploy env secret is only the fallback.
+    product_recaptcha = await db.get_product_recaptcha_secret(product["id"])
+    captcha = await antispam.verify_recaptcha(body.recaptcha_token, ip,
+                                              secret=product_recaptcha)
     if captcha.get("skipped"):
         await db.log_admin_event_sampled(None, "recaptcha_skipped",
                                          {"reason": captcha.get("reason")})
@@ -168,15 +181,6 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
         await db.log_admin_event(None, "recaptcha_blocked",
                                  {"reason": captcha.get("reason"), "score": captcha.get("score")})
         return _err(403, "recaptcha_failed", "reCaptcha verification failed.")
-
-    # --- resolve the product (multi-tenancy) ---------------------------------
-    # The widget key names the casino; everything below (handshake secret, test
-    # profile, language set, topic catalogue) resolves for that product.
-    product, err = await _resolve_product(body.widget_key)
-    if err:
-        await db.log_admin_event(None, "widget_key_rejected", {"ip": ip})
-        return err
-    tenancy.set_current_product(product["id"])
 
     # --- resolve trusted user_context (signed handshake §9) -----------------
     # Precedence of trust:
@@ -330,6 +334,11 @@ async def widget_i18n(widget_key: Optional[str] = None) -> JSONResponse:
         content={
             "languages": codes,
             "strings": translations.widget_strings(codes),
+            # The product's PUBLIC reCAPTCHA site key (env pair as fallback):
+            # the widget adopts it unless the host page pinned its own, so a
+            # per-domain key needs no embed change.
+            "recaptcha_site_key": (product.get("recaptcha_site_key")
+                                   or config.RECAPTCHA_SITE_KEY or None),
         },
     )
     # Same short cache as /topics: changes only on an admin edit.

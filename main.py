@@ -5,6 +5,7 @@ page on Railway and tune the bot end-to-end.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -78,15 +79,37 @@ async def lifespan(app: FastAPI):
         os.makedirs(config.RETENTION_MEDIA_DIR, exist_ok=True)
     except OSError as exc:
         log.warning("could not create RETENTION_MEDIA_DIR: %s", exc)
+    # Proactive ping worker (the retention "ping matrix"). Deploy-level switch;
+    # each product still opts in via the `retention.pings_enabled` setting, and
+    # the sweep takes a Postgres advisory lock so multiple instances don't race.
+    ping_task = None
+    if config.RETENTION_SCHEDULER_ENABLED:
+        import retention_pings
+        ping_task = asyncio.create_task(retention_pings.scheduler_loop())
     log.info("Startup complete")
     try:
         yield
     finally:
+        if ping_task is not None:
+            ping_task.cancel()
+            try:
+                await ping_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         await db.close()
         log.info("Shutdown complete")
 
 
-app = FastAPI(title=config.SERVICE_NAME, lifespan=lifespan)
+# The OpenAPI schema + Swagger/ReDoc pages describe the WHOLE surface (the
+# /admin API included), so they are not served by default in a deployment.
+# Set EXPOSE_API_DOCS=1 to publish /docs, /redoc and /openapi.json (dev/stage).
+app = FastAPI(
+    title=config.SERVICE_NAME,
+    lifespan=lifespan,
+    openapi_url="/openapi.json" if config.EXPOSE_API_DOCS else None,
+    docs_url="/docs" if config.EXPOSE_API_DOCS else None,
+    redoc_url="/redoc" if config.EXPOSE_API_DOCS else None,
+)
 
 # --- CORS (env-driven) ------------------------------------------------------
 app.add_middleware(
@@ -226,4 +249,12 @@ async def integration_docs() -> FileResponse:
 @app.get("/integration-telegram", response_class=HTMLResponse)
 async def integration_telegram_docs() -> FileResponse:
     return FileResponse(os.path.join(_FRONTEND_DIR, "integration-telegram.html"),
+                        media_type="text/html", headers=_WIDGET_CACHE)
+
+
+# Third sibling guide: integrating an external "master" admin panel with the
+# /admin API (roles model, service API keys, scoping, endpoint reference).
+@app.get("/integration-admin", response_class=HTMLResponse)
+async def integration_admin_docs() -> FileResponse:
+    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-admin.html"),
                         media_type="text/html", headers=_WIDGET_CACHE)

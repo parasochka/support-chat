@@ -36,8 +36,11 @@ def _stubs(monkeypatch):
     tenancy.set_current_product(None)
     created = {}
 
-    async def verify_recaptcha(token, ip):
+    async def verify_recaptcha(token, ip, secret=None):
         return {"skipped": True, "reason": "test"}
+
+    async def get_product_recaptcha_secret(product_id):
+        return None
 
     async def get_default_product():
         return dict(_DEFAULT)
@@ -67,6 +70,7 @@ def _stubs(monkeypatch):
     monkeypatch.setattr(db, "get_default_product", get_default_product)
     monkeypatch.setattr(db, "get_product_by_widget_key", get_product_by_widget_key)
     monkeypatch.setattr(db, "get_product_handshake_secret", get_product_handshake_secret)
+    monkeypatch.setattr(db, "get_product_recaptcha_secret", get_product_recaptcha_secret)
     monkeypatch.setattr(db, "create_session", create_session)
     monkeypatch.setattr(db, "log_admin_event", log_admin_event)
     monkeypatch.setattr(db, "log_admin_event_sampled", log_admin_event_sampled)

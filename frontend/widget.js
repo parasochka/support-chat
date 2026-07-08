@@ -23,8 +23,11 @@ export const CONFIG = {
       (document.querySelector("script[data-widget-key]") || { dataset: {} })
         .dataset.widgetKey) ||
     "",
-  // reCaptcha v3 site key. Leave "" to skip captcha (dev).
-  RECAPTCHA_SITE_KEY: "6LfNeistAAAAADIKPj_VP-AcInrFei0FLqabNK8X",
+  // reCaptcha v3 site key. Normally left "" — the widget adopts the PRODUCT's
+  // own site key served by GET /api/chat/i18n (each client domain runs its own
+  // reCAPTCHA property, configured in the admin Structure tab). A host page may
+  // still pin one explicitly via mount({ RECAPTCHA_SITE_KEY: "..." }).
+  RECAPTCHA_SITE_KEY: "",
   // Sample user_context for the test build. In production the host page supplies this.
   // `language` is the account/profile language. It is the strongest signal for the
   // widget chrome (after an explicit LANG), so a Russian account on an English
@@ -167,6 +170,9 @@ const state = {
   // paint IMMEDIATELY on tap; sendMessage() awaits this so the player's first
   // message transparently waits for the setup instead of failing without a token.
   setupPromise: null,
+  // Mount-time /i18n fetch (chrome copy + the product's reCAPTCHA site key);
+  // recaptchaToken() awaits it when the key hasn't arrived yet.
+  i18nPromise: null,
   // The widget chrome language. Starts at the browser locale and may later
   // follow the conversation if the player switches language (maybeSwitchLang).
   lang: resolveLang(),
@@ -206,6 +212,11 @@ function loadRecaptcha(siteKey) {
 }
 
 async function recaptchaToken(action) {
+  // The product's site key may still be in flight (it arrives with /i18n);
+  // wait for that fetch before concluding there is no captcha to run.
+  if (!CONFIG.RECAPTCHA_SITE_KEY && state.i18nPromise) {
+    await state.i18nPromise;
+  }
   if (!CONFIG.RECAPTCHA_SITE_KEY) return null;
   const grc = await loadRecaptcha(CONFIG.RECAPTCHA_SITE_KEY);
   if (!grc) return null;
@@ -260,6 +271,13 @@ async function fetchI18n() {
     ? `?widget_key=${encodeURIComponent(CONFIG.WIDGET_KEY)}` : "";
   const { ok, data } = await api(`/api/chat/i18n${qs}`, { method: "GET" });
   if (!ok || !data || !data.strings) return;
+  // Adopt the product's reCAPTCHA site key (served with the copy) unless the
+  // host page pinned its own — then pre-load the script so the first topic tap
+  // doesn't pay for it.
+  if (!CONFIG.RECAPTCHA_SITE_KEY && data.recaptcha_site_key) {
+    CONFIG.RECAPTCHA_SITE_KEY = data.recaptcha_site_key;
+    loadRecaptcha(CONFIG.RECAPTCHA_SITE_KEY);
+  }
   for (const [code, dict] of Object.entries(data.strings)) {
     I18N[code] = Object.assign({}, I18N[code] || I18N.en, dict);
   }
@@ -504,7 +522,10 @@ function buildUI() {
   // touches no reCaptcha or DB, so doing it on mount is cheap insurance.
   fetchTopics().catch(() => { /* the open handler retries if this missed */ });
   // Merge the admin-edited chrome copy over the baked-in defaults (non-fatal).
-  fetchI18n().catch(() => { /* baked-in copy stands */ });
+  // The promise is kept: the per-product reCAPTCHA site key rides in this
+  // response, so recaptchaToken() awaits it when no key is known yet — a
+  // topic tap racing the fetch must not mint a token-less session.
+  state.i18nPromise = fetchI18n().catch(() => { /* baked-in copy stands */ });
   // Pre-load the reCaptcha script too: it's the slowest piece of the session
   // create (a third-party script fetch), and without this it only started
   // loading when the player tapped a topic — adding seconds before the first

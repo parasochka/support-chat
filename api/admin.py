@@ -841,6 +841,104 @@ async def delete_user(email: str,
 
 
 # ---------------------------------------------------------------------------
+# Service API keys — machine credentials for the /admin API (external master
+# admin panels, partner backends). Bearer `sak_...` tokens; the plaintext is
+# returned exactly ONCE at creation, only the SHA-256 hash is stored. Each key
+# carries one role at one scope (like a membership); require_admin translates
+# it into a synthetic membership so every scope check applies unchanged.
+# Managing keys requires a HUMAN admin account — a leaked key must not be able
+# to mint further keys.
+# ---------------------------------------------------------------------------
+class ApiKeyCreate(BaseModel):
+    name: str
+    role: str = "manager"
+    scope_type: str = "global"
+    partner_id: Optional[int] = None
+    product_id: Optional[int] = None
+
+
+class ApiKeyUpdate(BaseModel):
+    name: Optional[str] = None
+    active: Optional[bool] = None
+
+
+def _require_human_admin(admin: dict) -> None:
+    if admin.get("api_key_id") is not None:
+        raise HTTPException(status_code=403,
+                            detail="API keys are managed by named admin "
+                                   "accounts only.")
+
+
+async def _api_key_visible(admin: dict, key: dict) -> bool:
+    """A key is visible/manageable when its scope lies inside the caller's
+    ADMIN reach (managers never see keys — they carry credentials)."""
+    scope = key.get("scope_type")
+    if scope == "global":
+        return admin_auth.global_role(admin) in WRITE_ROLES
+    if scope == "partner":
+        return admin_auth.role_for_partner(admin, key.get("partner_id")) in WRITE_ROLES
+    return (await admin_auth.role_for_product(admin, key.get("product_id"))) in WRITE_ROLES
+
+
+@router.get("/api-keys")
+async def list_api_keys(admin=Depends(require_admin_write)) -> JSONResponse:
+    _require_human_admin(admin)
+    keys = [k for k in await db.list_admin_api_keys()
+            if await _api_key_visible(admin, k)]
+    return JSONResponse(content={"keys": keys})
+
+
+@router.post("/api-keys")
+async def create_api_key(body: ApiKeyCreate,
+                         admin=Depends(require_admin_write)) -> JSONResponse:
+    _require_human_admin(admin)
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Key name is required.")
+    role = _validate_role(body.role)
+    scope, partner_id, product_id = await _validate_scope(MembershipSpec(
+        scope_type=body.scope_type, partner_id=body.partner_id,
+        product_id=body.product_id, role=role))
+    await _require_scope_admin(admin, scope, partner_id, product_id)
+    key, token = await db.create_admin_api_key(
+        name=name, role=role, scope_type=scope, partner_id=partner_id,
+        product_id=product_id, created_by=admin.get("email"))
+    await db.log_admin_event(None, "admin_api_key_created",
+                             {"id": key["id"], "name": name, "scope": scope,
+                              "role": role, "by": admin.get("email")})
+    # The ONE response that ever carries the plaintext token.
+    return JSONResponse(content={"key": key, "token": token})
+
+
+@router.put("/api-keys/{key_id}")
+async def update_api_key(key_id: int, body: ApiKeyUpdate,
+                         admin=Depends(require_admin_write)) -> JSONResponse:
+    _require_human_admin(admin)
+    key = await db.get_admin_api_key(key_id)
+    if key is None or not await _api_key_visible(admin, key):
+        raise HTTPException(status_code=404, detail="Key not found.")
+    updated = await db.update_admin_api_key(
+        key_id, active=body.active, name=(body.name or "").strip() or None)
+    await db.log_admin_event(None, "admin_api_key_updated",
+                             {"id": key_id, "by": admin.get("email")})
+    return JSONResponse(content={"key": updated})
+
+
+@router.delete("/api-keys/{key_id}")
+async def delete_api_key(key_id: int,
+                         admin=Depends(require_admin_write)) -> JSONResponse:
+    _require_human_admin(admin)
+    key = await db.get_admin_api_key(key_id)
+    if key is None or not await _api_key_visible(admin, key):
+        raise HTTPException(status_code=404, detail="Key not found.")
+    await db.delete_admin_api_key(key_id)
+    await db.log_admin_event(None, "admin_api_key_deleted",
+                             {"id": key_id, "name": key.get("name"),
+                              "by": admin.get("email")})
+    return JSONResponse(content={"ok": True})
+
+
+# ---------------------------------------------------------------------------
 # Structure — partners & products (the multi-tenancy tree + the header switcher)
 #
 # GET /structure feeds the Partner -> Product switcher in the admin header: it
@@ -871,6 +969,9 @@ class ProductCreate(BaseModel):
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
     active: Optional[bool] = None
+    # Per-product reCAPTCHA site key (PUBLIC config, pairs with the encrypted
+    # recaptcha_secret below). Empty string clears it (env fallback applies).
+    recaptcha_site_key: Optional[str] = None
 
 
 class ProductSecretsWrite(BaseModel):
@@ -881,6 +982,9 @@ class ProductSecretsWrite(BaseModel):
     # Retention / Telegram secrets (encrypted at rest, like the keys above).
     telegram_bot_token: Optional[str] = None
     player_api_key: Optional[str] = None
+    # Per-product (per-domain) reCAPTCHA secret — each client site runs its own
+    # reCAPTCHA property, so the pair lives on the product, not in deploy env.
+    recaptcha_secret: Optional[str] = None
 
 
 def _validate_slug(slug: str) -> str:
@@ -983,6 +1087,9 @@ async def update_product(product_id: int, body: ProductUpdate,
                                       active=body.active)
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found.")
+    if body.recaptcha_site_key is not None:
+        product = await db.set_product_recaptcha_site_key(
+            product_id, body.recaptcha_site_key)
     await db.log_admin_event(None, "product_updated",
                              {"id": product_id, "by": admin.get("email")},
                              product_id=product_id)
@@ -1009,6 +1116,8 @@ async def put_product_secrets(product_id: int, body: ProductSecretsWrite,
         fields["telegram_bot_token"] = body.telegram_bot_token
     if body.player_api_key is not None:
         fields["player_api_key"] = body.player_api_key
+    if body.recaptcha_secret is not None:
+        fields["recaptcha_secret"] = body.recaptcha_secret
     if not fields:
         raise HTTPException(status_code=400, detail="Nothing to update.")
     ok = await db.set_product_secrets(product_id, **fields)
