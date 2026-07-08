@@ -621,6 +621,10 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         "pings_day DATE",
         "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
         "pings_sent_today INT NOT NULL DEFAULT 0",
+        # Retention analytics + the Telegram-session join key on the ping
+        # reply-rate metric probe by (product, tg_user).
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_product_tg "
+        "ON chat_sessions(product_id, tg_user_id) WHERE tg_user_id IS NOT NULL",
         # --- Per-product reCAPTCHA -------------------------------------------
         # Each product (domain) runs its own reCAPTCHA site: the site key is
         # public config served to the widget; the secret is encrypted at rest
@@ -1999,13 +2003,26 @@ async def get_admin_api_key(key_id: int) -> Optional[dict[str, Any]]:
 
 async def get_admin_api_key_by_token(token: str) -> Optional[dict[str, Any]]:
     """Resolve an ACTIVE key row from a presented plaintext token (auth path).
-    Touches last_used_at as a side effect."""
+
+    last_used_at is refreshed at most once a minute: an external panel polling
+    with a key would otherwise rewrite the same tuple on every request (WAL +
+    vacuum churn in the hot path of every keyed admin call).
+    """
+    h = _hash_api_token(token)
     row = await _pool.fetchrow(
-        f"UPDATE admin_api_keys SET last_used_at = now() "
-        f"WHERE token_hash = $1 AND active RETURNING {_API_KEY_COLS}",
-        _hash_api_token(token),
+        f"SELECT {_API_KEY_COLS} FROM admin_api_keys "
+        "WHERE token_hash = $1 AND active", h,
     )
-    return _row_to_api_key(row) if row else None
+    if row is None:
+        return None
+    import datetime as _dt
+    if (row["last_used_at"] is None
+            or (_dt.datetime.now(_dt.timezone.utc)
+                - row["last_used_at"]).total_seconds() > 60):
+        await _pool.execute(
+            "UPDATE admin_api_keys SET last_used_at = now() "
+            "WHERE token_hash = $1", h)
+    return _row_to_api_key(row)
 
 
 async def update_admin_api_key(key_id: int, *, active: Optional[bool] = None,
@@ -2934,7 +2951,13 @@ async def record_retention_ping(product_id: int, rid: int,
                                 rule_id: Optional[int], action: str,
                                 status: str, detail: Optional[str] = None,
                                 cost_usd: Optional[float] = None) -> None:
-    """Ledger row + (on 'sent') the per-player ping counters, atomically."""
+    """Ledger row + the per-player ping state, atomically.
+
+    `last_ping_at` is stamped on EVERY outcome (it means "last attempt"): a
+    failed ping must also wait out `ping_min_gap_hours`, otherwise a player
+    whose sends persistently fail would be retried — with a fresh model call —
+    on every worker sweep, forever. The daily counter only counts real sends.
+    """
     async with _acquire() as conn:
         async with conn.transaction():
             await conn.execute(
@@ -2950,6 +2973,11 @@ async def record_retention_ping(product_id: int, rid: int,
                     "  THEN pings_sent_today + 1 ELSE 1 END, "
                     "pings_day = CURRENT_DATE, updated_at = now() "
                     "WHERE id = $1", rid,
+                )
+            else:
+                await conn.execute(
+                    "UPDATE retention_users SET last_ping_at = now(), "
+                    "updated_at = now() WHERE id = $1", rid,
                 )
 
 
@@ -3487,67 +3515,68 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
     convention: None = all accessible, [] = none."""
     args: list[Any] = [dt_from, dt_to]
     pid = _pid_where(product_ids, args)
-    users = await _pool.fetchrow(
-        "SELECT COUNT(*) AS total, "
-        "  COUNT(*) FILTER (WHERE subscribed) AS subscribed, "
-        "  COUNT(*) FILTER (WHERE pings_muted) AS pings_muted, "
-        "  COUNT(*) FILTER (WHERE unreachable) AS unreachable, "
-        "  COUNT(*) FILTER (WHERE last_active_at >= $1 AND last_active_at < $2) "
-        "    AS active_in_range, "
-        "  COUNT(*) FILTER (WHERE created_at >= $1 AND created_at < $2) "
-        "    AS new_in_range, "
-        "  COALESCE(AVG(unlocked_stage), 0) AS avg_stage "
-        f"FROM retention_users WHERE {pid}", *args,
-    )
-    photos = await _pool.fetchval(
-        "SELECT COUNT(*) FROM retention_photo_views "
-        f"WHERE {pid} AND viewed_at >= $1 AND viewed_at < $2", *args,
-    )
-    handoffs = await _pool.fetchval(
-        "SELECT COUNT(*) FROM admin_events "
-        f"WHERE {pid} AND type IN "
-        "  ('retention_handoff', 'retention_manager_handoff') "
-        "  AND created_at >= $1 AND created_at < $2", *args,
-    )
     args_msgs: list[Any] = [dt_from, dt_to]
     pid_msgs = _pid_where(product_ids, args_msgs, "s.product_id")
-    messages = await _pool.fetchrow(
-        "SELECT COUNT(*) AS user_msgs, COUNT(DISTINCT s.tg_user_id) AS senders "
-        "FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id "
-        f"WHERE s.consumer = 'telegram' AND {pid_msgs} "
-        "  AND m.role = 'user' AND m.created_at >= $1 AND m.created_at < $2",
-        *args_msgs,
-    )
     args2: list[Any] = [dt_from, dt_to]
     pid2 = _pid_where(product_ids, args2, "p.product_id")
-    pings = await _pool.fetchrow(
-        "SELECT COUNT(*) FILTER (WHERE p.status = 'sent') AS sent, "
-        "  COUNT(*) FILTER (WHERE p.status = 'failed') AS failed, "
-        "  COUNT(*) FILTER (WHERE p.status = 'sent' AND EXISTS ("
-        "    SELECT 1 FROM chat_messages m "
-        "    JOIN chat_sessions s ON s.id = m.session_id "
-        "    JOIN retention_users u ON u.id = p.retention_user_id "
-        "    WHERE s.tg_user_id = u.tg_user_id AND s.product_id = p.product_id "
-        "      AND m.role = 'user' AND m.created_at > p.created_at "
-        "      AND m.created_at < p.created_at + interval '48 hours')) AS replied "
-        f"FROM retention_pings p WHERE {pid2} "
-        "  AND p.created_at >= $1 AND p.created_at < $2", *args2,
-    )
     args3: list[Any] = [dt_from, dt_to]
     pid3 = _pid_where(product_ids, args3, "s.product_id")
-    cost = await _pool.fetchval(
-        "SELECT COALESCE(SUM(l.cost_usd), 0) FROM ai_interaction_logs l "
-        "JOIN chat_sessions s ON s.id = l.session_id "
-        f"WHERE s.consumer = 'telegram' AND {pid3} "
-        "  AND l.created_at >= $1 AND l.created_at < $2", *args3,
-    )
     args4: list[Any] = []
     pid4 = _pid_where(product_ids, args4)
-    stage_rows = await _pool.fetch(
-        "SELECT unlocked_stage AS stage, COUNT(*) AS users "
-        f"FROM retention_users WHERE {pid4} "
-        "GROUP BY unlocked_stage ORDER BY unlocked_stage", *args4,
-    )
+    # Independent aggregates — run them concurrently (this feeds the admin's
+    # landing dashboard, so wall time matters more than anywhere else).
+    users, photos, handoffs, messages, pings, cost, stage_rows = \
+        await asyncio.gather(
+            _pool.fetchrow(
+                "SELECT COUNT(*) AS total, "
+                "  COUNT(*) FILTER (WHERE subscribed) AS subscribed, "
+                "  COUNT(*) FILTER (WHERE pings_muted) AS pings_muted, "
+                "  COUNT(*) FILTER (WHERE unreachable) AS unreachable, "
+                "  COUNT(*) FILTER (WHERE last_active_at >= $1 "
+                "    AND last_active_at < $2) AS active_in_range, "
+                "  COUNT(*) FILTER (WHERE created_at >= $1 AND created_at < $2) "
+                "    AS new_in_range, "
+                "  COALESCE(AVG(unlocked_stage), 0) AS avg_stage "
+                f"FROM retention_users WHERE {pid}", *args),
+            _pool.fetchval(
+                "SELECT COUNT(*) FROM retention_photo_views "
+                f"WHERE {pid} AND viewed_at >= $1 AND viewed_at < $2", *args),
+            _pool.fetchval(
+                "SELECT COUNT(*) FROM admin_events "
+                f"WHERE {pid} AND type IN "
+                "  ('retention_handoff', 'retention_manager_handoff') "
+                "  AND created_at >= $1 AND created_at < $2", *args),
+            _pool.fetchrow(
+                "SELECT COUNT(*) AS user_msgs, "
+                "  COUNT(DISTINCT s.tg_user_id) AS senders "
+                "FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id "
+                f"WHERE s.consumer = 'telegram' AND {pid_msgs} "
+                "  AND m.role = 'user' AND m.created_at >= $1 "
+                "  AND m.created_at < $2", *args_msgs),
+            _pool.fetchrow(
+                "SELECT COUNT(*) FILTER (WHERE p.status = 'sent') AS sent, "
+                "  COUNT(*) FILTER (WHERE p.status = 'failed') AS failed, "
+                "  COUNT(*) FILTER (WHERE p.status = 'sent' AND EXISTS ("
+                "    SELECT 1 FROM chat_messages m "
+                "    JOIN chat_sessions s ON s.id = m.session_id "
+                "    JOIN retention_users u ON u.id = p.retention_user_id "
+                "    WHERE s.tg_user_id = u.tg_user_id "
+                "      AND s.product_id = p.product_id "
+                "      AND m.role = 'user' AND m.created_at > p.created_at "
+                "      AND m.created_at < p.created_at + interval '48 hours')) "
+                "    AS replied "
+                f"FROM retention_pings p WHERE {pid2} "
+                "  AND p.created_at >= $1 AND p.created_at < $2", *args2),
+            _pool.fetchval(
+                "SELECT COALESCE(SUM(l.cost_usd), 0) FROM ai_interaction_logs l "
+                "JOIN chat_sessions s ON s.id = l.session_id "
+                f"WHERE s.consumer = 'telegram' AND {pid3} "
+                "  AND l.created_at >= $1 AND l.created_at < $2", *args3),
+            _pool.fetch(
+                "SELECT unlocked_stage AS stage, COUNT(*) AS users "
+                f"FROM retention_users WHERE {pid4} "
+                "GROUP BY unlocked_stage ORDER BY unlocked_stage", *args4),
+        )
     sent = int(pings["sent"] or 0) if pings else 0
     replied = int(pings["replied"] or 0) if pings else 0
     return {

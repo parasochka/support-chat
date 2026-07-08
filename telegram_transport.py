@@ -133,28 +133,28 @@ class TelegramClient:
                            reply_markup: Optional[dict[str, Any]] = None,
                            parse_mode: Optional[str] = None
                            ) -> Optional[dict[str, Any]]:
+        result, _code, _desc = await self.send_message_verbose(
+            chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+        return result
+
+    async def send_message_verbose(self, chat_id: int, text: str, *,
+                                   reply_markup: Optional[dict[str, Any]] = None,
+                                   parse_mode: Optional[str] = None
+                                   ) -> tuple[Optional[dict[str, Any]],
+                                              Optional[int], Optional[str]]:
+        """sendMessage that also surfaces (error_code, description) on failure.
+
+        The proactive ping worker needs to tell 'the player blocked the bot'
+        (403 — mark unreachable, stop pinging) apart from a transient error
+        (retry next run); the fire-and-forget send_message drops that detail.
+        This is the ONE sendMessage HTTP path — send_message delegates here.
+        """
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text,
                                    "disable_web_page_preview": True}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         if parse_mode:
             payload["parse_mode"] = parse_mode
-        return await self._call("sendMessage", payload)
-
-    async def send_message_verbose(self, chat_id: int, text: str, *,
-                                   reply_markup: Optional[dict[str, Any]] = None
-                                   ) -> tuple[Optional[dict[str, Any]],
-                                              Optional[int], Optional[str]]:
-        """send_message that also surfaces (error_code, description) on failure.
-
-        The proactive ping worker needs to tell 'the player blocked the bot'
-        (403 — mark unreachable, stop pinging) apart from a transient error
-        (retry next run); the fire-and-forget send_message hides that.
-        """
-        payload: dict[str, Any] = {"chat_id": chat_id, "text": text,
-                                   "disable_web_page_preview": True}
-        if reply_markup is not None:
-            payload["reply_markup"] = reply_markup
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.post(self._url("sendMessage"), json=payload)

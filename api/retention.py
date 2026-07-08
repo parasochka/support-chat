@@ -703,14 +703,11 @@ async def run_pings_now(product_id: int,
 # ===========================================================================
 async def _analytics_scope(admin: dict, product_id: Optional[int],
                            partner_id: Optional[int]) -> Optional[list[int]]:
-    """Product scope for a retention analytics read: an explicit product is
-    read-checked; otherwise the caller's whole accessible scope applies (so the
-    global dashboard can show retention across products). Mirrors the support
-    dashboard's resolve_scope_filter convention (None = all, [] = none)."""
-    if product_id is not None:
-        await admin_auth.require_product_read(admin, product_id)
-        return [product_id]
-    return await admin_auth.resolve_scope_filter(admin, None, partner_id)
+    """Product scope for a retention analytics read — the support dashboard's
+    resolve_scope_filter convention verbatim (explicit product read-checked;
+    nothing selected = the caller's whole accessible scope; None = all,
+    [] = none). One authorization choke point, no forked copy."""
+    return await admin_auth.resolve_scope_filter(admin, product_id, partner_id)
 
 
 @admin_router.get("/overview")

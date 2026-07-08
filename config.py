@@ -437,5 +437,9 @@ RETENTION_PING_BATCH_SIZE: int = _env_int("RETENTION_PING_BATCH_SIZE", 30)
 RETENTION_PING_INTERVAL_SEC: int = _env_int("RETENTION_PING_INTERVAL_SEC", 300)
 RETENTION_SCHEDULER_ENABLED: bool = _env_bool("RETENTION_SCHEDULER_ENABLED", True)
 
+# Serve /docs, /redoc and /openapi.json (they describe the WHOLE API surface,
+# /admin included) — off by default; enable only on dev/stage deployments.
+EXPOSE_API_DOCS: bool = _env_bool("EXPOSE_API_DOCS", False)
+
 # Convenience: a name shown in logs / health.
 SERVICE_NAME = "nowplix-support-chat"

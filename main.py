@@ -103,14 +103,12 @@ async def lifespan(app: FastAPI):
 # The OpenAPI schema + Swagger/ReDoc pages describe the WHOLE surface (the
 # /admin API included), so they are not served by default in a deployment.
 # Set EXPOSE_API_DOCS=1 to publish /docs, /redoc and /openapi.json (dev/stage).
-_EXPOSE_DOCS = os.environ.get("EXPOSE_API_DOCS") == "1"
-
 app = FastAPI(
     title=config.SERVICE_NAME,
     lifespan=lifespan,
-    openapi_url="/openapi.json" if _EXPOSE_DOCS else None,
-    docs_url="/docs" if _EXPOSE_DOCS else None,
-    redoc_url="/redoc" if _EXPOSE_DOCS else None,
+    openapi_url="/openapi.json" if config.EXPOSE_API_DOCS else None,
+    docs_url="/docs" if config.EXPOSE_API_DOCS else None,
+    redoc_url="/redoc" if config.EXPOSE_API_DOCS else None,
 )
 
 # --- CORS (env-driven) ------------------------------------------------------

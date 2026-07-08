@@ -113,11 +113,16 @@ async def run_product_pings(product: dict[str, Any], *,
     rules = await db.list_retention_rules(pid, only_enabled=True)
     if not rules:
         return {"skipped": "no_rules"}
+    batch = int(limit or cfg["ping_batch_size"])
+    # Over-fetch: the most-idle players often sit inside a per-rule cooldown
+    # right after a successful sweep; with an exact-LIMIT fetch they would
+    # occupy the whole batch and starve everyone behind them. Rule matching
+    # below then stops after `batch` actual sends.
     users = await db.eligible_ping_users(
         pid,
         min_gap_hours=int(cfg["ping_min_gap_hours"]),
         daily_cap=int(cfg["ping_daily_cap"]),
-        limit=int(limit or cfg["ping_batch_size"]),
+        limit=batch * 3,
     )
     if not users:
         return {"sent": 0, "failed": 0, "considered": 0}
@@ -125,6 +130,8 @@ async def run_product_pings(product: dict[str, Any], *,
     client = TelegramClient(token)
     sent = failed = 0
     for ru in users:
+        if sent + failed >= batch:
+            break
         matched = await _match_rule(ru, rules)
         if matched is None:
             continue
@@ -138,15 +145,9 @@ async def run_product_pings(product: dict[str, Any], *,
 
 
 def _days_since(value: Any, now: _dt.datetime) -> Optional[float]:
-    if not value:
+    dt = db._as_ts(value)  # one shared "maybe ISO string" parser (Z-suffix safe)
+    if dt is None:
         return None
-    try:
-        dt = (value if isinstance(value, _dt.datetime)
-              else _dt.datetime.fromisoformat(str(value)))
-    except (ValueError, TypeError):
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=_dt.timezone.utc)
     return max((now - dt).total_seconds() / 86400.0, 0.0)
 
 
