@@ -129,6 +129,39 @@ def test_build_retention_messages_shape():
 
 
 # ---------------------------------------------------------------------------
+# Retention personalization: the Telegram chrome (menu greeting + opener line)
+# has ALREADY greeted the player by name, so — unlike the widget — the model's
+# first reply must NOT greet again. The returning-player rollover is the one
+# case where a (welcome-back) greeting is asked for, by the continuity block.
+# ---------------------------------------------------------------------------
+def test_retention_first_turn_suppresses_greeting():
+    p = prompts.build_retention_dynamic_prompt(
+        user_context={"full_name": "Andrey Smith"}, resolved_lang="ru",
+        user_text="кручу слоты", first_turn=True)
+    assert "Andrey" in p
+    assert "do NOT greet" in p
+    # The support-style greeting ORDER must never leak into retention.
+    assert "MUST open" not in p
+
+
+def test_retention_later_turns_keep_name_sparing():
+    p = prompts.build_retention_dynamic_prompt(
+        user_context={"full_name": "Andrey Smith"}, resolved_lang="ru",
+        user_text="ещё что-нибудь", first_turn=False)
+    assert "Do not greet" in p and "MUST open" not in p
+
+
+def test_retention_returning_player_defers_to_continuity_block():
+    prev = [{"role": "user", "content": "как дела?", "created_at": None},
+            {"role": "assistant", "content": "отлично!", "created_at": None}]
+    p = prompts.build_retention_dynamic_prompt(
+        user_context={"full_name": "Andrey Smith"}, resolved_lang="ru",
+        user_text="я вернулся", first_turn=True, previous_history=prev)
+    assert "RETURNING PLAYER" in p
+    assert "welcome-back" in p
+
+
+# ---------------------------------------------------------------------------
 # Settings group
 # ---------------------------------------------------------------------------
 def test_retention_settings_defaults():

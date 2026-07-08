@@ -32,7 +32,8 @@ export const GROUP_HELP = {
 
 export const GROUP_FIELDS = {
   antispam: [
-    { name: 'rate_limit_max_per_ip', label: 'Rate limit (max / IP)', type: 'int', min: 1, max: 100000, help: 'Maximum requests from one IP within the window.' },
+    { name: 'rate_limit_max_per_ip', label: 'Rate limit (max / IP)', type: 'int', min: 1, max: 100000, help: 'Maximum requests from one IP within the window (widget/API).' },
+    { name: 'tg_rate_limit_max_per_user', label: 'Telegram rate limit (max / user)', type: 'int', min: 1, max: 100000, help: 'Maximum Telegram messages from one player within the same window — a live chat needs more headroom than the widget.' },
     { name: 'window_sec', label: 'Rate-limit window (sec)', type: 'int', min: 1, max: 86400, help: 'Length of the rate-limit window in seconds.' },
     { name: 'cooldown_sec', label: 'Message cooldown (sec)', type: 'int', min: 0, max: 3600, help: 'Minimum seconds between two messages in one session.' },
     { name: 'max_input_chars', label: 'Max input characters', type: 'int', min: 1, max: 100000, help: 'Longest single message the API accepts.' },

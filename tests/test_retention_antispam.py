@@ -81,21 +81,70 @@ def _msg(text):
     return {"message": {"from": {"id": 7}, "chat": {"id": 7}, "text": text}}
 
 
-async def test_rate_limit_drops_silently(monkeypatch):
+async def test_rate_limit_notifies_once_then_silent(monkeypatch):
     tg = FakeTelegram()
     events: list = []
     _patch_common(monkeypatch, tg, events)
     monkeypatch.setattr(settings, "antispam", lambda: {
-        "rate_limit_max_per_ip": 0, "window_sec": 60, "cooldown_sec": 0,
+        "rate_limit_max_per_ip": 0, "tg_rate_limit_max_per_user": 0,
+        "window_sec": 60, "cooldown_sec": 0,
         "max_input_chars": 1000, "recaptcha_min_score": 0.5,
         "injection_hard_block": True, "low_content_block": True,
         "min_meaningful_chars": 2})
 
     await retention.handle_update(PRODUCT, _msg("hello there"))
+    await retention.handle_update(PRODUCT, _msg("hello again"))
+    await retention.handle_update(PRODUCT, _msg("still there?"))
 
-    assert tg.messages == []  # silent: no reply for a hammering user
+    # The FIRST blocked message gets the one-time "give me a moment" notice so
+    # a real player knows why the bot went quiet; the rest of the streak is
+    # silent (a hammering bot can't amplify into Telegram sends).
+    assert len(tg.messages) == 1
     assert events and events[0][0] == "rate_limited"
     assert events[0][1]["channel"] == "telegram"
+
+
+async def test_rate_limit_uses_telegram_allowance(monkeypatch):
+    """The Telegram chat is throttled by tg_rate_limit_max_per_user, not the
+    widget's per-IP limit — a per-IP budget of 0 must not block the bot."""
+    tg = FakeTelegram()
+    events: list = []
+    _patch_common(monkeypatch, tg, events)
+    monkeypatch.setattr(settings, "antispam", lambda: {
+        "rate_limit_max_per_ip": 0, "tg_rate_limit_max_per_user": 100,
+        "window_sec": 60, "cooldown_sec": 0,
+        "max_input_chars": 1000, "recaptcha_min_score": 0.5,
+        "injection_hard_block": True, "low_content_block": True,
+        "min_meaningful_chars": 2})
+
+    replied = []
+
+    async def _handle(session, text, candidates):
+        replied.append(text)
+        return chat_service.RetentionReply(reply="hi", lang="en", message_count=1)
+    monkeypatch.setattr(chat_service, "handle_retention_message", _handle)
+
+    async def _get_session(sid):
+        return {"id": "sess-1", "product_id": 1, "user_context": {}, "lang": "en",
+                "conv_lang": None, "message_count": 0, "status": "open"}
+    monkeypatch.setattr(retention.db, "get_session", _get_session)
+
+    async def _bump(rid, *, meaningful):
+        return dict(RU)
+    monkeypatch.setattr(retention.db, "bump_retention_activity", _bump)
+
+    async def _candidates(pid, rid, **kw):
+        return []
+    monkeypatch.setattr(retention.db, "candidate_photos", _candidates)
+
+    async def _advance(rid, stage):
+        pass
+    monkeypatch.setattr(retention.db, "advance_retention_stage", _advance)
+
+    await retention.handle_update(PRODUCT, _msg("hello there"))
+
+    assert replied == ["hello there"]
+    assert all(e[0] != "rate_limited" for e in events)
 
 
 async def test_low_content_gets_model_free_nudge(monkeypatch):

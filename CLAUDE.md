@@ -861,8 +861,16 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   "AI-tell" typography the model keeps emitting despite the rule is ALSO scrubbed
   deterministically after the model turn (`telegram_format.normalize_punctuation` in
   `chat_service` — em/en dashes → `-`, guillemet/curly quotes → straight ASCII), so the
-  persisted transcript and the sent message match. The persona MAY use at most ONE flirty
-  emoji per message (support Nika still uses none). The retention core
+  persisted transcript and the sent message match. **Liveliness rules (static, Layer 1)** —
+  tuned after a live transcript read like a bot: emoji are RARE (at most one, in roughly one
+  message out of 3-4, varied — a 😉 on every message is called out as a forbidden bot-tell;
+  support Nika still uses none); replies default to 1-2 short sentences with varied length and
+  rhythm (longer only when asked for a story/details); the "do you want X or Y?" two-option
+  closer is explicitly banned as a template; the ENGAGEMENT directive forbids steering to
+  games/bonuses in the OPENING turns of a chat (get to know the player's mood first) and
+  demands concrete call-backs to what the player said earlier instead of generic lines; photo
+  captions must be UNIQUE and grounded in the current moment + the chosen photo's description
+  (stock lines like "just for you" repeated per photo are named as the failure mode). The retention core
   renders with the **retention prompt-variable set**
   (`prompts.render_retention_prompt_variables` — retention override > retention default, a
   SEPARATE prompt with NO support inheritance, incl. its OWN tone `{retention_tone_of_voice}`)
@@ -879,6 +887,16 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   CRUD endpoints remain for API consumers. New products are seeded with
   `starter_kb.STARTER_RETENTION_KB`. Layer 3 (`build_retention_dynamic_prompt`) = full profile
   personalization + language directive + the **photo-candidate list** + a lighter retention guardrail.
+  **Retention personalization is its OWN directive** (`prompts._retention_personalization_directive`,
+  NOT the support one): in Telegram the bot chrome has ALREADY greeted the player by name
+  TWICE before the first model turn (the `rtn_menu_greeting` menu message + the
+  `rtn_nika_start` opener), so where the support widget ORDERS a first-reply by-name greeting,
+  retention orders the OPPOSITE — an explicit first-turn suppression imperative ("the menu
+  already greeted; do NOT greet or introduce yourself"), later turns get the name-sparing
+  wording, and a RETURNING player's fresh session (rollover) is the one case where a greeting
+  happens: the personalization defers to the continuity block's short welcome-back. The
+  `rtn_nika_start` copy is greeting-free BY CONTRACT (a conversation opener, not a hello) —
+  it used to open with "Привет!", stacking a triple greeting on the player's screen.
 - **Retention sentinels** (stripped like the support ones): `[[PHOTO:id]]` (send a photo from the
   candidate list the model was shown — backend re-validates the id), `[[STAGE_UP]]` (a hint the
   player is ready for the next explicitness stage — the backend gate decides), `[[HANDOFF]]`
@@ -973,11 +991,20 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   bypasses the proactive photo cooldown (`select_photo_candidates(bypass_cooldown=True)`) but
   never the daily photo cap, and falls back to a text ping when no candidate is sendable.
 - **Telegram anti-spam gate** (`retention._handle_message`, mirrors the widget gate): per-user
-  rate limit (`antispam.check_rate_limit("tg:{pid}:{uid}")`, SILENT drop + sampled event),
+  rate limit with its OWN chat-paced allowance — `antispam.check_rate_limit("tg:{pid}:{uid}",
+  cfg["tg_rate_limit_max_per_user"])` (`antispam` group knob, env `TG_RATE_LIMIT_MAX_PER_USER`,
+  default 60 per shared `window_sec`; the widget's per-IP 20/10min throttled a live human
+  dialogue mid-flow — a real player's messages silently vanished). A block is no longer fully
+  silent: the FIRST blocked message of a streak gets a localized in-persona `rtn_rate_limited`
+  notice (in-memory `_rl_notified`, cleared when a message passes — one notice per window, so a
+  hammering bot can't amplify into Telegram sends), and every gate drop logs a Railway line
+  (`retention_rate_limited`/`retention_injection` WARNING; `retention_low_content`/
+  `retention_need_deeplink`/`retention_subscription_gate` INFO) — the gates used to drop with
+  no log line, making "my messages stopped arriving" undiagnosable from Railway logs. Then:
   overlong input truncated (not rejected), low-content guard → localized model-free nudge
   (`rtn_low_content_reply`), injection scan → sampled audit + (with `injection_hard_block`) a
-  model-free in-persona deflection (`rtn_injection_reply`). Same `antispam` settings knobs as
-  the widget. The **subscription check is cached** (positive results only, 10 min,
+  model-free in-persona deflection (`rtn_injection_reply`). The other `antispam` settings
+  knobs are shared with the widget. The **subscription check is cached** (positive results only, 10 min,
   `retention._sub_cache`; the explicit "I subscribed" button re-checks live with
   `use_cache=False`). `is_photo_request` matches stems at word START (regex `\b`), so "epic"
   can't bypass the photo cooldown. A photo turn never sends a bare image — an empty caption

@@ -146,6 +146,10 @@ HISTORY_MAX_TURNS: int = _env_int("HISTORY_MAX_TURNS", 20)
 MAX_INPUT_CHARS: int = _env_int("MAX_INPUT_CHARS", 2000)
 RATE_LIMIT_WINDOW_SEC: int = _env_int("RATE_LIMIT_WINDOW_SEC", 600)
 RATE_LIMIT_MAX_PER_IP: int = _env_int("RATE_LIMIT_MAX_PER_IP", 20)
+# The Telegram retention chat is a LIVELY human dialogue (short messages every
+# 15-30s are normal), so it gets its own, higher per-user allowance over the
+# same window — the widget's 20/window killed a real conversation mid-flow.
+TG_RATE_LIMIT_MAX_PER_USER: int = _env_int("TG_RATE_LIMIT_MAX_PER_USER", 60)
 MESSAGE_COOLDOWN_SEC: int = _env_int("MESSAGE_COOLDOWN_SEC", 2)
 
 # --- Database pool / health -------------------------------------------------

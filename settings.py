@@ -127,6 +127,8 @@ def antispam() -> dict[str, Any]:
     return {
         "rate_limit_max_per_ip": db_v.get("rate_limit_max_per_ip",
                                           config.RATE_LIMIT_MAX_PER_IP),
+        "tg_rate_limit_max_per_user": db_v.get(
+            "tg_rate_limit_max_per_user", config.TG_RATE_LIMIT_MAX_PER_USER),
         "window_sec": db_v.get("window_sec", config.RATE_LIMIT_WINDOW_SEC),
         "cooldown_sec": db_v.get("cooldown_sec", config.MESSAGE_COOLDOWN_SEC),
         "max_input_chars": db_v.get("max_input_chars", config.MAX_INPUT_CHARS),
@@ -447,6 +449,7 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
 
     if key == "antispam":
         _require_int(value, "rate_limit_max_per_ip", 1, 100_000)
+        _require_int(value, "tg_rate_limit_max_per_user", 1, 100_000)
         _require_int(value, "window_sec", 1, 86_400)
         _require_int(value, "cooldown_sec", 0, 3_600)
         _require_int(value, "max_input_chars", 1, 100_000)
