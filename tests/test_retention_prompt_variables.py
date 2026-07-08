@@ -1,7 +1,9 @@
-"""Retention prompt variables: the Telegram persona is tuned INDEPENDENTLY
-from the support chat, but by default INHERITS its values — an empty override
-resolves to the corresponding support variable (retention_persona_name →
-persona_name, …); only the tone carries its own bolder default. Stored under
+"""Retention prompt variables: the Telegram persona is a SEPARATE prompt, tuned
+FULLY INDEPENDENTLY from the support chat. Every key ships its own retention
+default (no inheritance); an empty override falls back to that default, never to
+a support value, and a support edit never leaks into the bot. The 4th registry
+field (`renders_as`) is a template RENDER target - which base placeholder the
+variable fills ({persona_name}, …) - not a value link. Stored under
 `retention_prompt_variables` with its own admin editor (Retention → Prompt
 variables tab)."""
 from __future__ import annotations
@@ -25,33 +27,37 @@ def test_registry_split():
     retention = {k for k, _d, _v, _i in prompts.RETENTION_PROMPT_VARIABLES}
     assert not support & retention
     assert "retention_tone_of_voice" in retention
-    # Every inherit-source is a registered support key.
-    for _k, _d, default, inherits in prompts.RETENTION_PROMPT_VARIABLES:
-        if default is None:
-            assert inherits in support
+    # Every key ships a concrete retention default (no None = no inheritance).
+    for _k, _d, default, renders_as in prompts.RETENTION_PROMPT_VARIABLES:
+        assert default, f"{_k}: retention default must be non-empty"
+        # renders_as, when set, is a base placeholder the template fills.
+        if renders_as:
+            assert renders_as in support
 
 
-def test_defaults_inherit_the_support_values():
+def test_defaults_are_independent_of_support():
     resolved = settings.retention_prompt_variables()
-    support = settings.prompt_variables()
-    assert resolved["retention_persona_name"] == support["persona_name"]
-    assert resolved["retention_brand_name"] == support["brand_name"]
-    assert resolved["retention_products"] == support["products"]
-    # The tone does NOT inherit: it ships its own bolder retention default.
-    assert resolved["retention_tone_of_voice"] != support["tone_of_voice"]
+    # The retention persona ships its OWN defaults; the role must NOT read as a
+    # support agent (the "customer-support assistant" leak that motivated the split).
+    assert "support" not in resolved["retention_persona_role"].lower()
     assert "bolder" in resolved["retention_tone_of_voice"]
+    # Registry defaults resolve verbatim when nothing is overridden.
+    reg = {k: d for k, _desc, d, _r in prompts.RETENTION_PROMPT_VARIABLES}
+    for key, default in reg.items():
+        assert resolved[key] == default
 
 
-def test_support_override_flows_into_retention_by_default():
+def test_support_override_does_not_leak_into_retention():
+    # A support prompt-variable edit must NOT change the Telegram persona.
     settings._cache["prompt_variables"] = {"persona_name": "Lola",
                                            "brand_name": "LuckyBet"}
     core = prompts.get_retention_system_core()
-    assert "You are Lola" in core
-    assert "LuckyBet" in core
-    assert "NikaBet" not in core
+    assert "You are Nika" in core          # the retention default, unchanged
+    assert "Lola" not in core
+    assert "LuckyBet" not in core
 
 
-def test_retention_override_wins_over_support():
+def test_retention_override_wins_over_default():
     settings._cache["prompt_variables"] = {"persona_name": "Lola"}
     settings._cache["retention_prompt_variables"] = {
         "retention_persona_name": "Candy",
@@ -76,7 +82,7 @@ def test_retention_guardrails_render_retention_brand():
     assert "NikaBet" not in msg
 
 
-def test_empty_override_falls_back_to_inheritance():
+def test_empty_override_falls_back_to_retention_default():
     settings._cache["retention_prompt_variables"] = {
         "retention_persona_name": "   "}
     assert settings.retention_prompt_variables()["retention_persona_name"] == "Nika"

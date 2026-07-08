@@ -421,12 +421,12 @@ const VariablesTab = ({ productId }) => {
   return (
     <Box sx={{ maxWidth: 900 }}>
       <Alert severity="info" sx={{ mb: 2 }}>
-        These values uniquify the <b>Telegram retention persona</b> — they are
-        independent from the{' '}
+        These values uniquify the <b>Telegram retention persona</b> — a
+        <b> separate prompt</b>, fully independent from the{' '}
         <Link href="#/prompt?tab=variables">support-chat prompt variables</Link>.
-        An empty field <b>inherits the support chat&apos;s value</b> (shown as the
-        placeholder), so by default the bot matches the support persona; fill a
-        field only where the Telegram chat should differ.
+        An empty field <b>uses the built-in retention default</b> (shown as the
+        placeholder); a support edit never leaks into the bot. Fill a field only
+        where you want the Telegram persona to differ from that default.
       </Alert>
       <Card>
         <CardContent>
@@ -434,15 +434,10 @@ const VariablesTab = ({ productId }) => {
             <TextField
               key={v.key}
               label={v.key}
-              helperText={
-                v.description +
-                (v.inherits_from
-                  ? ' Empty = inherited from the support chat.'
-                  : ' Empty = the built-in default.')
-              }
+              helperText={v.description + ' Empty = the built-in retention default.'}
               value={values[v.key] ?? ''}
               onChange={(e) => setValues({ ...values, [v.key]: e.target.value })}
-              placeholder={v.inherited}
+              placeholder={v.default}
               fullWidth
               multiline
               margin="normal"
@@ -502,7 +497,8 @@ const PromptTab = ({ productId }) => {
       <Alert severity="info" sx={{ mb: 2 }}>
         The retention prompt variables below are edited on the{' '}
         <Link href="#/retention?tab=variables">Prompt variables</Link> tab; an
-        empty override inherits the support chat&apos;s value.
+        empty override uses the built-in retention default (independent of the
+        support chat).
       </Alert>
       {variables.length > 0 && (
         <Card sx={{ mb: 2 }}>
@@ -524,10 +520,10 @@ const PromptTab = ({ productId }) => {
                     <TableRow key={v.key}>
                       <TableCell>
                         <code>{`{${v.key}}`}</code>
-                        {!v.value && v.inherits_from && (
+                        {!v.value && (
                           <Chip
                             size="small"
-                            label="inherited"
+                            label="default"
                             variant="outlined"
                             sx={{ ml: 1 }}
                           />

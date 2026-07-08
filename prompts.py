@@ -117,33 +117,38 @@ PROMPT_VARIABLES: tuple[tuple[str, str, str], ...] = (
 # ---------------------------------------------------------------------------
 # RETENTION PROMPT VARIABLES — the Telegram-persona uniquification registry.
 #
-# The retention (Telegram) chat shares the prompt-variable mechanics but is
-# tuned INDEPENDENTLY from the support chat: the bot may run a different
-# persona (name, role, even brand naming) so it does not read as "the support
-# chat in Telegram". Registry: (key, admin-facing description, default,
-# inherits_from). `default=None` means the value INHERITS the resolved support
-# variable named by `inherits_from` — so out of the box the Telegram persona
-# mirrors the support one, and the operator overrides only what should differ.
-# Values live under their own store (`retention_prompt_variables`,
+# The retention (Telegram) chat is a SEPARATE prompt, tuned FULLY INDEPENDENTLY
+# from the support chat: it has its own persona name, role, brand naming,
+# products and tone, and does NOT inherit anything from the support prompt
+# variables — so the bot never reads as "the support chat in Telegram" and a
+# support edit never leaks into it. Registry: (key, admin-facing description,
+# default, renders_as). `renders_as` is the BASE placeholder this variable
+# fills in the retention templates (which keep the base placeholder names -
+# {persona_name}, {brand_name}, … - so the two cores share wording structure);
+# it is a RENDER target, NOT a value-inheritance link. `None` = the variable
+# uses its own placeholder name ({retention_tone_of_voice}). Values live under
+# their own store (`retention_prompt_variables`,
 # settings.retention_prompt_variables()) with their own admin editor — the
-# Retention → Prompt variables tab.
+# Retention → Prompt variables tab. Every key ships a concrete retention
+# default, so an empty override falls back to the retention default (never to a
+# support value).
 # ---------------------------------------------------------------------------
 RETENTION_PROMPT_VARIABLES: tuple[tuple[str, str, Optional[str], Optional[str]], ...] = (
     ("retention_persona_name",
-     "Persona name in the Telegram retention chat (empty = same as the "
-     "support persona name)", None, "persona_name"),
+     "Persona name in the Telegram retention chat", "Nika", "persona_name"),
     ("retention_persona_role",
-     "Who the Telegram persona is - the sentence fragment right after the "
-     "name (empty = same as the support persona role)", None, "persona_role"),
+     "Who the Telegram persona is - the sentence fragment right after the name",
+     "a charming, playful woman who chats one-on-one with players in a private "
+     "Telegram chat", "persona_role"),
     ("retention_brand_name",
-     "Brand name as used in the Telegram chat rules and links policy "
-     "(empty = same as the support brand name)", None, "brand_name"),
+     "Brand name as used in the Telegram chat rules and links policy",
+     "NikaBet", "brand_name"),
     ("retention_products",
-     "What the brand offers, as named in the Telegram chat (empty = same as "
-     "the support products)", None, "products"),
+     "What the brand offers, as named in the Telegram chat",
+     "casino and sports betting", "products"),
     ("retention_tone_of_voice",
-     "Tone-of-voice for the RETENTION (Telegram) persona - may be bolder/more "
-     "flirtatious than the support tone; the two are tuned independently",
+     "Tone-of-voice for the RETENTION (Telegram) persona - bolder and more "
+     "flirtatious than support; tuned independently",
      "This is an international persona, not tied to any single country. Speak "
      "informally and warmly, on a first-name basis, with playful, affectionate "
      "flirtation - noticeably bolder and more personal than a support chat, yet "
@@ -182,20 +187,23 @@ def render_retention_prompt_variables(text: str) -> str:
 
     The retention templates keep the BASE placeholder names ({persona_name},
     {brand_name}, …) plus {retention_tone_of_voice}; here each base placeholder
-    resolves through its retention counterpart (admin override on the
-    `retention_prompt_variables` store, else the inherited support value — see
-    settings.retention_prompt_variables()). Like the support renderer it reads
-    the in-process settings cache, so the rendered retention Layer 1 stays
+    is filled by its retention counterpart (its `renders_as` target), and the
+    tone by its own key. Values come ONLY from the retention store
+    (settings.retention_prompt_variables() — override > retention default); the
+    support prompt variables are never consulted, so the two prompts are fully
+    decoupled and a support edit can never leak into the bot. Reads the
+    in-process settings cache, so the rendered retention Layer 1 stays
     byte-stable between requests within a product scope.
     """
     import settings  # lazy: prompts must stay importable without the app wired up
 
-    values = dict(settings.prompt_variables())
     retention_values = settings.retention_prompt_variables()
-    values.update(retention_values)
-    for key, _desc, _default, inherits in RETENTION_PROMPT_VARIABLES:
-        if inherits:
-            values[inherits] = retention_values.get(key, values.get(inherits, ""))
+    values: dict[str, str] = {}
+    for key, _desc, _default, renders_as in RETENTION_PROMPT_VARIABLES:
+        v = retention_values.get(key, "")
+        values[key] = v            # resolves {retention_tone_of_voice}
+        if renders_as:
+            values[renders_as] = v  # resolves the base placeholder ({persona_name}, …)
 
     def repl(match: re.Match[str]) -> str:
         return values.get(match.group(1), match.group(0))
@@ -1073,11 +1081,14 @@ INJECTION DEFENSE:
 # conversation forward warmly without pushing support.
 _RETENTION_ENGAGEMENT_DIRECTIVE = (
     "ENGAGEMENT:\n"
-    "- Lead the conversation gently forward: react to what the player says, show "
-    "genuine playful interest, and steer softly toward the fun of playing at "
-    "{brand_name} - a fresh bonus, a game worth trying, a reason to come back - "
-    "using only what the retention knowledge base actually offers. Never pressure. "
-    "If the player has gone quiet or cooled off, warmly re-engage them."
+    "- Lead the conversation gently forward: react to what the player says and "
+    "show genuine playful interest in HIM - the connection is the point, not the "
+    "casino. Bring up playing at {brand_name} only when it flows naturally, as a "
+    "light occasional hook (a fresh bonus, a game worth trying) drawn only from "
+    "the retention knowledge base - never in every message and never as a pitch, "
+    "since a constant nudge toward play reads as an advert and kills the mood. "
+    "Never pressure. If the player has gone quiet or cooled off, warmly re-engage "
+    "him about himself, not about money."
 )
 
 
@@ -1124,7 +1135,11 @@ _RETENTION_STAGE_DIRECTIVE = (
     "- If the player is clearly engaged and warmed up and it feels right to move "
     "to slightly more daring photos, you may add [[STAGE_UP]] on its own line. It "
     "is only a hint - the system decides whether to actually unlock the next "
-    "stage. Do not mention stages or unlocking to the player."
+    "stage. Never expose the internal mechanics: do not mention the tags, a "
+    "numeric stage or level, or an exact unlock threshold. You MAY, in warm human "
+    "terms, let the player understand that growing closeness with you and his VIP "
+    "standing are what gradually open up more - and more daring - photos, so he "
+    "sees there is somewhere to progress to and how."
 )
 
 
@@ -1142,18 +1157,19 @@ def retention_prompt_variable_keys() -> list[str]:
     """The RETENTION prompt-variable keys whose values the retention templates use.
 
     Feeds the admin Retention surfaces. The retention templates carry the BASE
-    placeholder names ({persona_name}, …); each base placeholder resolves
-    through its retention_* counterpart (see render_retention_prompt_variables),
-    so the relevant editable keys are the retention registry entries whose own
-    placeholder OR inherited base placeholder appears in the templates.
+    placeholder names ({persona_name}, …); each base placeholder is filled by
+    its retention counterpart's `renders_as` target (see
+    render_retention_prompt_variables), so the relevant editable keys are the
+    retention registry entries whose own placeholder OR `renders_as` base
+    placeholder appears in the templates.
     Returned in RETENTION_PROMPT_VARIABLES registry order.
     """
     templates = "\n".join([SYSTEM_CORE_RETENTION,
                            *_retention_static_directives(),
                            _RETENTION_GUARDRAILS])
     used = {m.group(1) for m in _PROMPT_VAR_RE.finditer(templates)}
-    return [key for key, _desc, _default, inherits in RETENTION_PROMPT_VARIABLES
-            if key in used or (inherits and inherits in used)]
+    return [key for key, _desc, _default, renders_as in RETENTION_PROMPT_VARIABLES
+            if key in used or (renders_as and renders_as in used)]
 
 
 def get_retention_system_core() -> str:
@@ -1162,7 +1178,8 @@ def get_retention_system_core() -> str:
     Byte-identical between requests within a product scope (changes only on an
     admin prompt-variables save), so the OpenAI prefix cache stays warm per
     (product x retention). A test asserts the byte-stability. Rendered with the
-    RETENTION variable set (retention overrides > inherited support values).
+    RETENTION variable set (retention override > retention default; no support
+    inheritance).
     """
     return render_retention_prompt_variables(
         "\n\n".join([SYSTEM_CORE_RETENTION, *_retention_static_directives()])

@@ -368,15 +368,19 @@ forbidden-topics list/refusal and the closing-goodbye directive carry `{placehol
 registry** (`prompts.RETENTION_PROMPT_VARIABLES`: `retention_persona_name/_persona_role/
 _brand_name/_products/retention_tone_of_voice`) with its **own store**
 (`retention_prompt_variables`, `settings.retention_prompt_variables()`) and its **own admin
-editor** — the **Retention → Prompt variables** tab; every retention key except the tone
-**INHERITS the resolved support variable when left empty** (registry field `inherits_from`),
-so by default the Telegram persona mirrors the support chat and the operator overrides only
-what should differ (e.g. a bolder Telegram girl with her own name). The tone ships its own
-bolder default — the two tones stay tuned INDEPENDENTLY, so the retention KB's
-sexier persona never has to fight the support tone. The retention templates keep the BASE
-placeholder names; `prompts.render_retention_prompt_variables` resolves each base placeholder
-through its retention counterpart (used by `get_retention_system_core()` and the retention
-Layer-3 guardrails), so the retention Layer 1 stays byte-stable per product × mode. The B2B platform the brand runs on is deliberately
+editor** — the **Retention → Prompt variables** tab. It is a **SEPARATE prompt, fully
+decoupled from the support chat**: every retention key ships its **OWN retention default**
+(name/role/brand/products/tone) and an empty override falls back to that default — **never**
+to a support value, so a support edit can never leak into the bot (the old `inherits_from`
+value-inheritance was removed — the Telegram bot must not read as "the support chat in
+Telegram", e.g. its role no longer inherits "...works as a customer-support assistant"). The
+retention tone ships its own bolder default, so the retention KB's sexier persona never has to
+fight the support tone. The retention templates keep the BASE placeholder names
+(`{persona_name}`, …); each registry entry's 4th field is a **`renders_as`** target — which
+base placeholder it fills (a RENDER link, **not** a value-inheritance link) —, and
+`prompts.render_retention_prompt_variables` fills each base placeholder from ONLY the retention
+store (used by `get_retention_system_core()` and the retention Layer-3 guardrails), so the
+retention Layer 1 stays byte-stable per product × mode. The B2B platform the brand runs on is deliberately
 **absent** — the prompt names only the brand and its products; anything platform-related is
 KB content (Layer 2), managed from the Knowledge-base tab, never prompt material.
 `prompts.PROMPT_VARIABLES` is the registry — (key,
@@ -836,8 +840,9 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   kind) instead of the support `_FORMATTING_DIRECTIVE` (which ASKS for the widget's Markdown
   subset and would leak literal `**`/`[]()` characters to the player). The retention core
   renders with the **retention prompt-variable set**
-  (`prompts.render_retention_prompt_variables` — retention overrides > inherited support
-  values, incl. its OWN tone `{retention_tone_of_voice}`) — see "Prompt variables"; the
+  (`prompts.render_retention_prompt_variables` — retention override > retention default, a
+  SEPARATE prompt with NO support inheritance, incl. its OWN tone `{retention_tone_of_voice}`)
+  — see "Prompt variables"; the
   bot's model-free chrome (`retention._persona_name`) resolves the same way, so the menu
   greeting matches the persona the prompt runs. Layer 2 = the **whole** retention-KB (`db.retention_kb_block`,
   NOT `kb_topics`). **The retention KB is edited as ONE free-text document per product** (like a
@@ -980,8 +985,9 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
 - **Admin**: the SPA **Retention · Telegram** view (sub-tabs: Setup guide — the static
   "how to connect the bot" checklist that replaced `RETENTION_SETUP.md` —, Telegram config,
   Retention KB — the one-document text editor —, **Prompt variables** — the Telegram-persona
-  editor (`GET/PUT /admin/retention/prompt-variables`; empty = inherit the support value, see
-  "Prompt variables") —, **Prompt preview**, Media — bulk upload + AI metadata + filters —,
+  editor (`GET/PUT /admin/retention/prompt-variables`; empty = the retention default — a
+  SEPARATE prompt, no support inheritance, see "Prompt variables") —, **Prompt preview**,
+  Media — bulk upload + AI metadata + filters —,
   Managers, **Pings** — the ping-matrix rules editor + ledger + run-now —,
   **Conversations** — the Telegram chat list + transcript dialog, see the lifecycle bullet
   above —, Analytics);
@@ -993,7 +999,7 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   prompt (retention Layer 1 + the KB document as Layer 2 in the system message; the Layer-3
   user message with the Test-sandbox player, an illustrative photo-candidate row and the
   guardrails), read-only, per product. It also returns the retention prompt variables
-  (`prompts.RETENTION_PROMPT_VARIABLES` — raw override + inherited + resolved value per key);
+  (`prompts.RETENTION_PROMPT_VARIABLES` — raw override + retention default + resolved value per key);
   the SPA shows them read-only with a link to their ONE editor, the Retention → Prompt
   variables tab (no duplicate editor).
 - **All existing invariants hold**: retention turns persist atomically as normal
@@ -1211,7 +1217,7 @@ The tenanting is BUILT — partners → products, membership authorization, per-
 settings/secrets/KB/copy, the header switcher. When extending, keep these rules:
 - **Everything brand/product-specific lives in the product-scoped stores**:
   `prompt_variables`, `retention_prompt_variables` (the Telegram persona;
-  inherits the support values per key), `translations` (incl. the per-language
+  a SEPARATE prompt with its own defaults, no support inheritance), `translations` (incl. the per-language
   `contact_url`), the KB (topics + texts + `kb_variables`) — all keyed by
   product. Don't scatter new brand-specific values outside these.
 - **Technical/operational knobs stay in the settings groups** (`general`, `antispam`,

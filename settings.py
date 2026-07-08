@@ -228,16 +228,16 @@ def prompt_variables() -> dict[str, str]:
 
 
 def retention_prompt_variable_overrides() -> dict[str, str]:
-    """The RAW stored retention prompt-variable overrides (no inheritance).
+    """The RAW stored retention prompt-variable overrides (no defaults applied).
 
     Feeds the admin editor, which must distinguish "explicitly overridden"
-    from "inherited from the support chat" (an empty field). Only registered,
+    from "using the retention default" (an empty field). Only registered,
     non-empty string values survive.
     """
     db_v = _group("retention_prompt_variables")
     out: dict[str, str] = {}
     if isinstance(db_v, dict):
-        for key, _desc, _default, _inherits in _prompts.RETENTION_PROMPT_VARIABLES:
+        for key, _desc, _default, _renders in _prompts.RETENTION_PROMPT_VARIABLES:
             v = db_v.get(key)
             if isinstance(v, str) and v.strip():
                 out[key] = v.strip()
@@ -245,25 +245,19 @@ def retention_prompt_variable_overrides() -> dict[str, str]:
 
 
 def retention_prompt_variables() -> dict[str, str]:
-    """Resolved RETENTION (Telegram) prompt variables, with support inheritance.
+    """Resolved RETENTION (Telegram) prompt variables — fully independent.
 
     Resolution per key: the `retention_prompt_variables` store (product layer
-    over global, like every group) → the registry default → the resolved
-    SUPPORT variable it inherits from. So by default the Telegram persona
-    mirrors the support chat (same name/role/brand/products) with its own
-    bolder tone, and the operator overrides only the fields that should
-    differ. Edited from the admin Retention → Prompt variables tab.
+    over global, like every group) → the registry default. The support prompt
+    variables are NEVER consulted: the Telegram persona is a SEPARATE prompt
+    with its own name/role/brand/products/tone defaults, so a support edit can
+    never leak into the bot. An empty override falls back to the retention
+    default. Edited from the admin Retention → Prompt variables tab.
     """
     overrides = retention_prompt_variable_overrides()
-    support = prompt_variables()
     out: dict[str, str] = {}
-    for key, _desc, default, inherits in _prompts.RETENTION_PROMPT_VARIABLES:
-        if key in overrides:
-            out[key] = overrides[key]
-        elif default is not None:
-            out[key] = default
-        else:
-            out[key] = support.get(inherits or "", "")
+    for key, _desc, default, _renders in _prompts.RETENTION_PROMPT_VARIABLES:
+        out[key] = overrides.get(key, default or "")
     return out
 
 
@@ -601,8 +595,8 @@ def validate_retention_prompt_variables(value: Any) -> dict[str, str]:
     """Validate a retention prompt-variables write. Returns the cleaned map.
 
     Mirrors validate_prompt_variables over the RETENTION registry. Empty
-    strings are dropped so the resolved value falls back to the registry
-    default or the inherited support variable (see retention_prompt_variables).
+    strings are dropped so the resolved value falls back to the retention
+    registry default (no support inheritance; see retention_prompt_variables).
     """
     if not isinstance(value, dict):
         raise ValueError("retention_prompt_variables value must be a JSON object")
