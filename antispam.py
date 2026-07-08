@@ -93,8 +93,15 @@ def _prune_ip_hits(now: float, window: float) -> None:
         _ip_hits.pop(ip, None)
 
 
-def check_rate_limit(ip: str) -> None:
-    """Raise AntiSpamError(429) if the IP exceeded the window allowance."""
+def check_rate_limit(ip: str, max_hits: Optional[int] = None) -> None:
+    """Raise AntiSpamError(429) if the key exceeded the window allowance.
+
+    `max_hits` overrides the per-IP allowance for callers with their own budget
+    (the Telegram retention chat uses the higher `tg_rate_limit_max_per_user` —
+    a lively human dialogue easily outpaces the widget's per-IP limit). The
+    window is shared (`window_sec`). A blocked attempt is NOT recorded, so the
+    window drains while the sender is over the limit instead of re-arming.
+    """
     now = time.monotonic()
     cfg = settings.antispam()
     window = cfg["window_sec"]
@@ -103,7 +110,8 @@ def check_rate_limit(ip: str) -> None:
     hits = _ip_hits[ip]
     while hits and now - hits[0] > window:
         hits.popleft()
-    if len(hits) >= cfg["rate_limit_max_per_ip"]:
+    if len(hits) >= (max_hits if max_hits is not None
+                     else cfg["rate_limit_max_per_ip"]):
         # Don't leave a fresh empty bucket behind for a one-shot/forged IP.
         if not hits:
             _ip_hits.pop(ip, None)

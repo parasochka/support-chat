@@ -64,8 +64,12 @@ panel.
   `last_login_at`/`last_played_at`/`last_deposit_at` (push webhook or Player API).
 - **Anti-spam** before any model call: IP rate limiting, per-message cooldown, an input
   length cap, a low-content/junk guard, and a prompt-injection scan (hard-block by default).
-  Inbound Telegram bot messages run the same gauntlet (silent drop on rate limit, model-free
-  canned replies on low-content/injection), reusing the same `antispam` settings knobs.
+  Inbound Telegram bot messages run the same gauntlet with a higher, chat-paced per-user
+  rate limit (`tg_rate_limit_max_per_user`, env `TG_RATE_LIMIT_MAX_PER_USER`, default 60 per
+  window — a live dialogue outpaces the widget's per-IP budget): the first blocked message
+  gets a one-time in-persona "give me a moment" notice (further ones in the same window are
+  dropped silently), and low-content/injection get model-free canned replies; the other
+  `antispam` settings knobs are shared.
 - **Per-product reCaptcha v3** — each product/domain gets its own site key (Structure tab;
   served to the widget via `GET /api/chat/i18n` and adopted automatically, no embed change)
   and its own secret (stored encrypted, write-only via product secrets). The deploy env
@@ -166,6 +170,7 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `RETENTION_PROFILE_PULL_TTL_SEC` | no | `3600` | If a profile snapshot is older than this and the product has a Player API, pull a fresh profile before a turn (also a `retention` settings knob). |
 | `RETENTION_SESSION_IDLE_MINUTES` | no | `360` | Minutes of inactivity before a Telegram chat closes; the player's next message starts a fresh chat (0 = never; also a `retention` settings knob). |
 | `RETENTION_CARRY_CONTEXT_TURNS` | no | `6` | Trailing turns of the previous (closed) Telegram chat shown to the model on the first turn of the fresh one, so a returning player is greeted with continuity (0 = off; also a `retention` settings knob). |
+| `TG_RATE_LIMIT_MAX_PER_USER` | no | `60` | Retention bot: max Telegram messages from one player per rate-limit window (`RATE_LIMIT_WINDOW_SEC`). Higher than the widget's per-IP limit because a live chat is faster; also an `antispam` settings knob (`tg_rate_limit_max_per_user`). |
 | `RETENTION_SCHEDULER_ENABLED` | no | `true` | Whether this instance runs the proactive-ping worker loop at all (deploy-level switch, not a setting). Products still opt in individually via `retention.pings_enabled`. |
 | `RETENTION_PING_INTERVAL_SEC` | no | `300` | How often the ping worker wakes up for a sweep (advisory-locked, so multiple instances never double-send). |
 | `RETENTION_PINGS_ENABLED` | no | `false` | Default for the `retention.pings_enabled` master switch — proactive pings ship **off**; a product opts in from the admin (also a `retention` settings knob, like every ping knob below). |

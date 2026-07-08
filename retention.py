@@ -397,6 +397,13 @@ _SUB_CACHE_TTL_SEC = 600
 _SUB_CACHE_PRUNE_THRESHOLD = 50_000
 _sub_cache: dict[tuple[int, int], float] = {}  # (product_id, tg_user_id) -> expiry
 
+# Rate-limit courtesy notices already sent: spam_key -> monotonic time of the
+# notice. One "slow down" nudge per block streak (cleared when a message passes,
+# expired after a window), so a blocked player learns WHY the bot went quiet
+# while a hammering bot can't turn the limiter into a Telegram-send amplifier.
+_rl_notified: dict[str, float] = {}
+_RL_NOTIFIED_PRUNE_THRESHOLD = 10_000
+
 
 async def check_subscription(client: TelegramClient, product: dict[str, Any],
                              tg_user_id: int, *, use_cache: bool = True) -> bool:
@@ -424,8 +431,9 @@ async def check_subscription(client: TelegramClient, product: dict[str, Any],
 
 
 def reset_state() -> None:
-    """Test helper: clear the in-memory subscription cache."""
+    """Test helper: clear the in-memory subscription + rate-notice caches."""
     _sub_cache.clear()
+    _rl_notified.clear()
 
 
 def _persona_name() -> str:
@@ -535,21 +543,45 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
         return
 
     # --- Anti-spam gate, Telegram flavour of the widget's /message gate -----
-    # Rate limit FIRST (before any DB/Telegram round-trip) and drop silently: a
-    # hammering user gets no reply, burns no tokens, and can't grow the log
-    # unboundedly (the admin event is sampled).
+    # Rate limit FIRST (before any DB/Telegram round-trip), against the
+    # Telegram-specific per-user allowance (`tg_rate_limit_max_per_user` — a
+    # lively human chat outpaces the widget's per-IP budget). The block is NOT
+    # fully silent anymore: a real player whose messages just vanish thinks the
+    # bot is broken ("сообщения не доходят?"), so the FIRST blocked message in
+    # a streak gets a localized in-persona "give me a second" nudge; further
+    # blocked messages in the same window stay silent (a hammering bot cannot
+    # make us spam Telegram). Every block logs a WARNING for Railway tracing.
     spam_key = f"tg:{product['id']}:{pu.tg_user_id}"
+    cfg = settings.antispam()
     try:
-        antispam.check_rate_limit(spam_key)
+        antispam.check_rate_limit(spam_key, cfg["tg_rate_limit_max_per_user"])
     except antispam.AntiSpamError:
+        log.warning("retention_rate_limited product_id=%s tg_user_id=%s",
+                    product["id"], pu.tg_user_id)
         await db.log_admin_event_sampled(
             None, "rate_limited",
             {"channel": "telegram", "tg_user_id": pu.tg_user_id})
+        now = time.monotonic()
+        notified = _rl_notified.get(spam_key)
+        if notified is None or now - notified > float(cfg["window_sec"]):
+            if len(_rl_notified) > _RL_NOTIFIED_PRUNE_THRESHOLD:
+                stale = [k for k, ts in _rl_notified.items()
+                         if now - ts > float(cfg["window_sec"])]
+                for k in stale:
+                    _rl_notified.pop(k, None)
+            _rl_notified[spam_key] = now
+            ru = await db.get_retention_user(product["id"], pu.tg_user_id)
+            lang = resolve_user_lang(ru or {}, pu.language_code)
+            await client.send_message(pu.chat_id,
+                                      _rtn_text("rtn_rate_limited", lang))
         return
+    _rl_notified.pop(spam_key, None)
 
     ru = await db.get_retention_user(product["id"], pu.tg_user_id)
     if ru is None:
         # Never entered via a deeplink — require the site.
+        log.info("retention_need_deeplink product_id=%s tg_user_id=%s",
+                 product["id"], pu.tg_user_id)
         lang = resolve_user_lang({}, pu.language_code)
         await client.send_message(pu.chat_id,
                                   _rtn_text("rtn_need_deeplink", lang))
@@ -574,6 +606,8 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
 
     # Subscription gate applies to every turn (positive results briefly cached).
     if not await check_subscription(client, product, pu.tg_user_id):
+        log.info("retention_subscription_gate product_id=%s tg_user_id=%s",
+                 product["id"], pu.tg_user_id)
         await db.set_retention_subscribed(int(ru["id"]), False)
         await client.send_message(pu.chat_id,
                                   _rtn_text("rtn_subscribe_prompt", lang),
@@ -584,8 +618,7 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
 
     # Input gates: overlong text is truncated (not rejected — chats are human);
     # junk/no-content messages and injection attempts get a canned in-persona
-    # line and never reach the model.
-    cfg = settings.antispam()
+    # line and never reach the model. (cfg was resolved at the rate-limit gate.)
     text = pu.text or ""
     max_chars = int(cfg["max_input_chars"])
     if len(text) > max_chars:
@@ -593,12 +626,16 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
     try:
         antispam.check_low_content(text)
     except antispam.AntiSpamError:
+        log.info("retention_low_content product_id=%s tg_user_id=%s",
+                 product["id"], pu.tg_user_id)
         await db.log_admin_event_sampled(
             None, "low_content_blocked", {"channel": "telegram"})
         await client.send_message(pu.chat_id,
                                   _rtn_text("rtn_low_content_reply", lang))
         return
     if antispam.scan_injection(text):
+        log.warning("retention_injection product_id=%s tg_user_id=%s hard_block=%s",
+                    product["id"], pu.tg_user_id, cfg["injection_hard_block"])
         await db.log_admin_event_sampled(
             None, "injection_blocked",
             {"channel": "telegram", "tg_user_id": pu.tg_user_id})
