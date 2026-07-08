@@ -16,7 +16,6 @@ from __future__ import annotations
 import hmac
 import logging
 import os
-import secrets as _secrets
 import uuid
 from typing import Any, Optional
 

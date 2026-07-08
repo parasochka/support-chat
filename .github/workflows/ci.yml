@@ -1,0 +1,26 @@
+name: CI
+
+# Runs the same checks as `scripts/preflight.sh` so a green PR means a green
+# local preflight (and vice-versa). Fast: the suite is ~400 tests in a few
+# seconds against the openai/asyncpg stubs.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Preflight (install + ruff + invariants + tests)
+        run: bash scripts/preflight.sh

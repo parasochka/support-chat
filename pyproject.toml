@@ -1,0 +1,16 @@
+[tool.ruff]
+# The service targets Python 3.11 (see runtime.txt / Dockerfile).
+target-version = "py311"
+# Vendored / generated frontend assets are not Python we own.
+extend-exclude = ["admin", "frontend"]
+
+[tool.ruff.lint]
+# Conservative on an existing, unlinted codebase: catch real bugs (pyflakes F,
+# syntax E9) without imposing a new style on 30k lines. Line length, semicolons
+# and single-char names are intentional in places here, so they stay off.
+select = ["F", "E9", "W6"]
+ignore = [
+    "E501",  # line-too-long: many prompt/SQL strings are deliberately long
+    "E741",  # ambiguous var name (l/I/O): pre-existing, low value
+    "E702",  # multiple-statements-on-one-line (semicolon): used on purpose
+]

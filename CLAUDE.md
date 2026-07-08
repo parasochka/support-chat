@@ -153,6 +153,31 @@ pytest-asyncio` is not enough — `httpx` must be installed too. `pytest.ini` se
 so modules import without real secrets. `conftest.py` sets it too, so it is only needed
 when invoking modules outside pytest.
 
+### Dev tooling (`.claude/`, `scripts/`, CI)
+
+- **`scripts/preflight.sh`** is the one verify command: install deps → `ruff` →
+  invariant checks → `pytest`. Run `bash scripts/preflight.sh` before committing
+  (or `--checks` to skip install). CI (`.github/workflows/ci.yml`) runs the exact
+  same script on every PR, so green preflight = green PR. It installs the runtime
+  deps that must be real (fastapi/uvicorn/httpx/python-multipart) + dev tools, and
+  deliberately **omits** `openai`/`asyncpg` (conftest stubs them; the failover
+  tests build openai errors with the stub's lenient constructors, which the real
+  SDK rejects).
+- **SessionStart hook** (`.claude/hooks/session-start.sh`, registered in
+  `.claude/settings.json`) runs `preflight.sh --install` on Claude Code on the web
+  so tests/ruff work immediately in a fresh session. Synchronous; merge it to the
+  default branch for future sessions to use it.
+- **`scripts/check_invariants.py`** statically enforces the "breaks silently"
+  rules by importing the real modules (reusing conftest's stubs): every
+  translations key has shipped English copy, the Layer-1 prompt core is
+  byte-stable, and every writable settings group surfaces in the admin schema.
+- **`ruff`** config in `pyproject.toml` is conservative on purpose (real-bug rules
+  F/E9 only; line length and semicolons off) — don't broaden it into a restyle.
+- **Skills** in `.claude/skills/` scaffold the recurring cross-file changes so no
+  touch-point is missed: `/preflight`, `/add-setting`, `/add-translation`,
+  `/add-db-column`, `/add-admin-endpoint`. Reach for them when doing that kind of
+  change.
+
 ## Architecture — the big picture
 
 ### 3-layer prefix-cache-optimised prompt (the central design)
