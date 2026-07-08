@@ -419,6 +419,12 @@ RETENTION_SESSION_IDLE_MINUTES: int = _env_int(
 # player with continuity instead of starting cold (0 = no carry-over).
 RETENTION_CARRY_CONTEXT_TURNS: int = _env_int(
     "RETENTION_CARRY_CONTEXT_TURNS", 6)
+# Every N-th assistant reply in a Telegram retention chat carries a light,
+# in-context invitation to come play on the site (with a one-tap site-map
+# button when a fitting page exists). 0 = the periodic nudge is off; the
+# model may still invite organically per the engagement directive.
+RETENTION_PLAY_REMINDER_EVERY_MSGS: int = _env_int(
+    "RETENTION_PLAY_REMINDER_EVERY_MSGS", 5)
 
 # --- Proactive pings (the "retention matrix") --------------------------------
 # Env defaults for the `retention` settings group's ping knobs (hot-reloadable

@@ -14,6 +14,7 @@ the whole update).
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -170,7 +171,8 @@ class TelegramClient:
 
     async def send_photo_file_id(self, chat_id: int, file_id: str, *,
                                  caption: Optional[str] = None,
-                                 parse_mode: Optional[str] = None
+                                 parse_mode: Optional[str] = None,
+                                 reply_markup: Optional[dict[str, Any]] = None
                                  ) -> Optional[dict[str, Any]]:
         """Send an already-uploaded photo by its cached file_id (no re-upload)."""
         payload: dict[str, Any] = {"chat_id": chat_id, "photo": file_id}
@@ -178,11 +180,14 @@ class TelegramClient:
             payload["caption"] = caption
         if parse_mode:
             payload["parse_mode"] = parse_mode
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         return await self._call("sendPhoto", payload)
 
     async def send_photo_bytes(self, chat_id: int, content: bytes, filename: str,
                                *, caption: Optional[str] = None,
-                               parse_mode: Optional[str] = None
+                               parse_mode: Optional[str] = None,
+                               reply_markup: Optional[dict[str, Any]] = None
                                ) -> Optional[dict[str, Any]]:
         """Upload a photo from bytes (first send). Returns the result so the
         caller can cache the returned file_id for later sends."""
@@ -191,6 +196,9 @@ class TelegramClient:
             data["caption"] = caption
         if parse_mode:
             data["parse_mode"] = parse_mode
+        if reply_markup is not None:
+            # multipart form fields must be strings — serialize the keyboard.
+            data["reply_markup"] = json.dumps(reply_markup)
         files = {"photo": (filename, content)}
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:

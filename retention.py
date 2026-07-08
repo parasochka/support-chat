@@ -11,6 +11,7 @@ webhook handler, which resolved it from the bot's webhook routing token.
 """
 from __future__ import annotations
 
+import html
 import logging
 import re
 import secrets
@@ -18,6 +19,7 @@ import time
 import unicodedata
 import uuid
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 import antispam
 import chat_service
@@ -484,12 +486,106 @@ def _menu_text(ru: dict[str, Any], lang: str) -> str:
     return f"{greeting}\n\n{_rtn_text('rtn_menu_prompt', lang)}"
 
 
+def _menu_html(ru: dict[str, Any], lang: str) -> str:
+    """The menu message with light HTML structure: a bold greeting line above
+    the plain menu prompt, both HTML-escaped (the copy is admin-edited text)."""
+    full_name = str(ru.get("full_name") or "").strip()
+    first_name = full_name.split()[0] if full_name else ""
+    key = "rtn_menu_greeting" if first_name else "rtn_menu_greeting_noname"
+    greeting = _rtn_text(key, lang).replace("{name}", first_name)
+    prompt = _rtn_text("rtn_menu_prompt", lang)
+    return f"<b>{html.escape(greeting)}</b>\n\n{html.escape(prompt)}"
+
+
 async def _send_menu(client: TelegramClient, chat_id: int, ru: dict[str, Any],
                      lang: str) -> None:
-    await client.send_message(
-        chat_id, _menu_text(ru, lang),
-        reply_markup=_menu_markup(ru.get("entry_type", "retention"), lang),
-    )
+    markup = _menu_markup(ru.get("entry_type", "retention"), lang)
+    # Structured (bold greeting) first; if Telegram rejects the HTML for any
+    # reason, fall back to the plain text so the menu always arrives.
+    result = await client.send_message(chat_id, _menu_html(ru, lang),
+                                       reply_markup=markup, parse_mode="HTML")
+    if result is None:
+        await client.send_message(chat_id, _menu_text(ru, lang),
+                                  reply_markup=markup)
+
+
+def _site_support_url(lang: str) -> str:
+    """The "support on the site" destination for a Telegram hand-off.
+
+    The per-language `contact_url` (translations registry) when it is
+    configured — the ONE admin home for the support link — else the site's
+    main page derived from the first site-map entry (the support widget lives
+    on the site, so the origin is a safe landing). "" when neither exists.
+    """
+    url = (translations.text("contact_url", lang) or "").strip()
+    if url.startswith(("http://", "https://")):
+        return url
+    for page in settings.site_map() or []:
+        if not isinstance(page, dict):
+            continue
+        page_url = str(page.get("url", "")).strip()
+        if page_url.startswith(("http://", "https://")):
+            parts = urlsplit(page_url)
+            if parts.scheme and parts.netloc:
+                return f"{parts.scheme}://{parts.netloc}/"
+    return ""
+
+
+async def _send_handoff_choice(client: TelegramClient, product: dict[str, Any],
+                               ru: dict[str, Any], chat_id: int, lang: str
+                               ) -> str:
+    """The [[HANDOFF]] hand-off message: a structured CHOICE with up to two
+    buttons — the player's personal manager (right here in Telegram) and the
+    support chat on the site (main page / contact_url, where the widget lives).
+
+    Degrades gracefully: with only one destination configured it falls back to
+    the matching single-option copy (`rtn_manager_intro` / `rtn_handoff_support`),
+    and with neither to the plain route-out line — a hand-off never dead-ends.
+    Returns the offered target ("manager+site" | "manager" | "site" | "none")
+    for the retention_handoff admin event.
+    """
+    manager: Optional[dict[str, Any]] = None
+    try:
+        manager = await db.assign_round_robin_manager(product["id"], int(ru["id"]))
+    except Exception:  # noqa: BLE001 - a manager-pool failure must not kill the hand-off
+        log.exception("retention_handoff_manager_assign_failed product_id=%s",
+                      product["id"])
+    site_url = _site_support_url(lang)
+
+    rows: list[list[dict[str, str]]] = []
+    if manager:
+        link = f"https://t.me/{manager['username']}"
+        rows.append([{"text": f"👤 {manager['display_name']}", "url": link}])
+        await db.log_admin_event(
+            None, "retention_manager_handoff",
+            {"tg_user_id": ru.get("tg_user_id"), "manager_id": manager["id"],
+             "from_reason": "handoff"}, product_id=product["id"])
+    if site_url:
+        rows.append([{"text": _rtn_text("rtn_btn_site_support", lang),
+                      "url": site_url}])
+
+    if manager and site_url:
+        # Both destinations — the structured two-button choice message.
+        title = _rtn_text("rtn_handoff_title", lang)
+        body = _rtn_text("rtn_handoff_choice", lang)
+        markup = inline_keyboard(rows)
+        result = await client.send_message(
+            chat_id, f"<b>{html.escape(title)}</b>\n\n{html.escape(body)}",
+            reply_markup=markup, parse_mode="HTML")
+        if result is None:
+            await client.send_message(chat_id, f"{title}\n\n{body}",
+                                      reply_markup=markup)
+        return "manager+site"
+    if manager:
+        link = f"https://t.me/{manager['username']}"
+        intro = _rtn_text("rtn_manager_intro", lang).replace(
+            "{manager}", f"{manager['display_name']} ({link})")
+        await client.send_message(chat_id, intro,
+                                  reply_markup=inline_keyboard(rows))
+        return "manager"
+    await client.send_message(chat_id, _rtn_text("rtn_handoff_support", lang),
+                              reply_markup=inline_keyboard(rows) if rows else None)
+    return "site" if site_url else "none"
 
 
 async def _route_to_manager(client: TelegramClient, product: dict[str, Any],
@@ -778,31 +874,26 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
         await db.set_retention_conv_lang(int(ru["id"]), reply.lang)
 
     # Route-out: Nika does not handle support / complaints / RG / human asks.
+    # The hand-off message offers the player a CHOICE of destinations — their
+    # personal manager (in Telegram) and/or the support chat on the site —
+    # regardless of the entry type; whatever is configured shows up.
     if reply.handoff:
-        await db.log_admin_event(
-            None, "retention_handoff",
-            {"tg_user_id": ru.get("tg_user_id"),
-             "target": "manager" if ru.get("entry_type") == "escalation" else "support"},
-            product_id=product["id"])
         if reply.reply:
             await _send_ai_text(client, pu.chat_id, reply.reply)
-        if ru.get("entry_type") == "escalation":
-            await _route_to_manager(client, product, ru, pu.chat_id, reply.lang,
-                                    reason="handoff")
-        else:
-            # Give the route-out a real destination: the product's per-language
-            # support contact URL (the same translations `contact_url` the widget
-            # escalation card uses) as an inline button, when one is configured.
-            markup = None
-            url = (translations.text("contact_url", reply.lang) or "").strip()
-            if url.startswith(("http://", "https://")):
-                markup = inline_keyboard([[{
-                    "text": translations.text("escalation_button", reply.lang),
-                    "url": url}]])
-            await client.send_message(
-                pu.chat_id, _rtn_text("rtn_handoff_support", reply.lang),
-                reply_markup=markup)
+        target = await _send_handoff_choice(client, product, ru, pu.chat_id,
+                                            reply.lang)
+        await db.log_admin_event(
+            None, "retention_handoff",
+            {"tg_user_id": ru.get("tg_user_id"), "target": target},
+            product_id=product["id"])
         return
+
+    # A validated site-map CTA ([[LINK:url]]) becomes one inline button under
+    # the message — the play-nudge / engagement invitations land here.
+    markup = None
+    if reply.link_url:
+        markup = inline_keyboard([[{"text": reply.link_label or reply.link_url,
+                                    "url": reply.link_url}]])
 
     # Photo delivery (file_id cache; first send uploads + caches the id).
     if reply.photo_id is not None:
@@ -810,9 +901,11 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
         # the model returned a photo with no text.
         caption = reply.reply or _rtn_text("rtn_photo_caption", reply.lang)
         await _send_photo(client, product, ru, pu.chat_id, reply.photo_id,
-                          caption, session_id=session["id"])
+                          caption, session_id=session["id"],
+                          reply_markup=markup)
     elif reply.reply:
-        await _send_ai_text(client, pu.chat_id, reply.reply)
+        await _send_ai_text(client, pu.chat_id, reply.reply,
+                            reply_markup=markup)
 
     # Stage progression gate (model hint + backend gate).
     if meaningful:
@@ -821,35 +914,42 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
 
 async def _send_photo(client: TelegramClient, product: dict[str, Any],
                       ru: dict[str, Any], chat_id: int, photo_id: int,
-                      caption: str, session_id: Optional[str] = None) -> bool:
+                      caption: str, session_id: Optional[str] = None,
+                      reply_markup: Optional[dict[str, Any]] = None) -> bool:
     """Send a media-library photo, using the cached file_id or uploading once.
 
     Returns True when the photo itself was delivered (the ping worker keys its
     ledger on it); a caption-only fallback returns False. `session_id` links the
     delivery to the chat session so the admin transcript can show it inline.
+    `reply_markup` (a validated CTA button) rides on whatever message actually
+    goes out — the photo or the caption-only fallback.
     """
     # Render the (model-generated) caption's light markup as Telegram HTML.
     caption_html = telegram_format.to_html(caption) if caption else None
     photo = await db.get_retention_photo(photo_id)
     if not photo or not photo.get("active"):
         if caption:
-            await _send_ai_text(client, chat_id, caption)
+            await _send_ai_text(client, chat_id, caption,
+                                reply_markup=reply_markup)
         return False
     file_id = photo.get("telegram_file_id")
     result = None
     if file_id:
         result = await client.send_photo_file_id(
-            chat_id, file_id, caption=caption_html, parse_mode="HTML")
+            chat_id, file_id, caption=caption_html, parse_mode="HTML",
+            reply_markup=reply_markup)
     if result is None:
         # No cached id (or the cached id failed) — upload from the Volume.
         content = _read_media(photo.get("storage_ref"))
         if content is None:
             if caption:
-                await _send_ai_text(client, chat_id, caption)
+                await _send_ai_text(client, chat_id, caption,
+                                    reply_markup=reply_markup)
             return False
         result = await client.send_photo_bytes(
             chat_id, content, photo.get("storage_ref") or "photo.jpg",
-            caption=caption_html, parse_mode="HTML")
+            caption=caption_html, parse_mode="HTML",
+            reply_markup=reply_markup)
         new_file_id = TelegramClient.extract_photo_file_id(result)
         if new_file_id:
             await db.set_photo_file_id(photo_id, new_file_id)

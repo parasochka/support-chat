@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import html
 import logging
 from typing import Any, Optional
 
@@ -34,7 +35,7 @@ import retention
 import settings
 import telegram_format
 import tenancy
-from telegram_transport import TelegramClient
+from telegram_transport import TelegramClient, inline_keyboard
 
 log = logging.getLogger(__name__)
 
@@ -240,25 +241,42 @@ async def _send_ping(client: TelegramClient, product: dict[str, Any],
                                        detail="model_error")
         return False
 
+    # A validated site-map CTA the model attached ([[LINK:url]]) — one inline
+    # button under the ping, matching the message's intent (play / deposit /
+    # check balance), so the re-engagement has a one-tap destination.
+    markup = None
+    if draft.link_url:
+        markup = inline_keyboard([[{"text": draft.link_label or draft.link_url,
+                                    "url": draft.link_url}]])
+
     delivered = False
     detail: Optional[str] = None
     if draft.photo_id is not None:
         caption = draft.text or retention._rtn_text("rtn_photo_caption", draft.lang)
         delivered = await retention._send_photo(
             client, product, ru, chat_id, draft.photo_id, caption,
-            session_id=session["id"])
+            session_id=session["id"], reply_markup=markup)
         if not delivered:
             detail = "photo_send_failed"
     else:
+        # A proactive ping is visually set apart from an ordinary chat message:
+        # a short localized persona header (rtn_ping_header, italic) rides above
+        # the generated text, so the player sees at a glance that Nika reached
+        # out first — while the message itself stays warm and personal.
+        header = retention._rtn_text("rtn_ping_header", draft.lang).strip()
         # Render the persona's light markup as Telegram HTML; keep the verbose
         # result so a 403 (bot blocked) is still detected.
         ping_html = telegram_format.to_html(draft.text)
+        ping_plain = draft.text
+        if header:
+            ping_html = f"<i>{html.escape(header)}</i>\n\n{ping_html}"
+            ping_plain = f"{header}\n\n{draft.text}"
         result, err_code, err_desc = await client.send_message_verbose(
-            chat_id, ping_html, parse_mode="HTML")
-        if result is None and ping_html != draft.text and err_code != 403:
+            chat_id, ping_html, parse_mode="HTML", reply_markup=markup)
+        if result is None and ping_html != ping_plain and err_code != 403:
             # Bad HTML (never a block) — retry once as plain text.
             result, err_code, err_desc = await client.send_message_verbose(
-                chat_id, draft.text)
+                chat_id, ping_plain, reply_markup=markup)
         delivered = result is not None
         if not delivered:
             detail = f"{err_code}: {err_desc}" if err_desc else "send_failed"

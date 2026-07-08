@@ -212,7 +212,14 @@ async def test_run_product_pings_sends_and_persists(monkeypatch):
                                                     ignore_quiet_hours=True)
 
     assert stats == {"sent": 1, "failed": 0, "considered": 1}
-    assert tg.sent == [(7, "hey, miss you")]
+    # The ping is framed as a "system" message: the localized italic
+    # rtn_ping_header rides above the generated text…
+    assert len(tg.sent) == 1
+    chat_id, sent_text = tg.sent[0]
+    assert chat_id == 7
+    assert sent_text.startswith("<i>")
+    assert "hey, miss you" in sent_text
+    # …but only the model text is persisted (the header is chrome).
     assert capture["persisted"] == "hey, miss you"
     assert ("sent", "message", "idle-week") in capture["ledger"]
     assert capture["events"], "an admin retention_ping event is expected"

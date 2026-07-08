@@ -516,6 +516,46 @@ class RetentionReply:
     handoff: bool = False            # route the player OUT (support/manager)
     stage_up_hint: bool = False      # the model proposed advancing the stage
     ok: bool = True                  # False on a transient model failure
+    link_url: Optional[str] = None   # validated site-map CTA button url, or None
+    link_label: Optional[str] = None  # the site-map page title for the button
+
+
+def play_nudge_due(message_count: int) -> bool:
+    """True when THIS reply is the N-th assistant turn that carries the periodic
+    play invitation (`retention.play_reminder_every_msgs`; 0 = off).
+
+    `message_count` is the session's persisted turn counter BEFORE this reply
+    (one bump per persisted turn), so the upcoming reply is turn N+1. The very
+    first reply never nudges — the engagement directive forbids a casino pitch
+    in the opening turns.
+    """
+    every = int(settings.retention()["play_reminder_every_msgs"])
+    if every <= 0:
+        return False
+    upcoming = int(message_count or 0) + 1
+    return upcoming > 1 and upcoming % every == 0
+
+
+def resolve_site_link(url: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Validate a model-emitted [[LINK:url]] against the product's site map.
+
+    Only an EXACT match with an admin-configured site-map page survives (the
+    model can never button-ify an invented address); the page's title becomes
+    the button label (falling back to the url itself for a title-less row).
+    Returns (url, label) or (None, None).
+    """
+    candidate = (url or "").strip()
+    if not candidate:
+        return None, None
+    for page in settings.site_map() or []:
+        if not isinstance(page, dict):
+            continue
+        page_url = str(page.get("url", "")).strip()
+        if page_url and page_url == candidate:
+            label = str(page.get("title", "")).strip() or page_url
+            return page_url, label
+    log.info("retention_link_rejected url=%s", candidate[:200])
+    return None, None
 
 
 async def handle_retention_message(
@@ -554,6 +594,9 @@ async def handle_retention_message(
         carry = int(settings.retention()["carry_context_turns"])
         if carry > 0:
             previous_history = await db.get_history(prev_sid, limit=carry)
+    # Periodic play reminder: every N-th reply carries the Layer-3 nudge task
+    # (a light in-context invitation to play + a one-tap site-map button).
+    nudge = play_nudge_due(session.get("message_count", 0))
     messages = prompts.build_retention_messages(
         session=session,
         kb_block=kb_block,
@@ -562,12 +605,13 @@ async def handle_retention_message(
         resolved_lang=base_lang,
         photo_candidates=candidates,
         previous_history=previous_history or None,
+        play_nudge=nudge,
     )
     log.info(
         "retention_prompt_built session_id=%s history=%s prev_carry=%s "
-        "candidates=%s kb_chars=%s",
+        "candidates=%s kb_chars=%s play_nudge=%s",
         session_id, len(history), len(previous_history), len(candidates),
-        len(kb_block or ""),
+        len(kb_block or ""), nudge,
     )
 
     # --- call model (product keys / env failover) ---------------------------
@@ -596,12 +640,14 @@ async def handle_retention_message(
     handoff = False
     stage_up = False
     photo_id: Optional[int] = None
+    link_raw: Optional[str] = None
     clean_text = raw_text or ""
     if clean_text:
         clean_text, detected_lang = prompts.strip_language_tag(clean_text)
         clean_text, handoff = prompts.strip_handoff_tag(clean_text)
         clean_text, stage_up = prompts.strip_stage_up_tag(clean_text)
         clean_text, photo_id = prompts.strip_photo_tag(clean_text)
+        clean_text, link_raw = prompts.strip_link_tag(clean_text)
         # Deterministically scrub the "AI-tell" typography (em dashes, guillemet
         # quotes) the persona is told to avoid but the model keeps emitting.
         clean_text = telegram_format.normalize_punctuation(clean_text)
@@ -611,6 +657,9 @@ async def handle_retention_message(
     if photo_id is not None and photo_id not in candidate_ids:
         log.info("retention_photo_id_rejected session_id=%s id=%s", session_id, photo_id)
         photo_id = None
+    # Only honour a CTA link that exactly matches an admin-configured site-map
+    # page (never on a hand-off — the player is leaving for support/a manager).
+    link_url, link_label = (None, None) if handoff else resolve_site_link(link_raw)
 
     answer_lang = detected_lang or base_lang
     if detected_lang and detected_lang != session.get("conv_lang"):
@@ -647,6 +696,7 @@ async def handle_retention_message(
     return RetentionReply(
         reply=clean_text, lang=answer_lang, message_count=new_count,
         photo_id=photo_id, handoff=handoff, stage_up_hint=stage_up,
+        link_url=link_url, link_label=link_label,
     )
 
 
@@ -662,6 +712,8 @@ class PingDraft:
     lang: str
     photo_id: Optional[int]
     ai_meta: dict[str, Any]
+    link_url: Optional[str] = None    # validated site-map CTA button url
+    link_label: Optional[str] = None  # the site-map page title for the button
 
 
 async def generate_retention_ping(
@@ -722,17 +774,20 @@ async def generate_retention_ping(
     clean_text = raw_text or ""
     detected_lang: Optional[str] = None
     photo_id: Optional[int] = None
+    link_raw: Optional[str] = None
     if clean_text:
         clean_text, detected_lang = prompts.strip_language_tag(clean_text)
         # A ping never hands off or advances stages; strip defensively anyway.
         clean_text, _ = prompts.strip_handoff_tag(clean_text)
         clean_text, _ = prompts.strip_stage_up_tag(clean_text)
         clean_text, photo_id = prompts.strip_photo_tag(clean_text)
+        clean_text, link_raw = prompts.strip_link_tag(clean_text)
         clean_text = telegram_format.normalize_punctuation(clean_text)
     if detected_lang and detected_lang not in language.supported_codes():
         detected_lang = None
     if photo_id is not None and photo_id not in candidate_ids:
         photo_id = None
+    link_url, link_label = resolve_site_link(link_raw)
     if not clean_text and photo_id is None:
         # Nothing usable came back — treat like a failure, skip the ping.
         log.warning("retention_ping_empty session_id=%s", session_id)
@@ -746,6 +801,8 @@ async def generate_retention_ping(
         text=clean_text,
         lang=answer_lang,
         photo_id=photo_id,
+        link_url=link_url,
+        link_label=link_label,
         ai_meta={
             "model": result.model, "key_used": result.key_used,
             "tokens_in": result.tokens_in, "tokens_out": result.tokens_out,

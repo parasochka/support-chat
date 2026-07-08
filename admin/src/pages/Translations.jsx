@@ -13,18 +13,47 @@ import { API_URL, httpClient } from '../httpClient';
 import { getProductId, withProduct } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
 
-const SCOPES = [
-  ['widget', 'Widget texts', 'Chrome strings rendered by the widget itself.'],
-  [
-    'server',
-    'Assistant service replies',
-    'Model-free texts the server sends as part of a turn (escalation card, closing option, nudges, the per-language contact_url).',
-  ],
-  [
-    'retention',
-    'Retention bot copy',
-    'Telegram retention bot strings (menu, subscription gate, hand-off).',
-  ],
+// Keys that are service/error notices rather than the bot's own voice — split
+// into their own block so the "what the player hears from the bot" sections
+// stay clean and easy to tune.
+const SERVICE_KEYS = new Set([
+  'startError',
+  'sendError',
+  'switchStuck',
+  'low_content_reply',
+  'model_error_reply',
+  'rtn_need_deeplink',
+  'rtn_not_subscribed',
+  'rtn_rate_limited',
+  'rtn_low_content_reply',
+  'rtn_injection_reply',
+]);
+
+const SECTIONS = [
+  {
+    id: 'widget',
+    title: 'General — widget interface',
+    help: 'Chrome strings rendered by the widget itself: header, topic picker, buttons, input placeholder.',
+    match: (k) => k.scope === 'widget' && !SERVICE_KEYS.has(k.key),
+  },
+  {
+    id: 'support',
+    title: 'Support bot — messages to the player',
+    help: 'What the support bot itself says to the player: the escalation card and its button (incl. the per-language contact_url link) and the closing option.',
+    match: (k) => k.scope === 'server' && !SERVICE_KEYS.has(k.key),
+  },
+  {
+    id: 'retention',
+    title: 'Retention bot (Telegram) — messages to the player',
+    help: 'What the Telegram retention bot says: the entry menu and its buttons, the subscription gate, the manager hand-off, the proactive-ping header and the /stop-/resume confirmations.',
+    match: (k) => k.scope === 'retention' && !SERVICE_KEYS.has(k.key),
+  },
+  {
+    id: 'service',
+    title: 'Service and error notices',
+    help: 'Technical fallbacks shown on failures and guards (errors, rate limit, low-content and injection nudges) — rarely need brand tuning.',
+    match: (k) => SERVICE_KEYS.has(k.key),
+  },
 ];
 
 /**
@@ -157,11 +186,12 @@ const TranslationsInner = () => {
     <Box sx={{ p: 2, maxWidth: 1000 }}>
       <Title title="Translations" />
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-        Everything the player sees, editable per language: the widget texts,
-        the assistant's service replies (incl. the per-language{' '}
-        <code>contact_url</code> escalation button link), the retention bot
-        copy and the topic names. Clearing a field falls back to the shipped
-        default (shown as placeholder).
+        Everything the player sees, editable per language and split into
+        blocks: the general widget interface, the support bot's messages to
+        the player (incl. the per-language <code>contact_url</code> escalation
+        button link), the Telegram retention bot's messages, and the service /
+        error notices — plus the topic names. Clearing a field falls back to
+        the shipped default (shown as placeholder).
       </Typography>
       <Tabs
         value={lang}
@@ -175,11 +205,11 @@ const TranslationsInner = () => {
         ))}
       </Tabs>
 
-      {SCOPES.map(([scope, title, help]) => {
-        const keys = (data.keys || []).filter((k) => k.scope === scope);
+      {SECTIONS.map(({ id, title, help, match }) => {
+        const keys = (data.keys || []).filter(match);
         if (!keys.length) return null;
         return (
-          <Card key={scope} sx={{ mb: 2 }}>
+          <Card key={id} sx={{ mb: 2 }}>
             <CardContent>
               <Typography variant="h6">{title}</Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>

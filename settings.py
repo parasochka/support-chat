@@ -383,6 +383,9 @@ def retention() -> dict[str, Any]:
                                          config.RETENTION_SESSION_IDLE_MINUTES),
         "carry_context_turns": db_v.get("carry_context_turns",
                                         config.RETENTION_CARRY_CONTEXT_TURNS),
+        "play_reminder_every_msgs": db_v.get(
+            "play_reminder_every_msgs",
+            config.RETENTION_PLAY_REMINDER_EVERY_MSGS),
         # Proactive pings (the "retention matrix"): per-product opt-in + the
         # anti-annoyance guardrails the worker enforces on every send.
         "pings_enabled": db_v.get("pings_enabled",
@@ -524,6 +527,7 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "profile_pull_ttl_sec", 0, 604_800)  # <= 1 week
         _require_int(value, "session_idle_minutes", 0, 525_600)  # 0 = never close
         _require_int(value, "carry_context_turns", 0, 50)
+        _require_int(value, "play_reminder_every_msgs", 0, 1_000)  # 0 = off
         _require_bool(value, "pings_enabled")
         _require_int(value, "ping_daily_cap", 1, 24)
         _require_int(value, "ping_min_gap_hours", 1, 720)   # <= 30 days
