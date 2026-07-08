@@ -236,8 +236,16 @@ bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию
       <td>Telegram-конфиг продукта (бот, канал, player API, enabled) / регистрация вебхука.</td></tr>
   <tr><td><code>/admin/retention/kb</code> · <code>/admin/retention/kb/text</code></td>
       <td>Retention-KB (единый текстовый документ на продукт).</td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag put">PUT</span><code>/admin/retention/prompt-variables</code></td>
+      <td>Переменные Telegram-персоны (<code>retention_persona_name</code> / <code>_role</code> /
+          <code>_brand_name</code> / <code>_products</code> / <code>retention_tone_of_voice</code>).
+          Пустое значение наследует переменную чата поддержки.</td></tr>
   <tr><td><code>/admin/retention/photos*</code> · <code>/admin/retention/managers*</code></td>
-      <td>Медиатека (гейты по VIP-тиру × стадии) / пул менеджеров (round-robin, sticky).</td></tr>
+      <td>Медиатека (гейты по VIP-тиру × стадии; <code>POST /photos</code> принимает несколько
+          файлов за раз) / пул менеджеров (round-robin, sticky).</td></tr>
+  <tr><td><span class="tag post">POST</span><code>/admin/retention/photos/generate-metadata</code></td>
+      <td>AI-каталогизация выбранных фото (<code>{"ids":[…]}</code>, ≤20 за запрос): модель продукта
+          заполняет описание, теги, стадию откровенности и минимальный VIP-уровень.</td></tr>
   <tr><td><span class="tag get">GET</span><span class="tag post">POST</span><span class="tag put">PUT</span><span class="tag del">DEL</span><code>/admin/retention/pings/rules</code></td>
       <td>Правила матрицы пингов: триггер (<code>bot_inactivity</code> / <code>casino_inactivity</code> /
           <code>no_deposit</code>), дни, действие (message/photo), intent, VIP-тиры, cooldown, приоритет.

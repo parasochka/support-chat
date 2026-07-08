@@ -141,7 +141,12 @@ const PromptVariables = () => {
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         Brand values substituted into the shared prompt template. Empty values
         fall back to the built-in defaults. The prompt wording itself is edited
-        in <code>prompts.py</code> (see the read-only Prompt preview page).
+        in <code>prompts.py</code> (see the read-only Prompt preview page). The
+        Telegram retention persona has its own variables in{' '}
+        <Link href="#/retention?tab=variables">
+          Telegram · Retention → Prompt variables
+        </Link>{' '}
+        — they inherit these support values unless overridden there.
       </Typography>
 
       <Card sx={{ mb: 2 }}>

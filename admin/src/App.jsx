@@ -17,6 +17,7 @@ import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import CampaignIcon from '@mui/icons-material/Campaign';
+import EditNoteIcon from '@mui/icons-material/EditNote';
 import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
 import ForumIcon from '@mui/icons-material/Forum';
@@ -105,7 +106,9 @@ const RetentionSubItem = ({ tab, label, icon }) => {
       sx={{ pl: 4, py: 0.4 }}
     >
       <ListItemIcon sx={{ minWidth: 34 }}>{icon}</ListItemIcon>
-      <ListItemText primary={label} slotProps={{ primary: { variant: 'body2' } }} />
+      {/* No typography override: the Menu-level rule below pins one font size
+          for every entry, so sub-items match the resource/custom items. */}
+      <ListItemText primary={label} />
     </ListItemButton>
   );
 };
@@ -121,13 +124,19 @@ const AppMenu = () => {
   // managers anyway; hiding it mirrors that, like the page itself does).
   const { permissions } = usePermissions();
   return (
-    // Icons in the sidebar come from three different sources (resource items,
-    // custom Menu.Items, retention sub-items with fontSize="small") — normalize
-    // every one of them to the same size so the menu reads as one column.
+    // Sidebar entries come from three different sources (resource items render
+    // MUI MenuItems, custom Menu.Items likewise, retention sub-items are
+    // ListItemButtons) whose default typography differs — normalize BOTH the
+    // icons and the label font to one size so the menu reads as one column.
+    // Section headers keep their own overline style (excluded via :not()).
     <Menu
       sx={{
         '& .MuiListItemIcon-root .MuiSvgIcon-root': { fontSize: 20 },
         '& .MuiListItemIcon-root': { minWidth: 34 },
+        '& .MuiMenuItem-root': { fontSize: '0.875rem' },
+        '& .MuiListItemText-primary:not(.MuiTypography-overline)': {
+          fontSize: '0.875rem',
+        },
       }}
     >
       <Menu.DashboardItem primaryText="Dashboard" />
@@ -154,6 +163,7 @@ const AppMenu = () => {
         <RetentionSubItem tab="guide" label="Setup guide" icon={<MenuBookIcon fontSize="small" />} />
         <RetentionSubItem tab="config" label="Telegram config" icon={<TelegramIcon fontSize="small" />} />
         <RetentionSubItem tab="kb" label="Retention KB" icon={<LibraryBooksIcon fontSize="small" />} />
+        <RetentionSubItem tab="variables" label="Prompt variables" icon={<EditNoteIcon fontSize="small" />} />
         <RetentionSubItem tab="prompt" label="Prompt preview" icon={<TuneIcon fontSize="small" />} />
         <RetentionSubItem tab="photos" label="Media" icon={<PhotoLibraryIcon fontSize="small" />} />
         <RetentionSubItem tab="managers" label="Managers" icon={<SupportAgentIcon fontSize="small" />} />
