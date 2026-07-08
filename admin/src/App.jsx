@@ -130,30 +130,39 @@ const AppMenu = () => {
   // managers anyway; hiding it mirrors that, like the page itself does).
   const { permissions } = usePermissions();
   return (
-    // Sidebar entries come from three different sources (resource items render
-    // MUI MenuItems, custom Menu.Items likewise, retention sub-items are
-    // ListItemButtons) whose default typography differs — normalize BOTH the
-    // icons and the label font to one size so the menu reads as one column.
-    // Section headers keep their own overline style (excluded via :not()).
+    // Sidebar entries come from three different sources whose default typography
+    // differs, so they must be normalized to ONE look. The catch: RA's
+    // Menu.ResourceItem / Menu.Item (MenuItemLink) render the label as a bare
+    // <Typography variant="inherit"> directly inside .MuiMenuItem-root — NOT a
+    // ListItemText — while the retention sub-items (ListItemButton) render a
+    // .MuiListItemText-primary. A rule that targets only one of those leaves the
+    // column two-toned. So every rule below is written to cover BOTH the MenuItem
+    // label and the ListItemText label. Section headers keep their overline
+    // style (excluded via :not()).
     <Menu
       sx={{
         '& .MuiListItemIcon-root .MuiSvgIcon-root': { fontSize: 20 },
-        // One icon colour for every entry, in both states below.
+        // One icon size + inactive colour for every entry source.
         '& .MuiListItemIcon-root': { minWidth: 34, color: 'text.secondary' },
-        '& .MuiMenuItem-root': { fontSize: '0.875rem' },
-        // One label size AND colour across all three entry sources (resource
-        // items, custom Menu.Items, retention sub-items) — section headers keep
-        // their overline style (excluded). Without pinning the colour, RA menu
-        // links render text.secondary while the retention ListItemButtons render
-        // text.primary, so the column looked two-toned.
+        // One inactive label size + colour. .MuiMenuItem-root covers the RA
+        // links (label is an inheriting Typography), .MuiListItemText-primary
+        // covers the retention sub-items; both to text.secondary so the whole
+        // inactive column is a single tone (RA's default, matching Dashboard).
+        '& .MuiMenuItem-root': { fontSize: '0.875rem', color: 'text.secondary' },
         '& .MuiListItemText-primary:not(.MuiTypography-overline)': {
           fontSize: '0.875rem',
-          color: 'text.primary',
+          color: 'text.secondary',
         },
-        // Active/selected entry — same accent for every source, so the highlight
-        // reads identically whether it's a resource link or a retention sub-tab.
-        '& .RaMenuItemLink-active .MuiListItemText-primary:not(.MuiTypography-overline), & .Mui-selected .MuiListItemText-primary:not(.MuiTypography-overline)':
-          { color: 'primary.main', fontWeight: 600 },
+        // Active/selected entry — same accent for every source. RA marks the
+        // active link with .RaMenuItemLink-active on the MenuItem (its inheriting
+        // label picks up the colour); the retention sub-item uses .Mui-selected
+        // on the ListItemButton (colour pinned on its ListItemText). Cover both,
+        // label + icon, so the highlight reads identically everywhere.
+        '& .RaMenuItemLink-active': { color: 'primary.main', fontWeight: 600 },
+        '& .Mui-selected .MuiListItemText-primary:not(.MuiTypography-overline)': {
+          color: 'primary.main',
+          fontWeight: 600,
+        },
         '& .RaMenuItemLink-active .MuiListItemIcon-root, & .Mui-selected .MuiListItemIcon-root':
           { color: 'primary.main' },
       }}
