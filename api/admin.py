@@ -404,6 +404,10 @@ class PromptVariablesWrite(BaseModel):
     value: Any = Field(...)
 
 
+class SiteMapWrite(BaseModel):
+    value: Any = Field(...)
+
+
 @router.get("/prompt-variables")
 async def get_prompt_variables(product_id: Optional[int] = None,
                                admin=Depends(require_admin)) -> JSONResponse:
@@ -439,6 +443,38 @@ async def put_prompt_variables(body: PromptVariablesWrite,
          "value": settings_mod.prompt_variables().get(key, default)}
         for key, desc, default in prompts.PROMPT_VARIABLES
     ]})
+
+
+# ---------------------------------------------------------------------------
+# site map — the product's official pages the model may link to (Layer 1).
+#
+# A single per-product setting (list of {title, url, purpose}) injected into the
+# byte-stable Layer-1 core of BOTH the support and the retention bot, and named
+# in each core's links policy. Stored on the product (like prompt_variables),
+# outside the generic Settings editor. See prompts.render_site_map_block /
+# settings.site_map.
+# ---------------------------------------------------------------------------
+@router.get("/site-map")
+async def get_site_map(product_id: Optional[int] = None,
+                       admin=Depends(require_admin)) -> JSONResponse:
+    await _resolve_admin_product(admin, product_id, write=False)
+    return JSONResponse(content={"pages": settings_mod.site_map()})
+
+
+@router.put("/site-map")
+async def put_site_map(body: SiteMapWrite,
+                       product_id: Optional[int] = None,
+                       admin=Depends(require_admin_write)) -> JSONResponse:
+    pid = await _resolve_admin_product(admin, product_id, write=True)
+    try:
+        validated = settings_mod.validate_site_map(body.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.set_product_setting(pid, "site_map", validated,
+                                 updated_by=admin.get("email") or admin.get("role"))
+    await settings_mod.reload()  # hot: the next prompt build renders new pages
+    await db.log_admin_event(None, "site_map_updated", {"count": len(validated)})
+    return JSONResponse(content={"pages": settings_mod.site_map()})
 
 
 # ---------------------------------------------------------------------------

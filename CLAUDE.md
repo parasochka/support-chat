@@ -406,6 +406,28 @@ scan the player's raw message, not the prompt) and the **test player profile** (
 sandbox tab, moved here since it exists to test the prompt's personalization; the legacy `#test`
 hash redirects).
 
+### Site map — official pages the model may link to (`prompts.render_site_map_block` + `settings.site_map`)
+A single per-product setting: the list of the product's official website pages (`{title, url,
+purpose}`) the assistant is allowed to link to. Stored under its own `product_settings` key
+`site_map` (like `prompt_variables`/`translations`, OUTSIDE `SETTING_KEYS`, its own admin
+endpoint `GET/PUT /admin/site-map`), on the PRODUCT (brand-specific URLs). The product layer
+REPLACES the global list as a whole (a list has no keys to field-merge); no product override ⇒
+the global list, else empty. `settings.validate_site_map` requires an http(s) `url` per row
+(drops blank rows, caps at 60 pages, length-caps fields). `prompts.render_site_map_block(pages,
+brand)` renders a deterministic `=== SITE MAP ===` block (brand already substituted, appended
+AFTER the prompt-variable render so admin URLs never pass through `{placeholder}` substitution),
+which `get_system_core()` AND `get_retention_system_core()` append to their byte-stable Layer-1
+core — so **both** bots (support + retention) get the same catalogue, and each core's links
+policy names "the official {brand_name} site pages provided to you" as an allowed link source.
+Empty list ⇒ no block, so the cores render exactly as before (the byte-stability invariant holds
+when no pages are configured; it reads the in-process settings cache, so the block is byte-stable
+WITHIN a product scope and changes only on an admin save — the same accepted cache break as a
+prompt-variable edit). The read-only effective-prompt previews pick it up automatically (they
+reuse `get_system_core`/`get_retention_system_core`). Admin: the **Support chat → Site map** tab
+(`admin/src/pages/SiteMap.jsx`, `RequireProduct`-gated, admins edit / managers read-only). No
+per-product seed (like translations — empty until the owner adds pages). Tests:
+`tests/test_site_map.py`.
+
 ### Translations — the user-facing copy registry (`translations.py`)
 Every string the player sees now resolves through one registry: the widget chrome (header title,
 topic heading, canned greeting, placeholder, buttons, error notes, switch notices, finish copy)
@@ -1290,7 +1312,8 @@ settings/secrets/KB/copy, the header switcher. When extending, keep these rules:
 - **Everything brand/product-specific lives in the product-scoped stores**:
   `prompt_variables`, `retention_prompt_variables` (the Telegram persona;
   a SEPARATE prompt with its own defaults, no support inheritance), `translations` (incl. the per-language
-  `contact_url`), the KB (topics + texts + `kb_variables`) — all keyed by
+  `contact_url`), `site_map` (the official pages the model may link to, shared by both bots),
+  the KB (topics + texts + `kb_variables`) — all keyed by
   product. Don't scatter new brand-specific values outside these.
 - **Technical/operational knobs stay in the settings groups** (`general`, `antispam`,
   `model`, `language`) — resolvable at both the global and the product layer. When

@@ -84,8 +84,10 @@ panel.
   sub-tab for the `{placeholder}` values injected into KB answers), a **Prompt** view
   (read-only assembled prompt + a **Prompt variables** sub-tab that re-brands the prompt
   template — persona/brand/products/tone — and hosts the escalation keyword lists and the
-  test player profile), a **Translations** tab for every user-facing widget string
-  (chrome, service replies, topic names) per language, a **Structure** tab
+  test player profile), a **Site map** tab (the product's official pages the assistant is
+  allowed to link to — injected into both the support and the retention bot's prompt so it
+  links real pages instead of inventing URLs), a **Translations** tab for every user-facing
+  widget string (chrome, service replies, topic names) per language, a **Structure** tab
   (partners/products, widget keys + embed snippets, per-product OpenAI/handshake
   secrets), and a **Users** tab with per-scope memberships. Everything is edited
   per product via the header switcher. **Retention analytics** live in the Retention
