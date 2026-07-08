@@ -23,6 +23,7 @@ import ForumIcon from '@mui/icons-material/Forum';
 import VpnKeyIcon from '@mui/icons-material/VpnKey';
 import InsightsIcon from '@mui/icons-material/Insights';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
+import LinkIcon from '@mui/icons-material/Link';
 import PeopleIcon from '@mui/icons-material/People';
 import PhotoLibraryIcon from '@mui/icons-material/PhotoLibrary';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
@@ -45,6 +46,7 @@ import { UserCreate, UserEdit, UserList } from './resources/Users';
 import Prompt from './pages/Prompt';
 import Retention from './pages/Retention';
 import Settings from './pages/Settings';
+import SiteMap from './pages/SiteMap';
 import Structure from './pages/Structure';
 import Translations from './pages/Translations';
 
@@ -173,6 +175,7 @@ const AppMenu = () => {
         <Menu.ResourceItem name="sessions" />
         <Menu.ResourceItem name="unresolved" />
         <Menu.ResourceItem name="kb" />
+        <Menu.Item to="/site-map" primaryText="Site map" leftIcon={<LinkIcon />} />
         <Menu.Item to="/prompt" primaryText="Prompt" leftIcon={<TuneIcon />} />
         <Menu.Item
           to="/translations"
@@ -274,6 +277,7 @@ const App = () => (
         element={<Navigate to="/prompt?tab=variables" replace />}
       />
       <Route path="/translations" element={<Translations />} />
+      <Route path="/site-map" element={<SiteMap />} />
       <Route path="/settings" element={<Settings />} />
       <Route path="/structure" element={<Structure />} />
       <Route path="/retention" element={<Retention />} />

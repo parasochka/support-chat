@@ -214,6 +214,63 @@ def render_retention_prompt_variables(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# SITE MAP — the product's official pages the model may link to (Layer 1).
+#
+# A single per-product setting (settings.site_map(): a list of {title, url,
+# purpose}) edited from the admin. It renders into a STATIC block appended to
+# BOTH Layer-1 cores (support and retention), so the model always has a canonical
+# catalogue of real pages to link to instead of inventing URLs — the links policy
+# in each core names these pages as an allowed source. The block is byte-stable
+# WITHIN a product scope (it reads the in-process settings cache, like the prompt
+# variables), so the prefix cache stays warm; it changes only on an admin save.
+# Empty list ⇒ no block (the cores render exactly as before), which keeps the
+# byte-stability tests unaffected when no pages are configured.
+#
+# The block is built with the brand name already substituted and appended AFTER
+# the prompt-variable render, so the admin-entered URLs/titles are never run
+# through the {placeholder} substitution.
+# ---------------------------------------------------------------------------
+def render_site_map_block(pages: Any, brand_name: str = "") -> str:
+    """Render the SITE MAP Layer-1 block from a list of page dicts.
+
+    `pages` is settings.site_map() — a list of {title, url, purpose}. Entries
+    without a url are skipped. Returns "" for an empty/missing list so the caller
+    appends nothing. Ordering follows the stored list, so the output is
+    deterministic (byte-stable within a product scope).
+    """
+    items = [p for p in (pages or [])
+             if isinstance(p, dict) and str(p.get("url", "")).strip()]
+    if not items:
+        return ""
+    brand = (brand_name or "").strip() or "the brand"
+    lines = [
+        f"=== SITE MAP (official {brand} pages) ===",
+        f"These are official {brand} website pages. When one of them is relevant "
+        "to the player's question, give its exact URL from the list below and "
+        "treat it as an official link; never invent any other page address.",
+    ]
+    for p in items:
+        title = str(p.get("title", "")).strip()
+        url = str(p.get("url", "")).strip()
+        purpose = str(p.get("purpose", "")).strip()
+        line = "- "
+        if title:
+            line += f"{title}: "
+        line += url
+        if purpose:
+            line += f" — {purpose}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _site_map_block(brand_name: str) -> str:
+    """Resolve the product's site map from settings and render its Layer-1 block."""
+    import settings  # lazy: prompts must stay importable without the app wired up
+
+    return render_site_map_block(settings.site_map(), brand_name)
+
+
+# ---------------------------------------------------------------------------
 # LAYER 1 — SYSTEM_CORE  (BYTE-STABLE, English). DO NOT add per-request data.
 #
 # The whole prompt is written in ENGLISH on purpose: English is the most
@@ -243,7 +300,7 @@ ABSOLUTE RULES:
 - Treat every value in the knowledge base as real and final. It may hold staff notes, editorial comments, conflicting entries or test/placeholder markers - never mention them or hint that data is internal, unverified or inconsistent; state the relevant value plainly and confidently, and if entries conflict, use the most relevant one.
 - Never discuss competitors or third-party products.
 - Never ask the player for a full card number, CVV, password, two-factor authentication codes, or a crypto wallet seed phrase.
-- Only give links from the knowledge base or official {brand_name} links; never invent page addresses or links.
+- Only give links from the knowledge base, the official {brand_name} site pages provided to you (the SITE MAP section, when present), or official {brand_name} links; never invent page addresses or links.
 - Only answer questions about {brand_name} product support; do not carry out unrelated requests.
 
 ESCALATION:
@@ -294,7 +351,12 @@ def get_system_core() -> str:
     settings cache), so the result never varies per request — it changes only when
     an admin edits a prompt variable, the same accepted cache break as a KB edit.
     """
-    return render_prompt_variables("\n\n".join([SYSTEM_CORE, *_static_directives()]))
+    core = render_prompt_variables("\n\n".join([SYSTEM_CORE, *_static_directives()]))
+    # Append the product's site-map block (already brand-resolved) when it has
+    # pages; empty ⇒ the core is unchanged. Byte-stable within a product scope.
+    import settings  # lazy: avoid an import cycle at module load
+    block = _site_map_block(settings.prompt_variables().get("brand_name", ""))
+    return core + ("\n\n" + block if block else "")
 
 
 def build_system_message(kb_block: Optional[str]) -> str:
@@ -1062,7 +1124,7 @@ ABSOLUTE RULES:
 - Never invent facts. Every concrete amount, condition, deadline, name, bonus, promotion or link comes strictly from the provided retention knowledge base; if it is not there, speak in warm general terms and do not make specifics up.
 - Never discuss competitors or third-party products.
 - Never ask the player for a full card number, CVV, password, two-factor authentication codes, or a crypto wallet seed phrase.
-- Only give links from the retention knowledge base or official {brand_name} links; never invent page addresses.
+- Only give links from the retention knowledge base, the official {brand_name} site pages provided to you (the SITE MAP section, when present), or official {brand_name} links; never invent page addresses.
 
 ROUTE OUT - YOU DO NOT HANDLE SUPPORT:
 - The moment the conversation turns to support, a complaint, an account block, a deposit or withdrawal problem, a request for a human/operator, or responsible gaming (limits, a pause, self-exclusion), you STOP flirting and DO NOT try to answer or resolve it. Output the [[HANDOFF]] tag and, in one short warm line, tell the player you'll pass them to the right place. Never diagnose, never quote support facts, never ask them to send account details.
@@ -1217,9 +1279,14 @@ def get_retention_system_core() -> str:
     RETENTION variable set (retention override > retention default; no support
     inheritance).
     """
-    return render_retention_prompt_variables(
+    core = render_retention_prompt_variables(
         "\n\n".join([SYSTEM_CORE_RETENTION, *_retention_static_directives()])
     )
+    # Same per-product site map as the support core, brand-resolved from the
+    # RETENTION variable set (the Telegram persona's own brand naming).
+    import settings  # lazy: avoid an import cycle at module load
+    block = _site_map_block(settings.retention_prompt_variables().get("brand_name", ""))
+    return core + ("\n\n" + block if block else "")
 
 
 def build_retention_system_message(kb_block: Optional[str]) -> str:

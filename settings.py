@@ -299,6 +299,28 @@ def translations() -> dict[str, Any]:
     return out
 
 
+def site_map() -> list[dict[str, str]]:
+    """Resolved site map: the product's list of official pages the model may link to.
+
+    A list of {title, url, purpose} stored under its own app_settings /
+    product_settings key (like prompt_variables / translations), outside
+    SETTING_KEYS, with its own admin endpoint. Brand-specific, so it lives on the
+    PRODUCT: the product layer REPLACES the global list as a whole (it is not a
+    field merge — a list has no keys to merge), falling back to the global list
+    when the product stores none, else empty. Read from the in-process cache, so
+    the rendered Layer-1 site-map block stays byte-stable between requests within
+    a product scope (prompts.render_site_map_block consumes this).
+    """
+    glob = _cache.get("site_map")
+    glob = glob if isinstance(glob, list) else []
+    pid = tenancy.current_product_id()
+    if pid is not None:
+        prod = (_product_cache.get(pid) or {}).get("site_map")
+        if isinstance(prod, list):
+            return prod
+    return glob
+
+
 def general() -> dict[str, Any]:
     """Resolved operational knobs that don't belong to another group: session
     and admin-token lifetimes, the per-session message cap, the prompt history
@@ -615,6 +637,43 @@ def validate_retention_prompt_variables(value: Any) -> dict[str, str]:
             raise ValueError(f"{key} must be a string")
         if v.strip():
             out[key] = v.strip()
+    return out
+
+
+_SITE_MAP_MAX_PAGES = 60
+_SITE_MAP_MAX_FIELD = 300
+
+
+def validate_site_map(value: Any) -> list[dict[str, str]]:
+    """Validate a site-map write. Returns the cleaned list; raises ValueError.
+
+    Each entry is an object {title, url, purpose}: `url` is required and must be
+    an http(s) address (it goes to the model as a linkable page); `title` and
+    `purpose` are optional strings. Rows with a blank url are dropped, fields are
+    length-capped, and the list is capped at _SITE_MAP_MAX_PAGES. Stored
+    separately from SETTING_KEYS (its own admin endpoint), on the product.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("site_map value must be a JSON array")
+    out: list[dict[str, str]] = []
+    for i, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"site_map[{i}] must be an object")
+        url = str(item.get("url", "")).strip()
+        if not url:
+            continue  # a blank row (e.g. a just-added empty line) is dropped
+        if not (url.startswith("http://") or url.startswith("https://")):
+            raise ValueError(
+                f"site_map[{i}].url must start with http:// or https://")
+        out.append({
+            "title": str(item.get("title", "")).strip()[:_SITE_MAP_MAX_FIELD],
+            "url": url[:_SITE_MAP_MAX_FIELD],
+            "purpose": str(item.get("purpose", "")).strip()[:_SITE_MAP_MAX_FIELD],
+        })
+        if len(out) >= _SITE_MAP_MAX_PAGES:
+            break
     return out
 
 
