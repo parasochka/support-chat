@@ -350,11 +350,19 @@ the tab (the bug that shipped with the feature).
 The prompt in `prompts.py` is a **dry template**: `SYSTEM_CORE`, `_GUARDRAILS`, the
 forbidden-topics list/refusal and the closing-goodbye directive carry `{placeholder}` tokens
 (`{persona_name}`, `{brand_name}`, `{products}`, `{persona_role}`,
-`{tone_of_voice}`, `{support_scope}`, `{retention_tone_of_voice}`). The support core renders
-`{tone_of_voice}`; the retention (Telegram) core renders `{retention_tone_of_voice}` — the two
-tones are tuned INDEPENDENTLY from the same Prompt → Prompt variables sub-tab (the retention
-persona may be bolder/flirtier than the support one; its default is), so the retention KB's
-sexier persona never has to fight the support tone. The B2B platform the brand runs on is deliberately
+`{tone_of_voice}`, `{support_scope}`). The RETENTION (Telegram) persona has its **own
+registry** (`prompts.RETENTION_PROMPT_VARIABLES`: `retention_persona_name/_persona_role/
+_brand_name/_products/retention_tone_of_voice`) with its **own store**
+(`retention_prompt_variables`, `settings.retention_prompt_variables()`) and its **own admin
+editor** — the **Retention → Prompt variables** tab; every retention key except the tone
+**INHERITS the resolved support variable when left empty** (registry field `inherits_from`),
+so by default the Telegram persona mirrors the support chat and the operator overrides only
+what should differ (e.g. a bolder Telegram girl with her own name). The tone ships its own
+bolder default — the two tones stay tuned INDEPENDENTLY, so the retention KB's
+sexier persona never has to fight the support tone. The retention templates keep the BASE
+placeholder names; `prompts.render_retention_prompt_variables` resolves each base placeholder
+through its retention counterpart (used by `get_retention_system_core()` and the retention
+Layer-3 guardrails), so the retention Layer 1 stays byte-stable per product × mode. The B2B platform the brand runs on is deliberately
 **absent** — the prompt names only the brand and its products; anything platform-related is
 KB content (Layer 2), managed from the Knowledge-base tab, never prompt material.
 `prompts.PROMPT_VARIABLES` is the registry — (key,
@@ -813,8 +821,11 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `_RETENTION_FORMATTING_DIRECTIVE` (plain text only, bare URLs, no Markdown/HTML of any
   kind) instead of the support `_FORMATTING_DIRECTIVE` (which ASKS for the widget's Markdown
   subset and would leak literal `**`/`[]()` characters to the player). The retention core
-  also renders its OWN tone variable `{retention_tone_of_voice}` (not the support
-  `{tone_of_voice}`) — see "Prompt variables". Layer 2 = the **whole** retention-KB (`db.retention_kb_block`,
+  renders with the **retention prompt-variable set**
+  (`prompts.render_retention_prompt_variables` — retention overrides > inherited support
+  values, incl. its OWN tone `{retention_tone_of_voice}`) — see "Prompt variables"; the
+  bot's model-free chrome (`retention._persona_name`) resolves the same way, so the menu
+  greeting matches the persona the prompt runs. Layer 2 = the **whole** retention-KB (`db.retention_kb_block`,
   NOT `kb_topics`). **The retention KB is edited as ONE free-text document per product** (like a
   support topic's KB text): stored as a single `retention_kb` row with the sentinel title
   `db.RETENTION_KB_DOC_TITLE` (its body enters the prompt verbatim, no header);
@@ -833,7 +844,19 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
 - **Media library + file_id cache**: `retention_photos` gates by `level_min` (VIP-tier ordinal) ×
   `stage` (explicitness). The first send uploads the binary from the media dir (Railway Volume,
   `RETENTION_MEDIA_DIR`); Telegram returns a `file_id` cached on the row so later sends skip the
-  re-upload/egress. **Candidate selection is pre-model** (`retention.select_photo_candidates`):
+  re-upload/egress. **Upload is bulk-friendly** (`POST /admin/retention/photos` takes any number
+  of `files` in one request; the single `file` field stays for older consumers) and metadata is
+  **AI-generated on demand**: `POST /admin/retention/photos/generate-metadata` (`{ids: […]}`,
+  ≤20/request — the SPA chunks bigger selections) runs one vision call per photo through the
+  product's OWN OpenAI client (`client_for_product`) + the product-resolved `model` settings
+  group, using the prompt in `prompts.build_photo_meta_messages` (wording in `prompts.py`, the
+  single source of truth), and fills `description`/`tags`/`stage`/`level_min`; the reply is
+  strict JSON, parsed + **clamped against the product's real `vip_tiers`/`max_stage`**
+  (`api.retention._parse_photo_meta`) so a hallucinated number can never unlock a photo beyond
+  the delivery gate, every call lands in `ai_interaction_logs` (invariant §4, `session_id=NULL`),
+  and one failed photo never kills the batch. The SPA Media tab adds checkbox selection +
+  "Generate metadata" and client-side filters (search/stage/level/status).
+  **Candidate selection is pre-model** (`retention.select_photo_candidates`):
   unseen, tier×stage-gated (current stage + 1 teaser, capped by the tier ceiling), bounded by the
   **daily cap** (hard, reactive included) and the **proactive cooldown** (bypassed when the player
   explicitly asks — `is_photo_request`). Empty candidate set ⇒ the model is told to keep chatting
@@ -939,8 +962,10 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `resolve_scope_filter` convention.
 - **Admin**: the SPA **Retention · Telegram** view (sub-tabs: Setup guide — the static
   "how to connect the bot" checklist that replaced `RETENTION_SETUP.md` —, Telegram config,
-  Retention KB — the one-document text editor —, **Prompt preview**, Media, Managers,
-  **Pings** — the ping-matrix rules editor + ledger + run-now —,
+  Retention KB — the one-document text editor —, **Prompt variables** — the Telegram-persona
+  editor (`GET/PUT /admin/retention/prompt-variables`; empty = inherit the support value, see
+  "Prompt variables") —, **Prompt preview**, Media — bulk upload + AI metadata + filters —,
+  Managers, **Pings** — the ping-matrix rules editor + ledger + run-now —,
   **Conversations** — the Telegram chat list + transcript dialog, see the lifecycle bullet
   above —, Analytics);
   API under `/admin/retention/*` (`api/retention.py`, guarded per
@@ -950,10 +975,10 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   preview tab) mirrors the support `GET /admin/effective-prompt`: the whole assembled retention
   prompt (retention Layer 1 + the KB document as Layer 2 in the system message; the Layer-3
   user message with the Test-sandbox player, an illustrative photo-candidate row and the
-  guardrails), read-only, per product. It also returns the prompt variables the RETENTION
-  templates actually use (`prompts.retention_prompt_variable_keys()` — the persona/brand set,
-  not `support_scope`) with resolved values; the SPA shows them read-only with a notice that
-  their ONE editor is the support Prompt → Prompt variables sub-tab (no duplicate editor).
+  guardrails), read-only, per product. It also returns the retention prompt variables
+  (`prompts.RETENTION_PROMPT_VARIABLES` — raw override + inherited + resolved value per key);
+  the SPA shows them read-only with a link to their ONE editor, the Retention → Prompt
+  variables tab (no duplicate editor).
 - **All existing invariants hold**: retention turns persist atomically as normal
   `chat_messages` + `ai_interaction_logs`, carry the session's `product_id`, use the product's own
   (encrypted) OpenAI keys with the same failover, and DB access stays behind `db.*` helpers.
@@ -1168,9 +1193,10 @@ role-driven; no password-only owner login).
 The tenanting is BUILT — partners → products, membership authorization, per-product
 settings/secrets/KB/copy, the header switcher. When extending, keep these rules:
 - **Everything brand/product-specific lives in the product-scoped stores**:
-  `prompt_variables`, `translations` (incl. the per-language `contact_url`), the KB
-  (topics + texts + `kb_variables`) — all keyed by product. Don't scatter new
-  brand-specific values outside these.
+  `prompt_variables`, `retention_prompt_variables` (the Telegram persona;
+  inherits the support values per key), `translations` (incl. the per-language
+  `contact_url`), the KB (topics + texts + `kb_variables`) — all keyed by
+  product. Don't scatter new brand-specific values outside these.
 - **Technical/operational knobs stay in the settings groups** (`general`, `antispam`,
   `model`, `language`) — resolvable at both the global and the product layer. When
   adding a knob, put it in the group it belongs to (or `general`), never hard-code

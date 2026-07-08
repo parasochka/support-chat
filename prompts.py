@@ -112,6 +112,35 @@ PROMPT_VARIABLES: tuple[tuple[str, str, str], ...] = (
     ("support_scope", "Short list of what product support covers (used in guardrails/refusals)",
      "deposits and withdrawals, account and verification, bonuses, betting and "
      "games, technical questions"),
+)
+
+# ---------------------------------------------------------------------------
+# RETENTION PROMPT VARIABLES — the Telegram-persona uniquification registry.
+#
+# The retention (Telegram) chat shares the prompt-variable mechanics but is
+# tuned INDEPENDENTLY from the support chat: the bot may run a different
+# persona (name, role, even brand naming) so it does not read as "the support
+# chat in Telegram". Registry: (key, admin-facing description, default,
+# inherits_from). `default=None` means the value INHERITS the resolved support
+# variable named by `inherits_from` — so out of the box the Telegram persona
+# mirrors the support one, and the operator overrides only what should differ.
+# Values live under their own store (`retention_prompt_variables`,
+# settings.retention_prompt_variables()) with their own admin editor — the
+# Retention → Prompt variables tab.
+# ---------------------------------------------------------------------------
+RETENTION_PROMPT_VARIABLES: tuple[tuple[str, str, Optional[str], Optional[str]], ...] = (
+    ("retention_persona_name",
+     "Persona name in the Telegram retention chat (empty = same as the "
+     "support persona name)", None, "persona_name"),
+    ("retention_persona_role",
+     "Who the Telegram persona is - the sentence fragment right after the "
+     "name (empty = same as the support persona role)", None, "persona_role"),
+    ("retention_brand_name",
+     "Brand name as used in the Telegram chat rules and links policy "
+     "(empty = same as the support brand name)", None, "brand_name"),
+    ("retention_products",
+     "What the brand offers, as named in the Telegram chat (empty = same as "
+     "the support products)", None, "products"),
     ("retention_tone_of_voice",
      "Tone-of-voice for the RETENTION (Telegram) persona - may be bolder/more "
      "flirtatious than the support tone; the two are tuned independently",
@@ -120,7 +149,7 @@ PROMPT_VARIABLES: tuple[tuple[str, str, str], ...] = (
      "flirtation - noticeably bolder and more personal than a support chat, yet "
      "never vulgar and always respectful. Keep it simple and human, like texting "
      "someone you like. Make the player feel desired and special, like a VIP, "
-     "and keep the excitement of playing alive."),
+     "and keep the excitement of playing alive.", None),
 )
 
 # Placeholder syntax mirrors the KB variables ({key}); only keys registered in
@@ -144,6 +173,32 @@ def render_prompt_variables(text: str) -> str:
     def repl(match: re.Match[str]) -> str:
         key = match.group(1)
         return values.get(key, match.group(0))
+
+    return _PROMPT_VAR_RE.sub(repl, text)
+
+
+def render_retention_prompt_variables(text: str) -> str:
+    """Substitute placeholders with the RETENTION-resolved values.
+
+    The retention templates keep the BASE placeholder names ({persona_name},
+    {brand_name}, …) plus {retention_tone_of_voice}; here each base placeholder
+    resolves through its retention counterpart (admin override on the
+    `retention_prompt_variables` store, else the inherited support value — see
+    settings.retention_prompt_variables()). Like the support renderer it reads
+    the in-process settings cache, so the rendered retention Layer 1 stays
+    byte-stable between requests within a product scope.
+    """
+    import settings  # lazy: prompts must stay importable without the app wired up
+
+    values = dict(settings.prompt_variables())
+    retention_values = settings.retention_prompt_variables()
+    values.update(retention_values)
+    for key, _desc, _default, inherits in RETENTION_PROMPT_VARIABLES:
+        if inherits:
+            values[inherits] = retention_values.get(key, values.get(inherits, ""))
+
+    def repl(match: re.Match[str]) -> str:
+        return values.get(match.group(1), match.group(0))
 
     return _PROMPT_VAR_RE.sub(repl, text)
 
@@ -677,7 +732,7 @@ FORBIDDEN_TOPICS_REFUSAL: str = (
 )
 
 
-def _forbidden_topics_directive() -> Optional[str]:
+def _forbidden_topics_directive(renderer=None) -> Optional[str]:
     """Layer-3 line listing the forbidden topics defined in this file.
 
     The list + refusal wording are constants above (`FORBIDDEN_TOPICS` /
@@ -685,8 +740,11 @@ def _forbidden_topics_directive() -> Optional[str]:
     source of truth (this file), not the admin panel. Rides in Layer 3 (the user
     message) so SYSTEM_CORE stays byte-stable. Returns None when the list is
     empty, so the prompt is unchanged (and the static `_GUARDRAILS` topic
-    restriction still applies).
+    restriction still applies). `renderer` picks which variable set the
+    {placeholders} resolve with (support by default; the retention prompt
+    passes render_retention_prompt_variables so its own brand naming applies).
     """
+    renderer = renderer or render_prompt_variables
     topics = [t.strip() for t in FORBIDDEN_TOPICS if isinstance(t, str) and t.strip()]
     if not topics:
         return None
@@ -701,7 +759,7 @@ def _forbidden_topics_directive() -> Optional[str]:
     refusal = (FORBIDDEN_TOPICS_REFUSAL or "").strip()
     if refusal:
         line += f" For the refusal, use roughly this wording: \"{refusal}\"."
-    return render_prompt_variables(line)
+    return renderer(line)
 
 
 # Ongoing-conversation directive (Layer 3, per-request). After a topic switch the
@@ -1081,18 +1139,21 @@ def _retention_static_directives() -> list[str]:
 
 
 def retention_prompt_variable_keys() -> list[str]:
-    """Registered prompt-variable keys the RETENTION templates actually use.
+    """The RETENTION prompt-variable keys whose values the retention templates use.
 
-    Feeds the admin Retention → Prompt preview tab, which lists only the
-    variables relevant to the retention prompt (the values themselves are
-    edited in one place — the support Prompt → Prompt variables sub-tab).
-    Returned in PROMPT_VARIABLES registry order.
+    Feeds the admin Retention surfaces. The retention templates carry the BASE
+    placeholder names ({persona_name}, …); each base placeholder resolves
+    through its retention_* counterpart (see render_retention_prompt_variables),
+    so the relevant editable keys are the retention registry entries whose own
+    placeholder OR inherited base placeholder appears in the templates.
+    Returned in RETENTION_PROMPT_VARIABLES registry order.
     """
     templates = "\n".join([SYSTEM_CORE_RETENTION,
                            *_retention_static_directives(),
                            _RETENTION_GUARDRAILS])
     used = {m.group(1) for m in _PROMPT_VAR_RE.finditer(templates)}
-    return [key for key, _desc, _default in PROMPT_VARIABLES if key in used]
+    return [key for key, _desc, _default, inherits in RETENTION_PROMPT_VARIABLES
+            if key in used or (inherits and inherits in used)]
 
 
 def get_retention_system_core() -> str:
@@ -1100,9 +1161,10 @@ def get_retention_system_core() -> str:
 
     Byte-identical between requests within a product scope (changes only on an
     admin prompt-variables save), so the OpenAI prefix cache stays warm per
-    (product x retention). A test asserts the byte-stability.
+    (product x retention). A test asserts the byte-stability. Rendered with the
+    RETENTION variable set (retention overrides > inherited support values).
     """
-    return render_prompt_variables(
+    return render_retention_prompt_variables(
         "\n\n".join([SYSTEM_CORE_RETENTION, *_retention_static_directives()])
     )
 
@@ -1249,9 +1311,10 @@ def build_retention_dynamic_prompt(
         "=== PLAYER MESSAGE ===",
         user_text,
         "",
-        render_prompt_variables(_RETENTION_GUARDRAILS),
+        render_retention_prompt_variables(_RETENTION_GUARDRAILS),
     ]
-    forbidden = _forbidden_topics_directive()
+    forbidden = _forbidden_topics_directive(
+        renderer=render_retention_prompt_variables)
     if forbidden:
         parts += ["", forbidden]
     return "\n".join(parts)
@@ -1359,7 +1422,7 @@ def build_retention_ping_prompt(
     photo_block = _photo_candidates_directive(photo_candidates or [])
     if photo_block:
         parts += [photo_block, ""]
-    parts += [task, "", render_prompt_variables(_RETENTION_GUARDRAILS)]
+    parts += [task, "", render_retention_prompt_variables(_RETENTION_GUARDRAILS)]
     return "\n".join(parts)
 
 
@@ -1435,6 +1498,69 @@ def strip_stage_up_tag(text: str) -> tuple[str, bool]:
             continue
         cleaned.append(line)
     return "\n".join(cleaned).strip(), hinted
+
+
+# ---------------------------------------------------------------------------
+# RETENTION MEDIA CATALOGUING — the admin "generate metadata" task.
+#
+# A one-shot vision call (no session, no history) that catalogues one media
+# photo for the retention library: a grounded English description, tags, the
+# explicitness `stage`, and the minimum VIP tier (`level_min`) that may
+# receive it. The wording lives here — the single source of truth for every
+# model-facing prompt — and api/retention.py builds the messages per photo.
+# ---------------------------------------------------------------------------
+_PHOTO_META_SYSTEM = (
+    "You are cataloguing a photo for the media library of a casino's Telegram "
+    "retention chat, where a warm, flirtatious female persona chats with "
+    "players and sends them photos of herself. The catalogue metadata decides "
+    "WHICH players may receive the photo and grounds the caption the persona "
+    "writes when sending it. Describe what is actually in the photo, factually "
+    "and concretely, and rate how daring it is. Reply with ONE strict JSON "
+    "object only - no markdown fences, no commentary, no extra keys."
+)
+
+_PHOTO_META_TASK = (
+    "Catalogue this photo. Return a single JSON object with exactly these keys:\n"
+    "- \"description\": 1-2 English sentences, concrete and factual (setting, "
+    "outfit, pose, mood), written so the persona can ground a natural caption "
+    "on it.\n"
+    "- \"tags\": 3-8 short lowercase English tags (subject, setting, outfit, "
+    "mood).\n"
+    "- \"stage\": integer 1..{max_stage} - the explicitness ladder. 1 = "
+    "everyday and innocent (casual, fully covered, social); {max_stage} = the "
+    "most daring allowed (revealing outfit / swimwear / lingerie, openly "
+    "seductive - never nudity); intermediate steps scale smoothly between "
+    "those anchors (dressed-up and playful, then teasing and suggestive). "
+    "Rate only what is actually visible.\n"
+    "- \"level_min\": integer 0..{max_level} - the minimum VIP tier ordinal "
+    "that may receive the photo ({tier_list}). Innocent everyday photos go to "
+    "0 (available to everyone); the more daring or personal the photo, the "
+    "higher the tier that earns it."
+)
+
+
+def build_photo_meta_messages(image_data_url: str, vip_tiers: list[str],
+                              max_stage: int) -> list[dict[str, Any]]:
+    """The OpenAI `messages` array for one photo-metadata generation call.
+
+    `image_data_url` is a data: URL of the photo binary; `vip_tiers` is the
+    product's ordered tier list (ordinal = index) and `max_stage` the top of
+    its explicitness ladder — both from the `retention` settings group, so the
+    generated ranges always match what the delivery gate actually enforces.
+    """
+    tiers = [str(t) for t in (vip_tiers or ["none"])]
+    tier_list = ", ".join(f"{i} = {name}" for i, name in enumerate(tiers))
+    task = _PHOTO_META_TASK.format(max_stage=max(int(max_stage), 1),
+                                   max_level=len(tiers) - 1,
+                                   tier_list=tier_list)
+    return [
+        {"role": "system", "content": _PHOTO_META_SYSTEM},
+        {"role": "user", "content": [
+            {"type": "text", "text": task},
+            {"type": "image_url",
+             "image_url": {"url": image_data_url, "detail": "low"}},
+        ]},
+    ]
 
 
 def strip_handoff_tag(text: str) -> tuple[str, bool]:

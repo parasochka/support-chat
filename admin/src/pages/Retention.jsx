@@ -6,6 +6,7 @@ import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
+import Checkbox from '@mui/material/Checkbox';
 import Chip from '@mui/material/Chip';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
@@ -96,12 +97,16 @@ const GUIDE_STEPS = [
       <>
         Review the <Link href="#/retention?tab=kb">Retention KB</Link> (one text
         document — what Nika may offer and talk about; a generic English starter
-        is pre-filled, replace it with the brand&apos;s own), upload photos in{' '}
-        <Link href="#/retention?tab=photos">Media</Link> (description grounds the
-        caption; <code>level_min</code> = VIP tier, <code>stage</code> =
-        explicitness) and add live <Link href="#/retention?tab=managers">Managers</Link>{' '}
-        (round-robin, sticky). Thresholds (daily photo cap, stage progression, VIP
-        tiers, nonce TTL) are the <code>retention</code> group in{' '}
+        is pre-filled, replace it with the brand&apos;s own), tune the Telegram
+        persona in <Link href="#/retention?tab=variables">Prompt variables</Link>{' '}
+        (name/role/tone — empty fields inherit the support chat), upload photos
+        in <Link href="#/retention?tab=photos">Media</Link> (bulk upload, then
+        select them and press <b>Generate metadata</b> to have the AI fill the
+        description, tags, <code>stage</code> = explicitness and{' '}
+        <code>level_min</code> = VIP tier) and add live{' '}
+        <Link href="#/retention?tab=managers">Managers</Link> (round-robin,
+        sticky). Thresholds (daily photo cap, stage progression, VIP tiers,
+        nonce TTL) are the <code>retention</code> group in{' '}
         <Link href="#/settings">Settings</Link>; bot texts are the{' '}
         <code>rtn_*</code> keys in <Link href="#/translations">Translations</Link>.
       </>
@@ -366,10 +371,96 @@ const KbTab = ({ productId }) => {
 };
 
 // ---------------------------------------------------------------------------
+// Prompt variables tab — the Telegram-persona values (name, role, brand,
+// products, tone of voice). Every field except the tone INHERITS the support
+// chat's value when left empty, so by default the bot mirrors the support
+// persona and the operator overrides only what should differ (e.g. a bolder,
+// more intimate Telegram girl with her own name).
+// ---------------------------------------------------------------------------
+const VariablesTab = ({ productId }) => {
+  const notify = useNotify();
+  const [vars, setVars] = useState(null);
+  const [values, setValues] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  const apply = useCallback((variables) => {
+    setVars(variables || []);
+    const v = {};
+    (variables || []).forEach((x) => {
+      v[x.key] = x.value ?? '';
+    });
+    setValues(v);
+  }, []);
+
+  useEffect(() => {
+    httpClient(
+      `${API_URL}/admin/retention/prompt-variables?product_id=${productId}`
+    )
+      .then(({ json }) => apply(json.variables))
+      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+  }, [productId, notify, apply]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const { json } = await httpClient(
+        `${API_URL}/admin/retention/prompt-variables?product_id=${productId}`,
+        { method: 'PUT', body: JSON.stringify({ value: values }) }
+      );
+      apply(json.variables);
+      notify('Retention prompt variables saved', { type: 'success' });
+    } catch (e) {
+      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (vars === null) return <Box sx={{ p: 2 }}>Loading…</Box>;
+
+  return (
+    <Box sx={{ maxWidth: 900 }}>
+      <Alert severity="info" sx={{ mb: 2 }}>
+        These values uniquify the <b>Telegram retention persona</b> — they are
+        independent from the{' '}
+        <Link href="#/prompt?tab=variables">support-chat prompt variables</Link>.
+        An empty field <b>inherits the support chat&apos;s value</b> (shown as the
+        placeholder), so by default the bot matches the support persona; fill a
+        field only where the Telegram chat should differ.
+      </Alert>
+      <Card>
+        <CardContent>
+          {vars.map((v) => (
+            <TextField
+              key={v.key}
+              label={v.key}
+              helperText={
+                v.description +
+                (v.inherits_from
+                  ? ' Empty = inherited from the support chat.'
+                  : ' Empty = the built-in default.')
+              }
+              value={values[v.key] ?? ''}
+              onChange={(e) => setValues({ ...values, [v.key]: e.target.value })}
+              placeholder={v.inherited}
+              fullWidth
+              multiline
+              margin="normal"
+            />
+          ))}
+          <Button variant="contained" onClick={save} disabled={saving} sx={{ mt: 1 }}>
+            {saving ? 'Saving…' : 'Save variables'}
+          </Button>
+        </CardContent>
+      </Card>
+    </Box>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Prompt preview tab — read-only view of the assembled RETENTION prompt
-// (mirrors the support Prompt → Preview page) + the prompt variables the
-// retention templates use. The values are edited in ONE place — the support
-// Prompt → Prompt variables sub-tab — so this tab only shows them and links there.
+// (mirrors the support Prompt → Preview page) + the retention prompt variables
+// it renders with. The values are edited on the Prompt variables tab.
 // ---------------------------------------------------------------------------
 const PreviewBlock = ({ title, text }) => (
   <Card sx={{ mb: 2 }}>
@@ -409,9 +500,9 @@ const PromptTab = ({ productId }) => {
         the wording, edit <code>prompts.py</code> and redeploy.
       </Typography>
       <Alert severity="info" sx={{ mb: 2 }}>
-        The prompt variables below are shared with the support chat and are
-        edited in one place: <Link href="#/prompt?tab=variables">Support chat →
-        Prompt → Prompt variables</Link>.
+        The retention prompt variables below are edited on the{' '}
+        <Link href="#/retention?tab=variables">Prompt variables</Link> tab; an
+        empty override inherits the support chat&apos;s value.
       </Alert>
       {variables.length > 0 && (
         <Card sx={{ mb: 2 }}>
@@ -425,15 +516,25 @@ const PromptTab = ({ productId }) => {
                   <TableRow>
                     <TableCell>Variable</TableCell>
                     <TableCell>Description</TableCell>
-                    <TableCell>Current value</TableCell>
+                    <TableCell>Effective value</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {variables.map((v) => (
                     <TableRow key={v.key}>
-                      <TableCell><code>{`{${v.key}}`}</code></TableCell>
+                      <TableCell>
+                        <code>{`{${v.key}}`}</code>
+                        {!v.value && v.inherits_from && (
+                          <Chip
+                            size="small"
+                            label="inherited"
+                            variant="outlined"
+                            sx={{ ml: 1 }}
+                          />
+                        )}
+                      </TableCell>
                       <TableCell>{v.description}</TableCell>
-                      <TableCell sx={{ whiteSpace: 'pre-wrap' }}>{v.value}</TableCell>
+                      <TableCell sx={{ whiteSpace: 'pre-wrap' }}>{v.resolved}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -493,11 +594,20 @@ const PhotoPreview = ({ photoId }) => {
   );
 };
 
+// How many photos ride in one generate-metadata request; larger selections are
+// chunked client-side so a slow vision batch can't hit the request timeout.
+const META_CHUNK = 10;
+
 const PhotosTab = ({ productId }) => {
   const notify = useNotify();
   const [items, setItems] = useState([]);
   const [upload, setUpload] = useState({ description: '', tags: '', level_min: 0, stage: 1, category: '' });
-  const [file, setFile] = useState(null);
+  const [files, setFiles] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
+  const [generating, setGenerating] = useState(false);
+  const [genProgress, setGenProgress] = useState('');
+  const [filters, setFilters] = useState({ q: '', stage: 'all', level: 'all', status: 'all' });
 
   const load = useCallback(() => {
     httpClient(`${API_URL}/admin/retention/photos?product_id=${productId}`)
@@ -510,7 +620,8 @@ const PhotosTab = ({ productId }) => {
   }, [load]);
 
   const doUpload = async () => {
-    if (!file) return;
+    if (!files.length) return;
+    setUploading(true);
     const fd = new FormData();
     fd.append('product_id', String(productId));
     fd.append('description', upload.description);
@@ -518,20 +629,28 @@ const PhotosTab = ({ productId }) => {
     fd.append('level_min', String(upload.level_min));
     fd.append('stage', String(upload.stage));
     fd.append('category', upload.category);
-    fd.append('file', file);
-    const res = await fetch(`${API_URL}/admin/retention/photos`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${getToken()}` },
-      body: fd,
-    });
-    if (!res.ok) {
+    files.forEach((f) => fd.append('files', f));
+    try {
+      const res = await fetch(`${API_URL}/admin/retention/photos`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${getToken()}` },
+        body: fd,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        notify(body.detail || 'Upload failed', { type: 'error' });
+        return;
+      }
       const body = await res.json().catch(() => ({}));
-      notify(body.detail || 'Upload failed', { type: 'error' });
-      return;
+      const uploaded = (body.photos || []).length || 1;
+      notify(`${uploaded} photo${uploaded === 1 ? '' : 's'} uploaded`, {
+        type: 'success',
+      });
+      setFiles([]);
+      load();
+    } finally {
+      setUploading(false);
     }
-    notify('Photo uploaded', { type: 'success' });
-    setFile(null);
-    load();
   };
 
   const patch = async (id, fields) => {
@@ -550,9 +669,91 @@ const PhotosTab = ({ productId }) => {
     if (!window.confirm('Delete this photo?')) return;
     try {
       await httpClient(`${API_URL}/admin/retention/photos/${id}`, { method: 'DELETE' });
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
       load();
     } catch (e) {
       notify(e.body?.detail || e.message || 'Delete failed', { type: 'error' });
+    }
+  };
+
+  // --- filters (client-side over the loaded library) ---
+  const visible = items.filter((ph) => {
+    if (filters.status !== 'all' && Boolean(ph.active) !== (filters.status === 'active')) {
+      return false;
+    }
+    if (filters.stage !== 'all' && Number(ph.stage) !== Number(filters.stage)) return false;
+    if (filters.level !== 'all' && Number(ph.level_min) !== Number(filters.level)) return false;
+    if (filters.q) {
+      const hay = `${ph.description || ''} ${(ph.tags || []).join(' ')} ${ph.category || ''}`.toLowerCase();
+      if (!hay.includes(filters.q.toLowerCase())) return false;
+    }
+    return true;
+  });
+  const stageOptions = [...new Set(items.map((ph) => Number(ph.stage)))].sort((a, b) => a - b);
+  const levelOptions = [...new Set(items.map((ph) => Number(ph.level_min)))].sort((a, b) => a - b);
+
+  // --- selection + AI metadata generation ---
+  const toggleSelect = (id) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const selectAllVisible = () => setSelected(new Set(visible.map((ph) => ph.id)));
+
+  const generate = async () => {
+    const ids = [...selected];
+    if (!ids.length || generating) return;
+    if (
+      !window.confirm(
+        `Generate metadata for ${ids.length} photo(s)? The AI fills the description, tags, stage and VIP level; current values are overwritten.`
+      )
+    ) {
+      return;
+    }
+    setGenerating(true);
+    let ok = 0;
+    let failed = 0;
+    const errors = [];
+    try {
+      for (let i = 0; i < ids.length; i += META_CHUNK) {
+        const chunk = ids.slice(i, i + META_CHUNK);
+        setGenProgress(`${Math.min(i + chunk.length, ids.length)} / ${ids.length}`);
+        const { json } = await httpClient(
+          `${API_URL}/admin/retention/photos/generate-metadata?product_id=${productId}`,
+          { method: 'POST', body: JSON.stringify({ ids: chunk }) }
+        );
+        (json.results || []).forEach((r) => {
+          if (r.ok) ok += 1;
+          else {
+            failed += 1;
+            errors.push(`#${r.id}: ${r.error}`);
+          }
+        });
+      }
+      if (failed) {
+        notify(
+          `Metadata: ${ok} generated, ${failed} failed (${errors.slice(0, 3).join('; ')}${errors.length > 3 ? '…' : ''})`,
+          { type: 'warning' }
+        );
+      } else {
+        notify(`Metadata generated for ${ok} photo${ok === 1 ? '' : 's'}`, {
+          type: 'success',
+        });
+      }
+      setSelected(new Set());
+    } catch (e) {
+      notify(e.body?.detail || e.message || 'Generation failed', { type: 'error' });
+    } finally {
+      setGenerating(false);
+      setGenProgress('');
+      load();
     }
   };
 
@@ -561,7 +762,13 @@ const PhotosTab = ({ productId }) => {
       <Card sx={{ mb: 2 }}>
         <CardContent>
           <Typography variant="h6" gutterBottom>
-            Upload photo
+            Upload photos
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            Pick any number of files at once. The fields below apply to every
+            uploaded photo — leave them empty and use{' '}
+            <b>Generate metadata</b> afterwards to have the AI fill the
+            description, tags, explicitness stage and VIP level per photo.
           </Typography>
           <Grid container spacing={1.5} sx={{ mb: 1 }}>
             <Grid size={{ xs: 12 }}>
@@ -615,27 +822,172 @@ const PhotosTab = ({ productId }) => {
           </Grid>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
             <Button variant="outlined" component="label">
-              {file ? file.name : 'Choose file'}
-              <input hidden type="file" accept="image/*" onChange={(e) => setFile(e.target.files[0])} />
+              {files.length
+                ? `${files.length} file${files.length === 1 ? '' : 's'} chosen`
+                : 'Choose files'}
+              <input
+                hidden
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={(e) => setFiles([...e.target.files])}
+              />
             </Button>
-            <Button variant="contained" onClick={doUpload} disabled={!file}>
-              Upload
+            <Button variant="contained" onClick={doUpload} disabled={!files.length || uploading}>
+              {uploading ? 'Uploading…' : 'Upload'}
             </Button>
+          </Stack>
+        </CardContent>
+      </Card>
+
+      <Card sx={{ mb: 2 }}>
+        <CardContent>
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            flexWrap="wrap"
+            useFlexGap
+          >
+            <TextField
+              size="small"
+              label="Search (description, tags, category)"
+              value={filters.q}
+              onChange={(e) => setFilters({ ...filters, q: e.target.value })}
+              sx={{ minWidth: 240 }}
+            />
+            <TextField
+              select
+              size="small"
+              label="Stage"
+              value={filters.stage}
+              onChange={(e) => setFilters({ ...filters, stage: e.target.value })}
+              sx={{ minWidth: 110 }}
+            >
+              <MenuItem value="all">all</MenuItem>
+              {stageOptions.map((s) => (
+                <MenuItem key={s} value={String(s)}>
+                  {s}
+                </MenuItem>
+              ))}
+            </TextField>
+            <TextField
+              select
+              size="small"
+              label="Level min"
+              value={filters.level}
+              onChange={(e) => setFilters({ ...filters, level: e.target.value })}
+              sx={{ minWidth: 110 }}
+            >
+              <MenuItem value="all">all</MenuItem>
+              {levelOptions.map((l) => (
+                <MenuItem key={l} value={String(l)}>
+                  {l}
+                </MenuItem>
+              ))}
+            </TextField>
+            <TextField
+              select
+              size="small"
+              label="Status"
+              value={filters.status}
+              onChange={(e) => setFilters({ ...filters, status: e.target.value })}
+              sx={{ minWidth: 110 }}
+            >
+              <MenuItem value="all">all</MenuItem>
+              <MenuItem value="active">active</MenuItem>
+              <MenuItem value="inactive">inactive</MenuItem>
+            </TextField>
+            <Typography variant="body2" color="text.secondary">
+              {visible.length} of {items.length} photos
+            </Typography>
+          </Stack>
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            flexWrap="wrap"
+            useFlexGap
+            sx={{ mt: 1.5 }}
+          >
+            <Button size="small" onClick={selectAllVisible} disabled={!visible.length}>
+              Select all shown
+            </Button>
+            <Button
+              size="small"
+              onClick={() => setSelected(new Set())}
+              disabled={!selected.size}
+            >
+              Clear selection
+            </Button>
+            <Button
+              variant="contained"
+              size="small"
+              onClick={generate}
+              disabled={!selected.size || generating}
+            >
+              {generating
+                ? `Generating… ${genProgress}`
+                : `Generate metadata (${selected.size})`}
+            </Button>
+            <Typography variant="caption" color="text.secondary">
+              AI (the product&apos;s own model + API key) fills the description,
+              tags, stage and minimum VIP level for every selected photo.
+            </Typography>
           </Stack>
         </CardContent>
       </Card>
 
       {items.length === 0 && (
         <Typography variant="body2" color="text.secondary">
-          No photos yet — upload the first one above.
+          No photos yet — upload the first ones above.
         </Typography>
       )}
       <Grid container spacing={2} alignItems="stretch">
-        {items.map((ph) => (
+        {visible.map((ph) => (
           <Grid size={{ xs: 12, sm: 6, md: 4 }} key={ph.id}>
-            <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+            <Card
+              sx={{
+                height: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                outline: selected.has(ph.id) ? '2px solid' : 'none',
+                outlineColor: 'primary.main',
+              }}
+            >
               <CardContent sx={{ flexGrow: 1 }}>
-                <PhotoPreview photoId={ph.id} />
+                <Box sx={{ position: 'relative' }}>
+                  <PhotoPreview photoId={ph.id} />
+                  <Checkbox
+                    checked={selected.has(ph.id)}
+                    onChange={() => toggleSelect(ph.id)}
+                    sx={{
+                      position: 'absolute',
+                      top: 4,
+                      left: 4,
+                      bgcolor: 'background.paper',
+                      borderRadius: 1,
+                      p: 0.25,
+                      '&:hover': { bgcolor: 'background.paper' },
+                    }}
+                  />
+                </Box>
+                <Stack
+                  direction="row"
+                  spacing={0.5}
+                  flexWrap="wrap"
+                  useFlexGap
+                  sx={{ mt: 1 }}
+                >
+                  <Chip size="small" variant="outlined" label={`stage ${ph.stage}`} />
+                  <Chip size="small" variant="outlined" label={`level ${ph.level_min}+`} />
+                  {(ph.tags || []).slice(0, 4).map((t) => (
+                    <Chip key={t} size="small" label={t} />
+                  ))}
+                  {(ph.tags || []).length > 4 && (
+                    <Chip size="small" label={`+${ph.tags.length - 4}`} />
+                  )}
+                </Stack>
                 <Stack spacing={1.5} sx={{ mt: 1.5 }}>
                   <TextField
                     size="small"
@@ -647,6 +999,21 @@ const PhotosTab = ({ productId }) => {
                     }
                     fullWidth
                     multiline
+                  />
+                  <TextField
+                    size="small"
+                    label="Tags (comma-separated)"
+                    defaultValue={(ph.tags || []).join(', ')}
+                    onBlur={(e) => {
+                      const tags = e.target.value
+                        .split(',')
+                        .map((t) => t.trim().toLowerCase())
+                        .filter(Boolean);
+                      if (tags.join(',') !== (ph.tags || []).join(',')) {
+                        patch(ph.id, { tags });
+                      }
+                    }}
+                    fullWidth
                   />
                   <Stack direction="row" spacing={1}>
                     <TextField
@@ -1626,6 +1993,7 @@ const TABS = [
   ['guide', 'Setup guide', GuideTab],
   ['config', 'Telegram config', ConfigTab],
   ['kb', 'Retention KB', KbTab],
+  ['variables', 'Prompt variables', VariablesTab],
   ['prompt', 'Prompt preview', PromptTab],
   ['photos', 'Media', PhotosTab],
   ['managers', 'Managers', ManagersTab],

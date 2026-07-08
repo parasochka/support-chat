@@ -70,14 +70,15 @@ async def test_kb_text_folds_legacy_entries(monkeypatch):
 
 def test_retention_prompt_variable_keys_subset():
     keys = prompts.retention_prompt_variable_keys()
-    registered = [k for k, _d, _v in prompts.PROMPT_VARIABLES]
-    # Only registered keys, in registry order.
+    registered = [k for k, _d, _v, _i in prompts.RETENTION_PROMPT_VARIABLES]
+    # Only retention-registry keys, in registry order.
     assert keys == [k for k in registered if k in keys]
-    # The retention templates use the persona/brand set + their OWN tone...
-    for expected in ("persona_name", "brand_name", "products",
-                     "retention_tone_of_voice"):
+    # The retention templates use the persona/brand set (via inheritance from
+    # the base placeholders) + their OWN tone...
+    for expected in ("retention_persona_name", "retention_brand_name",
+                     "retention_products", "retention_tone_of_voice"):
         assert expected in keys
-    # ...but not the support-only scope list or the support tone.
+    # ...but never the support-only keys (scope list / support tone).
     assert "support_scope" not in keys
     assert "tone_of_voice" not in keys
 
@@ -109,7 +110,12 @@ async def test_retention_effective_prompt_renders_all_layers(monkeypatch):
     # Layer 3 carries the photo-candidate block and the recency guardrails.
     assert "PHOTO CANDIDATES" in pv["user"]
     assert "CONSTRAINTS" in pv["user"]
-    # Only retention-relevant variables are listed, with resolved values.
+    # Only retention-relevant variables are listed. `value` is the raw override
+    # (empty = inherited), `resolved` is what the prompt actually renders with.
     keys = [v["key"] for v in payload["variables"]]
     assert keys == prompts.retention_prompt_variable_keys()
-    assert all(v["value"] for v in payload["variables"])
+    assert all(v["resolved"] for v in payload["variables"])
+    # With no overrides stored, the inherit-keys resolve to the support values.
+    by_key = {v["key"]: v for v in payload["variables"]}
+    assert by_key["retention_persona_name"]["resolved"] == "Nika"
+    assert by_key["retention_persona_name"]["value"] == ""

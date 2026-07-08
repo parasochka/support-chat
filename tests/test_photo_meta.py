@@ -1,0 +1,72 @@
+"""AI metadata generation for retention media: the prompt builder and the
+strict-JSON parser/clamper behind POST /admin/retention/photos/generate-metadata."""
+from __future__ import annotations
+
+import pytest
+
+import prompts
+from api.retention import _parse_photo_meta
+
+_TIERS = ["none", "bronze", "silver", "gold"]
+
+
+def test_build_photo_meta_messages_shape():
+    msgs = prompts.build_photo_meta_messages("data:image/jpeg;base64,AAA",
+                                             _TIERS, max_stage=4)
+    assert msgs[0]["role"] == "system"
+    assert "strict JSON" in msgs[0]["content"]
+    user = msgs[1]
+    assert user["role"] == "user"
+    text_part, image_part = user["content"]
+    # The ranges the model is given match the product's real gates.
+    assert "1..4" in text_part["text"]
+    assert "0..3" in text_part["text"]
+    assert "3 = gold" in text_part["text"]
+    assert image_part["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_parse_photo_meta_happy_path():
+    meta = _parse_photo_meta(
+        '{"description": "A photo.", "tags": ["Beach", " sun ", ""],'
+        ' "stage": 2, "level_min": 1}',
+        vip_tiers=_TIERS, max_stage=4)
+    assert meta == {"description": "A photo.", "tags": ["beach", "sun"],
+                    "stage": 2, "level_min": 1}
+
+
+def test_parse_photo_meta_tolerates_fences_and_prose():
+    meta = _parse_photo_meta(
+        'Sure! ```json\n{"description": "d", "tags": ["a"], "stage": 1,'
+        ' "level_min": 0}\n```',
+        vip_tiers=_TIERS, max_stage=4)
+    assert meta["description"] == "d"
+
+
+def test_parse_photo_meta_clamps_to_product_gates():
+    # A hallucinated stage/level can never unlock beyond the real ladder.
+    meta = _parse_photo_meta(
+        '{"description": "d", "tags": [], "stage": 99, "level_min": 42}',
+        vip_tiers=_TIERS, max_stage=3)
+    assert meta["stage"] == 3
+    assert meta["level_min"] == 3          # len(tiers) - 1
+    meta = _parse_photo_meta(
+        '{"description": "d", "tags": [], "stage": 0, "level_min": -5}',
+        vip_tiers=_TIERS, max_stage=3)
+    assert meta["stage"] == 1
+    assert meta["level_min"] == 0
+
+
+def test_parse_photo_meta_rejects_garbage():
+    with pytest.raises(ValueError):
+        _parse_photo_meta("no json here", vip_tiers=_TIERS, max_stage=3)
+    with pytest.raises(ValueError):
+        _parse_photo_meta('{"tags": [], "stage": 1, "level_min": 0}',
+                          vip_tiers=_TIERS, max_stage=3)   # empty description
+    with pytest.raises(ValueError):
+        _parse_photo_meta('{"description": "d", "tags": "not-a-list",'
+                          ' "stage": 1, "level_min": 0}',
+                          vip_tiers=_TIERS, max_stage=3)
+    with pytest.raises(ValueError):
+        _parse_photo_meta('{"description": "d", "tags": [], "stage": "x",'
+                          ' "level_min": 0}',
+                          vip_tiers=_TIERS, max_stage=3)

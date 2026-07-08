@@ -413,8 +413,14 @@ def reset_state() -> None:
 
 
 def _persona_name() -> str:
-    """The product's persona name (prompt variable; product scope is already set)."""
-    return settings.prompt_variables().get("persona_name") or "Nika"
+    """The product's TELEGRAM persona name (product scope is already set).
+
+    Resolves through the retention prompt variables (retention_persona_name
+    override > the inherited support persona_name), so the bot chrome always
+    matches the persona the retention prompt actually runs.
+    """
+    return (settings.retention_prompt_variables().get("retention_persona_name")
+            or "Nika")
 
 
 def _rtn_text(key: str, lang: str) -> str:

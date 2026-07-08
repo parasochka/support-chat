@@ -338,13 +338,6 @@ async def retention_effective_prompt(product_id: int,
         resolved_lang=lang,
         photo_candidates=_RETENTION_PREVIEW_CANDIDATES,
     )
-    values = settings_mod.prompt_variables()
-    descriptions = {k: d for k, d, _v in prompts.PROMPT_VARIABLES}
-    variables = [
-        {"key": key, "description": descriptions.get(key, ""),
-         "value": values.get(key, "")}
-        for key in prompts.retention_prompt_variable_keys()
-    ]
     return JSONResponse(content={
         "effective_preview": {
             "system": messages[0]["content"],
@@ -352,8 +345,76 @@ async def retention_effective_prompt(product_id: int,
             "example": {"lang": lang,
                         "user_text": _RETENTION_PREVIEW_USER_TEXT},
         },
-        "variables": variables,
+        "variables": _retention_variables_payload(),
     })
+
+
+# ===========================================================================
+# Admin: retention prompt variables — the Telegram-persona uniquification
+# values (retention_persona_name / _role / _brand / _products / tone). Stored
+# under their own product-settings key; every non-tone key INHERITS the
+# resolved support prompt variable when left empty (the Telegram persona
+# mirrors the support chat by default and is overridden only where it should
+# differ). The one editor is the Retention → Prompt variables tab.
+# ===========================================================================
+class RetentionPromptVariablesWrite(BaseModel):
+    value: Any = Field(...)
+
+
+def _retention_variables_payload() -> list[dict[str, Any]]:
+    """The variables list for the admin editor (scope already bound).
+
+    `value` is the raw stored override ('' = inherited), `inherited` the value
+    that applies when the override is empty (the support counterpart or the
+    registry default), `resolved` what the prompt actually renders with.
+    """
+    overrides = settings_mod.retention_prompt_variable_overrides()
+    resolved = settings_mod.retention_prompt_variables()
+    support = settings_mod.prompt_variables()
+    out = []
+    for key, desc, default, inherits in prompts.RETENTION_PROMPT_VARIABLES:
+        inherited = default if default is not None else support.get(inherits or "", "")
+        out.append({
+            "key": key, "description": desc,
+            "inherits_from": inherits,
+            "inherited": inherited,
+            "value": overrides.get(key, ""),
+            "resolved": resolved.get(key, inherited),
+        })
+    return out
+
+
+@admin_router.get("/prompt-variables")
+async def get_retention_prompt_variables(product_id: int,
+                                         admin=Depends(require_admin)
+                                         ) -> JSONResponse:
+    await admin_auth.require_product_read(admin, product_id)
+    tenancy.set_current_product(product_id)
+    return JSONResponse(content={"variables": _retention_variables_payload()})
+
+
+@admin_router.put("/prompt-variables")
+async def put_retention_prompt_variables(product_id: int,
+                                         body: RetentionPromptVariablesWrite,
+                                         admin=Depends(require_admin_write)
+                                         ) -> JSONResponse:
+    await admin_auth.require_product_write(admin, product_id)
+    tenancy.set_current_product(product_id)
+    try:
+        validated = settings_mod.validate_retention_prompt_variables(body.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    # Product store only (like the support prompt variables): the Telegram
+    # persona is a per-casino uniquification seam, never a global one.
+    await db.set_product_setting(product_id, "retention_prompt_variables",
+                                 validated,
+                                 updated_by=admin.get("email") or admin.get("role"))
+    await settings_mod.reload()  # hot: the next retention prompt renders new values
+    await db.log_admin_event(None, "retention_prompt_variables_updated",
+                             {"keys": sorted(validated),
+                              "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"variables": _retention_variables_payload()})
 
 
 # ===========================================================================
@@ -460,6 +521,9 @@ async def list_photos(product_id: int, admin=Depends(require_admin)) -> JSONResp
     return JSONResponse(content={"items": await db.list_retention_photos(product_id)})
 
 
+_PHOTO_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+
+
 @admin_router.post("/photos")
 async def create_photo(product_id: int = Form(...),
                        description: str = Form(""),
@@ -468,27 +532,184 @@ async def create_photo(product_id: int = Form(...),
                        stage: int = Form(1),
                        category: str = Form(""),
                        sort_order: int = Form(0),
-                       file: UploadFile = File(...),
+                       file: Optional[UploadFile] = File(default=None),
+                       files: Optional[list[UploadFile]] = File(default=None),
                        admin=Depends(require_admin_write)) -> JSONResponse:
-    """Upload a photo binary to the media Volume + create its catalogue row."""
+    """Upload photo binaries to the media Volume + create their catalogue rows.
+
+    Bulk-friendly: `files` takes any number of images in one request (the shared
+    form fields apply to every one — typically left blank and filled by the AI
+    metadata generation afterwards). The single `file` field stays accepted for
+    older API consumers. Validation runs BEFORE anything is written, so one bad
+    file rejects the batch instead of half-uploading it.
+    """
     await admin_auth.require_product_write(admin, product_id)
+    uploads = [u for u in ([file] if file else []) + list(files or []) if u]
+    if not uploads:
+        raise HTTPException(status_code=400, detail="No files uploaded.")
+    exts = []
+    for up in uploads:
+        ext = os.path.splitext(up.filename or "")[1].lower() or ".jpg"
+        if ext not in _PHOTO_EXTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported image type: {up.filename or ext}")
+        exts.append(ext)
     os.makedirs(config.RETENTION_MEDIA_DIR, exist_ok=True)
-    ext = os.path.splitext(file.filename or "")[1].lower() or ".jpg"
-    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
-        raise HTTPException(status_code=400, detail="Unsupported image type.")
-    storage_ref = f"{product_id}_{uuid.uuid4().hex}{ext}"
-    content = await file.read()
-    with open(os.path.join(config.RETENTION_MEDIA_DIR, storage_ref), "wb") as fh:
-        fh.write(content)
     tag_list = [t.strip() for t in tags.split(",") if t.strip()]
-    photo = await db.create_retention_photo(
-        product_id, storage_ref=storage_ref, description=description,
-        tags=tag_list, level_min=level_min, stage=stage,
-        category=category.strip() or None, sort_order=sort_order,
-        created_by=admin.get("email"))
-    await db.log_admin_event(None, "retention_photo_created", {"id": photo["id"]},
+    photos = []
+    for up, ext in zip(uploads, exts):
+        storage_ref = f"{product_id}_{uuid.uuid4().hex}{ext}"
+        content = await up.read()
+        with open(os.path.join(config.RETENTION_MEDIA_DIR, storage_ref), "wb") as fh:
+            fh.write(content)
+        photo = await db.create_retention_photo(
+            product_id, storage_ref=storage_ref, description=description,
+            tags=tag_list, level_min=level_min, stage=stage,
+            category=category.strip() or None, sort_order=sort_order,
+            created_by=admin.get("email"))
+        photos.append(photo)
+    await db.log_admin_event(None, "retention_photo_created",
+                             {"ids": [p["id"] for p in photos],
+                              "count": len(photos), "by": admin.get("email")},
                              product_id=product_id)
-    return JSONResponse(content={"photo": photo})
+    # `photo` (the first row) is kept for pre-bulk API consumers.
+    return JSONResponse(content={"photos": photos, "photo": photos[0]})
+
+
+# ===========================================================================
+# Admin: AI metadata generation for media photos
+#
+# Cataloguing hundreds of photos by hand (description + tags + explicitness
+# stage + VIP tier) is the slowest part of setting a product up, so the admin
+# can select photos and have the product's OWN model fill the metadata: one
+# vision call per photo (the product's encrypted OpenAI keys via
+# client_for_product, the product-resolved `model` settings group — the same
+# stack every chat turn uses), returning strict JSON that is validated/clamped
+# against the product's actual tier list and stage ladder before it lands on
+# the row. Every call is logged to ai_interaction_logs (invariant §4).
+# ===========================================================================
+_PHOTO_META_BATCH_CAP = 20  # per request; the SPA chunks larger selections
+_PHOTO_META_CONTENT_TYPES = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".webp": "image/webp", ".gif": "image/gif",
+}
+
+
+class GeneratePhotoMetaReq(BaseModel):
+    ids: list[int] = Field(..., min_length=1, max_length=_PHOTO_META_BATCH_CAP)
+
+
+def _parse_photo_meta(text: str, *, vip_tiers: list[str],
+                      max_stage: int) -> dict[str, Any]:
+    """Parse + clamp the model's JSON metadata. Raises ValueError on garbage.
+
+    Tolerates a fenced/prefixed reply (extracts the outermost {...} block);
+    clamps stage/level into the product's real ranges so a hallucinated number
+    can never unlock a photo beyond what the delivery gate allows.
+    """
+    import json as _json
+    raw = (text or "").strip()
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("no JSON object in the model reply")
+    data = _json.loads(raw[start:end + 1])
+    if not isinstance(data, dict):
+        raise ValueError("model reply is not a JSON object")
+    description = str(data.get("description") or "").strip()
+    if not description:
+        raise ValueError("empty description")
+    tags = data.get("tags") or []
+    if not isinstance(tags, list):
+        raise ValueError("tags must be a list")
+    tags = [str(t).strip().lower() for t in tags if str(t).strip()][:10]
+    try:
+        stage = int(data.get("stage"))
+        level_min = int(data.get("level_min"))
+    except (TypeError, ValueError):
+        raise ValueError("stage/level_min must be integers")
+    stage = min(max(stage, 1), max(int(max_stage), 1))
+    level_min = min(max(level_min, 0), max(len(vip_tiers or ["none"]) - 1, 0))
+    return {"description": description[:1000], "tags": tags,
+            "stage": stage, "level_min": level_min}
+
+
+async def _generate_photo_meta(client: Any, photo: dict[str, Any],
+                               product_id: int, vip_tiers: list[str],
+                               max_stage: int) -> dict[str, Any]:
+    """One photo: read the binary, one vision call, validate, update the row."""
+    import base64
+    ref = photo.get("storage_ref")
+    path = os.path.join(config.RETENTION_MEDIA_DIR, os.path.basename(ref or ""))
+    if not ref or not os.path.exists(path):
+        return {"id": photo["id"], "ok": False, "error": "file missing on disk"}
+    ext = os.path.splitext(path)[1].lower()
+    mime = _PHOTO_META_CONTENT_TYPES.get(ext, "image/jpeg")
+    with open(path, "rb") as fh:
+        data_url = (f"data:{mime};base64,"
+                    + base64.b64encode(fh.read()).decode("ascii"))
+    messages = prompts.build_photo_meta_messages(data_url, vip_tiers, max_stage)
+    try:
+        result = await client.complete(messages)
+    except Exception as exc:  # noqa: BLE001 - one bad photo must not kill the batch
+        await db.log_ai_interaction(None, None, None, None, None, None, None,
+                                    None, ok=False,
+                                    error=f"photo_meta: {exc.__class__.__name__}",
+                                    product_id=product_id)
+        return {"id": photo["id"], "ok": False, "error": "model call failed"}
+    import openai_client as oc
+    cost = oc.compute_cost(result.model, result.tokens_in, result.tokens_out,
+                           result.cached_in)
+    await db.log_ai_interaction(None, result.model, result.key_used,
+                                result.tokens_in, result.tokens_out,
+                                result.cached_in, cost, result.latency_ms,
+                                ok=True, error=None, product_id=product_id)
+    try:
+        meta = _parse_photo_meta(result.text, vip_tiers=vip_tiers,
+                                 max_stage=max_stage)
+    except Exception as exc:  # noqa: BLE001 - malformed JSON must not kill the batch
+        log.warning("photo_meta_parse_failed photo_id=%s error=%s",
+                    photo["id"], exc)
+        return {"id": photo["id"], "ok": False,
+                "error": "could not parse the model reply"}
+    updated = await db.update_retention_photo(photo["id"], **meta)
+    return {"id": photo["id"], "ok": True, "photo": updated}
+
+
+@admin_router.post("/photos/generate-metadata")
+async def generate_photo_metadata(product_id: int, body: GeneratePhotoMetaReq,
+                                  admin=Depends(require_admin_write)
+                                  ) -> JSONResponse:
+    """Fill description/tags/stage/level_min for the selected photos with AI."""
+    import asyncio
+
+    import openai_client
+    await admin_auth.require_product_write(admin, product_id)
+    # Bind the scope so the `model` and `retention` groups resolve per product.
+    tenancy.set_current_product(product_id)
+    ids = list(dict.fromkeys(body.ids))  # dedupe, keep order
+    photos = []
+    for pid_ in ids:
+        photo = await db.get_retention_photo(pid_)
+        if photo is None or photo["product_id"] != product_id:
+            raise HTTPException(status_code=404,
+                                detail=f"Photo {pid_} not found in this product.")
+        photos.append(photo)
+    rt = settings_mod.retention()
+    vip_tiers = [str(t) for t in rt.get("vip_tiers") or ["none"]]
+    max_stage = int(rt.get("max_stage") or 1)
+    client = await openai_client.client_for_product(product_id)
+    results = await asyncio.gather(*[
+        _generate_photo_meta(client, p, product_id, vip_tiers, max_stage)
+        for p in photos
+    ])
+    ok = sum(1 for r in results if r["ok"])
+    await db.log_admin_event(None, "retention_photo_meta_generated",
+                             {"ids": ids, "ok": ok,
+                              "failed": len(results) - ok,
+                              "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"results": list(results)})
 
 
 @admin_router.put("/photos/{photo_id}")
