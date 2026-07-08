@@ -1,0 +1,9 @@
+# Dev/test-only dependencies. Runtime deps are in requirements.txt.
+# Installed on top of it by scripts/preflight.sh and the SessionStart hook.
+#
+# Test gotcha (see CLAUDE.md > Commands): conftest.py stubs only `openai` and
+# `asyncpg`, so the rest of requirements.txt (fastapi, httpx, python-multipart,
+# and pydantic via FastAPI) must be really installed for the suite to import.
+pytest>=8.0
+pytest-asyncio>=0.23
+ruff>=0.5

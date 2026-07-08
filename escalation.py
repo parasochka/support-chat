@@ -41,8 +41,6 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-import config
-
 log = logging.getLogger(__name__)
 
 # Explicit human-request keywords (multi-language). Built-in DEFAULT only — the
