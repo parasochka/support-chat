@@ -326,13 +326,27 @@ from any live product's KB; (3) the FULL `prompt_variables` set into `product_se
 seed so it applies immediately); (4) the **starter retention-KB document**
 (`starter_kb.STARTER_RETENTION_KB` via `db.seed_starter_retention_kb` — same brand-neutral
 English contract, seeded only when the product has no retention KB at all) so the Telegram
-bot also works out of the box. Translations and the `retention`/other settings groups need
+bot also works out of the box; and (5) the **starter ping-matrix rules**
+(`starter_kb.STARTER_RETENTION_RULES` via `db.seed_starter_retention_rules`) — an escalating
+`bot_inactivity` re-engagement ladder (9 rules from a 3-day check-in through a 60-day last
+warm reach, message + photo actions, `priority` climbing with the idle window so the longest
+silence wins) with brand-neutral English `intent` hints only. The casino triggers
+(`casino_inactivity`, `no_deposit`) are deliberately **not** seeded — they stay silent until
+the partner feeds `last_login_at`/`last_played_at`/`last_deposit_at`. Unlike the other seeds,
+`seed_starter_retention_rules` runs BOTH at `create_product` AND **at boot for every existing
+product** (in `init_db`, after the tenancy migration): it is idempotent + additive — a rule is
+inserted only when the product has no rule of that exact name, so a hand-made or edited rule is
+never touched or duplicated (same never-overwrite contract as `seed_kb_variables`), and an
+already-live product picks up newly-shipped starter pings on the next deploy. Translations and
+the `retention`/other settings groups need
 **no** per-product seed: their shipped defaults resolve for every product until overridden.
 `db.seed_starter_kb` is idempotent-safe: it inserts only
 topics the product doesn't have and writes a KB entry only for a topic it just created — it
-can never overwrite existing content. The boot-seeded default product is untouched (it goes
-through `_migrate_tenancy`, not `create_product`). Tests in `tests/test_starter_kb.py` pin
-the no-brand-leak contract (support + retention starters alike).
+can never overwrite existing content. The boot-seeded default product's KB/prompt-variables are
+untouched (it goes through `_migrate_tenancy`, not `create_product`; the ping-rules top-up is
+the one seed that DOES reach it, additively). Tests in `tests/test_starter_kb.py` pin
+the no-brand-leak contract + the priority-monotonicity invariant (support + retention + ping
+starters alike).
 
 ### KB variables — `{placeholder}` registry (`db.py` + `kb.render_variables`)
 KB texts may contain `{key}` placeholders (e.g. `{min_deposit}`). The `kb_variables` table holds
@@ -908,6 +922,9 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   only fire when the partner feeds the activity timestamps above), `inactivity_days`, `action`
   (`message` | `photo`), free-text English `intent` for the model, `vip_tiers` filter,
   `cooldown_days` (per player per rule, tracked in the `retention_pings` ledger), `priority`.
+  Every product ships with a **starter ladder of `bot_inactivity` rules** seeded from
+  `starter_kb.STARTER_RETENTION_RULES` (see the starter-baseline paragraph) — additive + never
+  overwriting, so the owner tunes/extends them freely.
   A worker loop (started in `main.py` lifespan, deploy switch `RETENTION_SCHEDULER_ENABLED`,
   interval `RETENTION_PING_INTERVAL_SEC`) sweeps under a Postgres **advisory lock** (multi-
   instance safe); each product opts in via the hot `retention.pings_enabled` setting.

@@ -781,6 +781,11 @@ async def init_db() -> None:
             default_product_id = await _migrate_tenancy(conn)
             await seed_kb_variables(conn, default_product_id)
             await _migrate_legacy_contact_url(conn, default_product_id)
+            # Top up EVERY product's ping matrix with any starter rules it is
+            # missing (idempotent, additive — never touches existing rules), so
+            # an already-live product picks up new starter pings on deploy.
+            for pid in await conn.fetch("SELECT id FROM products"):
+                await seed_starter_retention_rules(conn, int(pid["id"]))
 
 
 # ---------------------------------------------------------------------------
@@ -1595,11 +1600,11 @@ async def create_product(partner_id: int, slug: str, name: str
 
     A new casino starts working out of the box: widget key generated, the KB
     variables registry, the generic starter topics + KB texts (starter_kb.py),
-    the starter retention-KB document and the full prompt-variables set
-    (template defaults, brand_name = the product's name) are all seeded into
-    the PRODUCT layer — so nothing is inherited from another brand's global
-    overrides. The owner then translates/uniquifies everything from the admin
-    panel. (Translations and the retention settings group need no seed: their
+    the starter retention-KB document, the starter ping-matrix rules and the
+    full prompt-variables set (template defaults, brand_name = the product's
+    name) are all seeded into the PRODUCT layer — so nothing is inherited from
+    another brand's global overrides. The owner then translates/uniquifies
+    everything from the admin panel. (Translations and the retention settings group need no seed: their
     English/five-language defaults ship in the registries and resolve for
     every product until overridden.)
 
@@ -1618,6 +1623,7 @@ async def create_product(partner_id: int, slug: str, name: str
     await seed_kb_variables(product_id=row["id"])
     await seed_starter_kb(row["id"])
     await seed_starter_retention_kb(row["id"])
+    await seed_starter_retention_rules(product_id=row["id"])
     await set_product_setting(row["id"], "prompt_variables",
                               starter_kb.starter_prompt_variables(name),
                               updated_by="starter-seed")
@@ -3400,6 +3406,36 @@ async def seed_starter_retention_kb(product_id: int) -> None:
         "VALUES ($1, $2, $3, '[]'::jsonb, 'starter-seed')",
         product_id, RETENTION_KB_DOC_TITLE, starter_kb.STARTER_RETENTION_KB,
     )
+
+
+async def seed_starter_retention_rules(conn: Optional[asyncpg.Connection] = None,
+                                       product_id: int = 0) -> None:
+    """Top up a product's ping matrix with the starter re-engagement rules.
+
+    Runs both at boot (for every existing product) and at create_product (for a
+    new one), so each casino starts with a working `bot_inactivity` ping ladder.
+    Idempotent and additive: a rule is inserted only when the product has no
+    rule with that exact name, so it never touches (or duplicates) rules the
+    owner already created or edited — same never-overwrite contract as
+    seed_kb_variables / seed_starter_kb.
+    """
+    import starter_kb  # local import (starter_kb → prompts) to avoid a cycle
+
+    target = conn or _pool
+    for r in starter_kb.STARTER_RETENTION_RULES:
+        await target.execute(
+            """
+            INSERT INTO retention_rules
+                (product_id, name, enabled, trigger_kind, inactivity_days,
+                 action, intent, vip_tiers, cooldown_days, priority, updated_by)
+            SELECT $1, $2, TRUE, $3, $4, $5, $6, '[]'::jsonb, $7, $8, 'starter-seed'
+            WHERE NOT EXISTS (
+                SELECT 1 FROM retention_rules WHERE product_id = $1 AND name = $2
+            )
+            """,
+            product_id, r["name"], r["trigger_kind"], int(r["inactivity_days"]),
+            r["action"], r["intent"], int(r["cooldown_days"]), int(r["priority"]),
+        )
 
 
 # --- retention_managers ----------------------------------------------------
