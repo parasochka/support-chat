@@ -672,3 +672,24 @@ def starter_prompt_variables(brand_name: str) -> dict[str, str]:
     values = {key: default for key, _desc, default in prompts.PROMPT_VARIABLES}
     values["brand_name"] = (brand_name or "").strip() or values["brand_name"]
     return values
+
+
+def starter_retention_prompt_variables(brand_name: str) -> dict[str, str]:
+    """Baseline RETENTION prompt variables for a new product.
+
+    The Telegram persona is a SEPARATE prompt with its own registry
+    (prompts.RETENTION_PROMPT_VARIABLES), so it needs its own seed: without
+    one, a new product's bot would resolve straight to the registry defaults
+    (or the original tenant's GLOBAL overrides) and introduce itself under
+    another brand. Mirrors starter_prompt_variables: every key gets the
+    retention template default, and `retention_brand_name` is set to the
+    product's own name. The owner uniquifies the persona later from the admin
+    Retention → Prompt variables tab.
+    """
+    import prompts  # local import: db → starter_kb → prompts would otherwise risk a cycle
+
+    values = {key: default or ""
+              for key, _desc, default, _renders in prompts.RETENTION_PROMPT_VARIABLES}
+    values["retention_brand_name"] = ((brand_name or "").strip()
+                                      or values["retention_brand_name"])
+    return values

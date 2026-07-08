@@ -46,6 +46,18 @@ def test_retention_core_has_own_tone_variable():
     assert "{tone_of_voice}" in prompts.SYSTEM_CORE
 
 
+def test_retention_core_puts_connection_before_casino():
+    """The retention mission is the personal connection — the player comes back
+    to HER; the casino is a light occasional backdrop, never a per-message
+    pitch (a constant nudge toward play reads as an advert and kills the
+    mood)."""
+    core = prompts.get_retention_system_core()
+    assert "never in every message" in core
+    assert "come back" in core
+    # The old promotional mission line must stay gone.
+    assert "keep the excitement of playing alive" not in core
+
+
 async def test_create_deeplink_carries_lang(monkeypatch):
     """The site conversation's language rides in the nonce payload (supported
     codes only) so /start can adopt it as the bot's conversation language."""
