@@ -64,10 +64,49 @@ async def test_start_without_valid_nonce(monkeypatch):
         return None
     monkeypatch.setattr(retention.db, "redeem_retention_nonce", _redeem)
 
+    # Unknown player (never linked) + no usable nonce -> "open from the site".
+    async def _get_ru(pid, uid):
+        return None
+    monkeypatch.setattr(retention.db, "get_retention_user", _get_ru)
+
     await retention.handle_update(PRODUCT, {"message": {
         "from": {"id": 7}, "chat": {"id": 7}, "text": "/start bad"}})
     assert tg.messages, "expected a message"
     assert "site" in tg.messages[0][1].lower() or "сайт" in tg.messages[0][1].lower()
+
+
+async def test_start_known_player_without_payload_reopens_menu(monkeypatch):
+    """Telegram often drops the deeplink payload on the native START re-tap of an
+    existing chat (bare `/start`), and the nonce is single-use + short-TTL. An
+    already-linked player must NOT be dead-ended on "open from the site" — the
+    subscription gate re-runs and the menu re-opens."""
+    tg = FakeTelegram()
+    _patch_common(monkeypatch, tg)
+
+    async def _redeem(nonce):
+        return None  # no/expired/used nonce (payload didn't come through)
+    monkeypatch.setattr(retention.db, "redeem_retention_nonce", _redeem)
+
+    async def _get_ru(pid, uid):
+        return {"id": 10, "tg_user_id": uid, "entry_type": "escalation",
+                "conv_lang": None, "full_name": "Andrey"}
+    monkeypatch.setattr(retention.db, "get_retention_user", _get_ru)
+
+    async def _sub(rid, val):
+        pass
+    monkeypatch.setattr(retention.db, "set_retention_subscribed", _sub)
+
+    # Bare `/start` (payload stripped by the Telegram client).
+    await retention.handle_update(PRODUCT, {"message": {
+        "from": {"id": 7, "username": "andr"}, "chat": {"id": 7},
+        "text": "/start"}})
+
+    assert tg.messages, "menu expected"
+    text = tg.messages[-1][1]
+    assert "Andrey" in text and "Nika" in text
+    markup = tg.messages[-1][2]
+    labels = [b["text"] for row in markup["inline_keyboard"] for b in row]
+    assert any("manager" in l.lower() or "менеджер" in l.lower() for l in labels)
 
 
 async def test_start_valid_nonce_shows_menu(monkeypatch):

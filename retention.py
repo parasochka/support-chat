@@ -616,6 +616,19 @@ async def _handle_start(client: TelegramClient, product: dict[str, Any],
     lang = resolve_user_lang({}, pu.language_code)
     data = await db.redeem_retention_nonce(nonce) if nonce else None
     if data is None:
+        # No usable nonce. Telegram frequently drops the deeplink payload when
+        # the player taps the native START button on an EXISTING chat (a known
+        # client behaviour, especially on Telegram Desktop — the bot then only
+        # receives a bare `/start`); the nonce is also single-use and short-TTL,
+        # so a re-tap / lingering past the TTL / a reused link all land here.
+        # Don't dead-end a player we ALREADY know (they entered via a valid
+        # deeplink before) on "open from the site" — just re-run the
+        # subscription gate and re-show the menu, so the entry is robust
+        # regardless of whether Telegram forwarded the payload.
+        ru = await db.get_retention_user(product["id"], pu.tg_user_id)
+        if ru is not None:
+            await _gate_and_menu(client, product, ru, pu)
+            return
         await client.send_message(pu.chat_id,
                                   _rtn_text("rtn_need_deeplink", lang))
         return
@@ -642,8 +655,19 @@ async def _handle_start(client: TelegramClient, product: dict[str, Any],
             and link_lang != ru.get("conv_lang")):
         await db.set_retention_conv_lang(int(ru["id"]), link_lang)
         ru = dict(ru, conv_lang=link_lang)
+    await _gate_and_menu(client, product, ru, pu)
+
+
+async def _gate_and_menu(client: TelegramClient, product: dict[str, Any],
+                         ru: dict[str, Any], pu: ParsedUpdate) -> None:
+    """Run the channel-subscription gate, then open the entry menu.
+
+    The shared tail of every /start entry (fresh nonce redemption AND the
+    payload-less re-entry of an already-linked player): if the player is not
+    subscribed, prompt them onto the channel; otherwise mark them subscribed
+    and show the two-option menu.
+    """
     lang = resolve_user_lang(ru, pu.language_code)
-    # Subscription gate before any menu.
     if not await check_subscription(client, product, pu.tg_user_id):
         await client.send_message(pu.chat_id,
                                   _rtn_text("rtn_subscribe_prompt", lang),
