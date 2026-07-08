@@ -19,6 +19,7 @@ import time
 import unicodedata
 import uuid
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 import antispam
 import chat_service
@@ -508,6 +509,85 @@ async def _send_menu(client: TelegramClient, chat_id: int, ru: dict[str, Any],
                                   reply_markup=markup)
 
 
+def _site_support_url(lang: str) -> str:
+    """The "support on the site" destination for a Telegram hand-off.
+
+    The per-language `contact_url` (translations registry) when it is
+    configured — the ONE admin home for the support link — else the site's
+    main page derived from the first site-map entry (the support widget lives
+    on the site, so the origin is a safe landing). "" when neither exists.
+    """
+    url = (translations.text("contact_url", lang) or "").strip()
+    if url.startswith(("http://", "https://")):
+        return url
+    for page in settings.site_map() or []:
+        if not isinstance(page, dict):
+            continue
+        page_url = str(page.get("url", "")).strip()
+        if page_url.startswith(("http://", "https://")):
+            parts = urlsplit(page_url)
+            if parts.scheme and parts.netloc:
+                return f"{parts.scheme}://{parts.netloc}/"
+    return ""
+
+
+async def _send_handoff_choice(client: TelegramClient, product: dict[str, Any],
+                               ru: dict[str, Any], chat_id: int, lang: str
+                               ) -> str:
+    """The [[HANDOFF]] hand-off message: a structured CHOICE with up to two
+    buttons — the player's personal manager (right here in Telegram) and the
+    support chat on the site (main page / contact_url, where the widget lives).
+
+    Degrades gracefully: with only one destination configured it falls back to
+    the matching single-option copy (`rtn_manager_intro` / `rtn_handoff_support`),
+    and with neither to the plain route-out line — a hand-off never dead-ends.
+    Returns the offered target ("manager+site" | "manager" | "site" | "none")
+    for the retention_handoff admin event.
+    """
+    manager: Optional[dict[str, Any]] = None
+    try:
+        manager = await db.assign_round_robin_manager(product["id"], int(ru["id"]))
+    except Exception:  # noqa: BLE001 - a manager-pool failure must not kill the hand-off
+        log.exception("retention_handoff_manager_assign_failed product_id=%s",
+                      product["id"])
+    site_url = _site_support_url(lang)
+
+    rows: list[list[dict[str, str]]] = []
+    if manager:
+        link = f"https://t.me/{manager['username']}"
+        rows.append([{"text": f"👤 {manager['display_name']}", "url": link}])
+        await db.log_admin_event(
+            None, "retention_manager_handoff",
+            {"tg_user_id": ru.get("tg_user_id"), "manager_id": manager["id"],
+             "from_reason": "handoff"}, product_id=product["id"])
+    if site_url:
+        rows.append([{"text": _rtn_text("rtn_btn_site_support", lang),
+                      "url": site_url}])
+
+    if manager and site_url:
+        # Both destinations — the structured two-button choice message.
+        title = _rtn_text("rtn_handoff_title", lang)
+        body = _rtn_text("rtn_handoff_choice", lang)
+        markup = inline_keyboard(rows)
+        result = await client.send_message(
+            chat_id, f"<b>{html.escape(title)}</b>\n\n{html.escape(body)}",
+            reply_markup=markup, parse_mode="HTML")
+        if result is None:
+            await client.send_message(chat_id, f"{title}\n\n{body}",
+                                      reply_markup=markup)
+        return "manager+site"
+    if manager:
+        link = f"https://t.me/{manager['username']}"
+        intro = _rtn_text("rtn_manager_intro", lang).replace(
+            "{manager}", f"{manager['display_name']} ({link})")
+        await client.send_message(chat_id, intro,
+                                  reply_markup=inline_keyboard(rows))
+        return "manager"
+    await client.send_message(chat_id, _rtn_text("rtn_handoff_support", lang),
+                              reply_markup=inline_keyboard(rows) if rows else None)
+    return "site" if site_url else "none"
+
+
 async def _route_to_manager(client: TelegramClient, product: dict[str, Any],
                             ru: dict[str, Any], chat_id: int, lang: str,
                             reason: str = "menu") -> None:
@@ -794,30 +874,18 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
         await db.set_retention_conv_lang(int(ru["id"]), reply.lang)
 
     # Route-out: Nika does not handle support / complaints / RG / human asks.
+    # The hand-off message offers the player a CHOICE of destinations — their
+    # personal manager (in Telegram) and/or the support chat on the site —
+    # regardless of the entry type; whatever is configured shows up.
     if reply.handoff:
-        await db.log_admin_event(
-            None, "retention_handoff",
-            {"tg_user_id": ru.get("tg_user_id"),
-             "target": "manager" if ru.get("entry_type") == "escalation" else "support"},
-            product_id=product["id"])
         if reply.reply:
             await _send_ai_text(client, pu.chat_id, reply.reply)
-        if ru.get("entry_type") == "escalation":
-            await _route_to_manager(client, product, ru, pu.chat_id, reply.lang,
-                                    reason="handoff")
-        else:
-            # Give the route-out a real destination: the product's per-language
-            # support contact URL (the same translations `contact_url` the widget
-            # escalation card uses) as an inline button, when one is configured.
-            markup = None
-            url = (translations.text("contact_url", reply.lang) or "").strip()
-            if url.startswith(("http://", "https://")):
-                markup = inline_keyboard([[{
-                    "text": translations.text("escalation_button", reply.lang),
-                    "url": url}]])
-            await client.send_message(
-                pu.chat_id, _rtn_text("rtn_handoff_support", reply.lang),
-                reply_markup=markup)
+        target = await _send_handoff_choice(client, product, ru, pu.chat_id,
+                                            reply.lang)
+        await db.log_admin_event(
+            None, "retention_handoff",
+            {"tg_user_id": ru.get("tg_user_id"), "target": target},
+            product_id=product["id"])
         return
 
     # A validated site-map CTA ([[LINK:url]]) becomes one inline button under

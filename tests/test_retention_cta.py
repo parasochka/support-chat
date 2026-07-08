@@ -231,3 +231,132 @@ def test_menu_html_bold_and_escaped():
     assert out.startswith("<b>")
     assert "And&lt;rey" in out                # player data is HTML-escaped
     assert "\n\n" in out
+
+
+# --- hand-off choice ([[HANDOFF]] -> manager + site buttons) ----------------
+class _FakeTg:
+    def __init__(self):
+        self.messages = []  # (chat_id, text, reply_markup, parse_mode)
+
+    async def send_message(self, chat_id, text, *, reply_markup=None,
+                           parse_mode=None):
+        self.messages.append((chat_id, text, reply_markup, parse_mode))
+        return {"message_id": 1}
+
+
+def _labels(markup):
+    return [b["text"] for row in markup["inline_keyboard"] for b in row]
+
+
+def _urls(markup):
+    return [b.get("url") for row in markup["inline_keyboard"] for b in row]
+
+
+def test_site_support_url_prefers_contact_url(monkeypatch):
+    monkeypatch.setattr(retention.translations, "text",
+                        lambda key, lang: "https://x.example/contact"
+                        if key == "contact_url" else "")
+    assert retention._site_support_url("en") == "https://x.example/contact"
+
+
+def test_site_support_url_falls_back_to_site_map_origin(monkeypatch):
+    monkeypatch.setattr(retention.translations, "text", lambda key, lang: "")
+    monkeypatch.setattr(settings, "site_map",
+                        lambda: [{"title": "Slots",
+                                  "url": "https://nikabet.example/casino/slots"}])
+    assert retention._site_support_url("en") == "https://nikabet.example/"
+
+
+def test_site_support_url_empty_when_nothing_configured(monkeypatch):
+    monkeypatch.setattr(retention.translations, "text", lambda key, lang: "")
+    monkeypatch.setattr(settings, "site_map", lambda: [])
+    assert retention._site_support_url("en") == ""
+
+
+PRODUCT = {"id": 1, "telegram_bot_username": "nika_bot"}
+RU = {"id": 10, "tg_user_id": 7}
+
+
+def _wire_handoff(monkeypatch, *, manager, site_map):
+    async def _assign(pid, rid):
+        return manager
+    monkeypatch.setattr(retention.db, "assign_round_robin_manager", _assign)
+
+    async def _log(*a, **k):
+        return None
+    monkeypatch.setattr(retention.db, "log_admin_event", _log)
+    monkeypatch.setattr(settings, "site_map", lambda: site_map)
+
+
+async def test_handoff_choice_both_destinations(monkeypatch):
+    tg = _FakeTg()
+    _wire_handoff(monkeypatch,
+                  manager={"id": 3, "username": "mgr", "display_name": "Max"},
+                  site_map=[{"title": "Home", "url": "https://nikabet.example/"}])
+
+    target = await retention._send_handoff_choice(tg, PRODUCT, RU, 7, "en")
+
+    assert target == "manager+site"
+    chat_id, text, markup, parse_mode = tg.messages[0]
+    assert parse_mode == "HTML" and text.startswith("<b>")
+    urls = _urls(markup)
+    assert "https://t.me/mgr" in urls
+    assert "https://nikabet.example/" in urls
+    assert len(urls) == 2
+    assert any("Max" in lb for lb in _labels(markup))
+
+
+async def test_handoff_choice_manager_only(monkeypatch):
+    tg = _FakeTg()
+    _wire_handoff(monkeypatch,
+                  manager={"id": 3, "username": "mgr", "display_name": "Max"},
+                  site_map=[])
+
+    target = await retention._send_handoff_choice(tg, PRODUCT, RU, 7, "en")
+
+    assert target == "manager"
+    _cid, text, markup, parse_mode = tg.messages[0]
+    assert "Max" in text
+    assert _urls(markup) == ["https://t.me/mgr"]
+
+
+async def test_handoff_choice_site_only(monkeypatch):
+    tg = _FakeTg()
+    _wire_handoff(monkeypatch, manager=None,
+                  site_map=[{"title": "Home", "url": "https://nikabet.example/"}])
+
+    target = await retention._send_handoff_choice(tg, PRODUCT, RU, 7, "en")
+
+    assert target == "site"
+    _cid, text, markup, _pm = tg.messages[0]
+    assert "support" in text.lower()
+    assert _urls(markup) == ["https://nikabet.example/"]
+
+
+async def test_handoff_choice_nothing_configured(monkeypatch):
+    tg = _FakeTg()
+    _wire_handoff(monkeypatch, manager=None, site_map=[])
+
+    target = await retention._send_handoff_choice(tg, PRODUCT, RU, 7, "en")
+
+    assert target == "none"
+    _cid, text, markup, _pm = tg.messages[0]
+    assert markup is None
+    assert "support" in text.lower()
+
+
+async def test_handoff_manager_assign_failure_degrades(monkeypatch):
+    """A manager-pool/DB failure must never kill the hand-off message."""
+    tg = _FakeTg()
+
+    async def _assign(pid, rid):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(retention.db, "assign_round_robin_manager", _assign)
+    monkeypatch.setattr(settings, "site_map",
+                        lambda: [{"title": "Home",
+                                  "url": "https://nikabet.example/"}])
+
+    target = await retention._send_handoff_choice(tg, PRODUCT, RU, 7, "en")
+
+    assert target == "site"
+    assert tg.messages

@@ -852,8 +852,9 @@ localizes to the player's language. Lives in Layer 3 only, so `SYSTEM_CORE` stay
 A **second front-end over the same AI core**: from the site a player deep-links into a
 Telegram bot where **Nika runs retention only** (warm, flirtatious engagement + photos under
 the player's profile). She does **not** handle support — any support/complaint/account-block/
-deposit-withdrawal/responsible-gaming/ask-for-a-human topic is routed **out** (to a manager on
-an escalation entry, back to site support on a retention entry). This section IS the spec (the
+deposit-withdrawal/responsible-gaming/ask-for-a-human topic is routed **out** via the hand-off
+CHOICE message (personal manager in Telegram and/or the site's support chat — see the
+`[[HANDOFF]]` bullet below). This section IS the spec (the
 old `RETENTION_BOT_SPEC.md`/`RETENTION_SETUP.md` files were removed); the operator's setup
 checklist lives in the admin — the **Retention · Telegram → Setup guide** tab.
 
@@ -1095,8 +1096,19 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `retention._sub_cache`; the explicit "I subscribed" button re-checks live with
   `use_cache=False`). `is_photo_request` matches stems at word START (regex `\b`), so "epic"
   can't bypass the photo cooldown. A photo turn never sends a bare image — an empty caption
-  falls back to `rtn_photo_caption`. The retention-entry `[[HANDOFF]]` route-out now carries the
-  per-language `contact_url` as an inline button when configured.
+  falls back to `rtn_photo_caption`.
+- **Hand-off is a CHOICE message (`retention._send_handoff_choice`)**: on `[[HANDOFF]]` —
+  regardless of the entry type — the bot sends a structured message (bold `rtn_handoff_title`
+  + `rtn_handoff_choice` body, HTML with a plain fallback) with up to TWO url-buttons: the
+  player's personal manager (`assign_round_robin_manager`, sticky; a pool/DB failure degrades
+  gracefully instead of killing the hand-off) and **support on the site**
+  (`retention._site_support_url`: the per-language `contact_url` when configured, else the
+  site's MAIN PAGE derived as the origin of the first site-map entry — the widget lives on the
+  site, so the origin is a safe landing). With only one destination configured it falls back to
+  the matching single-option copy (`rtn_manager_intro` / `rtn_handoff_support` + button); with
+  neither, the plain `rtn_handoff_support` line — a hand-off never dead-ends. The
+  `retention_handoff` admin event records the offered target
+  (`manager+site`/`manager`/`site`/`none`). Tests: `tests/test_retention_cta.py`.
 - **Managers** (`retention_managers`): round-robin, **sticky** (a returning player keeps their
   manager); the hand-off is a `t.me/<username>` link; only the fact is logged
   (`retention_manager_handoff`).
