@@ -11,6 +11,7 @@ webhook handler, which resolved it from the bot's webhook routing token.
 """
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import re
@@ -33,6 +34,46 @@ from telegram_transport import (ParsedUpdate, TelegramClient, inline_keyboard,
                                 parse_update)
 
 log = logging.getLogger(__name__)
+
+
+async def is_safe_outbound_url(url: str) -> bool:
+    """SSRF guard for admin-configured outbound URLs (the Player API).
+
+    `player_api_url` is set by a product-scoped admin — a semi-trusted role — so
+    it must never be able to make the server reach internal/cloud-metadata
+    addresses (169.254.169.254, RFC1918, loopback, link-local, …). We require an
+    http(s) scheme and reject a host that resolves to any non-global IP. All
+    resolved records are checked (a rebind that mixes public + private records is
+    rejected). DNS is resolved off the event loop.
+    """
+    import ipaddress
+    import socket
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return False
+    host = parts.hostname
+    # A literal IP host is checked directly; a name is resolved and every record
+    # must be global (public).
+    try:
+        infos = await asyncio.to_thread(
+            socket.getaddrinfo, host, parts.port or (443 if parts.scheme == "https" else 80),
+            0, socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError, OSError):
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        sockaddr = info[4]
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            return False
+        if not ip.is_global or ip.is_multicast:
+            return False
+    return True
 
 
 async def _send_ai_text(client: TelegramClient, chat_id: int, text: str, *,
@@ -147,6 +188,14 @@ async def maybe_pull_profile(product: dict[str, Any], ru: dict[str, Any]
                 return ru  # fresh enough
         except (ValueError, TypeError):
             pass
+    # SSRF guard: the product's OWN (decrypted) API key rides on this request as
+    # a Bearer header, so a malicious player_api_url pointed at an internal /
+    # cloud-metadata address would both pivot the server and leak that key. Reject
+    # any URL that does not resolve to a public address before we ever connect.
+    if not await is_safe_outbound_url(url):
+        log.warning("retention_profile_pull_blocked_unsafe_url product=%s",
+                    product.get("id"))
+        return ru
     key = await db.get_product_player_api_key(product["id"])
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     try:

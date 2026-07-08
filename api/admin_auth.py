@@ -27,6 +27,12 @@ from api.client_ip import client_ip
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+# A throwaway PBKDF2 hash used to equalize login timing: when the account is
+# missing or disabled we still run one verify against this hash, so a valid
+# active email (which costs ~100ms of PBKDF2) is timing-indistinguishable from a
+# non-existent/disabled one. Otherwise the CPU-cost delta enumerates accounts.
+_DUMMY_PW_HASH = auth.hash_password("timing-equalizer-not-a-real-password")
+
 # Roles allowed to MUTATE state within their scope. "admin" is a named user
 # with full write rights over the scope; "manager" is read-only (support staff
 # who triage sessions but touch nothing technical).
@@ -243,11 +249,18 @@ async def login(req: Request, body: AdminLogin) -> JSONResponse:
     # the client (no account enumeration).
     user = await db.get_admin_user(email)
     ok = False
+    # PBKDF2 (200k iterations) is CPU-bound and would block the event loop for
+    # ~100ms per attempt — run it in a worker thread. Always run exactly one
+    # verify: against the real hash when the account exists and is active, else
+    # against a dummy hash of equal cost, so timing cannot distinguish a valid
+    # active email from a missing/disabled one (no account enumeration).
     if user and user.get("active", False):
-        # PBKDF2 (200k iterations) is CPU-bound and would block the event loop
-        # for ~100ms per attempt — run it in a worker thread.
         ok = await asyncio.to_thread(
             auth.verify_password, body.password, user["password_hash"]
+        )
+    else:
+        await asyncio.to_thread(
+            auth.verify_password, body.password, _DUMMY_PW_HASH
         )
     if not ok:
         await db.log_admin_event(None, "admin_login_failed",

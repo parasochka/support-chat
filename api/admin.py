@@ -783,6 +783,7 @@ async def list_users(admin=Depends(require_admin_write)) -> JSONResponse:
 @router.post("/users")
 async def create_user(body: UserCreate,
                       admin=Depends(require_admin_write)) -> JSONResponse:
+    _require_human_admin(admin)
     email = _validate_email(body.email)
     _validate_password(body.password)
     role = _validate_role(body.role)
@@ -805,6 +806,7 @@ async def create_user(body: UserCreate,
 @router.post("/users/{email}/memberships")
 async def grant_membership(email: str, body: MembershipSpec,
                            admin=Depends(require_admin_write)) -> JSONResponse:
+    _require_human_admin(admin)
     target = _validate_email(email)
     if not await db.get_admin_user(target):
         raise HTTPException(status_code=404, detail="User not found.")
@@ -825,6 +827,7 @@ async def grant_membership(email: str, body: MembershipSpec,
 @router.delete("/users/{email}/memberships/{membership_id}")
 async def revoke_membership(email: str, membership_id: int,
                             admin=Depends(require_admin_write)) -> JSONResponse:
+    _require_human_admin(admin)
     target = _validate_email(email)
     if admin.get("email") == target:
         raise HTTPException(status_code=400,
@@ -846,6 +849,7 @@ async def revoke_membership(email: str, membership_id: int,
 @router.put("/users/{email}")
 async def update_user(email: str, body: UserUpdate,
                       admin=Depends(require_admin_write)) -> JSONResponse:
+    _require_human_admin(admin)
     target = _validate_email(email)
     existing = await db.get_admin_user(target)
     if not existing:
@@ -889,6 +893,7 @@ async def update_user(email: str, body: UserUpdate,
 @router.delete("/users/{email}")
 async def delete_user(email: str,
                       admin=Depends(require_admin_write)) -> JSONResponse:
+    _require_human_admin(admin)
     target = _validate_email(email)
     if admin.get("email") == target:
         raise HTTPException(status_code=400, detail="You cannot delete your own account.")
