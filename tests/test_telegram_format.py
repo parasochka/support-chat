@@ -48,3 +48,22 @@ def test_to_html_code_span_preserved_and_escaped():
 
 def test_to_html_plain_is_unchanged():
     assert tf.to_html("just a normal chat line") == "just a normal chat line"
+
+
+def test_to_html_markdown_link_becomes_anchor():
+    out = tf.to_html("open the [cashier](https://x.io/cashier) now")
+    assert '<a href="https://x.io/cashier">cashier</a>' in out
+    # The URL inside the link is NOT also rendered as a bare URL.
+    assert out.count("https://x.io/cashier") == 1
+
+
+def test_to_html_link_url_underscores_and_emphasis_survive():
+    out = tf.to_html("see [my *page*](https://x.io/a_b_c)")
+    # Label is escaped-and-anchored; its asterisks are NOT chewed into <i>.
+    assert '<a href="https://x.io/a_b_c">my *page*</a>' in out
+    assert "<i>" not in out
+
+
+def test_to_html_link_label_html_escaped():
+    out = tf.to_html("[a<b>](https://x.io)")
+    assert '<a href="https://x.io">a&lt;b&gt;</a>' in out

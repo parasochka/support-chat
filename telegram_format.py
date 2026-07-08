@@ -53,6 +53,10 @@ def normalize_punctuation(text: str) -> str:
 
 
 # --- 2. light Markdown -> Telegram HTML -------------------------------------
+# [descriptive text](https://...) link markup -> a clickable <a href> anchor.
+# Matched (and stashed) BEFORE the bare-URL pass so the URL inside the parens is
+# not also caught as a bare URL; the label may hold anything but a closing ].
+_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
 _URL_RE = re.compile(r"https?://\S+")
 _CODE_RE = re.compile(r"`([^`\n]+)`")
 _BOLD_RE = re.compile(r"(?<!\*)\*\*(?!\s)([^\n*]+?)(?<!\s)\*\*(?!\*)")
@@ -69,9 +73,10 @@ _SENT_CLOSE = ""
 def to_html(text: str) -> str:
     """Render the retention Markdown subset as safe Telegram HTML.
 
-    Handles **bold**/__bold__, *italic*/_italic_ and `code`; everything else is
-    HTML-escaped plain text. Bare URLs and code spans are protected so their
-    punctuation survives the emphasis passes. Output is balanced HTML.
+    Handles [text](url) links, **bold**/__bold__, *italic*/_italic_ and `code`;
+    everything else is HTML-escaped plain text. Links, bare URLs and code spans
+    are protected so their punctuation survives the emphasis passes. Output is
+    balanced HTML.
     """
     if not text:
         return text
@@ -87,6 +92,15 @@ def to_html(text: str) -> str:
         return _stash(f"<code>{html.escape(m.group(1))}</code>")
 
     text = _CODE_RE.sub(_code_repl, text)
+
+    # Stash [text](url) links as a clickable <a href> anchor (label + URL both
+    # escaped) BEFORE the bare-URL pass, so the URL in the parens isn't re-caught.
+    def _link_repl(m: re.Match[str]) -> str:
+        label = html.escape(m.group(1))
+        url = html.escape(m.group(2), quote=True)
+        return _stash(f'<a href="{url}">{label}</a>')
+
+    text = _LINK_RE.sub(_link_repl, text)
 
     # Stash bare URLs (escaped) so underscores/asterisks in them aren't chewed.
     def _url_repl(m: re.Match[str]) -> str:
