@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Виджет поддержки — подключение на сайт</title>
+<style>
+  :root {
+    --bg:#0f1320; --panel:#1a2032; --panel2:#232c44; --line:#2e3a57;
+    --text:#e7ecf5; --muted:#9aa7c2; --accent:#4f8cff; --good:#36c08a; --warn:#e8b349;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:32px 20px 80px; }
+  h1 { font-size:26px; margin:0 0 6px; }
+  h2 { font-size:19px; margin:44px 0 10px; padding-top:18px; border-top:1px solid var(--line); }
+  h3 { font-size:15px; margin:24px 0 8px; color:var(--accent); }
+  p, li { color:var(--text); }
+  .muted { color:var(--muted); }
+  code { background:var(--panel2); border:1px solid var(--line); border-radius:5px;
+    padding:1px 6px; font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace; }
+  pre { background:var(--panel); border:1px solid var(--line); border-radius:9px;
+    padding:14px 16px; overflow-x:auto; font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace; }
+  pre code { background:none; border:none; padding:0; }
+  table { width:100%; border-collapse:collapse; margin:10px 0 18px; font-size:13px; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,Menlo,monospace; border-radius:5px;
+    padding:4px 7px; margin-right:6px; }
+  .get { background:rgba(54,192,138,.16); color:var(--good); }
+  .post { background:rgba(79,140,255,.16); color:var(--accent); }
+  .put { background:rgba(232,179,73,.16); color:var(--warn); }
+  .del { background:rgba(224,89,107,.16); color:#e0596b; }
+  .note { background:rgba(79,140,255,.08); border:1px solid var(--line); border-left:3px solid var(--accent);
+    border-radius:8px; padding:10px 14px; margin:14px 0; }
+  .warnbox { background:rgba(232,179,73,.10); border:1px solid var(--warn); color:var(--warn);
+    border-radius:8px; padding:10px 14px; margin:14px 0; }
+  nav { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 18px; margin:22px 0; }
+  nav a { color:var(--accent); text-decoration:none; display:inline-block; margin:2px 14px 2px 0; }
+  nav a:hover { text-decoration:underline; }
+  .endpoint { margin:14px 0 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Виджет поддержки — подключение на сайт (CMS)</h1>
+<p class="muted">Как встроить готовый плавающий AI-чат поддержки на страницы казино. Только виджет:
+один сниппет + widget key. Обзор сервиса и архитектура — на
+<a href="/integration" style="color:var(--accent)">обзорной странице</a>; передача данных игрока
+(подписанный handshake) — на <a href="/integration-data" style="color:var(--accent)">странице данных
+игрока</a>; если вы строите собственный интерфейс вместо готового виджета — см.
+<a href="/integration-chat-api" style="color:var(--accent)">Chat API и свой UI</a>.
+База URL во всех примерах — адрес этого сервиса.</p>
+
+<nav>
+  <a href="#embed">Сниппет встраивания</a>
+  <a href="#mount">Программный монтаж</a>
+  <a href="#behavior">Что виджет делает сам</a>
+  <a href="#recaptcha">reCaptcha v3</a>
+  <a href="#checklist">Чек-лист подключения</a>
+</nav>
+
+<h2 id="embed">1. Сниппет встраивания</h2>
+<p>Один сниппет на странице казино. Widget key берётся из админки: Structure → продукт → Widget key
+(там же есть кнопка «Copy embed snippet»).</p>
+<pre><code>&lt;link rel="stylesheet" href="https://CHAT_HOST/widget.css"&gt;
+&lt;script type="module" src="https://CHAT_HOST/widget.js"
+        data-widget-key="wk_XXXXXXXXXXXX"&gt;&lt;/script&gt;</code></pre>
+<ul>
+  <li>Widget key идентифицирует продукт (казино): по нему виджет получает свои темы, переводы,
+      настройки и ключи. Ключ не секрет (лежит в HTML страницы), но неугадываем и его можно
+      ротировать в админке.</li>
+  <li>Ключ также можно задать глобально: <code>window.NPCHAT_WIDGET_KEY = "wk_…"</code> до загрузки
+      скрипта.</li>
+  <li>Без ключа виджет попадает в «default» продукт деплоя — режим одиночного продукта/дев-стенда.</li>
+  <li>Не забудьте добавить домен сайта в <code>CORS_ALLOW_ORIGINS</code> сервиса.</li>
+</ul>
+<div class="warnbox">Ротация widget key немедленно отключает старые сниппеты — обновляйте встраивание
+на сайте синхронно с ротацией.</div>
+
+<h2 id="mount">2. Программный монтаж с переопределениями</h2>
+<p>Альтернатива автомонтажу — импортировать <code>mount</code> и передать конфиг явно
+(например, чтобы подставить подписанный handshake с данными игрока):</p>
+<pre><code>import { mount } from "https://CHAT_HOST/widget.js";
+mount({
+  API_BASE: "https://CHAT_HOST",
+  WIDGET_KEY: "wk_XXXXXXXXXXXX",
+  SIGNED_CONTEXT: "&lt;подписанный blob с данными игрока&gt;", // см. /integration-data
+});</code></pre>
+<p>Формат и подпись <code>SIGNED_CONTEXT</code> (HMAC-handshake бэкенда CMS, whitelist полей игрока,
+примеры кода на Node.js и Python) — на странице
+<a href="/integration-data#handshake" style="color:var(--accent)">передачи данных игрока</a>.
+Без handshake виджет работает анонимно (модель не знает имя/статус игрока).</p>
+
+<h2 id="behavior">3. Что виджет делает сам</h2>
+<p>Готовый виджет несёт всю клиентскую логику — на стороне сайта ничего дописывать не нужно:</p>
+<ul>
+  <li><b>Язык</b>: интерфейс открывается на языке браузера мгновенно, а дальше и ответы, и хром
+      следуют за языком, на котором реально пишет игрок.</li>
+  <li><b>Темы и переводы продукта</b> подтягиваются без сессии (<code>GET /api/chat/topics</code>,
+      <code>GET /api/chat/i18n</code>) и кэшируются — список тем рисуется без задержки; правки
+      копирайта из админки доезжают без редеплоя виджета.</li>
+  <li><b>Сессия создаётся лениво</b> — только когда игрок выбрал тему; «открыл-закрыл» посетитель
+      не создаёт сессий и не тратит лимиты.</li>
+  <li><b>Автопереключение темы, пузыри-подсказки, завершение чата, эскалация</b> (включая хендофф в
+      Telegram-бота, когда у продукта включён ретеншн) — весь контракт Chat API обработан внутри.</li>
+  <li><b>Безопасный рендеринг</b>: ответы ассистента — только белый список лёгкого Markdown, ввод
+      игрока — строго литерально.</li>
+  <li><b>Мобильные</b>: полноэкранный режим и подгонка под экранную клавиатуру через
+      <code>visualViewport</code>.</li>
+</ul>
+<div class="note">Классы виджета имеют префикс <code>npchat-</code> и не конфликтуют со стилями
+хост-страницы; скрипт — vanilla ES-модуль без зависимостей и без билд-шага.</div>
+
+<h2 id="recaptcha">4. reCaptcha v3 — своя пара ключей на продукт/домен</h2>
+<div class="note">Публичный <b>site key</b> задаётся на продукте в админке (Structure) — виджет
+подхватывает его сам через <code>GET /api/chat/i18n</code>, менять сниппет встраивания не нужно.
+<b>Секрет</b> reCaptcha хранится шифрованно и записывается write-only через
+<code>PUT /admin/products/{id}/secrets</code> (наружу — только флаг «задан»). Деплой-переменные
+<code>RECAPTCHA_SITE_KEY</code>/<code>RECAPTCHA_SECRET</code> остаются лишь фолбэком для продуктов
+без своей пары. Зарегистрируйте в Google reCaptcha домен каждого казино и внесите пару ключей на его
+продукт.</div>
+
+<h2 id="checklist">5. Чек-лист подключения</h2>
+<ul>
+  <li>Создать продукт в админке (Structure) и скопировать embed-сниппет с его widget key.</li>
+  <li>Добавить домен сайта в <code>CORS_ALLOW_ORIGINS</code> сервиса.</li>
+  <li>Зарегистрировать домен в Google reCaptcha v3 и внести site key + секрет на продукт
+      (или положиться на деплой-фолбэк).</li>
+  <li>Настроить подписанный handshake на бэкенде CMS, чтобы Ника знала имя/статус игрока —
+      <a href="/integration-data" style="color:var(--accent)">страница данных игрока</a>.</li>
+  <li>Заполнить KB, промпт-переменные и переводы продукта в админке — чат готов.</li>
+</ul>
+
+<p class="muted" style="margin-top:40px">Страница обновляется вместе с сервисом. Смежные гайды:
+<a href="/integration" style="color:var(--accent)">обзор и архитектура</a> ·
+<a href="/integration-data" style="color:var(--accent)">данные игрока</a> ·
+<a href="/integration-chat-api" style="color:var(--accent)">Chat API и свой UI</a> ·
+<a href="/integration-telegram" style="color:var(--accent)">retention-бот в Telegram</a> ·
+<a href="/integration-admin" style="color:var(--accent)">интеграция с общей админкой</a>.
+Вопросы по интеграции — к команде support-chat.</p>
+</div>
+</body>
+</html>

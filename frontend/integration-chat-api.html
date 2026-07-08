@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat API и свой UI — интеграция</title>
+<style>
+  :root {
+    --bg:#0f1320; --panel:#1a2032; --panel2:#232c44; --line:#2e3a57;
+    --text:#e7ecf5; --muted:#9aa7c2; --accent:#4f8cff; --good:#36c08a; --warn:#e8b349;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:32px 20px 80px; }
+  h1 { font-size:26px; margin:0 0 6px; }
+  h2 { font-size:19px; margin:44px 0 10px; padding-top:18px; border-top:1px solid var(--line); }
+  h3 { font-size:15px; margin:24px 0 8px; color:var(--accent); }
+  p, li { color:var(--text); }
+  .muted { color:var(--muted); }
+  code { background:var(--panel2); border:1px solid var(--line); border-radius:5px;
+    padding:1px 6px; font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace; }
+  pre { background:var(--panel); border:1px solid var(--line); border-radius:9px;
+    padding:14px 16px; overflow-x:auto; font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace; }
+  pre code { background:none; border:none; padding:0; }
+  table { width:100%; border-collapse:collapse; margin:10px 0 18px; font-size:13px; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,Menlo,monospace; border-radius:5px;
+    padding:4px 7px; margin-right:6px; }
+  .get { background:rgba(54,192,138,.16); color:var(--good); }
+  .post { background:rgba(79,140,255,.16); color:var(--accent); }
+  .put { background:rgba(232,179,73,.16); color:var(--warn); }
+  .del { background:rgba(224,89,107,.16); color:#e0596b; }
+  .note { background:rgba(79,140,255,.08); border:1px solid var(--line); border-left:3px solid var(--accent);
+    border-radius:8px; padding:10px 14px; margin:14px 0; }
+  .warnbox { background:rgba(232,179,73,.10); border:1px solid var(--warn); color:var(--warn);
+    border-radius:8px; padding:10px 14px; margin:14px 0; }
+  nav { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 18px; margin:22px 0; }
+  nav a { color:var(--accent); text-decoration:none; display:inline-block; margin:2px 14px 2px 0; }
+  nav a:hover { text-decoration:underline; }
+  .endpoint { margin:14px 0 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Публичный Chat API и свой UI поверх него</h1>
+<p class="muted">Справочник публичного Chat API (им пользуется готовый виджет) и обязательная
+клиентская логика, если вы строите <b>собственный интерфейс</b> чата вместо готового виджета.
+Готовый виджет — на <a href="/integration-widget" style="color:var(--accent)">странице виджета</a>;
+передача данных игрока — на <a href="/integration-data" style="color:var(--accent)">странице данных
+игрока</a>. База URL во всех примерах — адрес этого сервиса.</p>
+
+<nav>
+  <a href="#chat-api">Справочник Chat API</a>
+  <a href="#custom-ui">Свой UI — обязательная логика</a>
+</nav>
+
+<h2 id="chat-api">1. Публичный Chat API (используется виджетом)</h2>
+<p class="muted">Все запросы/ответы — JSON. Сессия = UUID + bearer-токен, который возвращает
+<code>POST /session</code>. Контракт consumer-agnostic: свой фронтенд может ходить в эти же ручки напрямую — но тогда он
+обязан воспроизвести клиентскую логику виджета, см. <a href="#custom-ui" style="color:var(--accent)">раздел 2</a>.</p>
+
+<div class="endpoint"><span class="tag post">POST</span><code>/api/chat/session</code></div>
+<p>Создать сессию. Тело: <code>{ widget_key?, locale?, signed_context?, consumer?, recaptcha_token? }</code>.
+Ответ: <code>{ session_id, token, topics[], lang, languages[] }</code>.
+Ошибки: <code>403 bad_widget_key</code>, <code>401 bad_handshake</code>, <code>403 recaptcha_failed</code>, <code>429</code>.</p>
+
+<div class="endpoint"><span class="tag get">GET</span><code>/api/chat/topics?widget_key=&amp;lang=</code></div>
+<p>Каталог тем продукта без сессии (для мгновенной первой отрисовки). Кэшируется 60 сек.</p>
+
+<div class="endpoint"><span class="tag get">GET</span><code>/api/chat/i18n?widget_key=</code></div>
+<p>Все строки виджета по языкам продукта (правки из админки доезжают без редеплоя виджета).</p>
+
+<div class="endpoint"><span class="tag post">POST</span><code>/api/chat/topic</code></div>
+<p><code>{ session_id, topic_slug }</code> + <code>Authorization: Bearer &lt;token&gt;</code>. Выбор/смена темы.</p>
+
+<div class="endpoint"><span class="tag post">POST</span><code>/api/chat/message</code></div>
+<p><code>{ session_id, text, closing? }</code> + bearer. Один ход диалога. Ответ:</p>
+<pre><code>{
+  "reply": "текст ответа (может быть пуст при эскалации/переключении темы)",
+  "lang": "ru",
+  "escalation": { "active": false } | {
+      "active": true, "final": true|false, "retention": true?,
+      "message": "...", "button": { "label": "...", "url": "..." } },
+  "message_count": 5,
+  "suggested_topic": null | { "slug": "...", "title": "..." },
+  "suggestions": ["наводящий вопрос 1?", "вопрос 2?"],
+  "closing_suggestion": null | "Проблема решена.",
+  "resolved": false
+}</code></pre>
+<p>Ошибки: <code>401</code>, <code>409 session_closed</code> (сессия закрыта — начать новую),
+<code>429</code> (rate-limit/cooldown), <code>400</code> (слишком длинно / injection),
+<code>413</code>/<code>411</code> (body cap). <code>escalation.final=true</code> — диалог завершён
+(hand-off), <code>final=false</code> — карточка показана, чат продолжается.</p>
+
+<div class="endpoint"><span class="tag get">GET</span><code>/api/chat/session/{id}</code></div>
+<p>Резюме сессии: статус + история (bearer обязателен).</p>
+
+<div class="endpoint"><span class="tag post">POST</span><code>/api/chat/escalate</code> · <span class="tag post">POST</span><code>/api/chat/resolve</code></div>
+<p>Явная эскалация (возвращает карточку контакта, закрывает сессию) / завершение чата игроком.</p>
+
+<h2 id="custom-ui">2. Свой UI поверх Chat API — обязательная клиентская логика</h2>
+<p>Готовый виджет (<code>widget.js</code>) — это не только вёрстка: в нём заложена клиентская логика,
+без которой чат работает медленно, «зависает» или ломает контракт с промптом. Если вы строите
+<b>собственный интерфейс напрямую поверх Chat API</b> (раздел 1), всё перечисленное ниже — часть
+контракта, которую ваш клиент обязан воспроизвести. Раздел написан по фактическому поведению
+виджета; сверяйтесь с <code>widget.js</code> как с референс-реализацией.</p>
+
+<h3>2.1. Старт и первая отрисовка — скорость</h3>
+<ul>
+  <li><b>Язык интерфейса резолвится на клиенте, до любого запроса</b> — из
+      <code>navigator.languages[0] || navigator.language</code> (фолбэк — английский). Не ждите
+      ответа сервера, чтобы выбрать язык шелла: иначе чат «открывается на английском и через
+      секунды перепрыгивает на русский».</li>
+  <li><b>Прогрейте данные при монтировании страницы</b>, а не при открытии панели:
+      <code>GET /api/chat/topics</code> и <code>GET /api/chat/i18n</code> — оба работают без сессии
+      и кэшируются (60 сек на сервере). Тогда список тем рисуется мгновенно.</li>
+  <li><b>Строки интерфейса</b>: держите запечённую копию базовых строк для мгновенной первой
+      отрисовки и накатывайте поверх ответ <code>GET /i18n</code> — так правки копирайта из админки
+      доезжают до вашего UI без редеплоя фронта.</li>
+  <li><b>Скрипт reCaptcha подгружайте заранее</b> (при монтировании), а не в момент создания сессии —
+      это самая медленная сторонняя загрузка на пути «тап по теме → чат готов».</li>
+</ul>
+
+<h3>2.2. Жизненный цикл сессии — экономия и корректность</h3>
+<ul>
+  <li><b>Сессию создавайте лениво — только когда игрок реально выбрал тему.</b> Не создавайте её
+      при открытии панели: каждый «открыл-закрыл» посетитель иначе жжёт per-IP лимит на
+      <code>POST /session</code> и плодит пустые сессии в статистике.</li>
+  <li><b>Тап по теме — оптимистичный.</b> Покажите экран диалога сразу (он не требует сети), а
+      медленную цепочку — reCaptcha-токен → <code>POST /session</code> → <code>POST /topic</code> —
+      запустите в фоне и сохраните её promise. Первая отправка сообщения просто ждёт этот promise
+      (обычно он уже завершён, пока игрок печатает). Если цепочка упала — верните игрока к списку
+      тем с локализованной ошибкой. Неудавшийся <code>POST /topic</code> не фатален (чат работает
+      и без темы), неудавшийся <code>POST /session</code> — фатален.</li>
+  <li><b>Не кэшируйте отклонённый promise создания сессии</b>: временный сбой (сеть, 429, reCaptcha)
+      не должен намертво заклинить все последующие попытки — сбросьте promise при ошибке, чтобы
+      следующий тап повторил создание заново.</li>
+  <li><b>Защита от двойного тапа</b> по кнопке темы: выставляйте флаг синхронно до любого await,
+      иначе двойной клик создаст два диалога/двойное приветствие.</li>
+  <li><b>Каждый вход — новый разговор.</b> «Назад», закрытие панели, завершение чата и эскалация
+      сбрасывают локальные <code>session_id</code>/<code>token</code>; повторное открытие всегда
+      начинает с чистого списка тем и новой сессии. Не резюмируйте старую сессию на клиенте — она
+      может быть уже закрыта на сервере, и первое сообщение «нового» чата молча упрётся в
+      <code>409</code>.</li>
+  <li><b>Токен сессии держите в памяти</b>, не в localStorage: он живёт один разговор и не должен
+      переживать вкладку.</li>
+</ul>
+
+<h3>2.3. Канонное приветствие — контракт с промптом</h3>
+<div class="note">Это самый неочевидный пункт. Пузырь «Привет, я Ника, чем могу тебе помочь?»
+рисует <b>клиент</b> (строка <code>greeting</code> из <code>/i18n</code>) сразу при выборе темы,
+до первого сообщения игрока; на сервер он не отправляется и в истории не хранится. Промпт модели
+построен в расчёте на то, что это приветствие уже показано: модель <b>никогда не представляется</b>,
+а своё единственное приветствие («Привет, Андрей!») даёт по имени в первом ответе — только если имя
+игрока передано (<a href="/integration-data#handshake" style="color:var(--accent)">handshake</a>).
+Если ваш UI не рисует канонный пузырь, диалог начнётся вообще без «здравствуйте» — добавьте его на
+клиенте, серверной альтернативы нет.</div>
+
+<h3>2.4. Обработка ответа <code>POST /message</code> — side-payload'ы</h3>
+<p>Один ход возвращает не только текст (поля — в разделе 1). Клиент обязан обработать каждое:</p>
+<ul>
+  <li><b><code>reply</code> может быть пустым</b> — при эскалации и при переключении темы. Никогда
+      не рисуйте пустой пузырь: если текст пуст, снимите индикатор «печатает» и работайте только
+      с side-payload'ами.</li>
+  <li><b><code>escalation.active=true, final=true</code></b> (жёсткая эскалация): покажите карточку
+      (<code>message</code> + кнопка <code>button.url</code>, если url задан; открывать с
+      <code>target="_blank" rel="noopener"</code>), скройте поле ввода и сбросьте локальную сессию —
+      сервер отклонит дальнейшие ходы с <code>409</code>. <b><code>final=false</code></b> (мягкая,
+      по ключевым словам): карточку покажите, но поле ввода оставьте — разговор продолжается.
+      <b><code>escalation.retention=true</code></b> — этот хендофф ведёт не на форму контакта, а
+      в Telegram-бота Nika: <code>button.url</code> уже содержит одноразовый диплинк входа
+      (nonce живёт ~120 c), просто откройте его — игрок попадёт в бота, подпишется на канал и
+      получит кнопку менеджера. Флаг появляется только когда у продукта включён ретеншн; иначе
+      кнопка ведёт на статический <code>contact_url</code>.</li>
+  <li><b><code>suggested_topic</code> — автопереключение темы.</b> Сервер уже подавил необоснованный
+      ответ (он генерировался без базы знаний целевой темы), поэтому <code>reply</code> пуст. Клиент:
+      (1) оставляет в переписке постоянную заметку «переключаю на «X»…» (без кнопок — это запись о
+      переходе); (2) вызывает <code>POST /topic</code> с новым slug; (3) после короткой паузы
+      ~900 мс (чтобы переход читался, а не мелькал) <b>повторно отправляет исходный текст игрока</b>
+      в <code>POST /message</code> — этот второй ответ и есть то, что видит игрок.
+      <b>Ограничьте цепочку</b> (виджет: максимум 2 автопереключения подряд): если лимит выбран,
+      покажите локализованный фолбэк «не удалось определить тему, переформулируйте» — иначе ход
+      закончится вообще без ответа и чат будет выглядеть зависшим.</li>
+  <li><b><code>suggestions[]</code></b> (до 2 наводящих вопросов): кнопки-пузыри у поля ввода; тап
+      отправляет текст вопроса как обычный ход. <b>Старые пузыри убирайте в момент начала любого
+      нового хода</b> — они устаревают мгновенно.</li>
+  <li><b><code>closing_suggestion</code></b> («Проблема решена.»): отдельно стилизованный
+      завершающий пузырь. Тап: отправить его текст с <code>closing=true</code> (модель ответит
+      коротким прощанием), затем best-effort <code>POST /resolve</code> и завершить разговор.
+      После этого <b>не</b> показывать кнопку «завершить чат» — игрок уже завершил. Если этот ход
+      неожиданно вернул эскалацию — обработать её как обычно вместо закрытия.</li>
+  <li><b><code>resolved=true</code></b>: показать кнопку «завершить чат»; тап → <code>POST /resolve</code>
+      (best-effort — интерфейс закрывается в любом случае) + свернуть чат. <b>Одновременно показывается
+      только один финишный контрол</b>: при конфликте <code>resolved</code> побеждает
+      <code>closing_suggestion</code>.</li>
+  <li><b><code>lang</code> — дрейф языка разговора.</b> Если игрок начал писать на другом
+      поддерживаемом языке, ответы переключаются на него; переключайте вслед и хром (кнопки,
+      плейсхолдер, канонное приветствие, заголовки тем — <code>GET /topics</code> уже на новом языке),
+      и передавайте новый язык как <code>locale</code> при создании следующей сессии — иначе после
+      «назад» язык отскочит к языку браузера.</li>
+</ul>
+
+<h3>2.5. Ошибки и деградация</h3>
+<ul>
+  <li><b><code>409 session_closed</code></b>: не показывать сырую ошибку — молча завершить разговор
+      локально (следующее обращение начнёт новую сессию).</li>
+  <li><b><code>429</code></b> (rate-limit / cooldown между сообщениями): локализованная заметка
+      «слишком часто», без автоматических ретраев в цикле.</li>
+  <li><b><code>400</code></b> (слишком длинное сообщение / injection-фильтр): показать
+      локализованный текст ошибки.</li>
+  <li><b>Сбой модели не приходит ошибкой</b>: при недоступности OpenAI сервер возвращает обычный
+      <code>200</code> с локализованной просьбой отправить сообщение ещё раз — для клиента это
+      обычный ход, ничего специального делать не нужно.</li>
+  <li><b>Индикатор «печатает»</b> (пузырь с точками) на время запроса; ответ заменяет его на месте.
+      Сетевая ошибка — локализованный текст ошибки в том же пузыре. Не отправляйте новый ход, пока
+      предыдущий в полёте.</li>
+</ul>
+
+<h3>2.6. Безопасность рендеринга</h3>
+<ul>
+  <li><b>Ответы ассистента приходят с лёгким Markdown</b> (модель этому обучена директивой):
+      жирный/курсив, <code>`код`</code>, ссылки, короткие списки. Рендерите <b>только этот сабсет</b>
+      и обязательно в порядке «сначала HTML-escape всего текста, потом восстановление разметки по
+      белому списку»; ссылки — только http(s)/mailto, с <code>rel="noopener"</code>. Никакой сырой
+      HTML из модели не должен попадать в DOM. Таблицы/код-блоки модель не шлёт (директива), но
+      неизвестную разметку показывайте как текст, не рендерьте.</li>
+  <li><b>Текст игрока рендерится строго литерально</b> (<code>textContent</code>, не innerHTML) —
+      и его собственный ввод, и его сообщения в истории.</li>
+  <li><b>Widget key — не секрет</b> (он в HTML), но <b>bearer-токен сессии</b> — секрет одного
+      разговора: только в память, только в заголовок <code>Authorization</code>.</li>
+  <li><b>reCaptcha v3</b>: токен нужен при создании сессии, если у продукта задан свой секрет
+      reCaptcha (Structure → Product secrets) или на сервисе задан деплой-фолбэк
+      <code>RECAPTCHA_SECRET</code>; без обоих сервис пропускает проверку (dev). Site key берите из
+      <code>GET /api/chat/i18n</code> (поле <code>recaptcha_site_key</code>) — как это делает виджет.
+      Домен вашего сайта должен быть в <code>CORS_ALLOW_ORIGINS</code>.</li>
+</ul>
+
+<h3>2.7. Мобильные нюансы</h3>
+<ul>
+  <li>Определяйте «мобильность» по реальному <code>window.visualViewport</code>, а не по CSS
+      media-query: media-query меряет CSS-пиксели, которыми управляет viewport-мета <b>вашей</b>
+      страницы — при нестандартной мете полноэкранный режим просто не срабатывает.</li>
+  <li>При открытой экранной клавиатуре layout-viewport не меняется, а visual-viewport сжимается —
+      панель с <code>position:fixed</code> на всю высоту прячет поле ввода под клавиатурой.
+      Виджет решает это, подгоняя top/left/width/height панели под
+      <code>visualViewport</code> на каждый его resize/scroll — повторите этот приём.</li>
+  <li>Держите ленту прикнопленной к последнему сообщению и повторяйте пиннинг после следующего
+      кадра (rAF): пузыри-подсказки и рендер Markdown меняют высоту после вставки ответа, иначе
+      свежий ответ оказывается наполовину скрыт.</li>
+</ul>
+
+<div class="warnbox">Чек-лист приёмки своего UI: ленивое создание сессии · оптимистичный тап по теме ·
+канонное приветствие на клиенте · пустой <code>reply</code> не рисуется · автопереключение темы с
+re-ask и лимитом глубины · пузыри-подсказки + два финишных контрола (по одному за раз) · обе силы
+эскалации (<code>final</code>) · обработка 409/429/400 · дрейф языка в хроме · Markdown-сабсет с
+эскейпом · литеральный рендер ввода игрока. Выпадение любого пункта — это «чат тормозит/завис/
+молчит» в проде.</div>
+
+<p class="muted" style="margin-top:40px">Страница обновляется вместе с сервисом. Смежные гайды:
+<a href="/integration" style="color:var(--accent)">обзор и архитектура</a> ·
+<a href="/integration-widget" style="color:var(--accent)">виджет</a> ·
+<a href="/integration-data" style="color:var(--accent)">данные игрока</a> ·
+<a href="/integration-telegram" style="color:var(--accent)">retention-бот в Telegram</a> ·
+<a href="/integration-admin" style="color:var(--accent)">интеграция с общей админкой</a>.
+Вопросы по интеграции — к команде support-chat.</p>
+</div>
+</body>
+</html>

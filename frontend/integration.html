@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Support Chat — API и интеграция</title>
+<title>Support Chat — API и интеграция (обзор)</title>
 <style>
   :root {
     --bg:#0f1320; --panel:#1a2032; --panel2:#232c44; --line:#2e3a57;
@@ -46,22 +46,45 @@
 <div class="wrap">
 
 <h1>Support Chat — интеграция и API</h1>
-<p class="muted">Документация для команд разработки: как подключить AI-чат поддержки к сайту казино (CMS),
-как передавать данные игрока, и какие API доступны для интеграции с основным бэкендом/фронтендом.
-База URL во всех примерах — адрес этого сервиса (страница открыта с него же).</p>
+<p class="muted">Обзорная страница документации для команд разработки: что это за сервис, как устроена
+мультитенантность, какие переменные окружения нужны деплою — и каталог остальных страниц
+(виджет, данные игрока, Chat API, Telegram-бот, админка). База URL во всех примерах на каждой
+странице — адрес этого сервиса (страница открыта с него же).</p>
 
 <nav>
+  <a href="#docs">Страницы документации</a>
   <a href="#arch">Архитектура и мультитенантность</a>
-  <a href="#widget">Подключение виджета</a>
-  <a href="#handshake">Передача данных игрока (handshake)</a>
-  <a href="#chat-api">Публичный Chat API</a>
-  <a href="#custom-ui">Свой UI поверх Chat API</a>
-  <a href="#admin-api">Admin API (интеграция бэкенда)</a>
-  <a href="#roles">Роли и доступы</a>
   <a href="#env">Переменные окружения</a>
 </nav>
 
-<h2 id="arch">1. Архитектура и мультитенантность</h2>
+<h2 id="docs">1. Страницы документации</h2>
+<p>Документация разбита по задачам — каждая страница самодостаточна и открывается прямо с сервиса:</p>
+<table>
+  <tr><th>Страница</th><th>Для чего</th></tr>
+  <tr><td><a href="/integration-widget" style="color:var(--accent)"><code>/integration-widget</code></a></td>
+      <td><b>Только виджет</b>: сниппет встраивания на сайт (CMS), widget key, программный монтаж,
+          reCaptcha, CORS, чек-лист подключения.</td></tr>
+  <tr><td><a href="/integration-data" style="color:var(--accent)"><code>/integration-data</code></a></td>
+      <td><b>Передача и синхронизация данных игрока</b>: whitelist полей, подписанный handshake
+          (+ примеры кода), ленивый pull из Player API, push-webhook из CRM, сигналы активности,
+          тест-профиль.</td></tr>
+  <tr><td><a href="/integration-chat-api" style="color:var(--accent)"><code>/integration-chat-api</code></a></td>
+      <td><b>Публичный Chat API</b> (справочник ручек) + обязательная клиентская логика, если вы
+          строите собственный UI чата вместо готового виджета.</td></tr>
+  <tr><td><a href="/integration-telegram" style="color:var(--accent)"><code>/integration-telegram</code></a></td>
+      <td><b>Retention-бот в Telegram</b>: диплинк и nonce, гейт подписки на канал, матрица
+          проактивных пингов, справочник API, настройка бота.</td></tr>
+  <tr><td><a href="/integration-admin" style="color:var(--accent)"><code>/integration-admin</code></a></td>
+      <td><b>Интеграция с общей админкой</b>: модель ролей, JWT-вход, сервисные API-ключи
+          <code>sak_…</code>, скоупинг, справочник <code>/admin/*</code> эндпоинтов, примеры curl.</td></tr>
+</table>
+<div class="note">Типовой путь подключения нового казино: создать продукт в админке →
+<a href="/integration-widget" style="color:var(--accent)">встроить виджет</a> →
+<a href="/integration-data" style="color:var(--accent)">настроить handshake с данными игрока</a> →
+(опционально) <a href="/integration-telegram" style="color:var(--accent)">подключить Telegram-бота</a>
+и <a href="/integration-data#pull" style="color:var(--accent)">синхронизацию профиля</a>.</div>
+
+<h2 id="arch">2. Архитектура и мультитенантность</h2>
 <p>Сервис — standalone FastAPI-микросервис (HTTP/JSON), мультитенантный:</p>
 <ul>
   <li><b>Партнёр</b> — клиент платформы; владеет несколькими <b>продуктами</b>.</li>
@@ -72,405 +95,17 @@
   <li>Продукт идентифицируется публичным <b>widget key</b> (<code>wk_…</code>) — выдаётся в админке
       (Structure), передаётся виджетом при создании сессии. Ключ не секрет (лежит в HTML страницы),
       но неугадываем и его можно ротировать.</li>
-  <li>Секреты продукта (OpenAI-ключи, handshake-секрет) хранятся в БД <b>в зашифрованном виде</b>
+  <li>Секреты продукта (OpenAI-ключи, handshake-секрет, токен Telegram-бота, ключ Player API,
+      секрет reCaptcha) хранятся в БД <b>в зашифрованном виде</b>
       (мастер-ключ — только в окружении деплоя) и через API никогда не возвращаются — только флаги
       «задан/не задан». Если у продукта нет своих ключей, используется глобальный ключ деплоя.</li>
 </ul>
 <div class="note">Сессия чата привязана к продукту. Все ответы, копирайт, эскалация и статистика
 считаются в разрезе продукта; админка агрегирует по продукту, по партнёру и глобально.</div>
 
-<h2 id="widget">2. Подключение виджета на сайт (CMS)</h2>
-<p>Один сниппет на странице казино. Widget key берётся из админки: Structure → продукт → Widget key
-(там же есть кнопка «Copy embed snippet»).</p>
-<pre><code>&lt;link rel="stylesheet" href="https://CHAT_HOST/widget.css"&gt;
-&lt;script type="module" src="https://CHAT_HOST/widget.js"
-        data-widget-key="wk_XXXXXXXXXXXX"&gt;&lt;/script&gt;</code></pre>
-<p>Альтернативно — программный монтаж с переопределениями:</p>
-<pre><code>import { mount } from "https://CHAT_HOST/widget.js";
-mount({
-  API_BASE: "https://CHAT_HOST",
-  WIDGET_KEY: "wk_XXXXXXXXXXXX",
-  SIGNED_CONTEXT: "&lt;подписанный blob с данными игрока — см. раздел 3&gt;",
-});</code></pre>
-<ul>
-  <li>Виджет сам резолвит язык интерфейса из браузера, тянет топики и переводы своего продукта
-      (<code>GET /api/chat/topics</code>, <code>GET /api/chat/i18n</code>) и создаёт сессию при выборе темы.</li>
-  <li>Ключ также можно задать глобально: <code>window.NPCHAT_WIDGET_KEY = "wk_…"</code> до загрузки скрипта.</li>
-  <li>Без ключа виджет попадает в «default» продукт деплоя — режим одиночного продукта/дев-стенда.</li>
-  <li>Не забудьте добавить домен сайта в <code>CORS_ALLOW_ORIGINS</code> сервиса.</li>
-</ul>
-<div class="note"><b>reCaptcha v3 — своя пара ключей на продукт/домен.</b> Публичный <b>site key</b>
-задаётся на продукте в админке (Structure) — виджет подхватывает его сам через
-<code>GET /api/chat/i18n</code>, менять сниппет встраивания не нужно. <b>Секрет</b> reCaptcha
-хранится шифрованно и записывается write-only через
-<code>PUT /admin/products/{id}/secrets</code> (наружу — только флаг «задан»). Деплой-переменные
-<code>RECAPTCHA_SITE_KEY</code>/<code>RECAPTCHA_SECRET</code> остаются лишь фолбэком для продуктов
-без своей пары. Зарегистрируйте в Google reCaptcha домен каждого казино и внесите пару ключей на его
-продукт.</div>
-<div class="warnbox">Ротация widget key немедленно отключает старые сниппеты — обновляйте встраивание
-на сайте синхронно с ротацией.</div>
-
-<h2 id="handshake">3. Передача данных игрока — подписанный handshake (push)</h2>
-<p>Чтобы модель знала имя/статус/баланс игрока, бэкенд CMS подписывает данные игрока HMAC-секретом
-продукта и передаёт blob виджету (например, вставляет в страницу при рендере). Виджет отправляет его
-в <code>POST /api/chat/session</code> как <code>signed_context</code>. Неподписанные данные из браузера
-в продакшн-режиме игнорируются — доверяем только подписи бэкенда.</p>
-<p><b>Формат blob:</b> <code>base64url(payload_json) + "." + base64url(HMAC_SHA256(secret, base64url(payload_json)))</code></p>
-<p>Payload — JSON c полями игрока + <code>iat</code>/<code>exp</code> (unix-секунды; TTL по умолчанию ≤ 300 сек, anti-replay).
-Модель видит только whitelisted-поля:</p>
-<pre><code>{
-  "id": "player-123",
-  "full_name": "Иван Петров",
-  "email": "ivan@example.com",
-  "activation_status": "active",
-  "country": "Portugal",
-  "balance": "1500.00 EUR",
-  "vip_level": "Silver",
-  "registration_date": "2024-01-15",
-  "iat": 1751500000,
-  "exp": 1751500300
-}</code></pre>
-<p><b>Пример подписи (Node.js):</b></p>
-<pre><code>const crypto = require("crypto");
-const b64url = (buf) =&gt; Buffer.from(buf).toString("base64url");
-
-function signHandshake(context, secret, ttlSec = 300) {
-  const now = Math.floor(Date.now() / 1000);
-  const payload = JSON.stringify(
-    Object.fromEntries(Object.entries({ ...context, iat: now, exp: now + ttlSec }).sort()),
-  );
-  const p64 = b64url(payload);
-  const sig = crypto.createHmac("sha256", secret).update(p64).digest("base64url");
-  return `${p64}.${sig}`;
-}</code></pre>
-<p><b>Пример подписи (Python):</b></p>
-<pre><code>import base64, hashlib, hmac, json, time
-
-def sign_handshake(context: dict, secret: str, ttl_sec: int = 300) -> str:
-    now = int(time.time())
-    payload = {**context, "iat": now, "exp": now + ttl_sec}
-    p64 = base64.urlsafe_b64encode(
-        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-    ).rstrip(b"=").decode()
-    sig = hmac.new(secret.encode(), p64.encode(), hashlib.sha256).digest()
-    s64 = base64.urlsafe_b64encode(sig).rstrip(b"=").decode()
-    return f"{p64}.{s64}"</code></pre>
-<ul>
-  <li>Секрет handshake задаётся per product в админке (Structure → Product secrets) — у каждого казино свой.</li>
-  <li>Blob живёт максимум 300 секунд — генерируйте его при рендере страницы или отдавайте отдельным
-      endpoint'ом своего бэкенда непосредственно перед открытием чата.</li>
-  <li>Pull-интеграция (сервис сам ходит в API CMS за данными игрока) — запланированный этап;
-      контракт будет добавлен сюда, когда зафиксируем API CMS.</li>
-</ul>
-
-<h2 id="chat-api">4. Публичный Chat API (используется виджетом)</h2>
-<p class="muted">Все запросы/ответы — JSON. Сессия = UUID + bearer-токен, который возвращает
-<code>POST /session</code>. Контракт consumer-agnostic: свой фронтенд может ходить в эти же ручки напрямую — но тогда он
-обязан воспроизвести клиентскую логику виджета, см. <a href="#custom-ui" style="color:var(--accent)">раздел 5</a>.</p>
-
-<div class="endpoint"><span class="tag post">POST</span><code>/api/chat/session</code></div>
-<p>Создать сессию. Тело: <code>{ widget_key?, locale?, signed_context?, consumer?, recaptcha_token? }</code>.
-Ответ: <code>{ session_id, token, topics[], lang, languages[] }</code>.
-Ошибки: <code>403 bad_widget_key</code>, <code>401 bad_handshake</code>, <code>403 recaptcha_failed</code>, <code>429</code>.</p>
-
-<div class="endpoint"><span class="tag get">GET</span><code>/api/chat/topics?widget_key=&amp;lang=</code></div>
-<p>Каталог тем продукта без сессии (для мгновенной первой отрисовки). Кэшируется 60 сек.</p>
-
-<div class="endpoint"><span class="tag get">GET</span><code>/api/chat/i18n?widget_key=</code></div>
-<p>Все строки виджета по языкам продукта (правки из админки доезжают без редеплоя виджета).</p>
-
-<div class="endpoint"><span class="tag post">POST</span><code>/api/chat/topic</code></div>
-<p><code>{ session_id, topic_slug }</code> + <code>Authorization: Bearer &lt;token&gt;</code>. Выбор/смена темы.</p>
-
-<div class="endpoint"><span class="tag post">POST</span><code>/api/chat/message</code></div>
-<p><code>{ session_id, text, closing? }</code> + bearer. Один ход диалога. Ответ:</p>
-<pre><code>{
-  "reply": "текст ответа (может быть пуст при эскалации/переключении темы)",
-  "lang": "ru",
-  "escalation": { "active": false } | {
-      "active": true, "final": true|false, "retention": true?,
-      "message": "...", "button": { "label": "...", "url": "..." } },
-  "message_count": 5,
-  "suggested_topic": null | { "slug": "...", "title": "..." },
-  "suggestions": ["наводящий вопрос 1?", "вопрос 2?"],
-  "closing_suggestion": null | "Проблема решена.",
-  "resolved": false
-}</code></pre>
-<p>Ошибки: <code>401</code>, <code>409 session_closed</code> (сессия закрыта — начать новую),
-<code>429</code> (rate-limit/cooldown), <code>400</code> (слишком длинно / injection),
-<code>413</code>/<code>411</code> (body cap). <code>escalation.final=true</code> — диалог завершён
-(hand-off), <code>final=false</code> — карточка показана, чат продолжается.</p>
-
-<div class="endpoint"><span class="tag get">GET</span><code>/api/chat/session/{id}</code></div>
-<p>Резюме сессии: статус + история (bearer обязателен).</p>
-
-<div class="endpoint"><span class="tag post">POST</span><code>/api/chat/escalate</code> · <span class="tag post">POST</span><code>/api/chat/resolve</code></div>
-<p>Явная эскалация (возвращает карточку контакта, закрывает сессию) / завершение чата игроком.</p>
-
-<h2 id="custom-ui">5. Свой UI поверх Chat API — обязательная клиентская логика</h2>
-<p>Готовый виджет (<code>widget.js</code>) — это не только вёрстка: в нём заложена клиентская логика,
-без которой чат работает медленно, «зависает» или ломает контракт с промптом. Если вы строите
-<b>собственный интерфейс напрямую поверх Chat API</b> (раздел 4), всё перечисленное ниже — часть
-контракта, которую ваш клиент обязан воспроизвести. Раздел написан по фактическому поведению
-виджета; сверяйтесь с <code>widget.js</code> как с референс-реализацией.</p>
-
-<h3>5.1. Старт и первая отрисовка — скорость</h3>
-<ul>
-  <li><b>Язык интерфейса резолвится на клиенте, до любого запроса</b> — из
-      <code>navigator.languages[0] || navigator.language</code> (фолбэк — английский). Не ждите
-      ответа сервера, чтобы выбрать язык шелла: иначе чат «открывается на английском и через
-      секунды перепрыгивает на русский».</li>
-  <li><b>Прогрейте данные при монтировании страницы</b>, а не при открытии панели:
-      <code>GET /api/chat/topics</code> и <code>GET /api/chat/i18n</code> — оба работают без сессии
-      и кэшируются (60 сек на сервере). Тогда список тем рисуется мгновенно.</li>
-  <li><b>Строки интерфейса</b>: держите запечённую копию базовых строк для мгновенной первой
-      отрисовки и накатывайте поверх ответ <code>GET /i18n</code> — так правки копирайта из админки
-      доезжают до вашего UI без редеплоя фронта.</li>
-  <li><b>Скрипт reCaptcha подгружайте заранее</b> (при монтировании), а не в момент создания сессии —
-      это самая медленная сторонняя загрузка на пути «тап по теме → чат готов».</li>
-</ul>
-
-<h3>5.2. Жизненный цикл сессии — экономия и корректность</h3>
-<ul>
-  <li><b>Сессию создавайте лениво — только когда игрок реально выбрал тему.</b> Не создавайте её
-      при открытии панели: каждый «открыл-закрыл» посетитель иначе жжёт per-IP лимит на
-      <code>POST /session</code> и плодит пустые сессии в статистике.</li>
-  <li><b>Тап по теме — оптимистичный.</b> Покажите экран диалога сразу (он не требует сети), а
-      медленную цепочку — reCaptcha-токен → <code>POST /session</code> → <code>POST /topic</code> —
-      запустите в фоне и сохраните её promise. Первая отправка сообщения просто ждёт этот promise
-      (обычно он уже завершён, пока игрок печатает). Если цепочка упала — верните игрока к списку
-      тем с локализованной ошибкой. Неудавшийся <code>POST /topic</code> не фатален (чат работает
-      и без темы), неудавшийся <code>POST /session</code> — фатален.</li>
-  <li><b>Не кэшируйте отклонённый promise создания сессии</b>: временный сбой (сеть, 429, reCaptcha)
-      не должен намертво заклинить все последующие попытки — сбросьте promise при ошибке, чтобы
-      следующий тап повторил создание заново.</li>
-  <li><b>Защита от двойного тапа</b> по кнопке темы: выставляйте флаг синхронно до любого await,
-      иначе двойной клик создаст два диалога/двойное приветствие.</li>
-  <li><b>Каждый вход — новый разговор.</b> «Назад», закрытие панели, завершение чата и эскалация
-      сбрасывают локальные <code>session_id</code>/<code>token</code>; повторное открытие всегда
-      начинает с чистого списка тем и новой сессии. Не резюмируйте старую сессию на клиенте — она
-      может быть уже закрыта на сервере, и первое сообщение «нового» чата молча упрётся в
-      <code>409</code>.</li>
-  <li><b>Токен сессии держите в памяти</b>, не в localStorage: он живёт один разговор и не должен
-      переживать вкладку.</li>
-</ul>
-
-<h3>5.3. Канонное приветствие — контракт с промптом</h3>
-<div class="note">Это самый неочевидный пункт. Пузырь «Привет, я Ника, чем могу тебе помочь?»
-рисует <b>клиент</b> (строка <code>greeting</code> из <code>/i18n</code>) сразу при выборе темы,
-до первого сообщения игрока; на сервер он не отправляется и в истории не хранится. Промпт модели
-построен в расчёте на то, что это приветствие уже показано: модель <b>никогда не представляется</b>,
-а своё единственное приветствие («Привет, Андрей!») даёт по имени в первом ответе — только если имя
-игрока передано (handshake, раздел 3). Если ваш UI не рисует канонный пузырь, диалог начнётся вообще
-без «здравствуйте» — добавьте его на клиенте, серверной альтернативы нет.</div>
-
-<h3>5.4. Обработка ответа <code>POST /message</code> — side-payload'ы</h3>
-<p>Один ход возвращает не только текст (поля — в разделе 4). Клиент обязан обработать каждое:</p>
-<ul>
-  <li><b><code>reply</code> может быть пустым</b> — при эскалации и при переключении темы. Никогда
-      не рисуйте пустой пузырь: если текст пуст, снимите индикатор «печатает» и работайте только
-      с side-payload'ами.</li>
-  <li><b><code>escalation.active=true, final=true</code></b> (жёсткая эскалация): покажите карточку
-      (<code>message</code> + кнопка <code>button.url</code>, если url задан; открывать с
-      <code>target="_blank" rel="noopener"</code>), скройте поле ввода и сбросьте локальную сессию —
-      сервер отклонит дальнейшие ходы с <code>409</code>. <b><code>final=false</code></b> (мягкая,
-      по ключевым словам): карточку покажите, но поле ввода оставьте — разговор продолжается.
-      <b><code>escalation.retention=true</code></b> — этот хендофф ведёт не на форму контакта, а
-      в Telegram-бота Nika: <code>button.url</code> уже содержит одноразовый диплинк входа
-      (nonce живёт ~120 c), просто откройте его — игрок попадёт в бота, подпишется на канал и
-      получит кнопку менеджера. Флаг появляется только когда у продукта включён ретеншн; иначе
-      кнопка ведёт на статический <code>contact_url</code>.</li>
-  <li><b><code>suggested_topic</code> — автопереключение темы.</b> Сервер уже подавил необоснованный
-      ответ (он генерировался без базы знаний целевой темы), поэтому <code>reply</code> пуст. Клиент:
-      (1) оставляет в переписке постоянную заметку «переключаю на «X»…» (без кнопок — это запись о
-      переходе); (2) вызывает <code>POST /topic</code> с новым slug; (3) после короткой паузы
-      ~900 мс (чтобы переход читался, а не мелькал) <b>повторно отправляет исходный текст игрока</b>
-      в <code>POST /message</code> — этот второй ответ и есть то, что видит игрок.
-      <b>Ограничьте цепочку</b> (виджет: максимум 2 автопереключения подряд): если лимит выбран,
-      покажите локализованный фолбэк «не удалось определить тему, переформулируйте» — иначе ход
-      закончится вообще без ответа и чат будет выглядеть зависшим.</li>
-  <li><b><code>suggestions[]</code></b> (до 2 наводящих вопросов): кнопки-пузыри у поля ввода; тап
-      отправляет текст вопроса как обычный ход. <b>Старые пузыри убирайте в момент начала любого
-      нового хода</b> — они устаревают мгновенно.</li>
-  <li><b><code>closing_suggestion</code></b> («Проблема решена.»): отдельно стилизованный
-      завершающий пузырь. Тап: отправить его текст с <code>closing=true</code> (модель ответит
-      коротким прощанием), затем best-effort <code>POST /resolve</code> и завершить разговор.
-      После этого <b>не</b> показывать кнопку «завершить чат» — игрок уже завершил. Если этот ход
-      неожиданно вернул эскалацию — обработать её как обычно вместо закрытия.</li>
-  <li><b><code>resolved=true</code></b>: показать кнопку «завершить чат»; тап → <code>POST /resolve</code>
-      (best-effort — интерфейс закрывается в любом случае) + свернуть чат. <b>Одновременно показывается
-      только один финишный контрол</b>: при конфликте <code>resolved</code> побеждает
-      <code>closing_suggestion</code>.</li>
-  <li><b><code>lang</code> — дрейф языка разговора.</b> Если игрок начал писать на другом
-      поддерживаемом языке, ответы переключаются на него; переключайте вслед и хром (кнопки,
-      плейсхолдер, канонное приветствие, заголовки тем — <code>GET /topics</code> уже на новом языке),
-      и передавайте новый язык как <code>locale</code> при создании следующей сессии — иначе после
-      «назад» язык отскочит к языку браузера.</li>
-</ul>
-
-<h3>5.5. Ошибки и деградация</h3>
-<ul>
-  <li><b><code>409 session_closed</code></b>: не показывать сырую ошибку — молча завершить разговор
-      локально (следующее обращение начнёт новую сессию).</li>
-  <li><b><code>429</code></b> (rate-limit / cooldown между сообщениями): локализованная заметка
-      «слишком часто», без автоматических ретраев в цикле.</li>
-  <li><b><code>400</code></b> (слишком длинное сообщение / injection-фильтр): показать
-      локализованный текст ошибки.</li>
-  <li><b>Сбой модели не приходит ошибкой</b>: при недоступности OpenAI сервер возвращает обычный
-      <code>200</code> с локализованной просьбой отправить сообщение ещё раз — для клиента это
-      обычный ход, ничего специального делать не нужно.</li>
-  <li><b>Индикатор «печатает»</b> (пузырь с точками) на время запроса; ответ заменяет его на месте.
-      Сетевая ошибка — локализованный текст ошибки в том же пузыре. Не отправляйте новый ход, пока
-      предыдущий в полёте.</li>
-</ul>
-
-<h3>5.6. Безопасность рендеринга</h3>
-<ul>
-  <li><b>Ответы ассистента приходят с лёгким Markdown</b> (модель этому обучена директивой):
-      жирный/курсив, <code>`код`</code>, ссылки, короткие списки. Рендерите <b>только этот сабсет</b>
-      и обязательно в порядке «сначала HTML-escape всего текста, потом восстановление разметки по
-      белому списку»; ссылки — только http(s)/mailto, с <code>rel="noopener"</code>. Никакой сырой
-      HTML из модели не должен попадать в DOM. Таблицы/код-блоки модель не шлёт (директива), но
-      неизвестную разметку показывайте как текст, не рендерьте.</li>
-  <li><b>Текст игрока рендерится строго литерально</b> (<code>textContent</code>, не innerHTML) —
-      и его собственный ввод, и его сообщения в истории.</li>
-  <li><b>Widget key — не секрет</b> (он в HTML), но <b>bearer-токен сессии</b> — секрет одного
-      разговора: только в память, только в заголовок <code>Authorization</code>.</li>
-  <li><b>reCaptcha v3</b>: токен нужен при создании сессии, если у продукта задан свой секрет
-      reCaptcha (Structure → Product secrets) или на сервисе задан деплой-фолбэк
-      <code>RECAPTCHA_SECRET</code>; без обоих сервис пропускает проверку (dev). Site key берите из
-      <code>GET /api/chat/i18n</code> (поле <code>recaptcha_site_key</code>) — как это делает виджет.
-      Домен вашего сайта должен быть в <code>CORS_ALLOW_ORIGINS</code>.</li>
-</ul>
-
-<h3>5.7. Мобильные нюансы</h3>
-<ul>
-  <li>Определяйте «мобильность» по реальному <code>window.visualViewport</code>, а не по CSS
-      media-query: media-query меряет CSS-пиксели, которыми управляет viewport-мета <b>вашей</b>
-      страницы — при нестандартной мете полноэкранный режим просто не срабатывает.</li>
-  <li>При открытой экранной клавиатуре layout-viewport не меняется, а visual-viewport сжимается —
-      панель с <code>position:fixed</code> на всю высоту прячет поле ввода под клавиатурой.
-      Виджет решает это, подгоняя top/left/width/height панели под
-      <code>visualViewport</code> на каждый его resize/scroll — повторите этот приём.</li>
-  <li>Держите ленту прикнопленной к последнему сообщению и повторяйте пиннинг после следующего
-      кадра (rAF): пузыри-подсказки и рендер Markdown меняют высоту после вставки ответа, иначе
-      свежий ответ оказывается наполовину скрыт.</li>
-</ul>
-
-<div class="warnbox">Чек-лист приёмки своего UI: ленивое создание сессии · оптимистичный тап по теме ·
-канонное приветствие на клиенте · пустой <code>reply</code> не рисуется · автопереключение темы с
-re-ask и лимитом глубины · пузыри-подсказки + два финишных контрола (по одному за раз) · обе силы
-эскалации (<code>final</code>) · обработка 409/429/400 · дрейф языка в хроме · Markdown-сабсет с
-эскейпом · литеральный рендер ввода игрока. Выпадение любого пункта — это «чат тормозит/завис/
-молчит» в проде.</div>
-
-<h2 id="admin-api">6. Admin API — интеграция с основным бэкендом/фронтендом</h2>
-<p class="muted">Все ручки под <code>/admin/*</code>, JSON, авторизация — bearer JWT из
-<code>POST /admin/login</code>. Именно этим API пользуется наша админка («хаб»); ваш бэкенд может
-использовать его же для встраивания управления и статистики в основную платформу — для
-«система-к-системе» выпустите <b>сервисный API-ключ</b> (<code>sak_…</code>, админка System →
-API keys): он передаётся тем же заголовком <code>Authorization: Bearer sak_…</code> вместо JWT и
-несёт одну роль в одном скоупе. Подробный гайд по интеграции с общей админкой — модель ролей,
-сервисные ключи, скоупинг, полный справочник эндпоинтов (включая аналитику ретеншна) и примеры
-curl — на отдельной странице
-<a href="/integration-admin" style="color:var(--accent)">/integration-admin</a>;
-про Telegram-бота — <a href="/integration-telegram" style="color:var(--accent)">/integration-telegram</a>.
-Ниже — краткая выжимка.</p>
-
-<div class="endpoint"><span class="tag post">POST</span><code>/admin/login</code></div>
-<p><code>{ email, password }</code> → <code>{ token, role, memberships[] }</code>. Токен живёт
-<code>admin_token_ttl_min</code> (по умолчанию 480 мин); аккаунт и права перепроверяются на каждом запросе.</p>
-
-<h3>Скоупинг запросов</h3>
-<p>Почти все ручки принимают <code>?product_id=N</code> (один продукт) или <code>?partner_id=N</code>
-(агрегат по партнёру). Без параметров — всё, что доступно аккаунту. Запрос вне своего скоупа → <code>403</code>.</p>
-
-<h3>Структура (партнёры/продукты)</h3>
-<table>
-  <tr><th>Ручка</th><th>Что делает</th></tr>
-  <tr><td><span class="tag get">GET</span><code>/admin/structure</code></td>
-      <td>Дерево партнёры → продукты, видимое аккаунту (+ widget key, флаги секретов).</td></tr>
-  <tr><td><span class="tag post">POST</span><code>/admin/partners</code></td>
-      <td><code>{slug, name}</code> — создать партнёра (глобальный админ).</td></tr>
-  <tr><td><span class="tag put">PUT</span><code>/admin/partners/{id}</code></td>
-      <td><code>{name?, active?}</code>.</td></tr>
-  <tr><td><span class="tag post">POST</span><code>/admin/products</code></td>
-      <td><code>{partner_id, slug, name}</code> — создать казино (widget key генерируется, KB-переменные сеются).</td></tr>
-  <tr><td><span class="tag put">PUT</span><code>/admin/products/{id}</code></td>
-      <td><code>{name?, active?}</code>.</td></tr>
-  <tr><td><span class="tag put">PUT</span><code>/admin/products/{id}/secrets</code></td>
-      <td><code>{openai_key_primary?, openai_key_fallback?, handshake_secret?}</code> — write-only;
-          пустая строка очищает поле; хранится шифрованно; в ответ только has_*-флаги.</td></tr>
-  <tr><td><span class="tag post">POST</span><code>/admin/products/{id}/widget-key</code></td>
-      <td>Ротация widget key (старые сниппеты перестают работать сразу).</td></tr>
-</table>
-
-<h3>Дашборд / данные</h3>
-<table>
-  <tr><th>Ручка</th><th>Что отдаёт</th></tr>
-  <tr><td><span class="tag get">GET</span><code>/admin/overview?from=&amp;to=&amp;product_id=</code></td>
-      <td>KPI: сессии, эскалации, стоимость, cache-hit и т.д.</td></tr>
-  <tr><td><span class="tag get">GET</span><code>/admin/timeseries?metric=sessions|cost|cost_per_session|escalation_rate</code></td>
-      <td>Ряды по дням/часам.</td></tr>
-  <tr><td><span class="tag get">GET</span><code>/admin/by-topic</code> · <code>/admin/by-language</code></td>
-      <td>Разрезы по темам/языкам (+стоимость).</td></tr>
-  <tr><td><span class="tag get">GET</span><code>/admin/sessions</code> · <code>/admin/session/{id}</code></td>
-      <td>Список сессий с фильтрами / полный транскрипт с затратами по ходам.</td></tr>
-  <tr><td><span class="tag get">GET</span><code>/admin/unresolved?format=json|csv</code></td>
-      <td>Очередь незакрытых обращений по темам.</td></tr>
-</table>
-
-<h3>Контент продукта</h3>
-<table>
-  <tr><th>Ручка</th><th>Что редактирует</th></tr>
-  <tr><td><code>/admin/kb/topics</code> · <code>/admin/kb/content</code> · <code>/admin/kb/variables</code></td>
-      <td>Темы, KB-тексты, {placeholder}-переменные базы знаний.</td></tr>
-  <tr><td><code>/admin/prompt-variables</code></td>
-      <td>Брендирование промпта: имя персонажа, бренд, продукты, tone of voice.</td></tr>
-  <tr><td><code>/admin/translations</code></td>
-      <td>Все видимые игроку строки по языкам + contact URL эскалации.</td></tr>
-  <tr><td><code>/admin/settings/{group}</code></td>
-      <td>Группы: <code>model</code> (модель/токены/таймауты), <code>antispam</code>, <code>language</code>,
-          <code>general</code>, <code>escalation</code> (ключевые слова). С <code>?product_id=</code> —
-          оверрайд продукта; без — глобальные значения по умолчанию (только глобальный админ).</td></tr>
-  <tr><td><code>/admin/effective-prompt?product_id=</code></td>
-      <td>Read-only: полный собранный промпт продукта (все слои).</td></tr>
-  <tr><td><code>/admin/test-profile</code></td>
-      <td>Тестовый профиль игрока (dev/предпрод, когда нет handshake).</td></tr>
-</table>
-
-<h3>Пользователи и доступы</h3>
-<table>
-  <tr><th>Ручка</th><th>Что делает</th></tr>
-  <tr><td><span class="tag get">GET</span><code>/admin/users</code></td>
-      <td>Аккаунты в зоне доступа + их membership'ы.</td></tr>
-  <tr><td><span class="tag post">POST</span><code>/admin/users</code></td>
-      <td><code>{email, password, role, scope_type: global|partner|product, partner_id?, product_id?}</code>.</td></tr>
-  <tr><td><span class="tag post">POST</span><code>/admin/users/{email}/memberships</code></td>
-      <td>Выдать доступ (скоуп + роль). Повторная выдача обновляет роль.</td></tr>
-  <tr><td><span class="tag del">DELETE</span><code>/admin/users/{email}/memberships/{id}</code></td>
-      <td>Отозвать доступ.</td></tr>
-  <tr><td><span class="tag put">PUT</span> / <span class="tag del">DELETE</span> <code>/admin/users/{email}</code></td>
-      <td>Пароль/активность / удаление аккаунта (в пределах своего скоупа).</td></tr>
-</table>
-
-<h2 id="roles">7. Роли и доступы</h2>
-<table>
-  <tr><th>Скоуп</th><th>admin</th><th>manager</th></tr>
-  <tr><td><b>global</b> — весь хаб</td>
-      <td>всё: партнёры, продукты, ключи, пользователи, глобальные настройки</td>
-      <td>чтение всего</td></tr>
-  <tr><td><b>partner</b> — партнёр и все его казино</td>
-      <td>создание продуктов партнёра, их контент/настройки/ключи, пользователи в скоупе</td>
-      <td>чтение по партнёру</td></tr>
-  <tr><td><b>product</b> — одно казино</td>
-      <td>контент/настройки/ключи этого казино, его пользователи</td>
-      <td>чтение по казино</td></tr>
-</table>
-<p>У аккаунта может быть несколько membership'ов (например, manager глобально + admin одного продукта).
-Сервер — единственный источник истины: каждый запрос проверяется по БД, отзыв доступа действует немедленно.</p>
-
-<h2 id="env">8. Переменные окружения (деплой)</h2>
+<h2 id="env">3. Переменные окружения (деплой)</h2>
+<p class="muted">Общие переменные деплоя сервиса; специфичные для Telegram-бота — на
+<a href="/integration-telegram#env" style="color:var(--accent)">странице retention-бота</a>.</p>
 <table>
   <tr><th>Переменная</th><th>Назначение</th></tr>
   <tr><td><code>DATABASE_URL</code></td><td>Postgres (обязательно).</td></tr>
@@ -485,7 +120,9 @@ curl — на отдельной странице
       <td>Деплой-фолбэк секрета handshake (у продукта приоритет — его собственный секрет).</td></tr>
   <tr><td><code>CORS_ALLOW_ORIGINS</code></td><td>Домены сайтов, где встраивается виджет.</td></tr>
   <tr><td><code>RECAPTCHA_SITE_KEY</code>/<code>RECAPTCHA_SECRET</code> (фолбэк-пара — у продукта
-      приоритетна его собственная, раздел 2), <code>TRUSTED_PROXY_*</code>, <code>CONTACT_FORM_URL</code>…</td>
+      приоритетна его собственная, см. <a href="/integration-widget#recaptcha"
+      style="color:var(--accent)">страницу виджета</a>), <code>TRUSTED_PROXY_*</code>,
+      <code>CONTACT_FORM_URL</code>…</td>
       <td>Прочее — см. README сервиса (полная таблица).</td></tr>
 </table>
 

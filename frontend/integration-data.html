@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Данные игрока — передача и синхронизация</title>
+<style>
+  :root {
+    --bg:#0f1320; --panel:#1a2032; --panel2:#232c44; --line:#2e3a57;
+    --text:#e7ecf5; --muted:#9aa7c2; --accent:#4f8cff; --good:#36c08a; --warn:#e8b349;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:32px 20px 80px; }
+  h1 { font-size:26px; margin:0 0 6px; }
+  h2 { font-size:19px; margin:44px 0 10px; padding-top:18px; border-top:1px solid var(--line); }
+  h3 { font-size:15px; margin:24px 0 8px; color:var(--accent); }
+  p, li { color:var(--text); }
+  .muted { color:var(--muted); }
+  code { background:var(--panel2); border:1px solid var(--line); border-radius:5px;
+    padding:1px 6px; font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace; }
+  pre { background:var(--panel); border:1px solid var(--line); border-radius:9px;
+    padding:14px 16px; overflow-x:auto; font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace; }
+  pre code { background:none; border:none; padding:0; }
+  table { width:100%; border-collapse:collapse; margin:10px 0 18px; font-size:13px; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .tag { display:inline-block; font:600 11px/1 ui-monospace,Menlo,monospace; border-radius:5px;
+    padding:4px 7px; margin-right:6px; }
+  .get { background:rgba(54,192,138,.16); color:var(--good); }
+  .post { background:rgba(79,140,255,.16); color:var(--accent); }
+  .put { background:rgba(232,179,73,.16); color:var(--warn); }
+  .del { background:rgba(224,89,107,.16); color:#e0596b; }
+  .note { background:rgba(79,140,255,.08); border:1px solid var(--line); border-left:3px solid var(--accent);
+    border-radius:8px; padding:10px 14px; margin:14px 0; }
+  .warnbox { background:rgba(232,179,73,.10); border:1px solid var(--warn); color:var(--warn);
+    border-radius:8px; padding:10px 14px; margin:14px 0; }
+  nav { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 18px; margin:22px 0; }
+  nav a { color:var(--accent); text-decoration:none; display:inline-block; margin:2px 14px 2px 0; }
+  nav a:hover { text-decoration:underline; }
+  .endpoint { margin:14px 0 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Данные игрока — передача и синхронизация</h1>
+<p class="muted">Все способы, которыми сервис узнаёт об игроке и держит его профиль свежим:
+подписанный <b>handshake</b> с сайта (push при открытии чата), <b>снапшот</b> профиля в
+Telegram-боте, ленивый <b>pull</b> из Player API казино и <b>push-webhook</b> из CRM.
+Виджет — на <a href="/integration-widget" style="color:var(--accent)">странице виджета</a>,
+Telegram-бот — на <a href="/integration-telegram" style="color:var(--accent)">странице
+retention-бота</a>. База URL во всех примерах — адрес этого сервиса.</p>
+
+<nav>
+  <a href="#fields">Поля профиля (whitelist)</a>
+  <a href="#handshake">Подписанный handshake</a>
+  <a href="#where">Куда передаётся</a>
+  <a href="#pull">Ленивый pull (Player API)</a>
+  <a href="#push">Push-webhook</a>
+  <a href="#activity">Сигналы активности</a>
+  <a href="#test-profile">Тест-профиль (dev)</a>
+</nav>
+
+<h2 id="fields">1. Поля профиля — единый whitelist</h2>
+<p>Во всех контрактах ниже используется один и тот же набор полей. Модель видит <b>только</b> их —
+любые другие поля отбрасываются на входе:</p>
+<table>
+  <tr><th>Поле</th><th>Пример</th><th>Зачем модели</th></tr>
+  <tr><td><code>id</code></td><td><code>"player-123"</code></td><td>идентификатор игрока (ключ pull/push)</td></tr>
+  <tr><td><code>full_name</code></td><td><code>"Иван Петров"</code></td><td>приветствие по имени</td></tr>
+  <tr><td><code>email</code></td><td><code>"ivan@example.com"</code></td><td>контекст аккаунта</td></tr>
+  <tr><td><code>activation_status</code></td><td><code>"active"</code></td><td>ответы про верификацию/блокировки</td></tr>
+  <tr><td><code>country</code></td><td><code>"Portugal"</code></td><td>региональный контекст</td></tr>
+  <tr><td><code>balance</code></td><td><code>"1500.00 EUR"</code></td><td>вопросы про баланс/вывод</td></tr>
+  <tr><td><code>vip_level</code></td><td><code>"Silver"</code></td><td>VIP-обращение; в ретеншне — гейты фото</td></tr>
+  <tr><td><code>registration_date</code></td><td><code>"2024-01-15"</code></td><td>стаж игрока</td></tr>
+</table>
+<div class="note">Поля с маркерами prompt-injection зануляются санитайзером до попадания в промпт.
+Никогда не передавайте в профиле номера карт, CVV, пароли, 2FA-коды — сервис их не запрашивает и
+не должен видеть.</div>
+
+<h2 id="handshake">2. Подписанный handshake (push с сайта)</h2>
+<p>Чтобы модель знала имя/статус/баланс игрока, бэкенд CMS подписывает данные игрока HMAC-секретом
+продукта и передаёт blob клиенту (например, вставляет в страницу при рендере). Неподписанные данные
+из браузера в продакшн-режиме игнорируются — доверяем только подписи бэкенда.</p>
+<p><b>Формат blob:</b> <code>base64url(payload_json) + "." + base64url(HMAC_SHA256(secret, base64url(payload_json)))</code></p>
+<p>Payload — JSON c полями игрока (раздел 1) + <code>iat</code>/<code>exp</code> (unix-секунды;
+TTL по умолчанию ≤ 300 сек, anti-replay):</p>
+<pre><code>{
+  "id": "player-123",
+  "full_name": "Иван Петров",
+  "email": "ivan@example.com",
+  "activation_status": "active",
+  "country": "Portugal",
+  "balance": "1500.00 EUR",
+  "vip_level": "Silver",
+  "registration_date": "2024-01-15",
+  "iat": 1751500000,
+  "exp": 1751500300
+}</code></pre>
+<p><b>Пример подписи (Node.js):</b></p>
+<pre><code>const crypto = require("crypto");
+const b64url = (buf) =&gt; Buffer.from(buf).toString("base64url");
+
+function signHandshake(context, secret, ttlSec = 300) {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = JSON.stringify(
+    Object.fromEntries(Object.entries({ ...context, iat: now, exp: now + ttlSec }).sort()),
+  );
+  const p64 = b64url(payload);
+  const sig = crypto.createHmac("sha256", secret).update(p64).digest("base64url");
+  return `${p64}.${sig}`;
+}</code></pre>
+<p><b>Пример подписи (Python):</b></p>
+<pre><code>import base64, hashlib, hmac, json, time
+
+def sign_handshake(context: dict, secret: str, ttl_sec: int = 300) -> str:
+    now = int(time.time())
+    payload = {**context, "iat": now, "exp": now + ttl_sec}
+    p64 = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    ).rstrip(b"=").decode()
+    sig = hmac.new(secret.encode(), p64.encode(), hashlib.sha256).digest()
+    s64 = base64.urlsafe_b64encode(sig).rstrip(b"=").decode()
+    return f"{p64}.{s64}"</code></pre>
+<ul>
+  <li>Секрет handshake задаётся per product в админке (Structure → Product secrets) — у каждого
+      казино свой. Деплой-переменная <code>WIDGET_HANDSHAKE_SECRET</code> — только фолбэк.</li>
+  <li>Blob живёт максимум 300 секунд — генерируйте его при рендере страницы или отдавайте отдельным
+      endpoint'ом своего бэкенда непосредственно перед открытием чата.</li>
+</ul>
+
+<h2 id="where">3. Куда передаётся handshake</h2>
+<table>
+  <tr><th>Куда</th><th>Как</th><th>Что происходит</th></tr>
+  <tr><td>Чат поддержки (виджет)</td>
+      <td>поле <code>signed_context</code> в <span class="tag post">POST</span><code>/api/chat/session</code>
+          (готовый виджет — через <code>SIGNED_CONTEXT</code> в <code>mount()</code>,
+          см. <a href="/integration-widget#mount" style="color:var(--accent)">страницу виджета</a>)</td>
+      <td>профиль виден модели всю сессию чата (персонализация, ответы про баланс/статус)</td></tr>
+  <tr><td>Telegram-бот (ретеншн)</td>
+      <td>поле <code>signed_context</code> в <span class="tag post">POST</span><code>/api/retention/deeplink</code>
+          (см. <a href="/integration-telegram#deeplink" style="color:var(--accent)">диплинк и nonce</a>)</td>
+      <td>при редиме <code>/start</code> фиксируется связка <code>tg_user_id ↔ player_id</code> и
+          <b>снапшот</b> профиля; каждый новый диплинк обновляет снапшот</td></tr>
+</table>
+<p>Дальше профиль в Telegram-боте живёт на снапшоте и деградирует мягко: без интеграции остаётся
+последний снапшот, а с Player API (pull) и/или CRM-webhook (push) — освежается автоматически.</p>
+
+<h2 id="pull">4. Ленивый pull — Player API на стороне казино</h2>
+<p>Если на продукте заданы <b>Player API URL</b> + ключ (админка → Retention · Telegram → Telegram
+config + Secrets), сервис сам подтягивает свежий профиль перед ходом бота, когда снапшоту больше
+<code>profile_pull_ttl_sec</code> (по умолчанию 1 ч). Эндпоинт реализуете вы у себя:</p>
+<pre><code>GET  {player_api_url}?player_id=&lt;id&gt;
+Authorization: Bearer &lt;player_api_key&gt;
+→ 200 {
+  "id": "player-123", "full_name": "Иван Петров", "email": "ivan@example.com",
+  "activation_status": "active", "country": "Portugal", "balance": "1500.00 EUR",
+  "vip_level": "Silver", "registration_date": "2024-01-15",
+  "last_login_at": "2026-07-05T18:20:00Z",     // опционально — сигналы активности,
+  "last_played_at": "2026-07-05T19:02:00Z",    // см. раздел 6
+  "last_deposit_at": "2026-06-28T11:45:00Z"
+}</code></pre>
+<p class="muted">Pull — best-effort: сбой запроса не ломает ход, снапшот просто остаётся прежним.
+Ключ Player API хранится у нас шифрованно (наружу — только флаг «задан»).</p>
+
+<h2 id="push">5. Push-webhook — CRM казино шлёт изменения мгновенно</h2>
+<div class="endpoint"><span class="tag post">POST</span><code>/partner/{product_id}/player-update</code></div>
+<pre><code>POST /partner/42/player-update
+Authorization: Bearer &lt;handshake-секрет продукта&gt;
+{
+  "player_id": "player-123",
+  "balance": "2000.00 EUR",
+  "vip_level": "Gold",
+  "last_login_at": "2026-07-05T18:20:00Z",
+  "last_played_at": "2026-07-05T19:02:00Z",
+  "last_deposit_at": "2026-06-28T11:45:00Z"
+}
+→ 200 { "ok": true, "updated": 1 }</code></pre>
+<p class="muted">Авторизация push — секретом handshake продукта (тот же общий секрет, что подписывает
+handshake, раздел 2). Апдейт частичный: отсутствующие поля не трогаются.</p>
+
+<h2 id="activity">6. Сигналы активности на стороне казино</h2>
+<p>Помимо профильных полей, pull- и push-контракты принимают опциональные ISO-8601-таймстемпы:</p>
+<table>
+  <tr><th>Поле</th><th>Что означает</th></tr>
+  <tr><td><code>last_login_at</code></td><td>последний вход на сайт казино</td></tr>
+  <tr><td><code>last_played_at</code></td><td>последняя игра/ставка</td></tr>
+  <tr><td><code>last_deposit_at</code></td><td>последний депозит</td></tr>
+</table>
+<div class="warnbox">На эти таймстемпы опираются триггеры <code>casino_inactivity</code> и
+<code>no_deposit</code> матрицы проактивных пингов
+(<a href="/integration-telegram#pings" style="color:var(--warn)">страница retention-бота, раздел
+«Проактивные пинги»</a>): пока казино их не передаёт, такие правила просто никогда не срабатывают.
+Передавать можно любым из двух путей — push'ем (раздел 5) или в ответе своего Player API (раздел 4).
+Непарсибельные значения отбрасываются.</div>
+
+<h2 id="test-profile">7. Тест-профиль — dev/предпрод без handshake</h2>
+<p>В dev-режиме (у продукта и деплоя <b>не задан</b> секрет handshake) нет хост-сайта, который
+подписал бы профиль, — вместо него при создании сессии подставляется <b>тестовый профиль игрока</b>
+из админки (Prompt → Prompt variables → блок Test player). Так проверяется персонализация промпта
+до подключения реального сайта. Как только секрет handshake задан, тест-профиль игнорируется —
+источником данных становится только подпись бэкенда.</p>
+
+<p class="muted" style="margin-top:40px">Страница обновляется вместе с сервисом. Смежные гайды:
+<a href="/integration" style="color:var(--accent)">обзор и архитектура</a> ·
+<a href="/integration-widget" style="color:var(--accent)">виджет</a> ·
+<a href="/integration-chat-api" style="color:var(--accent)">Chat API и свой UI</a> ·
+<a href="/integration-telegram" style="color:var(--accent)">retention-бот в Telegram</a> ·
+<a href="/integration-admin" style="color:var(--accent)">интеграция с общей админкой</a>.
+Вопросы по интеграции — к команде support-chat.</p>
+</div>
+</body>
+</html>

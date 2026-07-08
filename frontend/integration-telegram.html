@@ -48,7 +48,9 @@
 <h1>Retention-бот «Ника» в Telegram — интеграция и API</h1>
 <p class="muted">Документация для команд разработки: как подключить второй фасад сервиса — Telegram-бот
 с ретеншн-персоной Никой — к сайту казино. Это тот же AI-сервис и та же мультитенантность, что у
-чата поддержки (см. <a href="/integration" style="color:var(--accent)">страницу интеграции чата поддержки</a>;
+чата поддержки (обзор и архитектура — на <a href="/integration" style="color:var(--accent)">обзорной
+странице</a>; передача и синхронизация данных игрока — на
+<a href="/integration-data" style="color:var(--accent)">странице данных игрока</a>;
 авторизация и справочник <code>/admin/*</code> API — на
 <a href="/integration-admin" style="color:var(--accent)">странице интеграции с общей админкой</a>);
 здесь описано только то, что специфично для Telegram. База URL во всех примерах — адрес этого сервиса.</p>
@@ -127,8 +129,8 @@ username и токен от BotFather, — и включить <b>Retention enab
   <li><b>Профиль</b> в <code>signed_context</code> — тот же подписанный handshake, что и в чате поддержки
       (whitelisted-поля <code>id, full_name, email, activation_status, country, balance, vip_level,
       registration_date</code>). Подпись, форматы и примеры кода — на
-      <a href="/integration#handshake" style="color:var(--accent)">странице интеграции чата поддержки,
-      раздел 3</a>. В dev (без секрета handshake) вместо подписи берётся тест-профиль из админки.</li>
+      <a href="/integration-data#handshake" style="color:var(--accent)">странице данных игрока</a>.
+      В dev (без секрета handshake) вместо подписи берётся тест-профиль из админки.</li>
   <li><b>nonce одноразовый</b>, живёт <code>nonce_ttl_sec</code> (по умолч. 120 сек) — генерируйте его
       в момент клика по кнопке. Повторное использование и протухший nonce отклоняются.</li>
   <li><b>escalation</b> различает вход: <code>false</code> — обычная ретеншн-кнопка (в меню только
@@ -192,41 +194,19 @@ async function openNika(signedContext) {
   <li><b>Ленивый pull</b> (когда казино реализует эндпоинт) — если на продукте задан Player API URL + ключ,
       сервис сам подтягивает свежий профиль перед ходом, когда снапшоту больше
       <code>profile_pull_ttl_sec</code> (по умолч. 1 ч).</li>
-  <li><b>Push-webhook</b> (апгрейд) — CRM казино шлёт изменения нам мгновенно.</li>
+  <li><b>Push-webhook</b> (апгрейд) — CRM казино шлёт изменения нам мгновенно
+      (<span class="tag post">POST</span><code>/partner/{product_id}/player-update</code>,
+      авторизация — handshake-секретом продукта, частичный апдейт).</li>
 </ol>
-<h3>Pull — контракт на стороне казино (реализуете вы у себя)</h3>
-<pre><code>GET  {player_api_url}?player_id=&lt;id&gt;
-Authorization: Bearer &lt;player_api_key&gt;
-→ 200 {
-  "id": "player-123", "full_name": "Иван Петров", "email": "ivan@example.com",
-  "activation_status": "active", "country": "Portugal", "balance": "1500.00 EUR",
-  "vip_level": "Silver", "registration_date": "2024-01-15",
-  "last_login_at": "2026-07-05T18:20:00Z",     // опционально — сигналы активности,
-  "last_played_at": "2026-07-05T19:02:00Z",    // см. раздел 7 (матрица пингов)
-  "last_deposit_at": "2026-06-28T11:45:00Z"
-}</code></pre>
-<h3>Push — контракт на нашей стороне (шлёте вы при изменении профиля)</h3>
-<div class="endpoint"><span class="tag post">POST</span><code>/partner/{product_id}/player-update</code></div>
-<pre><code>POST /partner/42/player-update
-Authorization: Bearer &lt;handshake-секрет продукта&gt;
-{
-  "player_id": "player-123",
-  "balance": "2000.00 EUR",
-  "vip_level": "Gold",
-  "last_login_at": "2026-07-05T18:20:00Z",
-  "last_played_at": "2026-07-05T19:02:00Z",
-  "last_deposit_at": "2026-06-28T11:45:00Z"
-}
-→ 200 { "ok": true, "updated": 1 }</code></pre>
-<p class="muted">Авторизация push — секретом handshake продукта (тот же общий секрет, что подписывает
-handshake). Отсутствующие поля не трогаются (частичный апдейт).</p>
-<div class="note">Помимо профильных полей контракт принимает <b>сигналы активности на стороне
-казино</b> — опциональные ISO-8601-таймстемпы <code>last_login_at</code> (последний вход на сайт),
-<code>last_played_at</code> (последняя игра/ставка) и <code>last_deposit_at</code> (последний депозит).
-На них опираются триггеры <code>casino_inactivity</code> и <code>no_deposit</code> матрицы
-проактивных пингов (раздел&nbsp;7): пока казино их не передаёт, такие правила просто никогда не
-срабатывают. Передавать их можно любым из двух путей — push'ем сюда или в ответе своего Player API
-(pull выше).</div>
+<div class="note">Контракты <b>pull</b> (эндпоинт Player API на вашей стороне) и <b>push</b>
+(наш webhook), включая примеры запросов, — на
+<a href="/integration-data#pull" style="color:var(--accent)">странице данных игрока</a>.
+Помимо профильных полей оба контракта принимают <b>сигналы активности на стороне казино</b> —
+опциональные ISO-8601-таймстемпы <code>last_login_at</code> (последний вход на сайт),
+<code>last_played_at</code> (последняя игра/ставка) и <code>last_deposit_at</code> (последний
+депозит). На них опираются триггеры <code>casino_inactivity</code> и <code>no_deposit</code>
+матрицы проактивных пингов (раздел&nbsp;7): пока казино их не передаёт, такие правила просто
+никогда не срабатывают.</div>
 
 <h2 id="pings">7. Проактивные пинги — матрица ретеншна</h2>
 <p>Единственное место, где бот пишет игроку <b>первым</b>. В админке (раздел <b>Retention · Telegram →
@@ -342,7 +322,13 @@ Pings</b>) на продукт заводятся правила вида «иг
 
 <p class="muted" style="margin-top:40px">Страница обновляется вместе с сервисом. Пошаговый чек-лист
 подключения бота (BotFather, канал, Railway, вебхук) — в админке: раздел
-<b>Retention · Telegram → Setup guide</b>. Вопросы по интеграции — к команде support-chat.</p>
+<b>Retention · Telegram → Setup guide</b>. Смежные гайды:
+<a href="/integration" style="color:var(--accent)">обзор и архитектура</a> ·
+<a href="/integration-widget" style="color:var(--accent)">виджет</a> ·
+<a href="/integration-data" style="color:var(--accent)">данные игрока</a> ·
+<a href="/integration-chat-api" style="color:var(--accent)">Chat API и свой UI</a> ·
+<a href="/integration-admin" style="color:var(--accent)">интеграция с общей админкой</a>.
+Вопросы по интеграции — к команде support-chat.</p>
 </div>
 </body>
 </html>

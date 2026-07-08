@@ -15,6 +15,15 @@ def test_app_has_retention_routes():
         assert p in paths, p
 
 
+def test_app_has_integration_docs_routes():
+    # The docs family: the /integration hub + one per-topic sibling each.
+    paths = set(main.app.openapi()["paths"].keys())
+    for p in ("/integration", "/integration-widget", "/integration-data",
+              "/integration-chat-api", "/integration-telegram",
+              "/integration-admin"):
+        assert p in paths, p
+
+
 def _fake_request(method, path):
     return types.SimpleNamespace(method=method,
                                  url=types.SimpleNamespace(path=path))
