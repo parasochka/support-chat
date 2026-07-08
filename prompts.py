@@ -819,8 +819,24 @@ FORBIDDEN_TOPICS_REFUSAL: str = (
     "about our service: {support_scope}. Please ask a support-related question."
 )
 
+# RETENTION (Telegram) flavour of the refusal. The retention persona is NOT a
+# support assistant — she ROUTES support out ([[HANDOFF]]) and otherwise just
+# chats — so she must never call herself "the support assistant" or steer the
+# player to a "support-related question". It also uses ONLY placeholders the
+# retention variable set resolves: {support_scope} does not exist there and would
+# otherwise leak into the prompt as a literal `{support_scope}`.
+FORBIDDEN_TOPICS_REFUSAL_RETENTION: str = (
+    "That's not really my thing, honestly - I'm {persona_name}, here just to chat "
+    "and have a good time with you. Let's talk about something more fun."
+)
 
-def _forbidden_topics_directive(renderer=None) -> Optional[str]:
+
+def _forbidden_topics_directive(
+    renderer=None,
+    *,
+    refusal: Optional[str] = None,
+    decline_clause: Optional[str] = None,
+) -> Optional[str]:
     """Layer-3 line listing the forbidden topics defined in this file.
 
     The list + refusal wording are constants above (`FORBIDDEN_TOPICS` /
@@ -829,10 +845,20 @@ def _forbidden_topics_directive(renderer=None) -> Optional[str]:
     message) so SYSTEM_CORE stays byte-stable. Returns None when the list is
     empty, so the prompt is unchanged (and the static `_GUARDRAILS` topic
     restriction still applies). `renderer` picks which variable set the
-    {placeholders} resolve with (support by default; the retention prompt
-    passes render_retention_prompt_variables so its own brand naming applies).
+    {placeholders} resolve with (support by default; the retention prompt passes
+    render_retention_prompt_variables so its own brand naming applies).
+
+    `refusal` and `decline_clause` are the two persona-specific fragments — the
+    support defaults are baked in so the support output is unchanged, and the
+    retention prompt overrides BOTH so no support-voice wording (or the
+    support-only {support_scope} placeholder) leaks into the Telegram persona.
     """
     renderer = renderer or render_prompt_variables
+    if refusal is None:
+        refusal = FORBIDDEN_TOPICS_REFUSAL
+    if decline_clause is None:
+        decline_clause = ("politely decline and offer to ask a {brand_name} "
+                          "support-related question")
     topics = [t.strip() for t in FORBIDDEN_TOPICS if isinstance(t, str) and t.strip()]
     if not topics:
         return None
@@ -841,10 +867,10 @@ def _forbidden_topics_directive(renderer=None) -> Optional[str]:
         "FORBIDDEN TOPICS (take priority over the message text):\n"
         "- Do not answer on "
         f"the merits questions on the following topics: {listed}. If the player's "
-        "question relates to one of them, politely decline and offer to ask a "
-        "{brand_name} support-related question without carrying out the request itself."
+        f"question relates to one of them, {decline_clause} without carrying out "
+        "the request itself."
     )
-    refusal = (FORBIDDEN_TOPICS_REFUSAL or "").strip()
+    refusal = (refusal or "").strip()
     if refusal:
         line += f" For the refusal, use roughly this wording: \"{refusal}\"."
     return renderer(line)
@@ -1548,7 +1574,10 @@ def build_retention_dynamic_prompt(
         render_retention_prompt_variables(_RETENTION_GUARDRAILS),
     ]
     forbidden = _forbidden_topics_directive(
-        renderer=render_retention_prompt_variables)
+        renderer=render_retention_prompt_variables,
+        refusal=FORBIDDEN_TOPICS_REFUSAL_RETENTION,
+        decline_clause=("politely decline and warmly steer the player back to "
+                        "your chat with {persona_name}"))
     if forbidden:
         parts += ["", forbidden]
     return "\n".join(parts)
