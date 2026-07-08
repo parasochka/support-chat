@@ -75,6 +75,31 @@ def test_starter_prompt_variables_blank_name_falls_back():
     assert values["brand_name"] == defaults["brand_name"]
 
 
+def test_starter_retention_prompt_variables_full_registry_with_brand():
+    """The Telegram persona is a SEPARATE prompt with its own registry, so a
+    new product needs its own retention seed — without it the bot resolves to
+    the registry defaults (or the original tenant's global overrides) and
+    introduces itself under another brand."""
+    from prompts import RETENTION_PROMPT_VARIABLES
+
+    values = starter_kb.starter_retention_prompt_variables("Lucky Casino")
+    assert set(values) == {key for key, _d, _v, _r in RETENTION_PROMPT_VARIABLES}
+    assert values["retention_brand_name"] == "Lucky Casino"
+    for key, _desc, default, _renders in RETENTION_PROMPT_VARIABLES:
+        if key != "retention_brand_name":
+            assert values[key] == default
+    # The seed must be valid by the same rules as an admin write.
+    assert settings.validate_retention_prompt_variables(values) == values
+
+
+def test_starter_retention_prompt_variables_blank_name_falls_back():
+    from prompts import RETENTION_PROMPT_VARIABLES
+
+    values = starter_kb.starter_retention_prompt_variables("")
+    defaults = {key: default for key, _d, default, _r in RETENTION_PROMPT_VARIABLES}
+    assert values["retention_brand_name"] == defaults["retention_brand_name"]
+
+
 # ---------------------------------------------------------------------------
 # Starter RETENTION KB — the single document a new product's bot starts with.
 # Same contract as the support starter: brand-neutral, English, self-contained.

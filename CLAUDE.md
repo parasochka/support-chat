@@ -321,7 +321,11 @@ brand-specific facts (no names, URLs, amounts, timeframes — it
 points the player at the cashier/terms/game-info UI instead) and deliberately copies nothing
 from any live product's KB; (3) the FULL `prompt_variables` set into `product_settings`
 (template defaults, `brand_name` = the product's name, via
-`starter_kb.starter_prompt_variables`) so a new product never inherits another brand's
+`starter_kb.starter_prompt_variables`) — **and, symmetrically, the FULL
+`retention_prompt_variables` set** (`starter_kb.starter_retention_prompt_variables`,
+retention defaults + `retention_brand_name` = the product's name; the Telegram persona is a
+separate prompt with its own registry, so without its own seed the bot would introduce
+itself under the registry-default brand) — so a new product never inherits another brand's
 **global** prompt-variable overrides (the API endpoint calls `settings.reload()` after the
 seed so it applies immediately); (4) the **starter retention-KB document**
 (`starter_kb.STARTER_RETENTION_KB` via `db.seed_starter_retention_kb` — same brand-neutral

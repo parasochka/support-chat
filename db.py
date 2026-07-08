@@ -1609,9 +1609,9 @@ async def create_product(partner_id: int, slug: str, name: str
     A new casino starts working out of the box: widget key generated, the KB
     variables registry, the generic starter topics + KB texts (starter_kb.py),
     the starter retention-KB document, the starter ping-matrix rules and the
-    full prompt-variables set (template defaults, brand_name = the product's
-    name) are all seeded into the PRODUCT layer — so nothing is inherited from
-    another brand's global overrides. The owner then translates/uniquifies
+    full prompt-variables sets — support AND retention (template defaults,
+    brand name = the product's name) — are all seeded into the PRODUCT layer,
+    so nothing is inherited from another brand's global overrides. The owner then translates/uniquifies
     everything from the admin panel. (Translations and the retention settings group need no seed: their
     English/five-language defaults ship in the registries and resolve for
     every product until overridden.)
@@ -1634,6 +1634,9 @@ async def create_product(partner_id: int, slug: str, name: str
     await seed_starter_retention_rules(product_id=row["id"])
     await set_product_setting(row["id"], "prompt_variables",
                               starter_kb.starter_prompt_variables(name),
+                              updated_by="starter-seed")
+    await set_product_setting(row["id"], "retention_prompt_variables",
+                              starter_kb.starter_retention_prompt_variables(name),
                               updated_by="starter-seed")
     return _row_to_product(row)
 
