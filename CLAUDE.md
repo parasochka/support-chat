@@ -173,10 +173,17 @@ when invoking modules outside pytest.
   byte-stable, and every writable settings group surfaces in the admin schema.
 - **`ruff`** config in `pyproject.toml` is conservative on purpose (real-bug rules
   F/E9 only; line length and semicolons off) — don't broaden it into a restyle.
+- **`scripts/docs_check.py`** (skill `/docs-check`) is the manual replacement for
+  the removed docs-sync: it diffs the working tree vs `origin/main` and flags the
+  docs a change of that shape usually needs — architecture `.py`/`api/` →
+  `CLAUDE.md`; `config.py` → the README env table; a public API file → its
+  `frontend/integration-*.html` page; any integration/widget change →
+  `frontend/test.html`. Advisory (exit 0), since whether an edit warrants a doc
+  change is a judgment call.
 - **Skills** in `.claude/skills/` scaffold the recurring cross-file changes so no
-  touch-point is missed: `/preflight`, `/add-setting`, `/add-translation`,
-  `/add-db-column`, `/add-admin-endpoint`. Reach for them when doing that kind of
-  change.
+  touch-point is missed: `/preflight`, `/docs-check`, `/add-setting`,
+  `/add-translation`, `/add-db-column`, `/add-admin-endpoint`. Reach for them when
+  doing that kind of change.
 
 ## Architecture — the big picture
 
