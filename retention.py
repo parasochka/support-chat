@@ -732,7 +732,8 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
         # Never send a bare image: fall back to a short localized caption when
         # the model returned a photo with no text.
         caption = reply.reply or _rtn_text("rtn_photo_caption", reply.lang)
-        await _send_photo(client, product, ru, pu.chat_id, reply.photo_id, caption)
+        await _send_photo(client, product, ru, pu.chat_id, reply.photo_id,
+                          caption, session_id=session["id"])
     elif reply.reply:
         await client.send_message(pu.chat_id, reply.reply)
 
@@ -743,11 +744,12 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
 
 async def _send_photo(client: TelegramClient, product: dict[str, Any],
                       ru: dict[str, Any], chat_id: int, photo_id: int,
-                      caption: str) -> bool:
+                      caption: str, session_id: Optional[str] = None) -> bool:
     """Send a media-library photo, using the cached file_id or uploading once.
 
     Returns True when the photo itself was delivered (the ping worker keys its
-    ledger on it); a caption-only fallback returns False.
+    ledger on it); a caption-only fallback returns False. `session_id` links the
+    delivery to the chat session so the admin transcript can show it inline.
     """
     photo = await db.get_retention_photo(photo_id)
     if not photo or not photo.get("active"):
@@ -772,7 +774,8 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
         if new_file_id:
             await db.set_photo_file_id(photo_id, new_file_id)
     if result is not None:
-        await db.record_retention_photo_view(int(ru["id"]), photo_id, product["id"])
+        await db.record_retention_photo_view(int(ru["id"]), photo_id,
+                                             product["id"], session_id)
         return True
     return False
 

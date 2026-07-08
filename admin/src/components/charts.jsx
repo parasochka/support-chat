@@ -164,15 +164,23 @@ export const FunnelBars = ({ steps }) => {
         const conv = prev ? Math.round((s.value / prev) * 100) : null;
         return (
           <Box key={s.label}>
-            <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.25 }}>
-              <Typography variant="caption" color="text.secondary">
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'baseline',
+                gap: 1,
+                mb: 0.25,
+              }}
+            >
+              <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0 }}>
                 {s.label}
                 {conv != null && ` · ${conv}% of previous`}
               </Typography>
-              <Typography variant="caption" sx={{ fontWeight: 600 }}>
+              <Typography variant="caption" sx={{ fontWeight: 600, flexShrink: 0 }}>
                 {s.value}
               </Typography>
-            </Stack>
+            </Box>
             <Box sx={{ bgcolor: 'action.hover', borderRadius: 1, height: 14 }}>
               <Box
                 sx={{

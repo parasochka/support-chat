@@ -748,7 +748,9 @@ async def get_photo_file(photo_id: int, admin=Depends(require_admin)) -> Any:
     path = os.path.join(config.RETENTION_MEDIA_DIR, os.path.basename(ref))
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="File missing on disk.")
-    return FileResponse(path)
+    # The stored binary is immutable per photo id, so let the browser cache the
+    # admin preview instead of re-downloading it on every grid render/pagination.
+    return FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
 
 
 # ===========================================================================

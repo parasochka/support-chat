@@ -634,6 +634,14 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         "recaptcha_site_key TEXT",
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
         "recaptcha_secret_enc TEXT",
+        # --- Photo view ↔ chat session link ----------------------------------
+        # Which chat session a photo was sent in, so the admin transcript can
+        # show the delivered image inline (the retention Conversations view).
+        # NULL for rows written before this column existed.
+        "ALTER TABLE retention_photo_views ADD COLUMN IF NOT EXISTS "
+        "session_id UUID",
+        "CREATE INDEX IF NOT EXISTS idx_photo_views_session "
+        "ON retention_photo_views(session_id) WHERE session_id IS NOT NULL",
     ]
     for stmt in alters:
         await conn.execute(stmt)
@@ -2533,6 +2541,15 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
         "WHERE session_id = $1 AND type = 'topic_switch' ORDER BY id ASC",
         session_id,
     )
+    # Photos delivered in this (Telegram retention) session, so the transcript
+    # can render the sent image inline alongside its caption message.
+    photos = await _pool.fetch(
+        "SELECT v.photo_id, v.viewed_at, p.description, p.stage, p.level_min "
+        "FROM retention_photo_views v "
+        "JOIN retention_photos p ON p.id = v.photo_id "
+        "WHERE v.session_id = $1 ORDER BY v.id ASC",
+        session_id,
+    )
     def _msg(r):
         d = dict(r)
         d["created_at"] = d["created_at"].isoformat()
@@ -2546,6 +2563,14 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
             "type": r["type"],
             "payload": payload or {},
             "created_at": r["created_at"].isoformat(),
+        }
+    def _photo(r):
+        return {
+            "photo_id": r["photo_id"],
+            "description": r["description"],
+            "stage": r["stage"],
+            "level_min": r["level_min"],
+            "created_at": r["viewed_at"].isoformat(),
         }
     # Cost is summed from ai_interaction_logs (the canonical OpenAI-spend source,
     # invariant §4) — NOT from chat_messages. A routing-only turn logs its detect
@@ -2562,6 +2587,7 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
         "messages": [_msg(r) for r in msgs],
         "logs": [_msg(r) for r in logs],
         "events": [_event(r) for r in events],
+        "photos": [_photo(r) for r in photos],
         "cost_usd_total": round(cost_total, 6),
     }
 
@@ -3132,18 +3158,22 @@ async def advance_retention_stage(rid: int, new_stage: int) -> None:
 
 
 async def record_retention_photo_view(rid: int, photo_id: int,
-                                      product_id: int) -> None:
+                                      product_id: int,
+                                      session_id: Optional[str] = None) -> None:
     """Record a photo delivery: view row + per-photo counter + daily counter.
 
     Resets the daily counter when the stored day is not today, resets the
-    proactive-cooldown counter, all in one transaction.
+    proactive-cooldown counter, all in one transaction. `session_id` links the
+    view to the chat session it was sent in, so the admin transcript can render
+    the photo inline.
     """
     async with _acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 "INSERT INTO retention_photo_views "
-                "(photo_id, retention_user_id, product_id) VALUES ($1, $2, $3)",
-                photo_id, rid, product_id,
+                "(photo_id, retention_user_id, product_id, session_id) "
+                "VALUES ($1, $2, $3, $4)",
+                photo_id, rid, product_id, session_id,
             )
             await conn.execute(
                 "UPDATE retention_photos SET views_count = views_count + 1, "

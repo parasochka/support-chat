@@ -191,7 +191,7 @@ async def test_nika_turn_sends_photo(monkeypatch):
                 "storage_ref": "x.jpg"}
     monkeypatch.setattr(retention.db, "get_retention_photo", _get_photo)
 
-    async def _record(rid, photo_id, product_id):
+    async def _record(rid, photo_id, product_id, session_id=None):
         pass
     monkeypatch.setattr(retention.db, "record_retention_photo_view", _record)
 

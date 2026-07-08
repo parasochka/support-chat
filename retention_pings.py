@@ -244,7 +244,8 @@ async def _send_ping(client: TelegramClient, product: dict[str, Any],
     if draft.photo_id is not None:
         caption = draft.text or retention._rtn_text("rtn_photo_caption", draft.lang)
         delivered = await retention._send_photo(
-            client, product, ru, chat_id, draft.photo_id, caption)
+            client, product, ru, chat_id, draft.photo_id, caption,
+            session_id=session["id"])
         if not delivered:
             detail = "photo_send_failed"
     else:
