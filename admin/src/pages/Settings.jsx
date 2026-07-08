@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Title, useNotify } from 'react-admin';
 import Alert from '@mui/material/Alert';
 import AlertTitle from '@mui/material/AlertTitle';
@@ -28,11 +28,74 @@ import { GROUP_FIELDS, GROUP_HELP, GROUP_LABELS } from './settingsSchema';
 const SKIP_GROUPS = ['escalation'];
 const GROUP_ORDER = ['antispam', 'model', 'general', 'retention', 'language'];
 
+// Sub-headers for grouped fields inside a settings group (schema `section`).
+const SECTION_LABELS = {
+  progression: 'Photo unlock progression (Stage × VIP Level)',
+};
+
 // ---------------------------------------------------------------------------
 // One typed field
 // ---------------------------------------------------------------------------
-const Field = ({ field, value, onChange }) => {
+const Field = ({ field, value, onChange, form }) => {
   const { type, label, help } = field;
+
+  // Explicitness-stage thresholds shown as one labelled column per stage
+  // (Stage 1 is always the free baseline), instead of an opaque textarea list.
+  if (type === 'stagethresholds') {
+    const arr = Array.isArray(value) ? value : [];
+    const setAt = (i, n) => {
+      const next = [...arr];
+      next[i] = Math.max(0, parseInt(n, 10) || 0);
+      onChange(next);
+    };
+    return (
+      <Grid size={{ xs: 12 }}>
+        <Typography variant="subtitle2">{label}</Typography>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+          {help}
+        </Typography>
+        <Grid container spacing={1}>
+          <Grid size={{ xs: 6, sm: 3, md: 2 }}>
+            <TextField
+              label="Stage 1"
+              value="0"
+              size="small"
+              fullWidth
+              disabled
+              helperText="free / baseline"
+            />
+          </Grid>
+          {arr.map((n, i) => (
+            <Grid size={{ xs: 6, sm: 3, md: 2 }} key={i}>
+              <TextField
+                label={`Stage ${i + 2}`}
+                type="number"
+                value={n}
+                onChange={(e) => setAt(i, e.target.value)}
+                size="small"
+                fullWidth
+                helperText="msgs"
+                slotProps={{ htmlInput: { min: 0 } }}
+              />
+            </Grid>
+          ))}
+        </Grid>
+        <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+          <Button
+            size="small"
+            onClick={() => onChange([...arr, (arr[arr.length - 1] || 10) * 2])}
+          >
+            + Add stage
+          </Button>
+          {arr.length > 0 && (
+            <Button size="small" color="error" onClick={() => onChange(arr.slice(0, -1))}>
+              − Remove last
+            </Button>
+          )}
+        </Stack>
+      </Grid>
+    );
+  }
 
   if (type === 'bool') {
     return (
@@ -98,6 +161,13 @@ const Field = ({ field, value, onChange }) => {
 
   if (type === 'intmap') {
     const obj = value && typeof value === 'object' ? value : {};
+    // Order the columns by a sibling ordered list (e.g. vip_tiers) so the
+    // ceilings read lowest → highest tier instead of hash order.
+    const order = field.orderByField && Array.isArray(form?.[field.orderByField])
+      ? form[field.orderByField].map((t) => String(t).toLowerCase())
+      : [];
+    const keys = [...new Set([...order, ...Object.keys(obj)])].filter((k) => k in obj);
+    const lo = field.min ?? 0;
     return (
       <Grid size={{ xs: 12 }}>
         <Typography variant="subtitle2">{label}</Typography>
@@ -105,15 +175,18 @@ const Field = ({ field, value, onChange }) => {
           {help}
         </Typography>
         <Grid container spacing={1}>
-          {Object.keys(obj).map((k) => (
+          {keys.map((k, i) => (
             <Grid size={{ xs: 6, sm: 3 }} key={k}>
               <TextField
-                label={k}
+                label={order.length ? `Level ${i} · ${k}` : k}
                 type="number"
                 value={obj[k]}
-                onChange={(e) => onChange({ ...obj, [k]: Number(e.target.value) })}
+                onChange={(e) =>
+                  onChange({ ...obj, [k]: Math.max(lo, Number(e.target.value) || lo) })
+                }
                 fullWidth
                 size="small"
+                slotProps={{ htmlInput: { min: lo } }}
               />
             </Grid>
           ))}
@@ -181,10 +254,36 @@ const GroupEditor = ({ group, resolved, onSaved, scopeLabel }) => {
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           {GROUP_HELP[group]}
         </Typography>
+        {group === 'retention' && (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            <AlertTitle>How photos unlock — two gates, both must pass</AlertTitle>
+            A photo carries a <b>Stage</b> (how explicit/hot it is, 1 = softest) and a{' '}
+            <b>Level</b> (the minimum VIP tier that may see it). To receive a photo a
+            player needs BOTH: enough <b>chatting</b> to reach that Stage (the
+            thresholds below) AND a high enough <b>VIP tier</b> — the tier caps the
+            top Stage they can ever reach (its ceiling below) and clears the photo’s
+            Level. Chatting alone never beats the tier ceiling; a high tier alone
+            never skips the chatting. Set the same numbers on each photo in{' '}
+            <b>Media</b>.
+          </Alert>
+        )}
         <Grid container spacing={2}>
-          {fields.map((f) => (
-            <Field key={f.name} field={f} value={form[f.name]} onChange={(v) => setField(f.name, v)} />
-          ))}
+          {fields.map((f, i) => {
+            const startsSection = f.section && f.section !== fields[i - 1]?.section;
+            return (
+              <Fragment key={f.name}>
+                {startsSection && (
+                  <Grid size={{ xs: 12 }}>
+                    <Divider sx={{ mb: 1 }} />
+                    <Typography variant="subtitle1">
+                      {SECTION_LABELS[f.section] || f.section}
+                    </Typography>
+                  </Grid>
+                )}
+                <Field field={f} value={form[f.name]} form={form} onChange={(v) => setField(f.name, v)} />
+              </Fragment>
+            );
+          })}
         </Grid>
         <Button variant="contained" onClick={save} disabled={saving} sx={{ mt: 2 }}>
           {saving ? 'Saving…' : `Save ${GROUP_LABELS[group] || group}${scopeLabel}`}

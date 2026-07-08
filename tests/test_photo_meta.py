@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 import prompts
-from api.retention import _parse_photo_meta
+from api.retention import _clamp_photo_gate, _parse_photo_meta
 
 _TIERS = ["none", "bronze", "silver", "gold"]
 
@@ -54,6 +54,20 @@ def test_parse_photo_meta_clamps_to_product_gates():
         vip_tiers=_TIERS, max_stage=3)
     assert meta["stage"] == 1
     assert meta["level_min"] == 0
+
+
+def test_clamp_photo_gate_bounds_hand_entered_values():
+    # Above the ladder: stage caps at max_stage, level at the top tier ordinal.
+    assert _clamp_photo_gate(stage=6, level_min=9, vip_tiers=_TIERS,
+                             max_stage=5) == {"stage": 5, "level_min": 3}
+    # Below the floor: stage never below 1, level never below 0.
+    assert _clamp_photo_gate(stage=0, level_min=-2, vip_tiers=_TIERS,
+                             max_stage=5) == {"stage": 1, "level_min": 0}
+    # A field left unset is simply absent (partial update).
+    assert _clamp_photo_gate(stage=None, level_min=2, vip_tiers=_TIERS,
+                             max_stage=5) == {"level_min": 2}
+    assert _clamp_photo_gate(stage=None, level_min=None, vip_tiers=_TIERS,
+                             max_stage=5) == {}
 
 
 def test_parse_photo_meta_rejects_garbage():

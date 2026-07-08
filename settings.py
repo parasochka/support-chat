@@ -52,12 +52,15 @@ SETTING_KEYS = ("escalation", "language", "antispam", "model", "general",
 _DEFAULT_RETENTION: dict[str, Any] = {
     "vip_tiers": ["none", "bronze", "silver", "gold", "platinum", "diamond"],
     # tier name (lowercased) -> the highest photo stage that tier may unlock.
+    # Higher VIP tiers unlock hotter (higher-stage) photos; the base tier stops
+    # short of the top stages no matter how much the player chats.
     "max_stage_by_tier": {
-        "none": 2, "bronze": 2, "silver": 3, "gold": 4,
-        "platinum": 4, "diamond": 4,
+        "none": 3, "bronze": 4, "silver": 5, "gold": 5,
+        "platinum": 5, "diamond": 5,
     },
-    # accumulated meaningful player messages required for stages 2 / 3 / 4 ...
-    "stage_advance_msgs": [20, 45, 80],
+    # accumulated meaningful player messages required to unlock stages 2 / 3 /
+    # 4 / 5 ... (stage 1 is the baseline, always 0). One entry per stage above 1.
+    "stage_advance_msgs": [20, 40, 80, 160],
 }
 
 # Test/dev sandbox profile. In a real deployment the host site supplies the
