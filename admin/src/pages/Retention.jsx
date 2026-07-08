@@ -1614,12 +1614,15 @@ const PingsTab = ({ productId }) => {
 // ---------------------------------------------------------------------------
 const ConversationsTab = ({ productId }) => {
   const notify = useNotify();
+  const { permissions } = usePermissions();
+  const isAdmin = permissions === 'admin';
   const [data, setData] = useState({ items: [], total: 0 });
   const [page, setPage] = useState(1);
   const [detail, setDetail] = useState(null); // {session, messages, ...}
+  const [selected, setSelected] = useState(() => new Set());
   const pageSize = 25;
 
-  useEffect(() => {
+  const load = useCallback(() => {
     httpClient(
       `${API_URL}/admin/retention/sessions?product_id=${productId}&page=${page}&page_size=${pageSize}`
     )
@@ -1627,13 +1630,63 @@ const ConversationsTab = ({ productId }) => {
       .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
   }, [productId, page, notify]);
 
+  useEffect(() => {
+    load();
+  }, [load]);
+
   const openTranscript = (id) => {
     httpClient(`${API_URL}/admin/session/${id}`)
       .then(({ json }) => setDetail(json))
       .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
   };
 
+  const toggleSelect = (id) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const allSelected =
+    data.items.length > 0 && data.items.every((s) => selected.has(s.id));
+  const toggleSelectAll = () =>
+    setSelected((prev) =>
+      allSelected ? new Set() : new Set(data.items.map((s) => s.id))
+    );
+
+  const deleteIds = async (ids) => {
+    if (!ids.length) return;
+    const many = ids.length > 1;
+    if (
+      !window.confirm(
+        many
+          ? `Delete ${ids.length} Telegram chats? This removes their messages and logs permanently.`
+          : 'Delete this Telegram chat? This removes its messages and logs permanently.'
+      )
+    ) {
+      return;
+    }
+    try {
+      await Promise.all(
+        ids.map((id) =>
+          httpClient(`${API_URL}/admin/session/${id}`, { method: 'DELETE' })
+        )
+      );
+      notify(
+        many ? `${ids.length} chats deleted` : 'Chat deleted',
+        { type: 'success' }
+      );
+      setSelected(new Set());
+      setDetail(null);
+      load();
+    } catch (e) {
+      notify(e.body?.detail || e.message || 'Delete failed', { type: 'error' });
+    }
+  };
+
   const pages = Math.max(1, Math.ceil((data.total || 0) / pageSize));
+  const cols = isAdmin ? 10 : 8;
 
   return (
     <Box>
@@ -1644,10 +1697,33 @@ const ConversationsTab = ({ productId }) => {
         chat starts and Nika is shown the tail of the previous one for
         continuity. Click a row for the transcript.
       </Alert>
+      {isAdmin && (
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+          <Button
+            size="small"
+            color="error"
+            variant="outlined"
+            disabled={!selected.size}
+            onClick={() => deleteIds([...selected])}
+          >
+            Delete selected ({selected.size})
+          </Button>
+        </Stack>
+      )}
       <Box sx={{ overflowX: 'auto' }}>
         <Table size="small">
           <TableHead>
             <TableRow>
+              {isAdmin && (
+                <TableCell padding="checkbox">
+                  <Checkbox
+                    size="small"
+                    checked={allSelected}
+                    indeterminate={selected.size > 0 && !allSelected}
+                    onChange={toggleSelectAll}
+                  />
+                </TableCell>
+              )}
               <TableCell>Player</TableCell>
               <TableCell>TG user</TableCell>
               <TableCell>Lang</TableCell>
@@ -1656,6 +1732,7 @@ const ConversationsTab = ({ productId }) => {
               <TableCell align="right">Cost $</TableCell>
               <TableCell>Started</TableCell>
               <TableCell>Last activity</TableCell>
+              {isAdmin && <TableCell />}
             </TableRow>
           </TableHead>
           <TableBody>
@@ -1666,6 +1743,15 @@ const ConversationsTab = ({ productId }) => {
                 sx={{ cursor: 'pointer' }}
                 onClick={() => openTranscript(s.id)}
               >
+                {isAdmin && (
+                  <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
+                    <Checkbox
+                      size="small"
+                      checked={selected.has(s.id)}
+                      onChange={() => toggleSelect(s.id)}
+                    />
+                  </TableCell>
+                )}
                 <TableCell>{s.full_name || s.player_id || '—'}</TableCell>
                 <TableCell>
                   {s.tg_username ? `@${s.tg_username}` : s.tg_user_id || '—'}
@@ -1685,11 +1771,22 @@ const ConversationsTab = ({ productId }) => {
                 </TableCell>
                 <TableCell>{new Date(s.created_at).toLocaleString()}</TableCell>
                 <TableCell>{new Date(s.updated_at).toLocaleString()}</TableCell>
+                {isAdmin && (
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <Button
+                      size="small"
+                      color="error"
+                      onClick={() => deleteIds([s.id])}
+                    >
+                      Delete
+                    </Button>
+                  </TableCell>
+                )}
               </TableRow>
             ))}
             {data.items.length === 0 && (
               <TableRow>
-                <TableCell colSpan={8}>
+                <TableCell colSpan={cols}>
                   <Typography color="text.secondary" sx={{ py: 2 }}>
                     No Telegram chats yet.
                   </Typography>
@@ -1871,7 +1968,6 @@ const AnalyticsTab = ({ productId }) => {
         <KpiCard label="Subscribed" value={base?.subscribed} hint="passed the channel gate" />
         <KpiCard label="Pings muted" value={base?.pings_muted} hint="opted out via /stop" />
         <KpiCard label="Unreachable" value={base?.unreachable} hint="blocked the bot / sends fail" />
-        <KpiCard label="Avg stage" value={base?.avg_stage} hint="photo explicitness unlocked" />
       </Grid>
 
       <Typography variant="h6" sx={{ mb: 1 }}>
@@ -1989,24 +2085,46 @@ const AnalyticsTab = ({ productId }) => {
 // ---------------------------------------------------------------------------
 // page shell — needs a concrete product (retention is strictly per-product)
 // ---------------------------------------------------------------------------
-const TABS = [
-  ['guide', 'Setup guide', GuideTab],
-  ['config', 'Telegram config', ConfigTab],
-  ['kb', 'Retention KB', KbTab],
-  ['variables', 'Prompt variables', VariablesTab],
-  ['prompt', 'Prompt preview', PromptTab],
-  ['photos', 'Media', PhotosTab],
-  ['managers', 'Managers', ManagersTab],
-  ['pings', 'Pings', PingsTab],
-  ['chats', 'Conversations', ConversationsTab],
-  ['analytics', 'Analytics', AnalyticsTab],
-];
+// Navigation between sections is the sidebar's job now (each section is its own
+// entry, like Support), so there is no page-wide tab strip. Two sections bundle
+// a secondary sub-tab under one sidebar entry (mirrors the Support "Prompt"
+// page): the Setup guide under Telegram config, and the Prompt variables under
+// Prompt. Those groups render a small internal 2-tab strip; every other section
+// renders its component directly.
+const COMPONENTS = {
+  config: ConfigTab,
+  guide: GuideTab,
+  kb: KbTab,
+  prompt: PromptTab,
+  variables: VariablesTab,
+  photos: PhotosTab,
+  managers: ManagersTab,
+  pings: PingsTab,
+  chats: ConversationsTab,
+  analytics: AnalyticsTab,
+};
+
+const SUBTABS = {
+  config: [
+    ['config', 'Telegram config'],
+    ['guide', 'Setup guide'],
+  ],
+  prompt: [
+    ['prompt', 'Prompt preview'],
+    ['variables', 'Prompt variables'],
+  ],
+};
+
+// The group (and its sub-tab strip) a tab belongs to, if any; the group's first
+// entry is the sidebar's landing tab.
+const groupFor = (tab) =>
+  Object.values(SUBTABS).find((entries) => entries.some(([v]) => v === tab));
 
 const Retention = () => {
   const [params, setParams] = useSearchParams();
   const productId = getProductId();
   const requested = params.get('tab');
-  const tab = TABS.some(([v]) => v === requested) ? requested : 'config';
+  const tab = COMPONENTS[requested] ? requested : 'config';
 
   // Retention data is strictly per-product; refuse to render without one so the
   // operator can't edit the default product by accident (same gate as KB /
@@ -2015,22 +2133,24 @@ const Retention = () => {
     return <RequireProduct title="Retention · Telegram" />;
   }
 
+  const Component = COMPONENTS[tab];
+  const subtabs = groupFor(tab);
+
   return (
     <Box sx={{ p: 2, maxWidth: 1100 }}>
       <Title title="Retention · Telegram" />
-      <Tabs
-        value={tab}
-        onChange={(e, v) => setParams({ tab: v }, { replace: true })}
-        sx={{ mb: 2 }}
-        variant="scrollable"
-      >
-        {TABS.map(([value, label]) => (
-          <Tab key={value} value={value} label={label} />
-        ))}
-      </Tabs>
-      {TABS.map(([value, , Component]) =>
-        value === tab ? <Component key={value} productId={productId} /> : null
+      {subtabs && (
+        <Tabs
+          value={tab}
+          onChange={(e, v) => setParams({ tab: v }, { replace: true })}
+          sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}
+        >
+          {subtabs.map(([value, label]) => (
+            <Tab key={value} value={value} label={label} />
+          ))}
+        </Tabs>
       )}
+      <Component productId={productId} />
     </Box>
   );
 };

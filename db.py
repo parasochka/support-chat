@@ -2560,6 +2560,48 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
     }
 
 
+async def delete_session(session_id: str) -> bool:
+    """Hard-delete a chat/retention session and everything hanging off it.
+
+    `chat_messages.session_id` is a NOT NULL FK without ON DELETE CASCADE, and
+    `retention_users.session_id` / `chat_sessions.prev_session_id` reference the
+    row too, so the dependents are cleared in one transaction before the session
+    row itself. `ai_interaction_logs` / `admin_events` carry a bare (unconstrained)
+    `session_id`, so their rows are removed by value. Used by the admin
+    Conversations / Unresolved / Telegram-chats delete controls.
+    """
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
+            exists = await conn.fetchval(
+                "SELECT 1 FROM chat_sessions WHERE id = $1", session_id
+            )
+            if not exists:
+                return False
+            # Detach references that would otherwise block the delete.
+            await conn.execute(
+                "UPDATE retention_users SET session_id = NULL WHERE session_id = $1",
+                session_id,
+            )
+            await conn.execute(
+                "UPDATE chat_sessions SET prev_session_id = NULL "
+                "WHERE prev_session_id = $1",
+                session_id,
+            )
+            await conn.execute(
+                "DELETE FROM chat_messages WHERE session_id = $1", session_id
+            )
+            await conn.execute(
+                "DELETE FROM ai_interaction_logs WHERE session_id = $1", session_id
+            )
+            await conn.execute(
+                "DELETE FROM admin_events WHERE session_id = $1", session_id
+            )
+            await conn.execute(
+                "DELETE FROM chat_sessions WHERE id = $1", session_id
+            )
+    return True
+
+
 async def unresolved_by_topic(dt_from: Any, dt_to: Any,
                               product_ids: Optional[list[int]] = None
                               ) -> list[dict[str, Any]]:

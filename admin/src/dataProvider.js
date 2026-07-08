@@ -270,11 +270,19 @@ const dataProvider = {
       });
       return { data: params.previousData };
     }
+    // sessions + unresolved both key on a chat_sessions UUID (unresolved rows
+    // use session_id as their id), deleted through the one session endpoint.
+    if (resource === 'sessions' || resource === 'unresolved') {
+      await httpClient(`${API_URL}/admin/session/${params.id}`, {
+        method: 'DELETE',
+      });
+      return { data: params.previousData || { id: params.id } };
+    }
     throw new Error(`Delete is not supported for: ${resource}`);
   },
 
   deleteMany: async (resource, params) => {
-    if (resource === 'users') {
+    if (resource === 'users' || resource === 'sessions' || resource === 'unresolved') {
       await Promise.all(
         params.ids.map((id) => dataProvider.delete(resource, { id }))
       );

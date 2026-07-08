@@ -17,12 +17,10 @@ import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import CampaignIcon from '@mui/icons-material/Campaign';
-import EditNoteIcon from '@mui/icons-material/EditNote';
 import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
 import ForumIcon from '@mui/icons-material/Forum';
 import VpnKeyIcon from '@mui/icons-material/VpnKey';
-import MenuBookIcon from '@mui/icons-material/MenuBook';
 import InsightsIcon from '@mui/icons-material/Insights';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
 import PeopleIcon from '@mui/icons-material/People';
@@ -91,14 +89,22 @@ const CollapsibleSection = ({ id, label, children }) => {
   );
 };
 
+// Two retention tabs are bundled under a parent's sidebar entry (like the
+// Support "Prompt" page): the Setup guide lives under Telegram config, and the
+// Prompt variables under Prompt. So those parent entries stay highlighted while
+// their sub-tab is active.
+const RETENTION_TAB_PARENT = { guide: 'config', variables: 'prompt' };
+
 // A retention sub-tab as its own sidebar entry: navigates to /retention?tab=…
-// and highlights when that tab is the active one (the page reads ?tab=).
+// and highlights when that tab (or one bundled under it) is the active one (the
+// page reads ?tab=).
 const RetentionSubItem = ({ tab, label, icon }) => {
   const navigate = useNavigate();
   const location = useLocation();
+  const current = new URLSearchParams(location.search).get('tab') || 'config';
   const active =
     location.pathname.startsWith('/retention') &&
-    (new URLSearchParams(location.search).get('tab') || 'config') === tab;
+    (RETENTION_TAB_PARENT[current] || current) === tab;
   return (
     <ListItemButton
       selected={active}
@@ -132,11 +138,24 @@ const AppMenu = () => {
     <Menu
       sx={{
         '& .MuiListItemIcon-root .MuiSvgIcon-root': { fontSize: 20 },
-        '& .MuiListItemIcon-root': { minWidth: 34 },
+        // One icon colour for every entry, in both states below.
+        '& .MuiListItemIcon-root': { minWidth: 34, color: 'text.secondary' },
         '& .MuiMenuItem-root': { fontSize: '0.875rem' },
+        // One label size AND colour across all three entry sources (resource
+        // items, custom Menu.Items, retention sub-items) — section headers keep
+        // their overline style (excluded). Without pinning the colour, RA menu
+        // links render text.secondary while the retention ListItemButtons render
+        // text.primary, so the column looked two-toned.
         '& .MuiListItemText-primary:not(.MuiTypography-overline)': {
           fontSize: '0.875rem',
+          color: 'text.primary',
         },
+        // Active/selected entry — same accent for every source, so the highlight
+        // reads identically whether it's a resource link or a retention sub-tab.
+        '& .RaMenuItemLink-active .MuiListItemText-primary:not(.MuiTypography-overline), & .Mui-selected .MuiListItemText-primary:not(.MuiTypography-overline)':
+          { color: 'primary.main', fontWeight: 600 },
+        '& .RaMenuItemLink-active .MuiListItemIcon-root, & .Mui-selected .MuiListItemIcon-root':
+          { color: 'primary.main' },
       }}
     >
       <Menu.DashboardItem primaryText="Dashboard" />
@@ -160,11 +179,11 @@ const AppMenu = () => {
       </CollapsibleSection>
 
       <CollapsibleSection id="retention" label="Telegram · Retention">
-        <RetentionSubItem tab="guide" label="Setup guide" icon={<MenuBookIcon fontSize="small" />} />
+        {/* Setup guide is a sub-tab of Telegram config; Prompt variables a
+            sub-tab of Prompt — so neither gets its own sidebar entry. */}
         <RetentionSubItem tab="config" label="Telegram config" icon={<TelegramIcon fontSize="small" />} />
         <RetentionSubItem tab="kb" label="Retention KB" icon={<LibraryBooksIcon fontSize="small" />} />
-        <RetentionSubItem tab="variables" label="Prompt variables" icon={<EditNoteIcon fontSize="small" />} />
-        <RetentionSubItem tab="prompt" label="Prompt preview" icon={<TuneIcon fontSize="small" />} />
+        <RetentionSubItem tab="prompt" label="Prompt" icon={<TuneIcon fontSize="small" />} />
         <RetentionSubItem tab="photos" label="Media" icon={<PhotoLibraryIcon fontSize="small" />} />
         <RetentionSubItem tab="managers" label="Managers" icon={<SupportAgentIcon fontSize="small" />} />
         <RetentionSubItem tab="pings" label="Pings" icon={<CampaignIcon fontSize="small" />} />

@@ -15,9 +15,10 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
 import LineChart from '../components/LineChart';
-import { CHART_COLORS, SeriesLineChart } from '../components/charts';
+import { CHART_COLORS, FunnelBars, SeriesLineChart } from '../components/charts';
 import { API_URL, httpClient } from '../httpClient';
-import { scopeParams } from '../productScope';
+import { getProductId, scopeParams } from '../productScope';
+import RequireProduct from '../components/RequireProduct';
 
 const pct = (v) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`);
 const usd = (v) => (v == null ? '—' : `$${Number(v).toFixed(4)}`);
@@ -305,6 +306,18 @@ const RETENTION_SERIES = [
   { key: 'pings', label: 'Pings' },
 ];
 
+// Entry funnel steps shown beside the activity chart (deeplink → hand-off);
+// mirrors the fuller funnel on Retention → Analytics.
+const RETENTION_FUNNEL_STEPS = [
+  ['deeplinks_created', 'Deeplinks minted'],
+  ['starts', '/start redemptions'],
+  ['new_users', 'New linked players'],
+  ['subscribed', 'Subscribed to channel'],
+  ['engaged', 'Engaged (wrote a message)'],
+  ['photo_receivers', 'Received a photo'],
+  ['handoffs', 'Handed off'],
+];
+
 /**
  * Retention · Telegram block: GET /admin/retention/overview + /timeseries in
  * the same header scope as the support block (product / partner / everything
@@ -314,6 +327,7 @@ const RETENTION_SERIES = [
 const RetentionBlock = () => {
   const [overview, setOverview] = useState(null);
   const [series, setSeries] = useState([]);
+  const [funnel, setFunnel] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -325,6 +339,9 @@ const RetentionBlock = () => {
     httpClient(`${API_URL}/admin/retention/timeseries${qs}`)
       .then(({ json }) => setSeries(json.series || []))
       .catch(() => setSeries([]));
+    httpClient(`${API_URL}/admin/retention/funnel${qs}`)
+      .then(({ json }) => setFunnel(json))
+      .catch(() => setFunnel(null));
   }, []);
 
   if (error) return <BlockError label="Retention" error={error} />;
@@ -363,6 +380,21 @@ const RetentionBlock = () => {
             </CardContent>
           </Card>
         </Grid>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+                Entry funnel
+              </Typography>
+              <FunnelBars
+                steps={RETENTION_FUNNEL_STEPS.map(([key, label]) => ({
+                  label,
+                  value: funnel ? funnel[key] ?? 0 : null,
+                }))}
+              />
+            </CardContent>
+          </Card>
+        </Grid>
       </Grid>
     </>
   );
@@ -378,6 +410,15 @@ const Dashboard = () => {
   const module = params.get('module');
   const showSupport = module !== 'retention';
   const showRetention = module !== 'support';
+
+  // The support-only Analytics view is per-product: without a concrete product
+  // selected it would silently resolve to the default product, so gate it the
+  // same way the KB / Prompt / Conversations screens are gated. The combined
+  // dashboard (no module) and the retention view stay usable at the all/partner
+  // scope.
+  if (module === 'support' && !getProductId()) {
+    return <RequireProduct title="Analytics" />;
+  }
 
   return (
     <Box sx={{ p: 2 }}>

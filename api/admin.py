@@ -218,6 +218,33 @@ async def session(session_id: str, admin=Depends(require_admin)) -> JSONResponse
     return JSONResponse(content=detail)
 
 
+@router.delete("/session/{session_id}")
+async def delete_session(session_id: str,
+                         admin=Depends(require_admin_write)) -> JSONResponse:
+    """Hard-delete a session (support or Telegram) and all its rows.
+
+    Admin-only (require_admin_write) and additionally write-scoped to the
+    session's owning product — a manager, or an admin without reach over the
+    product, is refused. Used by the Conversations / Unresolved / Telegram-chats
+    delete controls.
+    """
+    try:
+        _uuid.UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    detail = await db.session_detail(session_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    sess_product = (detail.get("session") or {}).get("product_id")
+    if sess_product is not None:
+        await admin_auth.require_product_write(admin, sess_product)
+    else:
+        admin_auth.require_global_write(admin)
+    await db.delete_session(session_id)
+    await db.log_admin_event(None, "session_deleted", {"session_id": session_id})
+    return JSONResponse(content={"ok": True, "id": session_id})
+
+
 def _csv_safe(value: str) -> str:
     """Neutralize spreadsheet formula injection in player-controlled CSV cells.
 
