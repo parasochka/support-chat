@@ -119,7 +119,7 @@ async def test_rate_limit_uses_telegram_allowance(monkeypatch):
 
     replied = []
 
-    async def _handle(session, text, candidates):
+    async def _handle(session, text, candidates, appearance=None):
         replied.append(text)
         return chat_service.RetentionReply(reply="hi", lang="en", message_count=1)
     monkeypatch.setattr(chat_service, "handle_retention_message", _handle)
@@ -258,7 +258,7 @@ async def test_photo_without_caption_gets_fallback(monkeypatch):
     monkeypatch.setattr(retention.db, "advance_retention_stage", _advance)
 
     # Model returns a photo with an EMPTY caption.
-    async def _handle(session, text, candidates):
+    async def _handle(session, text, candidates, appearance=None):
         return chat_service.RetentionReply(
             reply="", lang="en", message_count=1, photo_id=55)
     monkeypatch.setattr(chat_service, "handle_retention_message", _handle)
@@ -294,7 +294,7 @@ async def test_handoff_carries_contact_button_when_configured(monkeypatch):
         pass
     monkeypatch.setattr(retention.db, "log_admin_event", _log)
 
-    async def _handle(session, text, candidates):
+    async def _handle(session, text, candidates, appearance=None):
         return chat_service.RetentionReply(
             reply="", lang="en", message_count=1, handoff=True)
     monkeypatch.setattr(chat_service, "handle_retention_message", _handle)

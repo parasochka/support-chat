@@ -51,14 +51,47 @@ def test_retention_core_has_own_tone_variable():
 
 def test_retention_core_puts_connection_before_casino():
     """The retention mission is the personal connection — the player comes back
-    to HER; the casino is a light occasional backdrop, never a per-message
-    pitch (a constant nudge toward play reads as an advert and kills the
-    mood)."""
+    to HER. Self-initiated play invitations are BANNED outright: the model may
+    talk play only when the player raises it or a PLAY NUDGE block orders one
+    invitation, so the cadence is fully deterministic
+    (retention.play_reminder_every_msgs)."""
     core = prompts.get_retention_system_core()
-    assert "never in every message" in core
+    assert "NEVER bring up games" in core
+    assert "PLAY NUDGE" in core
     assert "come back" in core
-    # The old promotional mission line must stay gone.
+    # The old "organic invite" permissions must stay gone — they made the
+    # model pitch slots from the very first reply.
     assert "keep the excitement of playing alive" not in core
+    assert "only when it flows naturally" not in core
+    assert "you SHOULD every so often" not in core
+
+
+def test_retention_core_handles_loss_without_play():
+    """After the player says he LOST money, inviting him to play is the worst
+    reply — the engagement directive orders comfort mode and skips even a due
+    play nudge."""
+    core = prompts.get_retention_system_core()
+    assert "LOST money" in core
+    assert "even a due PLAY NUDGE is skipped" in core
+
+
+def test_appearance_directive():
+    """The Layer-3 appearance block grounds the persona's looks in the REAL
+    photo library, so no-photo turns can't invent contradicting features."""
+    block = prompts._appearance_directive({
+        "base": ["short pink bob, freckles, poolside"],
+        "last_sent": "kitchen, oversized white shirt",
+    })
+    assert "YOUR APPEARANCE" in block
+    assert "pink bob" in block and "kitchen" in block
+    # last-sent photo is flagged as the player's CURRENT view of her
+    assert "LAST" in block
+    # nothing to ground on -> no block at all
+    assert prompts._appearance_directive(None) is None
+    assert prompts._appearance_directive({"base": [], "last_sent": ""}) is None
+    # base-only (a player who never received a photo) still renders
+    assert "pink" in prompts._appearance_directive({"base": ["pink hair"],
+                                                    "last_sent": None})
 
 
 async def test_create_deeplink_carries_lang(monkeypatch):
@@ -112,6 +145,10 @@ def test_photo_candidates_directive():
     assert "7" in block and "beach" in block and "stage 2" in block
     empty = prompts._photo_candidates_directive([])
     assert "none" in empty.lower()
+    # the empty block steers AWAY from the "у меня нет фото" flat refusal and
+    # toward the appearance-grounded tease + progression hint
+    assert "have no photos" in empty
+    assert "YOUR APPEARANCE" in empty
 
 
 def test_build_retention_messages_shape():
@@ -126,6 +163,24 @@ def test_build_retention_messages_shape():
     assert msgs[-1]["role"] == "user"
     assert "PHOTO CANDIDATES" in msgs[-1]["content"]
     assert "hi there" in msgs[-1]["content"]
+
+
+def test_build_retention_messages_carries_appearance():
+    session = {"id": "s1", "user_context": {"full_name": "Andrey"}}
+    msgs = prompts.build_retention_messages(
+        session=session, kb_block=None, history=[],
+        user_text="how do you look?", resolved_lang="en",
+        photo_candidates=[],
+        appearance={"base": ["short pink bob"], "last_sent": None},
+    )
+    body = msgs[-1]["content"]
+    assert "YOUR APPEARANCE" in body and "pink bob" in body
+    # omitted appearance (older callers / pings) -> no block, prompt unchanged
+    no_app = prompts.build_retention_messages(
+        session=session, kb_block=None, history=[],
+        user_text="how do you look?", resolved_lang="en", photo_candidates=[],
+    )
+    assert "YOUR APPEARANCE (from your real photos" not in no_app[-1]["content"]
 
 
 # ---------------------------------------------------------------------------

@@ -912,8 +912,18 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
     # stored user_context was fixed at creation.
     session["user_context"] = _user_context_from_ru(ru)
     candidates = await select_photo_candidates(product["id"], ru, text)
+    # Appearance grounding is a best-effort nice-to-have: a failed fetch must
+    # never drop the player's message (the model just gets no appearance block).
+    try:
+        appearance = await db.retention_appearance_context(product["id"],
+                                                           int(ru["id"]))
+    except Exception:  # noqa: BLE001
+        log.warning("retention_appearance_fetch_failed product=%s ru=%s",
+                    product["id"], ru.get("id"))
+        appearance = None
 
-    reply = await chat_service.handle_retention_message(session, text, candidates)
+    reply = await chat_service.handle_retention_message(session, text, candidates,
+                                                        appearance=appearance)
 
     # Keep the retention_users row's sticky language in step with the answer
     # drift (chat_service persists it on the session; the ru copy drives the

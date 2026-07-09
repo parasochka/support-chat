@@ -921,9 +921,15 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   message out of 3-4, varied — a 😉 on every message is called out as a forbidden bot-tell;
   support Nika still uses none); replies default to 1-2 short sentences with varied length and
   rhythm (longer only when asked for a story/details); the "do you want X or Y?" two-option
-  closer is explicitly banned as a template; the ENGAGEMENT directive forbids steering to
-  games/bonuses in the OPENING turns of a chat (get to know the player's mood first) and
-  demands concrete call-backs to what the player said earlier instead of generic lines; photo
+  closer is explicitly banned as a template, and question-ending is rationed (at most one
+  message in two-three ends with a question); the ENGAGEMENT directive **bans self-initiated
+  play invitations outright** — the model may talk games/bonuses ONLY when the player raises
+  the subject or the Layer-3 PLAY NUDGE block orders one invitation (so the nudge cadence knob
+  is the ONE pacing control; the old "invite every so often when it flows naturally" permission
+  made the model pitch slots from the first reply and was removed), orders comfort-mode with
+  NO play talk after the player says he lost money (even a due nudge is skipped), and demands
+  concrete call-backs to what the player said earlier instead of generic lines plus
+  freshly-invented (never recycled) small "life details"; photo
   captions must be UNIQUE and grounded in the current moment + the chosen photo's description
   (stock lines like "just for you" repeated per photo are named as the failure mode). The retention core
   renders with the **retention prompt-variable set**
@@ -941,7 +947,14 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   render in the prompt and are folded into the document text on the first save; the per-entry
   CRUD endpoints remain for API consumers. New products are seeded with
   `starter_kb.STARTER_RETENTION_KB`. Layer 3 (`build_retention_dynamic_prompt`) = full profile
-  personalization + language directive + the **photo-candidate list** + a lighter retention guardrail.
+  personalization + language directive + the **appearance block** (`prompts._appearance_directive`,
+  fed by `db.retention_appearance_context`: a stable sample of the product's photo-library
+  descriptions + the photo THIS player saw last — the persona's looks are grounded in the REAL
+  photos even on turns where no photo is sendable, so the model can never invent contradicting
+  hair/outfit; fetched best-effort in `retention._run_nika_turn`) + the **photo-candidate
+  list** (whose empty-state text steers away from the "I have no photos" flat refusal and
+  toward an appearance-grounded tease + a once-per-chat progression hint) + a lighter
+  retention guardrail.
   **Retention personalization is its OWN directive** (`prompts._retention_personalization_directive`,
   NOT the support one): in Telegram the bot chrome has ALREADY greeted the player by name
   TWICE before the first model turn (the `rtn_menu_greeting` menu message + the
@@ -967,14 +980,15 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   becomes the button label, falling back to the url) and the message ships with ONE inline
   url-button (`retention._run_nika_turn`; `_send_ai_text`/`_send_photo` and the transport photo
   senders all take `reply_markup`). A `[[HANDOFF]]` turn drops the link (the player is leaving for
-  support). On top of the organic invites, the **`retention.play_reminder_every_msgs` knob**
-  (default 5, 0 = off; env `RETENTION_PLAY_REMINDER_EVERY_MSGS`) paces a deliberate nudge:
-  `chat_service.play_nudge_due` keys on the session's `message_count` (one bump per persisted
-  turn; never the very first reply — the engagement directive forbids an opening pitch), and every
-  N-th reply carries the Layer-3 `prompts._PLAY_NUDGE_DIRECTIVE`: continue the conversation
-  normally, weave in ONE light in-context invitation to play, attach the best-fitting site-map
-  page as the button, and skip it entirely in a complaint/money/sensitive moment. Tests:
-  `tests/test_retention_cta.py`.
+  support). Play invitations are **nudge-only** (self-initiated invites are banned by the
+  engagement directive — see the liveliness bullet): the **`retention.play_reminder_every_msgs`
+  knob** (default 5, 0 = off; env `RETENTION_PLAY_REMINDER_EVERY_MSGS`) is the ONE pacing
+  control. `chat_service.play_nudge_due` keys on the session's `message_count` (one bump per
+  persisted turn; never the very first reply), and every N-th reply carries the Layer-3
+  `prompts._PLAY_NUDGE_DIRECTIVE` — explicitly framed as "the ONE permission you get to
+  invite": continue the conversation normally, weave in ONE light in-context invitation to
+  play, attach the best-fitting site-map page as the button, and skip it entirely in a
+  complaint/money/just-lost/sensitive moment. Tests: `tests/test_retention_cta.py`.
 - **Media library + file_id cache**: `retention_photos` gates by `level_min` (VIP-tier ordinal) ×
   `stage` (explicitness). **Both values are bounded to the product's real ranges on EVERY write**
   — `stage` to 1..`max_stage`, `level_min` to 0..(last tier ordinal) — whether the value is
