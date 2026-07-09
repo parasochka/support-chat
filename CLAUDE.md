@@ -1008,7 +1008,13 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   (`api.retention._parse_photo_meta`, sharing the same bounds as the write-time
   `_clamp_photo_gate`) so a hallucinated number can never unlock a photo beyond
   the delivery gate, every call lands in `ai_interaction_logs` (invariant §4, `session_id=NULL`),
-  and one failed photo never kills the batch. The SPA Media tab adds checkbox selection +
+  and one failed photo never kills the batch. Descriptions are demanded in plain everyday words
+  (hair = colour + length, simple clothing terms — no haircut names / fashion-catalogue jargon:
+  the persona voices this text in chat). The batch runs in **waves of 5** with the library's
+  current stage/level distribution injected into the prompt (`prompts._PHOTO_META_BALANCE`,
+  counts refreshed between waves from the fresh ratings) so borderline calls land on the
+  under-filled levels and the library spreads evenly across the whole ladder instead of
+  clustering on one-two values. The SPA Media tab adds checkbox selection +
   "Generate metadata" and client-side filters (search/stage/level/status).
   **Candidate selection is pre-model** (`retention.select_photo_candidates`):
   unseen, tier×stage-gated (current stage + 1 teaser, capped by the tier ceiling), bounded by the

@@ -1902,21 +1902,50 @@ _PHOTO_META_TASK = (
     "higher the tier that earns it."
 )
 
+# Appended to the task when the caller passes the library's current
+# stage/level distribution: the gate starves when every photo lands on the
+# same one or two values (nothing left to unlock), so borderline calls are
+# steered toward the under-filled levels. What is visible still rules — the
+# balancing only breaks ties inside the photo's own plausible range.
+_PHOTO_META_BALANCE = (
+    "\n\nBALANCE THE LIBRARY: the catalogue only works when photos are spread "
+    "EVENLY across the whole stage ladder and the whole tier range - a library "
+    "piled onto one or two values leaves every other level with nothing to "
+    "offer. What is visible in the photo always sets the plausible range, but "
+    "when two adjacent stages (or tiers) are both defensible, pick the one the "
+    "library currently has FEWER of, and do use the ends of both scales, not "
+    "just the middle.\n"
+    "Photos already catalogued, by stage: {stage_counts}\n"
+    "Photos already catalogued, by tier (level_min): {level_counts}"
+)
+
 
 def build_photo_meta_messages(image_data_url: str, vip_tiers: list[str],
-                              max_stage: int) -> list[dict[str, Any]]:
+                              max_stage: int,
+                              library_counts: Optional[dict[str, dict[int, int]]] = None,
+                              ) -> list[dict[str, Any]]:
     """The OpenAI `messages` array for one photo-metadata generation call.
 
     `image_data_url` is a data: URL of the photo binary; `vip_tiers` is the
     product's ordered tier list (ordinal = index) and `max_stage` the top of
     its explicitness ladder — both from the `retention` settings group, so the
     generated ranges always match what the delivery gate actually enforces.
+    `library_counts` ({"stage": {stage: n}, "level": {ordinal: n}}, optional)
+    is the library's current distribution: when passed, the task gains the
+    balancing block that steers borderline ratings toward the under-filled
+    levels so the library spreads evenly instead of clustering.
     """
     tiers = [str(t) for t in (vip_tiers or ["none"])]
     tier_list = ", ".join(f"{i} = {name}" for i, name in enumerate(tiers))
     task = _PHOTO_META_TASK.format(max_stage=max(int(max_stage), 1),
                                    max_level=len(tiers) - 1,
                                    tier_list=tier_list)
+    if library_counts:
+        def _fmt(d: dict[int, int]) -> str:
+            return ", ".join(f"{k}: {v}" for k, v in sorted(d.items()))
+        task += _PHOTO_META_BALANCE.format(
+            stage_counts=_fmt(library_counts.get("stage") or {}),
+            level_counts=_fmt(library_counts.get("level") or {}))
     return [
         {"role": "system", "content": _PHOTO_META_SYSTEM},
         {"role": "user", "content": [

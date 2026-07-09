@@ -23,6 +23,25 @@ def test_build_photo_meta_messages_shape():
     assert "0..3" in text_part["text"]
     assert "3 = gold" in text_part["text"]
     assert image_part["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    # Descriptions must be plain speech the persona can voice - not catalogue
+    # jargon (haircut names, fashion terms) she would then parrot verbatim.
+    assert "haircut names" in text_part["text"]
+    # No library counts passed -> no balancing block.
+    assert "BALANCE THE LIBRARY" not in text_part["text"]
+
+
+def test_build_photo_meta_messages_balance_block():
+    """With the library's current distribution passed, the task gains the
+    balancing block that steers borderline ratings to under-filled levels."""
+    msgs = prompts.build_photo_meta_messages(
+        "data:image/jpeg;base64,AAA", _TIERS, max_stage=3,
+        library_counts={"stage": {1: 7, 2: 0, 3: 1}, "level": {0: 8, 1: 0}})
+    text = msgs[1]["content"][0]["text"]
+    assert "BALANCE THE LIBRARY" in text
+    assert "1: 7, 2: 0, 3: 1" in text
+    assert "0: 8, 1: 0" in text
+    # what is visible still rules - balancing only breaks ties
+    assert "plausible range" in text
 
 
 def test_parse_photo_meta_happy_path():

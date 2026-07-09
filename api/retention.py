@@ -634,6 +634,8 @@ async def create_photo(product_id: int = Form(...),
 # the row. Every call is logged to ai_interaction_logs (invariant §4).
 # ===========================================================================
 _PHOTO_META_BATCH_CAP = 20  # per request; the SPA chunks larger selections
+_PHOTO_META_WAVE = 5  # concurrent vision calls per wave; the balancing counts
+                      # are refreshed between waves (see generate_photo_metadata)
 _PHOTO_META_CONTENT_TYPES = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
     ".webp": "image/webp", ".gif": "image/gif",
@@ -680,7 +682,9 @@ def _parse_photo_meta(text: str, *, vip_tiers: list[str],
 
 async def _generate_photo_meta(client: Any, photo: dict[str, Any],
                                product_id: int, vip_tiers: list[str],
-                               max_stage: int) -> dict[str, Any]:
+                               max_stage: int,
+                               library_counts: Optional[dict[str, dict[int, int]]] = None,
+                               ) -> dict[str, Any]:
     """One photo: read the binary, one vision call, validate, update the row."""
     import base64
     ref = photo.get("storage_ref")
@@ -692,7 +696,8 @@ async def _generate_photo_meta(client: Any, photo: dict[str, Any],
     with open(path, "rb") as fh:
         data_url = (f"data:{mime};base64,"
                     + base64.b64encode(fh.read()).decode("ascii"))
-    messages = prompts.build_photo_meta_messages(data_url, vip_tiers, max_stage)
+    messages = prompts.build_photo_meta_messages(data_url, vip_tiers, max_stage,
+                                                 library_counts=library_counts)
     try:
         result = await client.complete(messages)
     except Exception as exc:  # noqa: BLE001 - one bad photo must not kill the batch
@@ -743,10 +748,40 @@ async def generate_photo_metadata(product_id: int, body: GeneratePhotoMetaReq,
     vip_tiers = [str(t) for t in rt.get("vip_tiers") or ["none"]]
     max_stage = int(rt.get("max_stage") or 1)
     client = await openai_client.client_for_product(product_id)
-    results = await asyncio.gather(*[
-        _generate_photo_meta(client, p, product_id, vip_tiers, max_stage)
-        for p in photos
-    ])
+    # Library distribution for the balancing block: the model rates each photo
+    # independently, so without seeing the current spread everything clusters
+    # on the same one-two values and the unlock ladder has nothing to serve.
+    # Photos in this batch are about to be re-rated — their old numbers are
+    # excluded. The batch runs in WAVES (not one big gather): between waves the
+    # counts absorb the fresh ratings, so even a brand-new 20-photo library
+    # spreads across the levels instead of all landing on the same guess.
+    batch_ids = {p["id"] for p in photos}
+    stage_counts = {s: 0 for s in range(1, max_stage + 1)}
+    level_counts = {lv: 0 for lv in range(len(vip_tiers))}
+    for row in await db.list_retention_photos(product_id, active_only=True):
+        if row["id"] in batch_ids:
+            continue
+        if row.get("stage") in stage_counts:
+            stage_counts[row["stage"]] += 1
+        if row.get("level_min") in level_counts:
+            level_counts[row["level_min"]] += 1
+    results: list[dict[str, Any]] = []
+    for i in range(0, len(photos), _PHOTO_META_WAVE):
+        wave = photos[i:i + _PHOTO_META_WAVE]
+        counts = {"stage": dict(stage_counts), "level": dict(level_counts)}
+        wave_results = await asyncio.gather(*[
+            _generate_photo_meta(client, p, product_id, vip_tiers, max_stage,
+                                 library_counts=counts)
+            for p in wave
+        ])
+        for r in wave_results:
+            meta = r.get("photo") if r.get("ok") else None
+            if meta:
+                if meta.get("stage") in stage_counts:
+                    stage_counts[meta["stage"]] += 1
+                if meta.get("level_min") in level_counts:
+                    level_counts[meta["level_min"]] += 1
+        results.extend(wave_results)
     ok = sum(1 for r in results if r["ok"])
     await db.log_admin_event(None, "retention_photo_meta_generated",
                              {"ids": ids, "ok": ok,
