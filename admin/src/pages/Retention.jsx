@@ -27,6 +27,7 @@ import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import Link from '@mui/material/Link';
+import MuiPagination from '@mui/material/Pagination';
 import { API_URL, httpClient, getToken } from '../httpClient';
 import { getProductId } from '../productScope';
 import {
@@ -562,6 +563,41 @@ const PhotoPreview = ({ photoId }) => {
         style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
       />
     </Box>
+  );
+};
+
+// A pagination bar that mirrors react-admin's default <Pagination> look (the
+// Conversations list): a "1–N of M" range on the left and numbered page buttons
+// on the right. Used by the client-paginated grids/tables in this page so they
+// match the rest of the admin. `count` is the total row count, `page` is
+// 1-based, `perPage` the page size.
+const GridPagination = ({ count, page, perPage, onPage, unit = 'items' }) => {
+  const pageCount = Math.max(1, Math.ceil(count / perPage));
+  const from = count === 0 ? 0 : (page - 1) * perPage + 1;
+  const to = Math.min(page * perPage, count);
+  return (
+    <Stack
+      direction="row"
+      alignItems="center"
+      justifyContent="space-between"
+      flexWrap="wrap"
+      useFlexGap
+      spacing={1}
+      sx={{ mt: 2, px: 1 }}
+    >
+      <Typography variant="body2" color="text.secondary">
+        {from}–{to} of {count} {unit}
+      </Typography>
+      <MuiPagination
+        color="primary"
+        size="small"
+        count={pageCount}
+        page={Math.min(page, pageCount)}
+        onChange={(_e, value) => onPage(value)}
+        showFirstButton
+        showLastButton
+      />
+    </Stack>
   );
 };
 
@@ -1104,32 +1140,14 @@ const PhotosTab = ({ productId }) => {
           </Grid>
         ))}
       </Grid>
-      {pageCount > 1 && (
-        <Stack
-          direction="row"
-          spacing={1}
-          alignItems="center"
-          justifyContent="center"
-          sx={{ mt: 2 }}
-        >
-          <Button
-            size="small"
-            disabled={safePage <= 1}
-            onClick={() => setPage(safePage - 1)}
-          >
-            Prev
-          </Button>
-          <Typography variant="body2">
-            {safePage} / {pageCount} · {visible.length} photos
-          </Typography>
-          <Button
-            size="small"
-            disabled={safePage >= pageCount}
-            onClick={() => setPage(safePage + 1)}
-          >
-            Next
-          </Button>
-        </Stack>
+      {visible.length > 0 && (
+        <GridPagination
+          count={visible.length}
+          page={safePage}
+          perPage={PHOTOS_PER_PAGE}
+          onPage={setPage}
+          unit="photos"
+        />
       )}
     </Box>
   );

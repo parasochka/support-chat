@@ -1,10 +1,11 @@
 import { fetchUtils } from 'react-admin';
+import { sessionGet } from './session';
 
 export const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
 
 const ENV_TOKEN = import.meta.env.VITE_ADMIN_TOKEN || '';
 
-export const getToken = () => ENV_TOKEN || localStorage.getItem('admin_token') || '';
+export const getToken = () => ENV_TOKEN || sessionGet('admin_token');
 
 export const hasEnvToken = () => Boolean(ENV_TOKEN);
 
