@@ -107,3 +107,49 @@ async def test_require_admin_accepts_valid_token():
     token = auth.issue_admin_token(role="admin", email="a@example.com")
     payload = await admin_auth.require_admin(authorization=f"Bearer {token}")
     assert payload["role"] == "admin"
+
+
+def test_refresh_admin_token_slides_past_halflife():
+    # A token minted well into its second half must refresh (new full TTL);
+    # a fresh one must not.
+    now = int(__import__("time").time())
+    old = {"iat": now - 6000, "exp": now + 100, "role": "admin"}  # ~98% elapsed
+    fresh = {"iat": now - 10, "exp": now + 3600, "role": "admin"}  # just minted
+    assert auth.refresh_admin_token(old, "admin", "a@example.com") is not None
+    assert auth.refresh_admin_token(fresh, "admin", "a@example.com") is None
+    # A refreshed token is valid and carries a strictly later expiry.
+    new_tok = auth.refresh_admin_token(old, "admin", "a@example.com")
+    new_payload = auth.verify_admin_token(new_tok)
+    assert new_payload["exp"] > old["exp"]
+    assert new_payload["email"] == "a@example.com"
+
+
+def _stale_admin_token(email="a@example.com"):
+    """A validly-signed admin token whose iat/exp put it past half-life (so
+    refresh_admin_token fires) but not yet expired."""
+    import time as _t
+    now = int(_t.time())
+    header = auth._b64url_encode(b'{"alg":"HS256","typ":"JWT"}')
+    payload = {"sub": email, "email": email, "role": "admin",
+               "iat": now - 6000, "exp": now + 100}
+    p64 = auth._b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+    sig = auth._b64url_encode(
+        auth._sign_with(config.ADMIN_JWT_SECRET, f"{header}.{p64}".encode("ascii")))
+    return f"{header}.{p64}.{sig}"
+
+
+async def test_require_admin_sets_refresh_header_when_stale():
+    # A near-expired token drives require_admin to emit X-Refresh-Token so the
+    # SPA can slide the session forward.
+    from fastapi import Response
+
+    resp = Response()
+    payload = await admin_auth.require_admin(
+        authorization=f"Bearer {_stale_admin_token()}", response=resp)
+    assert payload["role"] == "admin"
+    assert resp.headers.get("X-Refresh-Token")
+    # And a freshly-minted token does NOT trigger a refresh.
+    resp2 = Response()
+    fresh = auth.issue_admin_token(role="admin", email="a@example.com")
+    await admin_auth.require_admin(authorization=f"Bearer {fresh}", response=resp2)
+    assert resp2.headers.get("X-Refresh-Token") is None

@@ -207,7 +207,11 @@ ADMIN_JWT_SECRET: str = _env_opt("ADMIN_JWT_SECRET") or SESSION_JWT_SECRET
 # True when ADMIN_JWT_SECRET is not set on its own and silently reuses
 # SESSION_JWT_SECRET — fine for dev, flagged at startup in production.
 ADMIN_JWT_SECRET_IS_FALLBACK: bool = _env_opt("ADMIN_JWT_SECRET") is None
-ADMIN_TOKEN_TTL_MIN: int = _env_int("ADMIN_TOKEN_TTL_MIN", 480)
+# Admin login lifetime. The session SLIDES: an active operator's token is
+# re-minted with a fresh full TTL past its half-life (see auth.refresh_admin_token),
+# so this is really the "inactivity window" — a week by default, so daily use
+# never logs you out while an untouched account expires after a week.
+ADMIN_TOKEN_TTL_MIN: int = _env_int("ADMIN_TOKEN_TTL_MIN", 10_080)
 
 # --- Secrets encryption master key (multi-tenancy) ---------------------------
 # Encrypts per-product secrets at rest (OpenAI keys, handshake secrets) via

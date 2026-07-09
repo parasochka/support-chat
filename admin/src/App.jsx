@@ -35,6 +35,8 @@ import TuneIcon from '@mui/icons-material/Tune';
 
 import authProvider from './authProvider';
 import dataProvider from './dataProvider';
+import buildStore from './store';
+import LoginPage from './pages/LoginPage';
 import ApiKeys from './pages/ApiKeys';
 import Dashboard from './dashboard/Dashboard';
 import ScopeAppBar from './layout/ScopeAppBar';
@@ -49,6 +51,10 @@ import Settings from './pages/Settings';
 import SiteMap from './pages/SiteMap';
 import Structure from './pages/Structure';
 import Translations from './pages/Translations';
+
+// One store instance for the app: a localStorage store whose reset() preserves
+// the theme + sidebar preference across logout (see ./store).
+const store = buildStore();
 
 // Collapsed/expanded state of the sidebar sections persists across reloads so
 // the operator's layout is remembered (default: expanded).
@@ -225,6 +231,8 @@ const App = () => (
   <Admin
     dataProvider={dataProvider}
     authProvider={authProvider}
+    store={store}
+    loginPage={LoginPage}
     dashboard={Dashboard}
     layout={AppLayout}
     theme={defaultLightTheme}
