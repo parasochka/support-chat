@@ -118,6 +118,10 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    # The admin SPA reads the sliding-session refresh token off this response
+    # header; a cross-origin dev deploy needs it explicitly exposed (production
+    # serves the SPA same-origin, where it's readable anyway).
+    expose_headers=["X-Refresh-Token"],
 )
 
 

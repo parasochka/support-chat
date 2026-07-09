@@ -163,6 +163,38 @@ def verify_admin_token(token: str) -> dict[str, Any]:
     return payload
 
 
+def refresh_admin_token(payload: dict[str, Any], role: str,
+                        email: Optional[str] = None) -> Optional[str]:
+    """Sliding-session helper: given a still-valid admin token's payload, return
+    a freshly-minted token (new `exp`, full TTL from settings) once the current
+    one is past the HALFWAY point of its lifetime — else None (no refresh yet).
+
+    This makes the admin session slide: every day of activity re-issues the
+    token with another full TTL ahead, so an operator who keeps using the panel
+    is never logged out mid-work, while an account left untouched for a whole
+    TTL window (a week by default) simply expires. `role`/`email` come from the
+    per-request DB re-check in `require_admin`, so a demotion propagates into
+    the refreshed token too. Re-minting only after half-life keeps it to at most
+    one new token per request-burst instead of one on every single call.
+    """
+    iat = payload.get("iat")
+    exp = payload.get("exp")
+    if iat is None or exp is None:
+        return None
+    try:
+        iat_i, exp_i = int(iat), int(exp)
+    except (TypeError, ValueError):
+        return None
+    now = int(time.time())
+    lifetime = exp_i - iat_i
+    if lifetime <= 0:
+        return None
+    # Past the halfway mark of this token's life → slide it forward.
+    if (now - iat_i) * 2 >= lifetime:
+        return issue_admin_token(role=role, email=email)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Signed front-end handshake (Phase 2 §9) — HMAC over a base64url payload + exp
 # ---------------------------------------------------------------------------

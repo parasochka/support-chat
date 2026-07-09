@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -49,7 +49,8 @@ def _client_ip(request: Request) -> str:
     return client_ip(request)
 
 
-async def require_admin(authorization: Optional[str] = Header(default=None)) -> dict:
+async def require_admin(authorization: Optional[str] = Header(default=None),
+                        response: Response = None) -> dict:
     """FastAPI dependency: verify the admin JWT (or a service API key) or raise
     401. Guards /admin/* data.
 
@@ -103,6 +104,16 @@ async def require_admin(authorization: Optional[str] = Header(default=None)) -> 
     payload["role"] = ("admin" if any(m.get("role") == "admin"
                                       for m in payload["memberships"])
                        else "manager")
+    # Sliding session: once this token is past half its life, hand the client a
+    # fresh one (new full TTL) via a response header. Active operators keep
+    # sliding forward and are never logged out mid-work; an untouched account
+    # still expires after a full TTL window. Applies to every human account
+    # (admin + manager) — service API keys (the sak_ path above) are not
+    # sessions and returned earlier without refresh.
+    if response is not None:
+        new_token = auth.refresh_admin_token(payload, payload["role"], email)
+        if new_token:
+            response.headers["X-Refresh-Token"] = new_token
     return payload
 
 

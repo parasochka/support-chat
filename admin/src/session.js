@@ -35,9 +35,21 @@ export const clearSession = () => {
 export const sessionGet = (key) =>
   localStorage.getItem(key) || sessionStorage.getItem(key) || '';
 
-/** Whether the "Remember me" box should default to ticked (yes, unless the
- *  operator explicitly unticked it last time). */
-export const rememberDefault = () => localStorage.getItem(REMEMBER_KEY) !== '0';
+/** Replace the stored token in place (sliding-session refresh from the server),
+ *  writing to whichever store currently holds the session so the "Remember me"
+ *  mode is preserved. No-op if there is no active token (e.g. env-token dev). */
+export const updateToken = (token) => {
+  if (!token) return;
+  if (localStorage.getItem('admin_token') !== null) {
+    localStorage.setItem('admin_token', token);
+  } else if (sessionStorage.getItem('admin_token') !== null) {
+    sessionStorage.setItem('admin_token', token);
+  }
+};
+
+/** Whether the "Remember me" box should default to ticked. Default OFF, unless
+ *  the operator explicitly ticked it last time (then it comes back ticked). */
+export const rememberDefault = () => localStorage.getItem(REMEMBER_KEY) === '1';
 
 /** True when a JWT's `exp` claim is in the past (so we can redirect to login
  *  cleanly instead of loading the dashboard and letting every call 401). */
