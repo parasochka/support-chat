@@ -24,6 +24,8 @@ const Prompt = () => {
       <Tabs
         value={tab}
         onChange={(e, v) => setParams({ tab: v }, { replace: true })}
+        variant="scrollable"
+        allowScrollButtonsMobile
         sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}
       >
         <Tab value="preview" label="Preview" />

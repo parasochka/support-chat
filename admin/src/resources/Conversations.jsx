@@ -16,6 +16,7 @@ import {
   TextInput,
   usePermissions,
   useRecordContext,
+  useRedirect,
 } from 'react-admin';
 import Box from '@mui/material/Box';
 import Card from '@mui/material/Card';
@@ -24,7 +25,9 @@ import Chip from '@mui/material/Chip';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { useSupportedLanguages } from '../lib/meta';
+import MobileList from '../components/MobileList';
 import RequireProduct from '../components/RequireProduct';
+import useIsMobile from '../lib/useIsMobile';
 
 const STATUS_CHOICES = [
   { id: 'open', name: 'Open' },
@@ -66,6 +69,8 @@ export const ConversationList = () => {
   // no per-row or bulk delete controls (the server refuses them anyway).
   const { permissions } = usePermissions();
   const isAdmin = permissions === 'admin';
+  const isMobile = useIsMobile();
+  const redirect = useRedirect();
   return (
     <RequireProduct title="Conversations">
       <List
@@ -79,6 +84,18 @@ export const ConversationList = () => {
         title="Conversations"
         sort={{ field: 'created_at', order: 'DESC' }}
       >
+        {isMobile ? (
+          <MobileList
+            primaryText={(r) => `${r.topic || '—'} · ${r.status}${r.escalated ? ' · escalated' : ''}`}
+            secondaryText={(r) => `${r.lang || ''} · ${r.id}`}
+            tertiaryText={(r) =>
+              `${r.message_count ?? 0} msgs · $${(r.cost_usd_total ?? 0).toFixed(4)} · ${
+                r.created_at ? new Date(r.created_at).toLocaleString() : ''
+              }`
+            }
+            onRowClick={(id) => redirect('show', 'sessions', id)}
+          />
+        ) : (
         <Datagrid
           rowClick="show"
           bulkActionButtons={
@@ -102,6 +119,7 @@ export const ConversationList = () => {
             <DeleteButton mutationMode="pessimistic" redirect={false} />
           )}
         </Datagrid>
+        )}
       </List>
     </RequireProduct>
   );
@@ -126,7 +144,10 @@ const MessageThread = () => {
       )}
       {timeline.map((item, i) =>
         item.kind === 'event' ? (
-          <Box key={i} sx={{ textAlign: 'center', py: 0.5 }}>
+          <Box
+            key={item.id != null ? `e${item.id}` : `i${i}`}
+            sx={{ textAlign: 'center', py: 0.5 }}
+          >
             <Chip
               size="small"
               label={`switched ${item.payload?.from || '?'} → ${item.payload?.to || '?'}${
@@ -136,10 +157,10 @@ const MessageThread = () => {
           </Box>
         ) : (
           <Card
-            key={i}
+            key={item.id != null ? `m${item.id}` : `i${i}`}
             variant="outlined"
             sx={{
-              maxWidth: '75%',
+              maxWidth: { xs: '92%', sm: '75%' },
               alignSelf: item.role === 'user' ? 'flex-start' : 'flex-end',
               bgcolor: item.role === 'user' ? 'transparent' : 'action.hover',
             }}

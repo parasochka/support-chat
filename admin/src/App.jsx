@@ -77,7 +77,7 @@ const CollapsibleSection = ({ id, label, children }) => {
   };
   return (
     <>
-      <ListItemButton onClick={toggle} sx={{ px: 2, py: 0.5 }}>
+      <ListItemButton onClick={toggle} sx={{ px: 2, py: { xs: 1, md: 0.5 } }}>
         <ListItemText
           primary={label}
           slotProps={{
@@ -117,7 +117,7 @@ const RetentionSubItem = ({ tab, label, icon }) => {
     <ListItemButton
       selected={active}
       onClick={() => navigate(`/retention?tab=${tab}`)}
-      sx={{ pl: 4, py: 0.4 }}
+      sx={{ pl: 4, py: { xs: 1, md: 0.4 } }}
     >
       <ListItemIcon sx={{ minWidth: 34 }}>{icon}</ListItemIcon>
       {/* No typography override: the Menu-level rule below pins one font size

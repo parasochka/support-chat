@@ -155,8 +155,9 @@ def resolve(locale: Optional[str] = None,
     if chosen:
         return chosen
 
-    if _supported(session_lang):
-        return session_lang  # type: ignore[return-value]
+    normalized = _supported(session_lang)
+    if normalized:
+        return normalized
 
     return AUTO
 

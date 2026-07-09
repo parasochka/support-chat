@@ -199,6 +199,22 @@ const state = {
 // ---------------------------------------------------------------------------
 // reCaptcha helper (no-op when no site key configured)
 // ---------------------------------------------------------------------------
+// An ad/privacy blocker can silently drop the google.com/recaptcha request —
+// then neither onload nor onerror ever fires and a stalled execute() never
+// settles, wedging session creation forever. Every step therefore races a
+// timeout and degrades to a null token (the backend decides what to do).
+const RECAPTCHA_TIMEOUT_MS = 8000;
+
+function withTimeout(promise, ms, fallback) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      () => { clearTimeout(timer); resolve(fallback); }
+    );
+  });
+}
+
 function loadRecaptcha(siteKey) {
   return new Promise((resolve) => {
     if (!siteKey) return resolve(null);
@@ -218,15 +234,18 @@ async function recaptchaToken(action) {
     await state.i18nPromise;
   }
   if (!CONFIG.RECAPTCHA_SITE_KEY) return null;
-  const grc = await loadRecaptcha(CONFIG.RECAPTCHA_SITE_KEY);
+  const grc = await withTimeout(
+    loadRecaptcha(CONFIG.RECAPTCHA_SITE_KEY), RECAPTCHA_TIMEOUT_MS, null
+  );
   if (!grc) return null;
-  return new Promise((resolve) => {
+  const exec = new Promise((resolve) => {
     grc.ready(() => {
       grc.execute(CONFIG.RECAPTCHA_SITE_KEY, { action })
         .then(resolve)
         .catch(() => resolve(null));
     });
   });
+  return withTimeout(exec, RECAPTCHA_TIMEOUT_MS, null);
 }
 
 // ---------------------------------------------------------------------------
@@ -776,10 +795,18 @@ function fillTyping(elm, text, isError) {
   scrollToBottom();
 }
 
+// The contact URL is admin-entered (per-product Translations) — enforce the
+// same scheme allow-list as renderMarkdown links so a semi-trusted tenant
+// admin can never plant a javascript:/data: URL in another origin's page
+// (tg: covers the retention-bot deeplink hand-off).
+function isSafeButtonUrl(url) {
+  return /^(https?:|mailto:|tg:)/i.test(String(url).trim());
+}
+
 function addEscalation(esc) {
   const wrap = el("div", "npchat-escalation");
   if (esc.message) wrap.appendChild(el("div", "npchat-esc-msg", esc.message));
-  if (esc.button && esc.button.url) {
+  if (esc.button && esc.button.url && isSafeButtonUrl(esc.button.url)) {
     const a = el("a", "npchat-esc-btn", esc.button.label || "Contact support");
     a.href = esc.button.url;
     a.target = "_blank";

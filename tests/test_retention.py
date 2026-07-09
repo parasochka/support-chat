@@ -252,6 +252,27 @@ async def test_maybe_advance_stage_gated(monkeypatch):
     assert new_stage == 2 and calls == [(2, 2)]
 
 
+async def test_stage_advance_requires_configured_threshold(monkeypatch):
+    """No stage_advance_msgs entry for the stage ⇒ no advance, even on a model
+    [[STAGE_UP]] hint — the hint must never unlock unpaced explicitness."""
+    calls = []
+
+    async def _fake_advance(rid, new_stage):
+        calls.append((rid, new_stage))
+
+    monkeypatch.setattr(retention.db, "advance_retention_stage", _fake_advance)
+    cfg = settings.retention()
+    monkeypatch.setattr(
+        retention.settings, "retention",
+        lambda: {**cfg, "stage_advance_msgs": []},
+    )
+    ru = {"id": 9, "unlocked_stage": 1, "vip_level": "gold",
+          "meaningful_msgs": 999, "last_stage_advance_at": None}
+    assert await retention.maybe_advance_stage(ru, True) is None
+    assert await retention.maybe_advance_stage(ru, False) is None
+    assert calls == []
+
+
 async def test_stage_advance_respects_tier_ceiling(monkeypatch):
     calls = []
 

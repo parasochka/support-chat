@@ -320,13 +320,12 @@ async def maybe_advance_stage(ru: dict[str, Any], stage_up_hint: bool) -> Option
     thresholds = cfg.get("stage_advance_msgs") or []
     idx = next_stage - 2
     threshold = thresholds[idx] if 0 <= idx < len(thresholds) else None
-    meaningful = int(ru.get("meaningful_msgs") or 0)
-    soft_ok = threshold is None or meaningful >= threshold
-    if not soft_ok:
+    # No configured threshold for this stage ⇒ no advance at all: a model
+    # [[STAGE_UP]] hint must never unlock explicitness the admin didn't pace.
+    if threshold is None:
         return None
-    # A pure hint still needs the soft threshold; the automatic advance needs the
-    # threshold too — both share the spacing guard.
-    if not stage_up_hint and (threshold is None or meaningful < threshold):
+    meaningful = int(ru.get("meaningful_msgs") or 0)
+    if meaningful < threshold:
         return None
     # spacing: at most one advance per stage_advance_min_hours.
     import datetime as _dt
@@ -989,7 +988,9 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
             reply_markup=reply_markup)
     if result is None:
         # No cached id (or the cached id failed) — upload from the Volume.
-        content = _read_media(photo.get("storage_ref"))
+        # Off-thread: a multi-MB Volume read on the event loop stalls every
+        # concurrent chat turn.
+        content = await asyncio.to_thread(_read_media, photo.get("storage_ref"))
         if content is None:
             if caption:
                 await _send_ai_text(client, chat_id, caption,

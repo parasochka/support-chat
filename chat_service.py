@@ -78,6 +78,21 @@ async def _none() -> None:
     return None
 
 
+def _session_base_lang(session: dict) -> str:
+    """The turn's base/fallback language: sticky conv_lang, else the session's
+    browser language, else the default. A session created from an unsupported
+    locale stores the literal AUTO sentinel — normalize it to the default so it
+    never becomes an answer_lang / persisted assistant_lang value."""
+    base = (
+        session.get("conv_lang")
+        or session.get("lang")
+        or language.default_code()
+    )
+    if base == language.AUTO:
+        return language.default_code()
+    return base
+
+
 async def handle_message(
     session: dict[str, Any], user_text: str, closing: bool = False
 ) -> ChatReply:
@@ -107,11 +122,7 @@ async def handle_message(
     # to fall back to this base when the message is too short/ambiguous; it
     # reports the language it used via a [[LANG:xx]] tag we strip below. The
     # widget chrome is untouched (it keeps the browser language client-side).
-    base_lang = (
-        session.get("conv_lang")
-        or session.get("lang")
-        or language.default_code()
-    )
+    base_lang = _session_base_lang(session)
     resolved = base_lang
 
     # --- pre-model keyword escalation (SOFT, saves the model call) ----------
@@ -576,14 +587,21 @@ async def handle_retention_message(
     candidates = photo_candidates or []
     candidate_ids = {int(c["id"]) for c in candidates}
 
-    base_lang = (session.get("conv_lang") or session.get("lang")
-                 or language.default_code())
+    base_lang = _session_base_lang(session)
 
     # --- retention KB (Layer 2, loaded WHOLE) + history ---------------------
-    kb_text = await db.retention_kb_block(product_id) if product_id else ""
-    kb_block = await kb.render_variables(kb_text, product_id=product_id) if kb_text else None
-    history = await db.get_history(
-        session_id, limit=settings.general()["history_max_turns"],
+    # The three reads are independent — fetch them concurrently (mirrors the
+    # support path's gather) so a Telegram turn doesn't pay serial round-trips.
+    kb_text, history, client = await asyncio.gather(
+        db.retention_kb_block(product_id) if product_id else _none(),
+        db.get_history(
+            session_id, limit=settings.general()["history_max_turns"],
+        ),
+        openai_client.client_for_product(product_id),
+    )
+    kb_block = (
+        await kb.render_variables(kb_text, product_id=product_id)
+        if kb_text else None
     )
     # Returning-player continuity: on the FIRST turn of a fresh session that
     # rolled over from an idle chat (prev_session_id), carry the tail of the
@@ -614,8 +632,7 @@ async def handle_retention_message(
         len(kb_block or ""), nudge,
     )
 
-    # --- call model (product keys / env failover) ---------------------------
-    client = await openai_client.client_for_product(product_id)
+    # --- call model (product keys / env failover; client fetched above) -----
     error: Optional[str] = None
     try:
         result = await client.complete(
@@ -735,13 +752,19 @@ async def generate_retention_ping(
     tenancy.set_current_product(product_id)
     candidates = photo_candidates or []
     candidate_ids = {int(c["id"]) for c in candidates}
-    lang = (session.get("conv_lang") or session.get("lang")
-            or language.default_code())
+    lang = _session_base_lang(session)
 
-    kb_text = await db.retention_kb_block(product_id) if product_id else ""
-    kb_block = await kb.render_variables(kb_text, product_id=product_id) if kb_text else None
-    history = await db.get_history(
-        session_id, limit=settings.general()["history_max_turns"],
+    # Independent reads, fetched concurrently (same shape as the dialog turn).
+    kb_text, history, client = await asyncio.gather(
+        db.retention_kb_block(product_id) if product_id else _none(),
+        db.get_history(
+            session_id, limit=settings.general()["history_max_turns"],
+        ),
+        openai_client.client_for_product(product_id),
+    )
+    kb_block = (
+        await kb.render_variables(kb_text, product_id=product_id)
+        if kb_text else None
     )
     messages = prompts.build_retention_ping_messages(
         session=session,
@@ -753,7 +776,6 @@ async def generate_retention_ping(
         intent=intent,
         photo_candidates=candidates,
     )
-    client = await openai_client.client_for_product(product_id)
     try:
         result = await client.complete(
             messages, session_id=session_id, on_failover=_on_failover

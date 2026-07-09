@@ -13,11 +13,14 @@ import {
   TextInput,
   email,
   required,
+  useRedirect,
 } from 'react-admin';
 import { useFormContext } from 'react-hook-form';
 import Button from '@mui/material/Button';
 import Stack from '@mui/material/Stack';
+import MobileList from '../components/MobileList';
 import { generatePassword } from '../lib/secrets';
+import useIsMobile from '../lib/useIsMobile';
 
 const ROLE_CHOICES = [
   { id: 'admin', name: 'admin (read + write)' },
@@ -55,16 +58,31 @@ const PasswordWithGenerate = ({ source = 'password', label, helperText, validate
   );
 };
 
-export const UserList = () => (
-  <List perPage={50} exporter={false} title="Admin users">
-    <Datagrid rowClick="edit">
-      <TextField source="email" />
-      <TextField source="role" />
-      <BooleanField source="active" />
-      <DateField source="created_at" showTime />
-    </Datagrid>
-  </List>
-);
+export const UserList = () => {
+  const isMobile = useIsMobile();
+  const redirect = useRedirect();
+  return (
+    <List perPage={50} exporter={false} title="Admin users">
+      {isMobile ? (
+        <MobileList
+          primaryText={(r) => r.email}
+          secondaryText={(r) => `${r.role} · ${r.active ? 'active' : 'inactive'}`}
+          tertiaryText={(r) =>
+            r.created_at ? new Date(r.created_at).toLocaleString() : ''
+          }
+          onRowClick={(id) => redirect('edit', 'users', id)}
+        />
+      ) : (
+        <Datagrid rowClick="edit">
+          <TextField source="email" />
+          <TextField source="role" />
+          <BooleanField source="active" />
+          <DateField source="created_at" showTime />
+        </Datagrid>
+      )}
+    </List>
+  );
+};
 
 export const UserEdit = () => (
   <Edit mutationMode="pessimistic" title="Edit admin user">
