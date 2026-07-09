@@ -37,6 +37,7 @@ import {
   TelegramCostCharts,
 } from '../components/charts';
 import RequireProduct from '../components/RequireProduct';
+import useIsMobile from '../lib/useIsMobile';
 import SecretField from '../components/SecretField';
 
 // ---------------------------------------------------------------------------
@@ -769,10 +770,12 @@ const PhotosTab = ({ productId }) => {
     let ok = 0;
     let failed = 0;
     const errors = [];
-    try {
-      for (let i = 0; i < ids.length; i += META_CHUNK) {
-        const chunk = ids.slice(i, i + META_CHUNK);
-        setGenProgress(`${Math.min(i + chunk.length, ids.length)} / ${ids.length}`);
+    // Each chunk fails independently — a mid-batch 500/network error must not
+    // discard the counts of chunks that already succeeded server-side.
+    for (let i = 0; i < ids.length; i += META_CHUNK) {
+      const chunk = ids.slice(i, i + META_CHUNK);
+      setGenProgress(`${Math.min(i + chunk.length, ids.length)} / ${ids.length}`);
+      try {
         const { json } = await httpClient(
           `${API_URL}/admin/retention/photos/generate-metadata?product_id=${productId}`,
           { method: 'POST', body: JSON.stringify({ ids: chunk }) }
@@ -784,7 +787,12 @@ const PhotosTab = ({ productId }) => {
             errors.push(`#${r.id}: ${r.error}`);
           }
         });
+      } catch (e) {
+        failed += chunk.length;
+        errors.push(e.body?.detail || e.message || 'request failed');
       }
+    }
+    try {
       if (failed) {
         notify(
           `Metadata: ${ok} generated, ${failed} failed (${errors.slice(0, 3).join('; ')}${errors.length > 3 ? '…' : ''})`,
@@ -796,8 +804,6 @@ const PhotosTab = ({ productId }) => {
         });
       }
       setSelected(new Set());
-    } catch (e) {
-      notify(e.body?.detail || e.message || 'Generation failed', { type: 'error' });
     } finally {
       setGenerating(false);
       setGenProgress('');
@@ -1275,6 +1281,7 @@ const EMPTY_RULE = {
 const STATUS_COLORS = { sent: 'success', failed: 'error', skipped: 'default' };
 
 const PingsTab = ({ productId }) => {
+  const isMobile = useIsMobile();
   const notify = useNotify();
   const { permissions } = usePermissions();
   const canWrite = permissions === 'admin';
@@ -1574,7 +1581,7 @@ const PingsTab = ({ productId }) => {
         </Stack>
       )}
 
-      <Dialog open={!!editing} onClose={() => setEditing(null)} maxWidth="sm" fullWidth>
+      <Dialog open={!!editing} onClose={() => setEditing(null)} maxWidth="sm" fullWidth fullScreen={isMobile}>
         <DialogTitle>{editing?.id ? 'Edit rule' : 'New rule'}</DialogTitle>
         <DialogContent dividers>
           {editing && (
@@ -1694,6 +1701,7 @@ const PingsTab = ({ productId }) => {
 // that carries a short continuity tail from the previous one.
 // ---------------------------------------------------------------------------
 const ConversationsTab = ({ productId }) => {
+  const isMobile = useIsMobile();
   const notify = useNotify();
   const { permissions } = usePermissions();
   const isAdmin = permissions === 'admin';
@@ -1890,7 +1898,7 @@ const ConversationsTab = ({ productId }) => {
           </Button>
         </Stack>
       )}
-      <Dialog open={!!detail} onClose={() => setDetail(null)} maxWidth="md" fullWidth>
+      <Dialog open={!!detail} onClose={() => setDetail(null)} maxWidth="md" fullWidth fullScreen={isMobile}>
         <DialogTitle>
           Telegram chat · {detail?.session?.id}
           {detail?.session?.status ? ` · ${detail.session.status}` : ''}
@@ -1906,7 +1914,7 @@ const ConversationsTab = ({ productId }) => {
                 item._kind === 'photo' ? (
                   <Box
                     key={`p${i}`}
-                    sx={{ maxWidth: '80%', alignSelf: 'flex-end', width: 240 }}
+                    sx={{ maxWidth: '80%', alignSelf: 'flex-end', width: { xs: 180, sm: 240 } }}
                   >
                     <Typography variant="caption" color="text.secondary">
                       photo · {new Date(item.created_at).toLocaleString()}
@@ -2250,6 +2258,8 @@ const Retention = () => {
         <Tabs
           value={tab}
           onChange={(e, v) => setParams({ tab: v }, { replace: true })}
+          variant="scrollable"
+          allowScrollButtonsMobile
           sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}
         >
           {subtabs.map(([value, label]) => (

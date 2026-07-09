@@ -13,7 +13,9 @@ import {
   useRedirect,
 } from 'react-admin';
 import Alert from '@mui/material/Alert';
+import MobileList from '../components/MobileList';
 import RequireProduct from '../components/RequireProduct';
+import useIsMobile from '../lib/useIsMobile';
 
 const filters = [
   <TextInput key="topic" source="topic" label="Topic slug" alwaysOn />,
@@ -32,6 +34,7 @@ export const EscalationList = () => {
   // Delete is admin-only and destructive; managers keep the read-only queue.
   const { permissions } = usePermissions();
   const isAdmin = permissions === 'admin';
+  const isMobile = useIsMobile();
   return (
     <RequireProduct title="Escalations / unresolved">
       <Alert severity="info" sx={{ mt: 2 }}>
@@ -45,32 +48,45 @@ export const EscalationList = () => {
         exporter={false}
         title="Escalations / unresolved"
       >
-        <Datagrid
-          bulkActionButtons={
-            isAdmin ? <BulkDeleteButton mutationMode="pessimistic" /> : false
-          }
-          rowClick={(id) => {
-            redirect('show', 'sessions', id);
-            return false;
-          }}
-        >
-          <TextField source="topic" />
-          <TextField source="session_id" label="Session" />
-          <TextField source="lang" label="Lang" />
-          <TextField source="status" />
-          <BooleanField source="escalated" />
-          <NumberField source="message_count" label="Msgs" />
-          <NumberField
-            source="cost_usd_total"
-            label="Cost $"
-            options={{ maximumFractionDigits: 4 }}
+        {isMobile ? (
+          <MobileList
+            primaryText={(r) => `${r.topic || '—'} · ${r.status}${r.escalated ? ' · escalated' : ''}`}
+            secondaryText={(r) => r.first_message || ''}
+            tertiaryText={(r) =>
+              `${r.message_count ?? 0} msgs · $${(r.cost_usd_total ?? 0).toFixed(4)} · ${
+                r.created_at ? new Date(r.created_at).toLocaleString() : ''
+              }`
+            }
+            onRowClick={(id) => redirect('show', 'sessions', id)}
           />
-          <TextField source="first_message" label="First message" />
-          <DateField source="created_at" showTime />
-          {isAdmin && (
-            <DeleteButton mutationMode="pessimistic" redirect={false} />
-          )}
-        </Datagrid>
+        ) : (
+          <Datagrid
+            bulkActionButtons={
+              isAdmin ? <BulkDeleteButton mutationMode="pessimistic" /> : false
+            }
+            rowClick={(id) => {
+              redirect('show', 'sessions', id);
+              return false;
+            }}
+          >
+            <TextField source="topic" />
+            <TextField source="session_id" label="Session" />
+            <TextField source="lang" label="Lang" />
+            <TextField source="status" />
+            <BooleanField source="escalated" />
+            <NumberField source="message_count" label="Msgs" />
+            <NumberField
+              source="cost_usd_total"
+              label="Cost $"
+              options={{ maximumFractionDigits: 4 }}
+            />
+            <TextField source="first_message" label="First message" sx={{ display: 'block', maxWidth: 320 }} />
+            <DateField source="created_at" showTime />
+            {isAdmin && (
+              <DeleteButton mutationMode="pessimistic" redirect={false} />
+            )}
+          </Datagrid>
+        )}
       </List>
     </RequireProduct>
   );

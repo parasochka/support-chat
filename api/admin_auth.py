@@ -244,8 +244,10 @@ async def login(req: Request, body: AdminLogin) -> JSONResponse:
     try:
         antispam.check_rate_limit(f"admin-login:{ip}")
     except antispam.AntiSpamError as exc:
-        await db.log_admin_event(None, "admin_login_failed",
-                                 {"ip": ip, "reason": "rate_limited"})
+        # Sampled: the limiter blocks the attempt, but an unsampled INSERT per
+        # blocked request would let one hammering IP grow admin_events unbounded.
+        await db.log_admin_event_sampled(None, "admin_login_failed",
+                                         {"ip": ip, "reason": "rate_limited"})
         return JSONResponse(status_code=exc.status,
                             content={"error": exc.code, "detail": exc.detail})
 

@@ -25,6 +25,7 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { API_URL, httpClient } from '../httpClient';
+import useIsMobile from '../lib/useIsMobile';
 
 const ROLE_CHOICES = [
   ['admin', 'admin (read + write)'],
@@ -55,6 +56,7 @@ const mono = { fontFamily: 'monospace', fontSize: 13 };
  * Admins only (the server refuses managers; keys are credentials).
  */
 const ApiKeys = () => {
+  const isMobile = useIsMobile();
   const notify = useNotify();
   const { permissions } = usePermissions();
   const [keys, setKeys] = useState(null);
@@ -319,7 +321,7 @@ const ApiKeys = () => {
         </Table>
       </Box>
 
-      <Dialog open={!!minted} onClose={() => setMinted(null)} maxWidth="sm" fullWidth>
+      <Dialog open={!!minted} onClose={() => setMinted(null)} maxWidth="sm" fullWidth fullScreen={isMobile}>
         <DialogTitle>Key created — copy the token now</DialogTitle>
         <DialogContent dividers>
           <Alert severity="warning" sx={{ mb: 2 }}>

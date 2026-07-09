@@ -937,7 +937,7 @@ async def list_pings(product_id: int, page: int = 1, page_size: int = 50,
     """The ping ledger: what was sent to whom, by which rule, at what cost."""
     await admin_auth.require_product_read(admin, product_id)
     return JSONResponse(content=await db.list_retention_pings(
-        product_id, page=page, page_size=min(page_size, 200)))
+        product_id, page=max(page, 1), page_size=max(1, min(page_size, 200))))
 
 
 @admin_router.post("/pings/run")
@@ -1021,8 +1021,9 @@ async def users(product_id: int, limit: int = 100, offset: int = 0,
                 admin=Depends(require_admin)) -> JSONResponse:
     await admin_auth.require_product_read(admin, product_id)
     return JSONResponse(content={
-        "items": await db.list_retention_users(product_id, limit=min(limit, 500),
-                                               offset=offset)})
+        "items": await db.list_retention_users(product_id,
+                                               limit=max(1, min(limit, 500)),
+                                               offset=max(offset, 0))})
 
 
 @admin_router.get("/sessions")
@@ -1037,4 +1038,4 @@ async def sessions(product_id: int, page: int = 1, page_size: int = 25,
     """
     await admin_auth.require_product_read(admin, product_id)
     return JSONResponse(content=await db.list_retention_sessions(
-        product_id, page=page, page_size=min(page_size, 100)))
+        product_id, page=max(page, 1), page_size=max(1, min(page_size, 100))))

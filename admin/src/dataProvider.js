@@ -36,7 +36,10 @@ const paginate = (rows, params) => {
       const av = a[field];
       const bv = b[field];
       if (av === bv) return 0;
-      const cmp = av > bv || bv === undefined ? 1 : -1;
+      // Missing values always sort last regardless of direction.
+      if (av === undefined || av === null) return 1;
+      if (bv === undefined || bv === null) return -1;
+      const cmp = av > bv ? 1 : -1;
       return order === 'DESC' ? -cmp : cmp;
     });
   }

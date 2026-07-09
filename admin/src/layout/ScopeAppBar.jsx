@@ -79,7 +79,17 @@ const ScopeSelect = () => {
       value={value}
       onChange={onChange}
       variant="outlined"
-      sx={{ mr: 2, minWidth: 180, '.MuiSelect-select': { py: 0.5 } }}
+      sx={{
+        mr: { xs: 0.5, sm: 2 },
+        minWidth: { xs: 110, sm: 180 },
+        maxWidth: { xs: 160, sm: 300 },
+        '.MuiSelect-select': {
+          py: 0.5,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        },
+      }}
     >
       {items}
     </Select>
@@ -88,7 +98,10 @@ const ScopeSelect = () => {
 
 const ScopeAppBar = () => (
   <AppBar>
-    <TitlePortal />
+    {/* minWidth: 0 lets the title truncate instead of pushing the switcher off-screen */}
+    <Box sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <TitlePortal />
+    </Box>
     <Box flex={1} />
     <ScopeSelect />
   </AppBar>

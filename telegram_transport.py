@@ -242,7 +242,15 @@ class TelegramClient:
         return result.get("status")
 
     async def is_subscribed(self, chat_id: Any, user_id: int) -> bool:
-        status = await self.get_chat_member_status(chat_id, user_id)
+        result = await self._call("getChatMember",
+                                  {"chat_id": chat_id, "user_id": user_id})
+        if not result:
+            return False
+        status = result.get("status")
+        # A "restricted" member record exists even after the user leaves the
+        # channel — only its is_member flag says whether they are actually in.
+        if status == "restricted":
+            return bool(result.get("is_member"))
         return status in _SUBSCRIBED_STATUSES
 
     async def set_webhook(self, url: str, secret_token: str,

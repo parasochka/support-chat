@@ -135,6 +135,17 @@ def test_strip_language_tag():
     assert clean2 == "Just a plain reply"
 
 
+def test_strip_language_tag_malformed_never_leaks():
+    """Strip-then-validate: a malformed code still has the tag REMOVED from the
+    visible reply; a locale narrows to its 2-letter base."""
+    clean, code = prompts.strip_language_tag("[[LANG:pt-BR]]\nOlá!")
+    assert code == "pt"
+    assert "[[LANG" not in clean and clean == "Olá!"
+    clean2, code2 = prompts.strip_language_tag("[[LANG:por]]\nOlá!")
+    assert code2 is None
+    assert "[[LANG" not in clean2 and clean2 == "Olá!"
+
+
 def test_persona_and_tone_in_core():
     """Nika's tone-of-voice + the responsible-gaming / links rules ride in the
     byte-stable persona core (SYSTEM_CORE is a dry template; check the rendered

@@ -11,11 +11,14 @@ import {
   TextField,
   TextInput,
   required,
+  useRedirect,
 } from 'react-admin';
 import Alert from '@mui/material/Alert';
 import Link from '@mui/material/Link';
+import MobileList from '../components/MobileList';
 import RouteTabs from '../components/RouteTabs';
 import RequireProduct from '../components/RequireProduct';
+import useIsMobile from '../lib/useIsMobile';
 import { KB_TABS } from './kbTabs';
 
 /**
@@ -57,21 +60,36 @@ const TopicForm = ({ isCreate = false }) => (
   </SimpleForm>
 );
 
-export const KbList = () => (
-  <RequireProduct title="Knowledge base">
-    <RouteTabs tabs={KB_TABS} />
-    <List perPage={25} exporter={false} title="Knowledge base">
-      <Datagrid rowClick="edit" bulkActionButtons={false}>
-        <NumberField source="id" />
-        <TextField source="slug" />
-        <TextField source="title.en" label="Title (en)" />
-        <NumberField source="order" label="Order" />
-        <BooleanField source="active" />
-        <NumberField source="entry_count" label="Has KB" />
-      </Datagrid>
-    </List>
-  </RequireProduct>
-);
+export const KbList = () => {
+  const isMobile = useIsMobile();
+  const redirect = useRedirect();
+  return (
+    <RequireProduct title="Knowledge base">
+      <RouteTabs tabs={KB_TABS} />
+      <List perPage={25} exporter={false} title="Knowledge base">
+        {isMobile ? (
+          <MobileList
+            primaryText={(r) => r.title?.en || r.slug}
+            secondaryText={(r) => r.slug}
+            tertiaryText={(r) =>
+              `order ${r.order ?? 0} · ${r.active ? 'active' : 'inactive'} · KB ${r.entry_count ?? 0}`
+            }
+            onRowClick={(id) => redirect('edit', 'kb', id)}
+          />
+        ) : (
+          <Datagrid rowClick="edit" bulkActionButtons={false}>
+            <NumberField source="id" />
+            <TextField source="slug" />
+            <TextField source="title.en" label="Title (en)" />
+            <NumberField source="order" label="Order" />
+            <BooleanField source="active" />
+            <NumberField source="entry_count" label="Has KB" />
+          </Datagrid>
+        )}
+      </List>
+    </RequireProduct>
+  );
+};
 
 export const KbEdit = () => (
   <RequireProduct title="Knowledge base">

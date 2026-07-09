@@ -42,7 +42,11 @@ _TOPIC_TAG_RE = re.compile(r"\[\[TOPIC:([a-z0-9_\-]+)\]\]", re.IGNORECASE)
 # message, and this tag lets chat_service learn which language that was so it can
 # stick (persist) it and localize side-payloads (escalation copy). Captures a
 # 2-letter code. Mirrors the [[ESCALATE]] / [[TOPIC:slug]] strip pattern.
-_LANG_TAG_RE = re.compile(r"\[\[LANG:([a-z]{2})\]\]", re.IGNORECASE)
+# Strip-then-validate: the inner match is deliberately loose (a model emitting
+# `pt-BR` or `por` must still have the tag REMOVED from the visible reply);
+# strip_language_tag narrows the captured value to a clean 2-letter code and
+# chat_service validates it against the supported set.
+_LANG_TAG_RE = re.compile(r"\[\[LANG:([a-zA-Z-]{0,8})\]\]", re.IGNORECASE)
 
 # Machine-readable sentinel the model appends (own LAST line) carrying up to a
 # few short follow-up/clarifying questions phrased from the player's point of
@@ -1054,7 +1058,12 @@ def strip_language_tag(text: str) -> tuple[str, Optional[str]]:
         m = _LANG_TAG_RE.search(line)
         if m:
             if code is None:
-                code = m.group(1).strip().lower()
+                # Narrow a loose match ("pt-BR", "por") to the 2-letter base;
+                # anything that doesn't reduce to one is dropped (tag still
+                # stripped) and chat_service's supported-set check is the final
+                # validator.
+                raw = m.group(1).strip().lower().split("-", 1)[0]
+                code = raw if len(raw) == 2 and raw.isalpha() else None
             remainder = _LANG_TAG_RE.sub("", line).strip()
             if remainder:
                 cleaned.append(remainder)

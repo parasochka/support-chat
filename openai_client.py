@@ -223,10 +223,14 @@ class _KeyClient:
                 kwargs["max_completion_tokens"] = bumped
                 async with self._sem:
                     resp = await self.client.chat.completions.create(**kwargs)
-                if len(self._pending_extra_usage) > 32:
+                while len(self._pending_extra_usage) > 32:
                     # Orphaned entries (responses that never reached _result,
                     # e.g. a cancelled race loser) must not accumulate forever.
-                    self._pending_extra_usage.clear()
+                    # Evict oldest-first so a concurrent turn's still-in-flight
+                    # entry isn't wiped wholesale.
+                    self._pending_extra_usage.pop(
+                        next(iter(self._pending_extra_usage)), None
+                    )
                 self._pending_extra_usage[id(resp)] = (
                     first_in, first_out, first_cached
                 )
@@ -527,6 +531,13 @@ class OpenAIClient:
 # key rebuilds the client instead of serving the stale one).
 _client: Optional[OpenAIClient] = None
 _product_clients: dict[tuple[int, str], OpenAIClient] = {}
+# Short-TTL cache of the DECRYPTED per-product keys: without it every single
+# turn pays a DB round-trip + secretbox decrypt before the model call, even on
+# a client-cache hit. reset() (called on every product-secrets write) clears
+# it, so a rotation applies within the TTL at worst on another instance and
+# immediately on the instance that took the write.
+_product_keys_cache: dict[int, tuple[float, Optional[dict]]] = {}
+_PRODUCT_KEYS_TTL_SEC = 60.0
 
 
 def get_client() -> OpenAIClient:
@@ -555,7 +566,15 @@ async def client_for_product(product_id: Optional[int]) -> OpenAIClient:
     """
     if product_id is not None:
         import db  # lazy: keep module importable without the app wired up
-        keys = await db.get_product_openai_keys(product_id)
+        now = time.monotonic()
+        cached = _product_keys_cache.get(product_id)
+        if cached is not None and now - cached[0] < _PRODUCT_KEYS_TTL_SEC:
+            keys = cached[1]
+        else:
+            keys = await db.get_product_openai_keys(product_id)
+            if len(_product_keys_cache) > 1024:
+                _product_keys_cache.clear()
+            _product_keys_cache[product_id] = (now, keys)
         if keys and keys.get("primary"):
             cache_key = (product_id, _fingerprint(keys["primary"], keys.get("fallback")))
             client = _product_clients.get(cache_key)
@@ -584,6 +603,7 @@ def reset() -> None:
     global _client
     _client = None
     _product_clients.clear()
+    _product_keys_cache.clear()
     # Clear breaker state too: an operator changing model/keys is an explicit
     # intervention, and the new config deserves a clean probe rather than an
     # inherited open breaker from the prior configuration.
