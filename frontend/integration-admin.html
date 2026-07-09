@@ -209,6 +209,9 @@ bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию
       <td>Брендирование промпта (персона, бренд, tone of voice) / read-only собранный промпт.</td></tr>
   <tr><td><code>/admin/translations</code></td>
       <td>Все видимые игроку строки по языкам + contact URL эскалации.</td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag put">PUT</span><code>/admin/site-map</code></td>
+      <td>Официальные страницы сайта (<code>title</code> / <code>url</code> / <code>purpose</code>),
+          на которые ассистенту разрешено ставить ссылки (общий каталог для чата поддержки и Telegram).</td></tr>
   <tr><td><code>/admin/settings/{group}</code></td>
       <td>Группы: <code>model</code>, <code>antispam</code>, <code>language</code>,
           <code>general</code>, <code>escalation</code>, <code>retention</code>.
@@ -239,7 +242,8 @@ bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию
   <tr><td><span class="tag get">GET</span><span class="tag put">PUT</span><code>/admin/retention/prompt-variables</code></td>
       <td>Переменные Telegram-персоны (<code>retention_persona_name</code> / <code>_role</code> /
           <code>_brand_name</code> / <code>_products</code> / <code>retention_tone_of_voice</code>).
-          Пустое значение наследует переменную чата поддержки.</td></tr>
+          Отдельный промпт со своими дефолтами — пустое значение откатывается к retention-дефолту,
+          а не к переменной чата поддержки.</td></tr>
   <tr><td><code>/admin/retention/photos*</code> · <code>/admin/retention/managers*</code></td>
       <td>Медиатека (гейты по VIP-тиру × стадии; <code>POST /photos</code> принимает несколько
           файлов за раз) / пул менеджеров (round-robin, sticky).</td></tr>
