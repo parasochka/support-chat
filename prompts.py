@@ -1945,11 +1945,15 @@ def build_photo_meta_messages(image_data_url: str, vip_tiers: list[str],
                                    max_level=len(tiers) - 1,
                                    tier_list=tier_list)
     if library_counts:
-        def _fmt(d: dict[int, int]) -> str:
-            return ", ".join(f"{k}: {v}" for k, v in sorted(d.items()))
+        def _fmt(d: dict[int, int], names: Optional[list[str]] = None) -> str:
+            def _label(k: int) -> str:
+                if names and 0 <= k < len(names):
+                    return f"{k} ({names[k]})"
+                return str(k)
+            return ", ".join(f"{_label(k)}: {v}" for k, v in sorted(d.items()))
         task += _PHOTO_META_BALANCE.format(
             stage_counts=_fmt(library_counts.get("stage") or {}),
-            level_counts=_fmt(library_counts.get("level") or {}))
+            level_counts=_fmt(library_counts.get("level") or {}, names=tiers))
     return [
         {"role": "system", "content": _PHOTO_META_SYSTEM},
         {"role": "user", "content": [

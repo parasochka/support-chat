@@ -39,9 +39,27 @@ def test_build_photo_meta_messages_balance_block():
     text = msgs[1]["content"][0]["text"]
     assert "BALANCE THE LIBRARY" in text
     assert "1: 7, 2: 0, 3: 1" in text
-    assert "0: 8, 1: 0" in text
+    # tier counts are labelled with the tier NAMES, not bare ordinals
+    assert "0 (none): 8, 1 (bronze): 0" in text
     # what is visible still rules - balancing only breaks ties
     assert "plausible range" in text
+    # the tier is a distribution choice, decoupled from the stage
+    assert "independently of the stage" in text
+
+
+def test_build_photo_meta_messages_live_config():
+    """The exact live NikaBet ladder: stages 1-5, six tiers none..diamond
+    (Level 0-5) - the prompt ranges must mirror the product settings."""
+    tiers = ["none", "bronze", "silver", "gold", "platinum", "diamond"]
+    msgs = prompts.build_photo_meta_messages(
+        "data:image/jpeg;base64,AAA", tiers, max_stage=5,
+        library_counts={"stage": {s: 0 for s in range(1, 6)},
+                        "level": {lv: 0 for lv in range(6)}})
+    text = msgs[1]["content"][0]["text"]
+    assert "1..5" in text          # the stage ladder
+    assert "0..5" in text          # the tier range (0 = none, open to everyone)
+    assert "5 = diamond" in text
+    assert "0 (none): 0" in text and "5 (diamond): 0" in text
 
 
 def test_parse_photo_meta_happy_path():
