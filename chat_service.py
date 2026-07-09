@@ -573,12 +573,16 @@ async def handle_retention_message(
     session: dict[str, Any],
     user_text: str,
     photo_candidates: Optional[list[dict[str, Any]]] = None,
+    appearance: Optional[dict[str, Any]] = None,
 ) -> RetentionReply:
     """Process one retention (Telegram) turn for an already-linked session.
 
     `photo_candidates` is the pre-filtered allowed set (tier x stage x unseen x
     daily-cap x proactive-cooldown), computed by retention.py; the model may only
-    pick a [[PHOTO:id]] from it and we re-validate here.
+    pick a [[PHOTO:id]] from it and we re-validate here. `appearance` grounds
+    the persona's looks in the real photo library
+    (db.retention_appearance_context) so self-descriptions never contradict the
+    photos, even on turns where no photo is sendable.
     """
     started = time.monotonic()
     session_id = session["id"]
@@ -624,6 +628,7 @@ async def handle_retention_message(
         photo_candidates=candidates,
         previous_history=previous_history or None,
         play_nudge=nudge,
+        appearance=appearance,
     )
     log.info(
         "retention_prompt_built session_id=%s history=%s prev_carry=%s "

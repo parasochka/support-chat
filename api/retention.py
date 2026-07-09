@@ -328,6 +328,13 @@ async def retention_effective_prompt(product_id: int,
             kb_block = await kb.render_variables(kb_text, product_id=product_id)
     except Exception:  # pragma: no cover - preview must never break the page
         kb_block = None
+    # The persona-appearance block, grounded in the product's REAL photo
+    # library (no player in a preview, so no "last sent" photo).
+    appearance: Optional[dict] = None
+    try:
+        appearance = await db.retention_appearance_context(product_id, 0)
+    except Exception:  # pragma: no cover - preview must never break the page
+        appearance = None
     lang = language.default_code()
     messages = prompts.build_retention_messages(
         session={"user_context": _preview_context()},
@@ -336,6 +343,7 @@ async def retention_effective_prompt(product_id: int,
         user_text=_RETENTION_PREVIEW_USER_TEXT,
         resolved_lang=lang,
         photo_candidates=_RETENTION_PREVIEW_CANDIDATES,
+        appearance=appearance,
     )
     return JSONResponse(content={
         "effective_preview": {
