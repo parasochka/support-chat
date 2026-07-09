@@ -1897,9 +1897,12 @@ _PHOTO_META_TASK = (
     "those anchors (dressed-up and playful, then teasing and suggestive). "
     "Rate only what is actually visible.\n"
     "- \"level_min\": integer 0..{max_level} - the minimum VIP tier ordinal "
-    "that may receive the photo ({tier_list}). Innocent everyday photos go to "
-    "0 (available to everyone); the more daring or personal the photo, the "
-    "higher the tier that earns it."
+    "that may receive the photo ({tier_list}). Unlike the stage, this is NOT "
+    "a visual fact but a distribution choice: every tier needs photos of "
+    "every kind to hand out, so assign tiers INDEPENDENTLY of the stage and "
+    "spread the photos across the whole 0..{max_level} range - a daring "
+    "photo can sit at a low tier and an everyday one at a high tier (a "
+    "personal touch for the top players). Do not simply mirror the stage."
 )
 
 # Appended to the task when the caller passes the library's current
@@ -1909,12 +1912,13 @@ _PHOTO_META_TASK = (
 # balancing only breaks ties inside the photo's own plausible range.
 _PHOTO_META_BALANCE = (
     "\n\nBALANCE THE LIBRARY: the catalogue only works when photos are spread "
-    "EVENLY across the whole stage ladder and the whole tier range - a library "
-    "piled onto one or two values leaves every other level with nothing to "
-    "offer. What is visible in the photo always sets the plausible range, but "
-    "when two adjacent stages (or tiers) are both defensible, pick the one the "
-    "library currently has FEWER of, and do use the ends of both scales, not "
-    "just the middle.\n"
+    "EVENLY along BOTH scales, each on its own - the full stage ladder AND the "
+    "full tier range - because a library piled onto one or two values leaves "
+    "every other level with nothing to offer. For the STAGE, what is visible "
+    "in the photo sets the plausible range; when two adjacent stages are both "
+    "defensible, pick the one the library has FEWER of, and use the ends of "
+    "the scale, not just the middle. For the TIER, you are free: pick the "
+    "under-filled tier from the counts below, independently of the stage.\n"
     "Photos already catalogued, by stage: {stage_counts}\n"
     "Photos already catalogued, by tier (level_min): {level_counts}"
 )
