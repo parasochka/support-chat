@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { AppBar, TitlePortal } from 'react-admin';
-import Box from '@mui/material/Box';
 import ListSubheader from '@mui/material/ListSubheader';
 import MenuItem from '@mui/material/MenuItem';
 import Select from '@mui/material/Select';
@@ -80,8 +79,10 @@ const ScopeSelect = () => {
       onChange={onChange}
       variant="outlined"
       sx={{
-        mr: { xs: 0.5, sm: 2 },
-        minWidth: { xs: 110, sm: 180 },
+        // keep the switcher from shrinking away and from touching its neighbours
+        flexShrink: 0,
+        mx: { xs: 0.75, sm: 1.5 },
+        minWidth: { xs: 120, sm: 180 },
         maxWidth: { xs: 160, sm: 300 },
         '.MuiSelect-select': {
           py: 0.5,
@@ -98,11 +99,19 @@ const ScopeSelect = () => {
 
 const ScopeAppBar = () => (
   <AppBar>
-    {/* minWidth: 0 lets the title truncate instead of pushing the switcher off-screen */}
-    <Box sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-      <TitlePortal />
-    </Box>
-    <Box flex={1} />
+    {/* The title is the flex-grower: it takes the slack and truncates with an
+        ellipsis (minWidth: 0) so the switcher and the toolbar buttons keep their
+        room instead of being crowded together on narrow screens. */}
+    <TitlePortal
+      sx={{
+        flex: 1,
+        minWidth: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        mr: 1,
+      }}
+    />
     <ScopeSelect />
   </AppBar>
 );
