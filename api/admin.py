@@ -1040,6 +1040,9 @@ class ProductUpdate(BaseModel):
     # Per-product reCAPTCHA site key (PUBLIC config, pairs with the encrypted
     # recaptcha_secret below). Empty string clears it (env fallback applies).
     recaptcha_site_key: Optional[str] = None
+    # Public main-site URL (home page). The Telegram hand-off's "support on the
+    # site" button lands here. Empty string clears it.
+    site_url: Optional[str] = None
 
 
 class ProductSecretsWrite(BaseModel):
@@ -1158,6 +1161,8 @@ async def update_product(product_id: int, body: ProductUpdate,
     if body.recaptcha_site_key is not None:
         product = await db.set_product_recaptcha_site_key(
             product_id, body.recaptcha_site_key)
+    if body.site_url is not None:
+        product = await db.set_product_site_url(product_id, body.site_url)
     await db.log_admin_event(None, "product_updated",
                              {"id": product_id, "by": admin.get("email")},
                              product_id=product_id)

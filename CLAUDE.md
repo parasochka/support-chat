@@ -966,8 +966,11 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `settings.site_map()`, so the model can never button-ify an invented address; the page `title`
   becomes the button label, falling back to the url) and the message ships with ONE inline
   url-button (`retention._run_nika_turn`; `_send_ai_text`/`_send_photo` and the transport photo
-  senders all take `reply_markup`). A `[[HANDOFF]]` turn drops the link (the player is leaving for
-  support). On top of the organic invites, the **`retention.play_reminder_every_msgs` knob**
+  senders all take `reply_markup`). On a plain TEXT message carrying a link button the directive
+  makes Nika end the reply with a single 👇 hand pointing at the button — the ONE emoji allowed on
+  an ordinary text reply, and never added on a photo (a photo caption already carries its own
+  single mood emoji, so the hand would collide). A `[[HANDOFF]]` turn drops the link (the player is
+  leaving for support). On top of the organic invites, the **`retention.play_reminder_every_msgs` knob**
   (default 5, 0 = off; env `RETENTION_PLAY_REMINDER_EVERY_MSGS`) paces a deliberate nudge:
   `chat_service.play_nudge_due` keys on the session's `message_count` (one bump per persisted
   turn; never the very first reply — the engagement directive forbids an opening pitch), and every
@@ -1098,13 +1101,18 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   can't bypass the photo cooldown. A photo turn never sends a bare image — an empty caption
   falls back to `rtn_photo_caption`.
 - **Hand-off is a CHOICE message (`retention._send_handoff_choice`)**: on `[[HANDOFF]]` —
-  regardless of the entry type — the bot sends a structured message (bold `rtn_handoff_title`
-  + `rtn_handoff_choice` body, HTML with a plain fallback) with up to TWO url-buttons: the
-  player's personal manager (`assign_round_robin_manager`, sticky; a pool/DB failure degrades
-  gracefully instead of killing the hand-off) and **support on the site**
-  (`retention._site_support_url`: the per-language `contact_url` when configured, else the
+  regardless of the entry type — the bot sends **only** the structured choice message (bold
+  `rtn_handoff_title` + `rtn_handoff_choice` body, HTML with a plain fallback). The model's own
+  route-out line is **suppressed** (persisted to the transcript, not sent): it duplicated the
+  choice card's intro, so the player used to see two messages. The card carries up to TWO
+  url-buttons: the player's personal manager (`assign_round_robin_manager`, sticky; a pool/DB
+  failure degrades gracefully instead of killing the hand-off) and **support on the site**
+  (`retention._site_support_url(lang, product)`: the product's own `site_url` (its public main
+  page — the dedicated Structure field) when set, else the per-language `contact_url`, else the
   site's MAIN PAGE derived as the origin of the first site-map entry — the widget lives on the
-  site, so the origin is a safe landing). With only one destination configured it falls back to
+  site, so the origin is a safe landing. `site_url` is first on purpose: the "support on the
+  site" button must land on the site, not a Telegram/contact link an operator set as
+  `contact_url`). With only one destination configured it falls back to
   the matching single-option copy (`rtn_manager_intro` / `rtn_handoff_support` + button); with
   neither, the plain `rtn_handoff_support` line — a hand-off never dead-ends. The
   `retention_handoff` admin event records the offered target
@@ -1116,7 +1124,9 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `player_api_key_enc` (secretbox-encrypted, like the OpenAI keys — `has_*` flags only out),
   `telegram_bot_username`, `telegram_webhook_secret` (non-secret webhook routing token, the
   Telegram analogue of `widget_key` — resolves an update to its product), `telegram_channel_id`,
-  `telegram_channel_url`, `player_api_url`, `retention_enabled`. Webhook auth is two-layer: the
+  `telegram_channel_url`, `player_api_url`, `site_url` (public main-site URL / home page, edited in
+  Structure; the hand-off's "support on the site" button lands here), `retention_enabled`. Webhook
+  auth is two-layer: the
   routing token in the path + the deploy-wide `TELEGRAM_WEBHOOK_SECRET` in the
   `X-Telegram-Bot-Api-Secret-Token` header (NOT in the URL).
 - **Retention analytics** (`db.retention_overview` / `retention_funnel` /

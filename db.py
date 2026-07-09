@@ -594,6 +594,12 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         "telegram_channel_url TEXT",
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
         "player_api_url TEXT",
+        # The product's public main-site URL (its home page). Used as the
+        # "support on the site" hand-off destination in the Telegram bot so a
+        # route-out lands on the site itself, not a Telegram/contact link.
+        # Public, non-secret, edited in Structure.
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "site_url TEXT",
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
         "player_api_key_enc TEXT",
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
@@ -1488,6 +1494,7 @@ def _row_to_product(row: asyncpg.Record) -> dict[str, Any]:
         "telegram_channel_id": row["telegram_channel_id"],
         "telegram_channel_url": row["telegram_channel_url"],
         "player_api_url": row["player_api_url"],
+        "site_url": row["site_url"],
         "has_player_api_key": row["player_api_key_enc"] is not None,
         "retention_enabled": row["retention_enabled"],
         # Per-product reCAPTCHA: the site key is public widget config; the
@@ -1504,7 +1511,7 @@ _PRODUCT_COLS = ("id, partner_id, slug, name, widget_key, active, "
                  "handshake_secret_enc, telegram_bot_token_enc, "
                  "telegram_bot_username, telegram_webhook_secret, "
                  "telegram_channel_id, telegram_channel_url, player_api_url, "
-                 "player_api_key_enc, retention_enabled, "
+                 "site_url, player_api_key_enc, retention_enabled, "
                  "recaptcha_site_key, recaptcha_secret_enc, "
                  "created_at, updated_at")
 
@@ -1869,6 +1876,19 @@ async def set_product_recaptcha_site_key(product_id: int,
         f"UPDATE products SET recaptcha_site_key = $2, updated_at = now() "
         f"WHERE id = $1 RETURNING {_PRODUCT_COLS}",
         product_id, (site_key or "").strip() or None,
+    )
+    return _row_to_product(row) if row else None
+
+
+async def set_product_site_url(product_id: int,
+                               site_url: Optional[str]
+                               ) -> Optional[dict[str, Any]]:
+    """Set the product's public main-site URL (its home page). Public config;
+    the Telegram hand-off's "support on the site" button lands here."""
+    row = await _pool.fetchrow(
+        f"UPDATE products SET site_url = $2, updated_at = now() "
+        f"WHERE id = $1 RETURNING {_PRODUCT_COLS}",
+        product_id, (site_url or "").strip() or None,
     )
     return _row_to_product(row) if row else None
 

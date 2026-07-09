@@ -42,6 +42,7 @@ const ProductCard = ({ product, onChanged }) => {
   const [recaptchaSiteKey, setRecaptchaSiteKey] = useState(
     product.recaptcha_site_key || ''
   );
+  const [siteUrl, setSiteUrl] = useState(product.site_url || '');
   const [secrets, setSecrets] = useState({});
 
   const saveProduct = async (fields) => {
@@ -246,6 +247,43 @@ const ProductCard = ({ product, onChanged }) => {
             sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
           >
             Save site key
+          </Button>
+        </Stack>
+
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          flexWrap="wrap"
+          useFlexGap
+          sx={{ mb: 2 }}
+        >
+          <TextField
+            size="small"
+            label="Site URL (home page)"
+            placeholder="https://example.com/"
+            helperText="Telegram hand-off 'support on the site' button lands here"
+            value={siteUrl}
+            onChange={(e) => setSiteUrl(e.target.value)}
+            sx={{ minWidth: 220, flex: '1 1 320px' }}
+            slotProps={{
+              input: {
+                sx: mono,
+                endAdornment: (
+                  <InputAdornment position="end">
+                    <SetBadge set={Boolean(product.site_url)} />
+                  </InputAdornment>
+                ),
+              },
+            }}
+          />
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={() => saveProduct({ site_url: siteUrl })}
+            sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+          >
+            Save site URL
           </Button>
         </Stack>
 

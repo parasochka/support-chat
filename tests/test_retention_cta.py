@@ -273,6 +273,20 @@ def test_site_support_url_empty_when_nothing_configured(monkeypatch):
     assert retention._site_support_url("en") == ""
 
 
+def test_site_support_url_prefers_product_site_url(monkeypatch):
+    # The product's explicit main-site URL wins over contact_url and site map,
+    # so the "support on the site" hand-off button lands on the site itself.
+    monkeypatch.setattr(retention.translations, "text",
+                        lambda key, lang: "https://x.example/contact"
+                        if key == "contact_url" else "")
+    monkeypatch.setattr(settings, "site_map",
+                        lambda: [{"title": "Slots",
+                                  "url": "https://nikabet.example/casino"}])
+    product = {"id": 1, "site_url": "https://nikabet.example/"}
+    got = retention._site_support_url("en", product)
+    assert got == "https://nikabet.example/"
+
+
 PRODUCT = {"id": 1, "telegram_bot_username": "nika_bot"}
 RU = {"id": 10, "tg_user_id": 7}
 

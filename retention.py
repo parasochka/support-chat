@@ -557,14 +557,21 @@ async def _send_menu(client: TelegramClient, chat_id: int, ru: dict[str, Any],
                                   reply_markup=markup)
 
 
-def _site_support_url(lang: str) -> str:
+def _site_support_url(lang: str, product: Optional[dict[str, Any]] = None) -> str:
     """The "support on the site" destination for a Telegram hand-off.
 
-    The per-language `contact_url` (translations registry) when it is
-    configured — the ONE admin home for the support link — else the site's
-    main page derived from the first site-map entry (the support widget lives
-    on the site, so the origin is a safe landing). "" when neither exists.
+    Priority: the product's explicit `site_url` (its main page, the dedicated
+    field for "open the support chat on the site") → the per-language
+    `contact_url` (translations registry) → the site's main page derived from
+    the first site-map entry (the support widget lives on the site, so the
+    origin is a safe landing). "" when none exists. The `site_url` field is
+    first on purpose: a hand-off's "support on the site" button should land on
+    the site itself, not on a Telegram/contact link an operator may have set as
+    the widget's `contact_url`.
     """
+    site_url = str((product or {}).get("site_url") or "").strip()
+    if site_url.startswith(("http://", "https://")):
+        return site_url
     url = (translations.text("contact_url", lang) or "").strip()
     if url.startswith(("http://", "https://")):
         return url
@@ -598,7 +605,7 @@ async def _send_handoff_choice(client: TelegramClient, product: dict[str, Any],
     except Exception:  # noqa: BLE001 - a manager-pool failure must not kill the hand-off
         log.exception("retention_handoff_manager_assign_failed product_id=%s",
                       product["id"])
-    site_url = _site_support_url(lang)
+    site_url = _site_support_url(lang, product)
 
     rows: list[list[dict[str, str]]] = []
     if manager:
@@ -926,8 +933,11 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
     # personal manager (in Telegram) and/or the support chat on the site —
     # regardless of the entry type; whatever is configured shows up.
     if reply.handoff:
-        if reply.reply:
-            await _send_ai_text(client, pu.chat_id, reply.reply)
+        # Send ONLY the structured hand-off choice: the model's own route-out
+        # line ("I'll pass you to support...") duplicated the choice message's
+        # intro, so the player saw two messages. The choice card is the single,
+        # canonical hand-off message (the model reply is still persisted to the
+        # transcript, just not sent).
         target = await _send_handoff_choice(client, product, ru, pu.chat_id,
                                             reply.lang)
         await db.log_admin_event(
