@@ -3392,6 +3392,38 @@ async def candidate_photos(product_id: int, retention_user_id: int, *,
     return [_row_to_photo(r) for r in rows]
 
 
+async def retention_appearance_context(product_id: int, retention_user_id: int,
+                                        *, base_limit: int = 3
+                                        ) -> dict[str, Any]:
+    """The persona-appearance grounding for the retention Layer-3 block.
+
+    Returns {"base": [description, ...], "last_sent": description|None}:
+    `base` is a small stable sample of the product's ACTIVE photo library
+    (lowest stages first, deterministic order - the canonical look the model
+    may describe even when no photo is currently sendable); `last_sent` is the
+    description of the photo THIS player saw most recently ("what you look
+    like right now" to him). Descriptions doubling as appearance context is
+    why they matter beyond captions - see prompts._appearance_directive.
+    """
+    base_rows = await _pool.fetch(
+        "SELECT description FROM retention_photos "
+        "WHERE product_id = $1 AND active AND description <> '' "
+        "ORDER BY stage, sort_order, id LIMIT $2",
+        product_id, base_limit,
+    )
+    last_row = await _pool.fetchrow(
+        "SELECT p.description FROM retention_photo_views v "
+        "JOIN retention_photos p ON p.id = v.photo_id "
+        "WHERE v.retention_user_id = $1 AND p.description <> '' "
+        "ORDER BY v.viewed_at DESC, v.id DESC LIMIT 1",
+        retention_user_id,
+    )
+    return {
+        "base": [r["description"] for r in base_rows],
+        "last_sent": last_row["description"] if last_row else None,
+    }
+
+
 # --- retention_kb ----------------------------------------------------------
 def _row_to_retention_kb(row: asyncpg.Record) -> dict[str, Any]:
     d = dict(row)
