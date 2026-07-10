@@ -34,6 +34,10 @@ import TelegramIcon from '@mui/icons-material/Telegram';
 import TranslateIcon from '@mui/icons-material/Translate';
 import TuneIcon from '@mui/icons-material/Tune';
 
+import polyglotI18nProvider from 'ra-i18n-polyglot';
+import englishMessages from 'ra-language-english';
+import russianMessages from 'ra-language-russian';
+
 import authProvider from './authProvider';
 import dataProvider from './dataProvider';
 import buildStore from './store';
@@ -44,7 +48,19 @@ import { EscalationList } from './resources/Escalations';
 import { KbCreate, KbEdit, KbList } from './resources/KnowledgeBase';
 import { KbVariableEdit, KbVariableList } from './resources/KbVariables';
 import { UserCreate, UserEdit, UserList } from './resources/Users';
-import { t } from './i18n';
+import { getAdminLang, t } from './i18n';
+
+// React-admin's own chrome (list toolbars, pagination, login, confirm dialogs)
+// follows the same persisted EN/RU choice as the custom pages' t() dictionary.
+const i18nProvider = polyglotI18nProvider(
+  (locale) => (locale === 'ru' ? russianMessages : englishMessages),
+  getAdminLang(),
+  [
+    { locale: 'en', name: 'English' },
+    { locale: 'ru', name: 'Русский' },
+  ],
+  { allowMissing: true }
+);
 
 // ---------------------------------------------------------------------------
 // Code splitting: every heavy page loads on demand (React.lazy → its own
@@ -302,6 +318,7 @@ const App = () => (
   <Admin
     dataProvider={dataProvider}
     authProvider={authProvider}
+    i18nProvider={i18nProvider}
     store={store}
     loginPage={LoginPage}
     dashboard={Dashboard}

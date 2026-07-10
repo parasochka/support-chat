@@ -28,11 +28,12 @@ import { useSupportedLanguages } from '../lib/meta';
 import MobileList from '../components/MobileList';
 import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
+import { t } from '../i18n';
 
 const STATUS_CHOICES = [
-  { id: 'open', name: 'Open' },
-  { id: 'escalated', name: 'Escalated' },
-  { id: 'resolved', name: 'Resolved' },
+  { id: 'open', name: t('Open') },
+  { id: 'escalated', name: t('Escalated') },
+  { id: 'resolved', name: t('Resolved') },
 ];
 
 // The backend page size is fixed at 25, so the per-page selector is hidden
@@ -42,25 +43,25 @@ const SessionsPagination = () => <Pagination rowsPerPageOptions={[]} />;
 const useFilters = () => {
   const langs = useSupportedLanguages();
   return [
-    <TextInput key="q" source="q" label="Search in messages" alwaysOn />,
+    <TextInput key="q" source="q" label={t('Search in messages')} alwaysOn />,
     <NumberInput
       key="min_messages"
       source="min_messages"
-      label="Min messages"
+      label={t('Min messages')}
       min={0}
       alwaysOn
     />,
-    <TextInput key="topic" source="topic" label="Topic slug" />,
+    <TextInput key="topic" source="topic" label={t('Topic slug')} />,
     <SelectInput
       key="lang"
       source="lang"
-      label="Language"
+      label={t('Language')}
       choices={langs.map((l) => ({ id: l.code, name: `${l.name} (${l.code})` }))}
     />,
     <SelectInput key="status" source="status" choices={STATUS_CHOICES} />,
-    <BooleanInput key="escalated" source="escalated" label="Escalated" />,
-    <DateInput key="from" source="from" label="From" />,
-    <DateInput key="to" source="to" label="To" />,
+    <BooleanInput key="escalated" source="escalated" label={t('Escalated')} />,
+    <DateInput key="from" source="from" label={t('From')} />,
+    <DateInput key="to" source="to" label={t('To')} />,
   ];
 };
 
@@ -72,7 +73,7 @@ export const ConversationList = () => {
   const isMobile = useIsMobile();
   const redirect = useRedirect();
   return (
-    <RequireProduct title="Conversations">
+    <RequireProduct title={t('Conversations')}>
       <List
         filters={useFilters()}
         // Hide empty sessions (opened widget, never wrote) by default — clear the
@@ -81,7 +82,7 @@ export const ConversationList = () => {
         perPage={25}
         pagination={<SessionsPagination />}
         exporter={false}
-        title="Conversations"
+        title={t('Conversations')}
         sort={{ field: 'created_at', order: 'DESC' }}
       >
         {isMobile ? (
@@ -102,15 +103,15 @@ export const ConversationList = () => {
             isAdmin ? <BulkDeleteButton mutationMode="pessimistic" /> : false
           }
         >
-          <TextField source="id" label="Session" sortable={false} />
+          <TextField source="id" label={t('Session')} sortable={false} />
           <TextField source="topic" sortable={false} />
-          <TextField source="lang" label="Lang" sortable={false} />
+          <TextField source="lang" label={t('Lang')} sortable={false} />
           <TextField source="status" sortable={false} />
           <BooleanField source="escalated" sortable={false} />
-          <NumberField source="message_count" label="Msgs" sortable={false} />
+          <NumberField source="message_count" label={t('Msgs')} sortable={false} />
           <NumberField
             source="cost_usd_total"
-            label="Cost $"
+            label={t('Cost $')}
             options={{ maximumFractionDigits: 4 }}
             sortable={false}
           />
@@ -138,9 +139,9 @@ const MessageThread = () => {
 
   return (
     <Stack spacing={1} sx={{ mt: 2 }}>
-      <Typography variant="h6">Message thread</Typography>
+      <Typography variant="h6">{t('Message thread')}</Typography>
       {timeline.length === 0 && (
-        <Typography color="text.secondary">No messages.</Typography>
+        <Typography color="text.secondary">{t('No messages.')}</Typography>
       )}
       {timeline.map((item, i) =>
         item.kind === 'event' ? (
@@ -185,14 +186,14 @@ const SessionSummary = () => {
   const record = useRecordContext();
   if (!record) return null;
   const fields = [
-    ['Session', record.id],
-    ['Topic', record.topic],
-    ['Language', record.lang],
-    ['Status', record.status],
-    ['Escalated', record.escalated ? 'yes' : 'no'],
-    ['Messages', record.message_count],
-    ['Total cost $', record.cost_usd_total],
-    ['Created', record.created_at && new Date(record.created_at).toLocaleString()],
+    [t('Session'), record.id],
+    [t('Topic'), record.topic],
+    [t('Language'), record.lang],
+    [t('Status'), record.status],
+    [t('Escalated'), record.escalated ? t('yes') : t('no')],
+    [t('Messages'), record.message_count],
+    [t('Total cost $'), record.cost_usd_total],
+    [t('Created'), record.created_at && new Date(record.created_at).toLocaleString()],
   ];
   return (
     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -206,8 +207,8 @@ const SessionSummary = () => {
 };
 
 export const ConversationShow = () => (
-  <RequireProduct title="Conversation">
-  <Show title="Conversation">
+  <RequireProduct title={t('Conversation')}>
+  <Show title={t('Conversation')}>
     <Box sx={{ p: 2 }}>
       <SessionSummary />
       <MessageThread />

@@ -24,6 +24,7 @@ import {
 import { API_URL, httpClient } from '../httpClient';
 import { getProductId, scopeParams } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
+import { t } from '../i18n';
 
 const pct = (v) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`);
 const usd = (v) => (v == null ? '—' : `$${Number(v).toFixed(4)}`);
@@ -34,10 +35,10 @@ const ms = (v) =>
   v == null ? '—' : v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)} ms`;
 
 const CHARTS = [
-  ['sessions', 'Sessions over time', (v) => String(Math.round(v))],
-  ['cost', 'Cost over time', usd],
-  ['cost_per_session', 'Avg cost / session', usd],
-  ['escalation_rate', 'Escalation rate', pct],
+  ['sessions', t('Sessions over time'), (v) => String(Math.round(v))],
+  ['cost', t('Cost over time'), usd],
+  ['cost_per_session', t('Avg cost / session'), usd],
+  ['escalation_rate', t('Escalation rate'), pct],
 ];
 
 const Kpi = ({ label, value, hint }) => (
@@ -108,9 +109,9 @@ const BreakdownTable = ({ title, rows, nameLabel, nameOf }) => (
             <TableHead>
               <TableRow>
                 <TableCell>{nameLabel}</TableCell>
-                <TableCell align="right">Sessions</TableCell>
-                <TableCell align="right">Escalated</TableCell>
-                <TableCell align="right">Cost $</TableCell>
+                <TableCell align="right">{t('Sessions')}</TableCell>
+                <TableCell align="right">{t('Escalated')}</TableCell>
+                <TableCell align="right">{t('Cost $')}</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -151,7 +152,7 @@ const SectionTitle = ({ children }) => (
 // Quiet per-block failure note — one block failing must never break the page.
 const BlockError = ({ label, error }) => (
   <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-    {label} metrics could not be loaded ({error}).
+    {label} — {t('metrics could not be loaded')} ({error}).
   </Typography>
 );
 
@@ -194,35 +195,35 @@ const SupportBlock = () => {
 
   const colors = CHART_COLORS[theme.palette.mode] || CHART_COLORS.dark;
 
-  if (error) return <BlockError label="Support chat" error={error} />;
+  if (error) return <BlockError label={t('Support chat')} error={error} />;
 
   return (
     <>
       {/* Row 1 — sessions & engagement (6 tiles). */}
       <Grid container spacing={2} alignItems="stretch">
-        <Kpi label="Sessions (30d)" value={num(overview?.sessions_total)} />
+        <Kpi label={t('Sessions (30d)')} value={num(overview?.sessions_total)} />
         <Kpi
-          label="Engaged"
+          label={t('Engaged')}
           value={num(overview?.sessions_engaged)}
-          hint="≥ 1 message"
+          hint={t('≥ 1 message')}
         />
         <Kpi
-          label="Open sessions"
+          label={t('Open sessions')}
           value={num(overview?.sessions_open)}
-          hint="engaged, still open"
+          hint={t('engaged, still open')}
         />
         <Kpi
-          label="Escalated"
+          label={t('Escalated')}
           value={num(overview?.sessions_escalated)}
-          hint={`rate ${pct(overview?.escalation_rate)}`}
+          hint={`${t('rate')} ${pct(overview?.escalation_rate)}`}
         />
         <Kpi
-          label="Resolution rate"
+          label={t('Resolution rate')}
           value={pct(overview?.resolution_rate)}
-          hint="proxy: not escalated"
+          hint={t('proxy: not escalated')}
         />
         <Kpi
-          label="Avg msgs / session"
+          label={t('Avg msgs / session')}
           value={num(overview?.avg_messages_per_session)}
         />
       </Grid>
@@ -232,46 +233,46 @@ const SupportBlock = () => {
           KPI rows touch. */}
       <Grid container spacing={2} sx={{ mt: 2 }} alignItems="stretch">
         <Kpi
-          label="Cost (USD)"
+          label={t('Cost (USD)')}
           value={usd(overview?.cost_usd_total)}
           hint={
             overview?.cost_usd_per_session != null
-              ? `${usd(overview.cost_usd_per_session)} / session`
+              ? `${usd(overview.cost_usd_per_session)} / ${t('session')}`
               : undefined
           }
         />
         <Kpi
-          label="Avg response time"
+          label={t('Avg response time')}
           value={ms(overview?.avg_latency_ms)}
-          hint="AI generation, successful calls"
+          hint={t('AI generation, successful calls')}
         />
         <Kpi
-          label="AI calls"
+          label={t('AI calls')}
           value={num(overview?.ai_calls_total)}
           hint={
             overview?.failed_calls
-              ? `${overview.failed_calls} failed`
-              : 'OpenAI requests'
+              ? `${overview.failed_calls} ${t('failed')}`
+              : t('OpenAI requests')
           }
         />
         <Kpi
-          label="Cache hit ratio"
+          label={t('Cache hit ratio')}
           value={pct(overview?.cache_hit_ratio)}
-          hint="prefix-cache economics"
+          hint={t('prefix-cache economics')}
         />
         <Kpi
-          label="Key failovers"
+          label={t('Key failovers')}
           value={num(overview?.failovers)}
-          hint="fallback key engaged"
+          hint={t('fallback key engaged')}
         />
         <Kpi
-          label="Blocks"
+          label={t('Blocks')}
           value={
             overview
               ? num((overview.rate_limit_blocks || 0) + (overview.injection_blocks || 0))
               : '—'
           }
-          hint="rate-limit + injection"
+          hint={t('rate-limit + injection')}
         />
       </Grid>
 
@@ -289,15 +290,15 @@ const SupportBlock = () => {
 
       <Grid container spacing={2} sx={{ mt: 2 }} alignItems="stretch">
         <BreakdownTable
-          title="By topic"
+          title={t('By topic')}
           rows={topics}
-          nameLabel="Topic"
+          nameLabel={t('Topic')}
           nameOf={(r) => r.topic || r.slug}
         />
         <BreakdownTable
-          title="By language"
+          title={t('By language')}
           rows={languages}
-          nameLabel="Language"
+          nameLabel={t('Language')}
           nameOf={(r) => r.lang}
         />
       </Grid>
@@ -349,7 +350,7 @@ const RetentionBlock = () => {
       .catch(() => setFunnel(null));
   }, []);
 
-  if (error) return <BlockError label="Retention" error={error} />;
+  if (error) return <BlockError label={t('Retention')} error={error} />;
 
   const base = overview?.users;
   const inRange = overview?.range;
@@ -358,22 +359,22 @@ const RetentionBlock = () => {
     <>
       <Grid container spacing={2} alignItems="stretch">
         <Kpi
-          label="Linked players"
+          label={t('Linked players')}
           value={num(base?.total)}
           hint={
             base?.subscribed != null ? `${base.subscribed} subscribed` : 'lifetime'
           }
         />
-        <Kpi label="Active (30d)" value={num(inRange?.active_users)} hint="wrote in the bot" />
+        <Kpi label={t('Active (30d)')} value={num(inRange?.active_users)} hint={t('wrote in the bot')} />
         <Kpi
-          label="Pings sent"
+          label={t('Pings sent')}
           value={num(inRange?.pings_sent)}
           hint={`reply rate ${pct(inRange?.ping_reply_rate)}`}
         />
-        <Kpi label="Photos sent" value={num(inRange?.photos_sent)} />
-        <Kpi label="Hand-offs" value={num(inRange?.handoffs)} hint="to manager / support" />
+        <Kpi label={t('Photos sent')} value={num(inRange?.photos_sent)} />
+        <Kpi label={t('Hand-offs')} value={num(inRange?.handoffs)} hint={t('to manager / support')} />
         <Kpi
-          label="Cost (USD)"
+          label={t('Cost (USD)')}
           value={usd(inRange?.cost_usd)}
           hint="TG turns + photo metadata"
         />
@@ -429,21 +430,21 @@ const Dashboard = () => {
   // dashboard (no module) and the retention view stay usable at the all/partner
   // scope.
   if (module === 'support' && !getProductId()) {
-    return <RequireProduct title="Analytics" />;
+    return <RequireProduct title={t('Analytics')} />;
   }
 
   return (
     <Box sx={{ p: 2 }}>
-      <Title title="Dashboard" />
+      <Title title={t('Dashboard')} />
       {showSupport && (
         <Box sx={{ mb: showRetention ? 4 : 0 }}>
-          <SectionTitle>Support chat</SectionTitle>
+          <SectionTitle>{t('Support chat')}</SectionTitle>
           <SupportBlock />
         </Box>
       )}
       {showRetention && (
         <Box>
-          <SectionTitle>Retention · Telegram</SectionTitle>
+          <SectionTitle>{t('Retention · Telegram')}</SectionTitle>
           <RetentionBlock />
         </Box>
       )}

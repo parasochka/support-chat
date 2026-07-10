@@ -21,10 +21,11 @@ import Stack from '@mui/material/Stack';
 import MobileList from '../components/MobileList';
 import { generatePassword } from '../lib/secrets';
 import useIsMobile from '../lib/useIsMobile';
+import { t } from '../i18n';
 
 const ROLE_CHOICES = [
-  { id: 'admin', name: 'admin (read + write)' },
-  { id: 'manager', name: 'manager (read-only)' },
+  { id: 'admin', name: t('admin (read + write)') },
+  { id: 'manager', name: t('manager (read-only)') },
 ];
 
 // Password input with a one-click generator. A generated password renders as
@@ -52,7 +53,7 @@ const PasswordWithGenerate = ({ source = 'password', label, helperText, validate
         onChange={() => setRevealed(false)}
       />
       <Button variant="outlined" onClick={generate} sx={{ whiteSpace: 'nowrap', mt: 1 }}>
-        Generate
+        {t('Generate')}
       </Button>
     </Stack>
   );
@@ -62,7 +63,7 @@ export const UserList = () => {
   const isMobile = useIsMobile();
   const redirect = useRedirect();
   return (
-    <List perPage={50} exporter={false} title="Admin users">
+    <List perPage={50} exporter={false} title={t('Admin users')}>
       {isMobile ? (
         <MobileList
           primaryText={(r) => r.email}
@@ -85,21 +86,21 @@ export const UserList = () => {
 };
 
 export const UserEdit = () => (
-  <Edit mutationMode="pessimistic" title="Edit admin user">
+  <Edit mutationMode="pessimistic" title={t('Edit admin user')}>
     <SimpleForm>
       <TextInput source="email" disabled />
       <SelectInput source="role" choices={ROLE_CHOICES} />
       <BooleanInput source="active" />
       <PasswordWithGenerate
-        label="New password (leave empty to keep)"
-        helperText="Minimum 8 characters. Set directly — there is no email reset flow."
+        label={t('New password (leave empty to keep)')}
+        helperText={t('Minimum 8 characters. Set directly — there is no email reset flow.')}
       />
     </SimpleForm>
   </Edit>
 );
 
 export const UserCreate = () => (
-  <Create redirect="list" title="New admin user">
+  <Create redirect="list" title={t('New admin user')}>
     <SimpleForm>
       <TextInput source="email" validate={[required(), email()]} />
       <PasswordWithGenerate validate={required()} />

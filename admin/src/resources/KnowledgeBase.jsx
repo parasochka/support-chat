@@ -44,20 +44,20 @@ const TopicForm = ({ isCreate = false }) => (
       source="slug"
       validate={required()}
       disabled={!isCreate}
-      helperText="Stable topic identifier (e.g. deposits). Cannot change after create."
+      helperText={t('Stable topic identifier (e.g. deposits). Cannot change after create.')}
     />
     <TextInput
       source="title.en"
-      label="Topic title (English)"
+      label={t('Topic title (English)')}
       validate={required()}
-      helperText="The canonical title and the fallback for every language."
+      helperText={t('The canonical title and the fallback for every language.')}
     />
     <Alert severity="info" sx={{ mb: 1 }}>
-      Translate the title into other languages in{' '}
-      <Link href="#/translations">Translations → Topic names</Link>. The prompt
-      itself is English-only, so only this English title feeds the model.
+      {t('Translate the title into other languages in')}{' '}
+      <Link href="#/translations">{t('Translations')} → {t('Topic names')}</Link>.{' '}
+      {t('The prompt itself is English-only, so only this English title feeds the model.')}
     </Alert>
-    <NumberInput source="order" label="Display order" defaultValue={0} />
+    <NumberInput source="order" label={t('Display order')} defaultValue={0} />
     <BooleanInput source="active" defaultValue />
     <Alert severity="info" sx={{ mb: 0.5, alignSelf: 'stretch' }}>
       <b>{t('English only')}.</b>{' '}
@@ -68,11 +68,11 @@ const TopicForm = ({ isCreate = false }) => (
     <KbContentStats />
     <TextInput
       source="content"
-      label="KB content"
+      label={t('KB content')}
       multiline
       minRows={16}
       fullWidth
-      helperText="The topic's knowledge base text (Layer 2). {placeholders} are substituted from KB variables. Clearing the field removes the entry."
+      helperText={t("The topic's knowledge base text (Layer 2). {placeholders} are substituted from KB variables. Clearing the field removes the entry.")}
     />
   </SimpleForm>
 );
@@ -81,7 +81,7 @@ export const KbList = () => {
   const isMobile = useIsMobile();
   const redirect = useRedirect();
   return (
-    <RequireProduct title="Knowledge base">
+    <RequireProduct title={t('Knowledge base')}>
       <RouteTabs tabs={KB_TABS} />
       <List perPage={25} exporter={false} title="Knowledge base">
         {isMobile ? (
@@ -109,16 +109,16 @@ export const KbList = () => {
 };
 
 export const KbEdit = () => (
-  <RequireProduct title="Knowledge base">
-    <Edit mutationMode="pessimistic" title="Edit topic + KB">
+  <RequireProduct title={t('Knowledge base')}>
+    <Edit mutationMode="pessimistic" title={t('Edit topic + KB')}>
       <TopicForm />
     </Edit>
   </RequireProduct>
 );
 
 export const KbCreate = () => (
-  <RequireProduct title="Knowledge base">
-    <Create redirect="list" title="New topic">
+  <RequireProduct title={t('Knowledge base')}>
+    <Create redirect="list" title={t('New topic')}>
       <TopicForm isCreate />
     </Create>
   </RequireProduct>

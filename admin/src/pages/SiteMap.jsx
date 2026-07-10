@@ -13,6 +13,7 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import { API_URL, httpClient } from '../httpClient';
 import { withProduct } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
+import { t } from '../i18n';
 
 const emptyRow = () => ({ title: '', url: '', purpose: '' });
 
@@ -62,7 +63,7 @@ const SiteMapEditor = () => {
       });
       const pages = json.pages || [];
       setRows(pages.length ? pages.map((p) => ({ ...emptyRow(), ...p })) : [emptyRow()]);
-      notify('Site map saved', { type: 'success' });
+      notify(t('Site map saved'), { type: 'success' });
     } catch (e) {
       notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
     } finally {
@@ -74,11 +75,9 @@ const SiteMapEditor = () => {
     <Box sx={{ p: 2, maxWidth: 900 }}>
       <Title title="Site map" />
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Official pages of this product's website. They are added to the system
-        prompt of <strong>both</strong> the support chat and the Telegram
-        retention bot, and to their links policy, so the assistant links players
-        to real pages instead of inventing URLs. One entry per page — the URL is
-        required and must start with <code>http://</code> or <code>https://</code>.
+        {t(
+          "Official pages of this product's website. They are added to the system prompt of BOTH the support chat and the Telegram retention bot, and to their links policy, so the assistant links players to real pages instead of inventing URLs. One entry per page — the URL is required and must start with http:// or https://."
+        )}
       </Typography>
 
       <Card>
@@ -93,7 +92,7 @@ const SiteMapEditor = () => {
                 sx={{ mb: 1.5 }}
               >
                 <TextField
-                  label="Title"
+                  label={t('Title')}
                   value={r.title}
                   onChange={(e) => setRow(i, { title: e.target.value })}
                   disabled={readOnly}
@@ -111,7 +110,7 @@ const SiteMapEditor = () => {
                   placeholder="https://example.com/cashier"
                 />
                 <TextField
-                  label="Purpose (when to link here)"
+                  label={t('Purpose (when to link here)')}
                   value={r.purpose}
                   onChange={(e) => setRow(i, { purpose: e.target.value })}
                   disabled={readOnly}
@@ -132,14 +131,14 @@ const SiteMapEditor = () => {
 
           <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
             <Button startIcon={<AddIcon />} onClick={addRow} disabled={readOnly}>
-              Add page
+              {t('Add page')}
             </Button>
             <Button
               variant="contained"
               onClick={save}
               disabled={saving || readOnly}
             >
-              {saving ? 'Saving…' : 'Save site map'}
+              {saving ? t('Saving…') : t('Save site map')}
             </Button>
           </Stack>
         </CardContent>

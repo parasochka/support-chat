@@ -7,6 +7,7 @@ import CircularProgress from '@mui/material/CircularProgress';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import TextField from '@mui/material/TextField';
 import { rememberDefault } from '../session';
+import { t } from '../i18n';
 
 // Named-account login (email + password) with a "Remember me" box. Ticked, the
 // session is stored in localStorage and survives a browser restart; unticked,
@@ -25,7 +26,7 @@ const LoginForm = () => {
     setLoading(true);
     login({ username: email, password, remember })
       .catch((err) =>
-        notify(err?.message || 'Invalid email or password', { type: 'error' })
+        notify(err?.message || t('Invalid email or password'), { type: 'error' })
       )
       .finally(() => setLoading(false));
   };
@@ -44,7 +45,7 @@ const LoginForm = () => {
         disabled={loading}
       />
       <TextField
-        label="Password"
+        label={t('Password')}
         type="password"
         value={password}
         onChange={(e) => setPassword(e.target.value)}
@@ -61,7 +62,7 @@ const LoginForm = () => {
             disabled={loading}
           />
         }
-        label="Remember me"
+        label={t('Remember me')}
       />
       <Button
         type="submit"
@@ -70,7 +71,7 @@ const LoginForm = () => {
         disabled={loading}
         sx={{ mt: 1 }}
       >
-        {loading ? <CircularProgress size={20} /> : 'Sign in'}
+        {loading ? <CircularProgress size={20} /> : t('Sign in')}
       </Button>
     </Box>
   );

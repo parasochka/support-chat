@@ -9,6 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "ra-i18n-polyglot": "^5.15.0",
+    "ra-language-english": "^5.15.0",
+    "ra-language-russian": "^5.4.5",
     "react": "^18.3.1",
     "react-admin": "^5.4.0",
     "react-dom": "^18.3.1",
