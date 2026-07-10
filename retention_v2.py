@@ -85,6 +85,35 @@ _OCCASIONS: dict[str, str] = {
     "bet_settled": "the player has had a rough, losing day",
 }
 
+# Safe, non-money payload details folded into the occasion line so the persona
+# can react to the CONCRETE thing that happened ("new level: 7"), not a vague
+# congratulation. Amounts are deliberately absent — the prompt bans naming them.
+_OCCASION_DETAIL_KEYS: dict[str, tuple[str, ...]] = {
+    "level_up": ("level",),
+    "class_up": ("class",),
+    "bonus_completed": ("type", "bonus_id"),
+    "bonus_expired": ("type", "bonus_id"),
+    "deposit_failed": ("reason",),
+}
+
+
+def occasion_for(evt: dict[str, Any]) -> str:
+    """The plain-English occasion line for the persona prompt: the per-event
+    wording plus whitelisted, non-money payload details."""
+    name = evt.get("event_name") or ""
+    occasion = _OCCASIONS.get(name, "a notable moment")
+    payload = evt.get("payload") or {}
+    details = []
+    for key in _OCCASION_DETAIL_KEYS.get(name, ()):
+        value = payload.get(key)
+        if value not in (None, ""):
+            details.append(f"{key}: {value}")
+            break  # one detail is enough; the keys are fallbacks
+    if details:
+        occasion = f"{occasion} ({details[0]})"
+    return occasion
+
+
 # One reaction per event type per window — a partner retrying webhooks or a
 # player making five deposits in an evening gets ONE warm note, not five.
 # The default for the hot `retention.v2_same_event_cooldown_hours` knob
@@ -560,7 +589,7 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
         candidates = await retention.select_photo_candidates(
             pid, ru, "", bypass_cooldown=True)
 
-    occasion = _OCCASIONS.get(evt.get("event_name") or "", "a notable moment")
+    occasion = occasion_for(evt)
     draft = await chat_service.generate_retention_ping(
         session, idle_days=0, reason="", intent=decision["intent"],
         photo_candidates=candidates, occasion=occasion, comfort=comfort)
@@ -569,6 +598,18 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
                                        "failed", detail="v2:model_error")
         return False, 0.0, "model_error"
     gen_cost = float(draft.ai_meta.get("cost_usd") or 0)
+
+    # The trigger + occasion travel with the turn: persisted on the message row
+    # (so the prompt history and the admin transcript can explain WHY the bot
+    # wrote) and — with `v2_show_trigger` on — shown as a chrome line in the
+    # sent message itself.
+    event_name = str(evt.get("event_name") or "")
+    ping_context = f"{event_name}: {occasion}" if event_name else occasion
+    trigger_line = ""
+    if cfg.get("v2_show_trigger"):
+        trigger_line = retention._rtn_text(
+            "rtn_ping_trigger", draft.lang
+        ).replace("{trigger}", event_name or "event").strip()
 
     markup = None
     if draft.link_url and not comfort:
@@ -581,6 +622,8 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
     if draft.photo_id is not None and not comfort:
         caption = draft.text or retention._rtn_text("rtn_photo_caption",
                                                     draft.lang)
+        if trigger_line:
+            caption = f"{trigger_line}\n\n{caption}"
         delivered = await retention._send_photo(
             client, product, ru, chat_id, draft.photo_id, caption,
             session_id=session["id"], reply_markup=markup)
@@ -590,9 +633,13 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
         header = retention._rtn_text("rtn_ping_header", draft.lang).strip()
         text_html = telegram_format.to_html(draft.text)
         text_plain = draft.text
-        if header:
-            text_html = f"<i>{html.escape(header)}</i>\n\n{text_html}"
-            text_plain = f"{header}\n\n{draft.text}"
+        chrome = [ln for ln in (header, trigger_line) if ln]
+        if chrome:
+            chrome_html = "\n".join(f"<i>{html.escape(ln)}</i>"
+                                    for ln in chrome)
+            chrome_plain = "\n".join(chrome)
+            text_html = f"{chrome_html}\n\n{text_html}"
+            text_plain = f"{chrome_plain}\n\n{draft.text}"
         result, err_code, err_desc = await client.send_message_verbose(
             chat_id, text_html, parse_mode="HTML", reply_markup=markup)
         if result is None and text_html != text_plain and err_code != 403:
@@ -608,7 +655,8 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
 
     if delivered:
         await db.persist_ping_turn(session["id"], draft.text or "[photo]",
-                                   ai_meta=draft.ai_meta, product_id=pid)
+                                   ai_meta=draft.ai_meta, product_id=pid,
+                                   ping_context=ping_context)
         # Shared anti-annoyance state: the SAME ledger/counters the v1 matrix
         # uses, so caps and min-gap hold across regimes.
         await db.record_retention_ping(

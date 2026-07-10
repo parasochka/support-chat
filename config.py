@@ -480,6 +480,10 @@ RETENTION_V2_LOSS_HIGH_USD: float = _env_float("RETENTION_V2_LOSS_HIGH_USD", 100
 # decision instead of a same_event_cooldown block).
 RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS: int = _env_int(
     "RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS", 20)
+# Show the fired trigger (event name) as a chrome line inside every proactive
+# message ("⚡ Trigger: deposit_confirmed") — invaluable while testing the
+# agent; turn off for production players who shouldn't see internals.
+RETENTION_V2_SHOW_TRIGGER: bool = _env_bool("RETENTION_V2_SHOW_TRIGGER", True)
 
 # Serve /docs, /redoc and /openapi.json (they describe the WHOLE API surface,
 # /admin included) — off by default; enable only on dev/stage deployments.

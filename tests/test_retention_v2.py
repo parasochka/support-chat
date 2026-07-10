@@ -31,7 +31,7 @@ def _cfg(**over):
         "ping_daily_cap": 1, "ping_min_gap_hours": 48,
         "quiet_hours_start": 22, "quiet_hours_end": 9,
         "quiet_hours_utc_offset": 0, "ping_batch_size": 30,
-        "v2_enabled": True, "v2_dry_run": True,
+        "v2_enabled": True, "v2_dry_run": True, "v2_show_trigger": True,
         "v2_daily_budget_usd": 5.0, "v2_loss_comfort_hours": 24,
         "v2_loss_high_usd": 100.0, "v2_same_event_cooldown_hours": 20,
     }
@@ -522,6 +522,99 @@ async def test_process_event_live_sends_and_ledgers(monkeypatch):
     assert rows[0]["cost_usd"] == pytest.approx(0.004)  # decision + generation
 
 
+def test_occasion_for_safe_details_only():
+    # Base occasion: never leaks payload amounts.
+    o = retention_v2.occasion_for(_evt())  # payload carries amount=50
+    assert "deposit" in o and "50" not in o
+    # Whitelisted non-money detail is folded in so the persona can name the
+    # concrete thing that happened.
+    o = retention_v2.occasion_for(
+        _evt(event_name="level_up", payload={"level": 7, "previous": 6}))
+    assert "loyalty level" in o and "(level: 7)" in o
+    o = retention_v2.occasion_for(
+        _evt(event_name="deposit_failed",
+             payload={"amount": 100, "reason": "card_declined"}))
+    assert "card_declined" in o and "100" not in o
+    # Unknown event degrades to the generic line.
+    assert retention_v2.occasion_for(
+        _evt(event_name="made_up")) == "a notable moment"
+
+
+def _patch_send_env(monkeypatch, sent, persisted):
+    import chat_service
+    import retention
+
+    async def _token(pid):
+        return "tok"
+
+    async def _sess(pid, ru, lang):
+        return {"id": "s1", "product_id": pid, "message_count": 0}
+
+    async def _gen(session, **kw):
+        return chat_service.PingDraft(
+            text="Поздравляю с пополнением!", lang="ru", photo_id=None,
+            ai_meta={"cost_usd": 0.01})
+
+    class _TG:
+        def __init__(self, token):
+            pass
+
+        async def send_message_verbose(self, chat_id, text, parse_mode=None,
+                                       reply_markup=None):
+            sent["text"] = text
+            return {"message_id": 1}, None, None
+
+    async def _persist(session_id, text, ai_meta=None, product_id=None,
+                       ping_context=None):
+        persisted.update(session_id=session_id, text=text,
+                         ping_context=ping_context)
+        return 1
+
+    async def _record(*a, **kw):
+        return None
+
+    monkeypatch.setattr(db, "get_product_telegram_token", _token)
+    monkeypatch.setattr(retention, "_ensure_session", _sess)
+    monkeypatch.setattr(retention, "_user_context_from_ru", lambda ru: {})
+    monkeypatch.setattr(chat_service, "generate_retention_ping", _gen)
+    monkeypatch.setattr(retention_v2, "TelegramClient", _TG)
+    monkeypatch.setattr(db, "persist_ping_turn", _persist)
+    monkeypatch.setattr(db, "record_retention_ping", _record)
+
+
+async def test_send_touch_shows_trigger_and_persists_context(monkeypatch):
+    sent, persisted = {}, {}
+    _patch_send_env(monkeypatch, sent, persisted)
+    decision = {"action": "message", "tone": "warm", "intent": "hi",
+                "reason": "r"}
+
+    ok, cost, detail = await retention_v2._send_touch(
+        {"id": 1}, _ru(), _evt(), decision, comfort=False, cfg=_cfg())
+    assert ok is True and detail is None
+    # The fired trigger is a visible chrome line in the sent message
+    # (the `v2_show_trigger` knob, on by default)…
+    assert "deposit_confirmed" in sent["text"]
+    assert "Поздравляю с пополнением!" in sent["text"]
+    # …and the trigger + occasion are persisted with the turn, so the prompt
+    # history (and the admin transcript) can explain later WHY the bot wrote.
+    assert persisted["ping_context"].startswith("deposit_confirmed:")
+    assert "deposit" in persisted["ping_context"]
+
+
+async def test_send_touch_trigger_line_can_be_disabled(monkeypatch):
+    sent, persisted = {}, {}
+    _patch_send_env(monkeypatch, sent, persisted)
+    decision = {"action": "message", "tone": "warm", "intent": "hi",
+                "reason": "r"}
+    ok, *_ = await retention_v2._send_touch(
+        {"id": 1}, _ru(), _evt(), decision, comfort=False,
+        cfg=_cfg(v2_show_trigger=False))
+    assert ok is True
+    assert "deposit_confirmed" not in sent["text"]
+    # The persisted context stays regardless — it feeds the prompt history.
+    assert persisted["ping_context"].startswith("deposit_confirmed:")
+
+
 # ---------------------------------------------------------------------------
 # The enable switch + the atomic event claim
 # ---------------------------------------------------------------------------
@@ -566,7 +659,7 @@ def test_worker_interval_is_hot_and_clamped(monkeypatch):
 # Settings knobs
 # ---------------------------------------------------------------------------
 def test_retention_v2_settings_validation():
-    ok = {"v2_enabled": True, "v2_dry_run": False,
+    ok = {"v2_enabled": True, "v2_dry_run": False, "v2_show_trigger": False,
           "v2_daily_budget_usd": 2.5, "v2_loss_comfort_hours": 12,
           "v2_loss_high_usd": 200.0, "v2_same_event_cooldown_hours": 0,
           "worker_interval_sec": 5}
@@ -575,6 +668,8 @@ def test_retention_v2_settings_validation():
         settings.validate_setting("retention", {"worker_interval_sec": 2})
     with pytest.raises(ValueError):
         settings.validate_setting("retention", {"v2_enabled": "yes"})
+    with pytest.raises(ValueError):
+        settings.validate_setting("retention", {"v2_show_trigger": "yes"})
     with pytest.raises(ValueError):
         settings.validate_setting("retention", {"v2_daily_budget_usd": -1})
     with pytest.raises(ValueError):
@@ -588,6 +683,7 @@ def test_retention_settings_resolve_v2_defaults():
     cfg = settings.retention()
     assert cfg["v2_enabled"] is True        # the agent is the one regime
     assert cfg["v2_dry_run"] is True        # shadow mode by default
+    assert cfg["v2_show_trigger"] is True   # trigger chrome line on by default
     assert cfg["v2_daily_budget_usd"] > 0
     assert cfg["v2_same_event_cooldown_hours"] == 20
     assert cfg["worker_interval_sec"] == 5  # near-realtime by default
@@ -622,12 +718,42 @@ def test_ping_prompt_occasion_and_comfort_switch():
     touch = prompts.build_retention_ping_prompt(
         **base, occasion="the player just made a deposit")
     assert "something just happened: the player just made a deposit" in touch
+    # The message must NAME the occasion so the player never has to ask what
+    # the bot means (the vague-congratulation bug).
+    assert "unmistakably clear WHAT you are reacting to" in touch
     assert "COMFORT MODE" not in touch
 
     comfort = prompts.build_retention_ping_prompt(
         **base, occasion="a rough day", comfort=True)
     assert "COMFORT MODE" in comfort
     assert "do NOT invite them to play" in comfort
+
+
+def test_retention_history_marks_proactive_turns():
+    """A persisted proactive turn carries its trigger into the prompt history,
+    so a follow-up like "what do you mean?" is answerable — without it the
+    persona had no idea why it wrote first (the live bug)."""
+    ctx = "deposit_confirmed: the player just made a deposit"
+    history = [
+        {"role": "assistant", "content": "Congrats!", "ping_context": ctx},
+        {"role": "user", "content": "what do you mean?", "ping_context": None},
+    ]
+    msgs = prompts.build_retention_messages(
+        session={"user_context": {}}, kb_block=None, history=history,
+        user_text="это ты о чем?", resolved_lang="ru")
+    assistant = msgs[1]["content"]
+    assert assistant.startswith("[You sent this message PROACTIVELY")
+    assert "deposit_confirmed" in assistant and "Congrats!" in assistant
+    # Ordinary turns are untouched; a user row never gets the note.
+    assert msgs[2] == {"role": "user", "content": "what do you mean?"}
+    # The ping builder shares the same history rendering.
+    ping_msgs = prompts.build_retention_ping_messages(
+        session={"user_context": {}}, kb_block=None, history=history,
+        resolved_lang="ru", idle_days=1, reason="", intent="")
+    assert "deposit_confirmed" in ping_msgs[1]["content"]
+    # And the returning-player continuity block labels the proactive turn too.
+    prev = prompts._previous_context_directive(history)
+    assert "proactive message, trigger: deposit_confirmed" in prev
 
 
 def test_current_time_directive_rides_layer3():
