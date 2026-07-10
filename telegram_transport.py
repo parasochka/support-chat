@@ -132,15 +132,18 @@ class TelegramClient:
 
     async def send_message(self, chat_id: int, text: str, *,
                            reply_markup: Optional[dict[str, Any]] = None,
-                           parse_mode: Optional[str] = None
+                           parse_mode: Optional[str] = None,
+                           disable_notification: bool = False
                            ) -> Optional[dict[str, Any]]:
         result, _code, _desc = await self.send_message_verbose(
-            chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+            chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode,
+            disable_notification=disable_notification)
         return result
 
     async def send_message_verbose(self, chat_id: int, text: str, *,
                                    reply_markup: Optional[dict[str, Any]] = None,
-                                   parse_mode: Optional[str] = None
+                                   parse_mode: Optional[str] = None,
+                                   disable_notification: bool = False
                                    ) -> tuple[Optional[dict[str, Any]],
                                               Optional[int], Optional[str]]:
         """sendMessage that also surfaces (error_code, description) on failure.
@@ -156,6 +159,8 @@ class TelegramClient:
             payload["reply_markup"] = reply_markup
         if parse_mode:
             payload["parse_mode"] = parse_mode
+        if disable_notification:
+            payload["disable_notification"] = True
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.post(self._url("sendMessage"), json=payload)
@@ -172,7 +177,8 @@ class TelegramClient:
     async def send_photo_file_id(self, chat_id: int, file_id: str, *,
                                  caption: Optional[str] = None,
                                  parse_mode: Optional[str] = None,
-                                 reply_markup: Optional[dict[str, Any]] = None
+                                 reply_markup: Optional[dict[str, Any]] = None,
+                                 disable_notification: bool = False
                                  ) -> Optional[dict[str, Any]]:
         """Send an already-uploaded photo by its cached file_id (no re-upload)."""
         payload: dict[str, Any] = {"chat_id": chat_id, "photo": file_id}
@@ -182,12 +188,15 @@ class TelegramClient:
             payload["parse_mode"] = parse_mode
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
+        if disable_notification:
+            payload["disable_notification"] = True
         return await self._call("sendPhoto", payload)
 
     async def send_photo_bytes(self, chat_id: int, content: bytes, filename: str,
                                *, caption: Optional[str] = None,
                                parse_mode: Optional[str] = None,
-                               reply_markup: Optional[dict[str, Any]] = None
+                               reply_markup: Optional[dict[str, Any]] = None,
+                               disable_notification: bool = False
                                ) -> Optional[dict[str, Any]]:
         """Upload a photo from bytes (first send). Returns the result so the
         caller can cache the returned file_id for later sends."""
@@ -196,6 +205,8 @@ class TelegramClient:
             data["caption"] = caption
         if parse_mode:
             data["parse_mode"] = parse_mode
+        if disable_notification:
+            data["disable_notification"] = "true"
         if reply_markup is not None:
             # multipart form fields must be strings — serialize the keyboard.
             data["reply_markup"] = json.dumps(reply_markup)

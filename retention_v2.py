@@ -639,6 +639,9 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
                                     "url": draft.link_url}]])
     client = TelegramClient(token)
     chat_id = int(ru["tg_user_id"])
+    # Proactive touches may be delivered silently (no sound on the player's
+    # phone) — the hot per-product `retention.silent_notifications` knob.
+    silent = bool(cfg.get("silent_notifications"))
     delivered = False
     detail: Optional[str] = None
     if draft.photo_id is not None and not comfort:
@@ -651,7 +654,7 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
         # None (nothing reached the player).
         photo_status = await retention._send_photo(
             client, product, ru, chat_id, draft.photo_id, caption,
-            session_id=session["id"], reply_markup=markup)
+            session_id=session["id"], reply_markup=markup, silent=silent)
         delivered = photo_status is not None
         if not delivered:
             detail = "photo_send_failed"
@@ -669,10 +672,12 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
             text_html = f"{chrome_html}\n\n{text_html}"
             text_plain = f"{chrome_plain}\n\n{draft.text}"
         result, err_code, err_desc = await client.send_message_verbose(
-            chat_id, text_html, parse_mode="HTML", reply_markup=markup)
+            chat_id, text_html, parse_mode="HTML", reply_markup=markup,
+            disable_notification=silent)
         if result is None and text_html != text_plain and err_code != 403:
             result, err_code, err_desc = await client.send_message_verbose(
-                chat_id, text_plain, reply_markup=markup)
+                chat_id, text_plain, reply_markup=markup,
+                disable_notification=silent)
         delivered = result is not None
         if not delivered:
             detail = f"{err_code}: {err_desc}" if err_desc else "send_failed"

@@ -6,6 +6,7 @@ import CardContent from '@mui/material/CardContent';
 import Typography from '@mui/material/Typography';
 import { API_URL, httpClient } from '../httpClient';
 import { withProduct } from '../productScope';
+import TextStats from '../components/TextStats';
 
 const Block = ({ title, text }) => (
   <Card sx={{ mb: 2 }}>
@@ -13,6 +14,7 @@ const Block = ({ title, text }) => (
       <Typography variant="h6" gutterBottom>
         {title}
       </Typography>
+      <TextStats text={text || ''} sx={{ mb: 1 }} />
       <Typography
         component="pre"
         sx={{
@@ -54,6 +56,11 @@ const PromptPreview = () => {
         To change the wording, edit <code>prompts.py</code> and redeploy; the
         brand values are on the Prompt variables page.
       </Typography>
+      <TextStats
+        label="Total"
+        text={[preview?.system, preview?.user]}
+        sx={{ mb: 1.5 }}
+      />
       <Block
         title="System message (Layer 1 core + directives + Layer 2 KB)"
         text={preview?.system}

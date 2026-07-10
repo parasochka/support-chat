@@ -452,6 +452,14 @@ RETENTION_QUIET_HOURS_UTC_OFFSET: int = _env_int(
 # setting). The scheduler switch is deploy-level (not a setting): it decides
 # whether this instance runs the loop at all.
 RETENTION_PING_BATCH_SIZE: int = _env_int("RETENTION_PING_BATCH_SIZE", 30)
+# Deliver PROACTIVE messages silently (Telegram disable_notification — the
+# message lands without a sound/vibration on the player's phone). Dialogue
+# replies are never silent: the player just wrote and expects the buzz.
+RETENTION_SILENT_NOTIFICATIONS: bool = _env_bool(
+    "RETENTION_SILENT_NOTIFICATIONS", False)
+# How long a positive channel-subscription check is cached before the next
+# getChatMember round-trip (0 = re-check live on every message).
+RETENTION_SUB_CACHE_TTL_SEC: int = _env_int("RETENTION_SUB_CACHE_TTL_SEC", 600)
 RETENTION_WORKER_INTERVAL_SEC: int = _env_int("RETENTION_WORKER_INTERVAL_SEC", 5)
 RETENTION_SCHEDULER_ENABLED: bool = _env_bool("RETENTION_SCHEDULER_ENABLED", True)
 

@@ -13,5 +13,19 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        // Split the heavyweight vendors out of the entry chunk (the app code
+        // itself is already split per page via React.lazy in App.jsx). The
+        // browser caches these across releases that only touch app code.
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined;
+          if (id.includes('recharts') || id.includes('d3-')) return 'recharts';
+          if (id.includes('@mui')) return 'mui';
+          if (id.includes('react-admin') || id.includes('/ra-')) return 'ra';
+          return 'vendor';
+        },
+      },
+    },
   },
 });

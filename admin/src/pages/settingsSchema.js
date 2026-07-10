@@ -6,8 +6,14 @@
  * appears here.
  *
  * Field shapes:
- *   { name, label, type, help, min?, max?, step?, options? }
+ *   { name, label, type, help, min?, max?, step?, options?, module? }
  *   type ∈ int | float | bool | string | select | intlist | strlist | intmap
+ *
+ * `module` routes a field to one of the three settings surfaces (the sidebar
+ * has one per module): 'support' (Support chat → Chat settings), 'retention'
+ * (Telegram · Retention → Bot settings) and 'core' (System → Settings). A
+ * field without a tag inherits its group's default module. A group is still
+ * SAVED as a whole object — the module split is presentation only.
  */
 export const GROUP_LABELS = {
   antispam: 'Anti-spam',
@@ -30,10 +36,38 @@ export const GROUP_HELP = {
     'Which languages the assistant supports and the default. Answers follow the player; the widget chrome follows the browser.',
 };
 
+// Default module per group; individual fields may override with `module`.
+export const GROUP_MODULE = {
+  antispam: 'support',
+  model: 'core',
+  general: 'core',
+  retention: 'retention',
+  language: 'core',
+};
+
+// The three settings surfaces (each a sidebar entry inside its section).
+export const MODULES = {
+  support: {
+    title: 'Support chat settings',
+    help: 'Anti-spam and chat limits for the support widget. These knobs only affect the on-site support chat.',
+    groups: ['antispam', 'general'],
+  },
+  retention: {
+    title: 'Retention bot settings',
+    help: 'Everything that paces the Telegram retention bot: photos, progression, the proactive agent and its per-player guards.',
+    groups: ['retention', 'antispam'],
+  },
+  core: {
+    title: 'System settings (core)',
+    help: 'Deploy-wide core: the AI model, supported languages and technical limits shared by both bots.',
+    groups: ['model', 'general', 'language'],
+  },
+};
+
 export const GROUP_FIELDS = {
   antispam: [
     { name: 'rate_limit_max_per_ip', label: 'Rate limit (max / IP)', type: 'int', min: 1, max: 100000, help: 'Maximum requests from one IP within the window (widget/API).' },
-    { name: 'tg_rate_limit_max_per_user', label: 'Telegram rate limit (max / user)', type: 'int', min: 1, max: 100000, help: 'Maximum Telegram messages from one player within the same window — a live chat needs more headroom than the widget.' },
+    { name: 'tg_rate_limit_max_per_user', label: 'Telegram rate limit (max / user)', type: 'int', min: 1, max: 100000, module: 'retention', help: 'Maximum Telegram messages from one player within the same window — a live chat needs more headroom than the widget.' },
     { name: 'window_sec', label: 'Rate-limit window (sec)', type: 'int', min: 1, max: 86400, help: 'Length of the rate-limit window in seconds.' },
     { name: 'cooldown_sec', label: 'Message cooldown (sec)', type: 'int', min: 0, max: 3600, help: 'Minimum seconds between two messages in one session.' },
     { name: 'max_input_chars', label: 'Max input characters', type: 'int', min: 1, max: 100000, help: 'Longest single message the API accepts.' },
@@ -52,10 +86,10 @@ export const GROUP_FIELDS = {
     { name: 'max_concurrent_per_key', label: 'Max concurrent / key', type: 'int', min: 1, max: 1000, help: 'Concurrent in-flight requests allowed per API key.' },
   ],
   general: [
-    { name: 'session_ttl_hours', label: 'Session TTL (hours)', type: 'int', min: 1, max: 8760, help: 'How long a chat session stays valid.' },
+    { name: 'session_ttl_hours', label: 'Session TTL (hours)', type: 'int', min: 1, max: 8760, module: 'support', help: 'How long a chat session stays valid.' },
     { name: 'admin_token_ttl_min', label: 'Admin token TTL (min)', type: 'int', min: 5, max: 10080, help: 'Admin inactivity window (5 min … 1 week). The session slides: daily use auto-renews it; an account untouched for this long is logged out. Default 1 week (10080).' },
-    { name: 'max_messages_per_session', label: 'Max messages / session', type: 'int', min: 1, max: 10000, help: 'Message cap before the session hands off to a human.' },
-    { name: 'history_max_turns', label: 'History turns to model', type: 'int', min: 1, max: 200, help: 'Recent turns fed into the prompt history (full transcript is always stored).' },
+    { name: 'max_messages_per_session', label: 'Max messages / session', type: 'int', min: 1, max: 10000, module: 'support', help: 'Message cap before the session hands off to a human.' },
+    { name: 'history_max_turns', label: 'History turns to model', type: 'int', min: 1, max: 200, module: 'support', help: 'Recent turns fed into the prompt history (full transcript is always stored).' },
     { name: 'body_max_bytes', label: 'Max request body (bytes)', type: 'int', min: 1024, max: 104857600, help: 'Largest accepted request body (1 KiB … 100 MiB).' },
   ],
   retention: [
@@ -68,6 +102,8 @@ export const GROUP_FIELDS = {
     { name: 'session_idle_minutes', label: 'Session idle (min)', type: 'int', min: 0, max: 525600, help: 'Idle minutes before a Telegram chat closes; the next message starts a fresh chat (0 = never close).' },
     { name: 'carry_context_turns', label: 'Carry-over context turns', type: 'int', min: 0, max: 50, help: 'Trailing turns of the previous chat shown to the model when a returning player starts a fresh one (0 = off).' },
     { name: 'play_reminder_every_msgs', label: 'Play reminder every N replies', type: 'int', min: 0, max: 1000, help: 'Every N-th of Nika’s Telegram replies weaves in a light in-context invitation to play, with a one-tap site button picked from the Site map by intent (0 = off).' },
+    { name: 'silent_notifications', label: 'Silent notifications (proactive)', type: 'bool', section: 'delivery', help: 'Proactive messages arrive WITHOUT a sound/vibration on the player’s phone (Telegram silent delivery). Replies in a live dialogue always notify normally.' },
+    { name: 'subscription_cache_ttl_sec', label: 'Subscription re-check cache (sec)', type: 'int', min: 0, max: 86400, section: 'delivery', help: 'How long a positive channel-subscription check is cached before asking Telegram again (0 = re-check on every message).' },
     { name: 'v2_enabled', label: 'Agent enabled', type: 'bool', section: 'agent', help: 'The proactive agent for this product: reacts to casino events (deposits, level-ups, losses) with a decision per event. Off = no proactive messages at all (the dialogue bot still answers).' },
     { name: 'v2_dry_run', label: 'Dry-run (shadow mode)', type: 'bool', section: 'agent', help: 'ON: the agent decides and logs to the Decisions ledger but sends nothing. Turn off only after reviewing decisions.' },
     { name: 'v2_show_trigger', label: 'Show trigger in message', type: 'bool', section: 'agent', help: 'Adds an italic chrome line with the fired trigger ("⚡ Trigger: deposit_confirmed") to every proactive message. Great while testing; turn OFF for production players.' },
@@ -88,3 +124,9 @@ export const GROUP_FIELDS = {
     { name: 'max_stage_by_tier', label: 'Stage ceiling per VIP tier (Level → highest Stage)', type: 'intmap', section: 'progression', orderByField: 'vip_tiers', min: 1, help: 'The highest stage each VIP tier is allowed to reach, no matter how much they chat. Higher VIP = hotter photos unlocked.' },
   ],
 };
+
+/** Fields of `group` that belong to `module` (group default + per-field tags). */
+export const fieldsForModule = (group, module) =>
+  (GROUP_FIELDS[group] || []).filter(
+    (f) => (f.module || GROUP_MODULE[group]) === module
+  );

@@ -517,6 +517,11 @@ async def get_kb_text(product_id: int, admin=Depends(require_admin)) -> JSONResp
 async def put_kb_text(product_id: int, body: RetentionKBTextWrite,
                       admin=Depends(require_admin_write)) -> JSONResponse:
     await admin_auth.require_product_write(admin, product_id)
+    try:
+        # The retention KB feeds the model-facing prompt (Layer 2) - English only.
+        settings_mod.ensure_english(body.text, "retention KB")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     await db.set_retention_kb_text(product_id, body.text,
                                    updated_by=admin.get("email"))
     await db.log_admin_event(None, "retention_kb_updated",

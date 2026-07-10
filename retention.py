@@ -44,7 +44,8 @@ is_safe_outbound_url = player_sync.is_safe_outbound_url
 
 
 async def _send_ai_text(client: TelegramClient, chat_id: int, text: str, *,
-                        reply_markup: Optional[dict[str, Any]] = None) -> bool:
+                        reply_markup: Optional[dict[str, Any]] = None,
+                        silent: bool = False) -> bool:
     """Send model-generated retention text with the light HTML markup rendered.
 
     The retention persona may use a touch of **bold**/*italic*; telegram_format
@@ -54,10 +55,12 @@ async def _send_ai_text(client: TelegramClient, chat_id: int, text: str, *,
     """
     html = telegram_format.to_html(text)
     result = await client.send_message(
-        chat_id, html, reply_markup=reply_markup, parse_mode="HTML")
+        chat_id, html, reply_markup=reply_markup, parse_mode="HTML",
+        disable_notification=silent)
     if result is None and html != text:
         result = await client.send_message(chat_id, text,
-                                           reply_markup=reply_markup)
+                                           reply_markup=reply_markup,
+                                           disable_notification=silent)
     return result is not None
 
 # Callback-data constants for the inline menu (short + stable).
@@ -390,11 +393,18 @@ async def check_subscription(client: TelegramClient, product: dict[str, Any],
             return True
     ok = await client.is_subscribed(channel, tg_user_id)
     if ok:
-        if len(_sub_cache) > _SUB_CACHE_PRUNE_THRESHOLD:
-            stale = [k for k, exp in _sub_cache.items() if exp <= now]
-            for k in stale:
-                _sub_cache.pop(k, None)
-        _sub_cache[key] = now + _SUB_CACHE_TTL_SEC
+        # TTL is the hot `retention.subscription_cache_ttl_sec` knob
+        # (0 = never cache: re-check live on every message).
+        ttl = int(settings.retention().get("subscription_cache_ttl_sec",
+                                           _SUB_CACHE_TTL_SEC))
+        if ttl > 0:
+            if len(_sub_cache) > _SUB_CACHE_PRUNE_THRESHOLD:
+                stale = [k for k, exp in _sub_cache.items() if exp <= now]
+                for k in stale:
+                    _sub_cache.pop(k, None)
+            _sub_cache[key] = now + ttl
+        else:
+            _sub_cache.pop(key, None)
     else:
         _sub_cache.pop(key, None)
     return ok
@@ -906,7 +916,8 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
 async def _send_photo(client: TelegramClient, product: dict[str, Any],
                       ru: dict[str, Any], chat_id: int, photo_id: int,
                       caption: str, session_id: Optional[str] = None,
-                      reply_markup: Optional[dict[str, Any]] = None
+                      reply_markup: Optional[dict[str, Any]] = None,
+                      silent: bool = False
                       ) -> Optional[str]:
     """Send a media-library photo, using the cached file_id or uploading once.
 
@@ -924,7 +935,8 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
     photo = await db.get_retention_photo(photo_id)
     if not photo or not photo.get("active"):
         if caption and await _send_ai_text(client, chat_id, caption,
-                                           reply_markup=reply_markup):
+                                           reply_markup=reply_markup,
+                                           silent=silent):
             return "text"
         return None
     file_id = photo.get("telegram_file_id")
@@ -932,7 +944,7 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
     if file_id:
         result = await client.send_photo_file_id(
             chat_id, file_id, caption=caption_html, parse_mode="HTML",
-            reply_markup=reply_markup)
+            reply_markup=reply_markup, disable_notification=silent)
     if result is None:
         # No cached id (or the cached id failed) — upload from the Volume.
         # Off-thread: a multi-MB Volume read on the event loop stalls every
@@ -940,13 +952,14 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
         content = await asyncio.to_thread(_read_media, photo.get("storage_ref"))
         if content is None:
             if caption and await _send_ai_text(client, chat_id, caption,
-                                               reply_markup=reply_markup):
+                                               reply_markup=reply_markup,
+                                               silent=silent):
                 return "text"
             return None
         result = await client.send_photo_bytes(
             chat_id, content, photo.get("storage_ref") or "photo.jpg",
             caption=caption_html, parse_mode="HTML",
-            reply_markup=reply_markup)
+            reply_markup=reply_markup, disable_notification=silent)
         new_file_id = TelegramClient.extract_photo_file_id(result)
         if new_file_id:
             await db.set_photo_file_id(photo_id, new_file_id)

@@ -13,9 +13,12 @@ import {
   required,
   useRedirect,
 } from 'react-admin';
+import { useWatch } from 'react-hook-form';
 import Alert from '@mui/material/Alert';
 import Link from '@mui/material/Link';
 import MobileList from '../components/MobileList';
+import TextStats from '../components/TextStats';
+import { t } from '../i18n';
 import RouteTabs from '../components/RouteTabs';
 import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
@@ -28,6 +31,13 @@ import { KB_TABS } from './kbTabs';
  * and other languages inherit) so the two surfaces can't drift apart — the KB
  * form is for the knowledge-base TEXT, which is what actually feeds the prompt.
  */
+// Live character / ≈token / cost line over the KB editor — the KB text is
+// Layer 2 of every prompt in this topic, so its volume is prompt volume.
+const KbContentStats = () => {
+  const content = useWatch({ name: 'content' });
+  return <TextStats text={content || ''} />;
+};
+
 const TopicForm = ({ isCreate = false }) => (
   <SimpleForm>
     <TextInput
@@ -49,6 +59,13 @@ const TopicForm = ({ isCreate = false }) => (
     </Alert>
     <NumberInput source="order" label="Display order" defaultValue={0} />
     <BooleanInput source="active" defaultValue />
+    <Alert severity="info" sx={{ mb: 0.5, alignSelf: 'stretch' }}>
+      <b>{t('English only')}.</b>{' '}
+      {t(
+        'Model-facing content must be in English — the backend rejects other scripts. Player-facing copy belongs in Translations.'
+      )}
+    </Alert>
+    <KbContentStats />
     <TextInput
       source="content"
       label="KB content"

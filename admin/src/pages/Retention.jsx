@@ -39,6 +39,8 @@ import {
 import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
 import SecretField from '../components/SecretField';
+import TextStats from '../components/TextStats';
+import { t } from '../i18n';
 
 // ---------------------------------------------------------------------------
 // Setup guide tab — the short "how to connect the bot" checklist that replaced
@@ -363,6 +365,13 @@ const KbTab = ({ productId }) => {
           model, and Nika answers in the player&apos;s language regardless.{' '}
           <code>{'{placeholders}'}</code> are substituted from KB variables.
         </Typography>
+        <Alert severity="info" sx={{ mb: 1 }}>
+          <b>{t('English only')}.</b>{' '}
+          {t(
+            'Model-facing content must be in English — the backend rejects other scripts. Player-facing copy belongs in Translations.'
+          )}
+        </Alert>
+        <TextStats text={text} />
         <TextField
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -437,6 +446,16 @@ const VariablesTab = ({ productId }) => {
       </Alert>
       <Card>
         <CardContent>
+          <Alert severity="info" sx={{ mb: 1 }}>
+            <b>{t('English only')}.</b>{' '}
+            {t(
+              'Model-facing content must be in English — the backend rejects other scripts. Player-facing copy belongs in Translations.'
+            )}
+          </Alert>
+          <TextStats
+            label="Total"
+            text={vars.map((v) => values[v.key] || v.default || '')}
+          />
           {vars.map((v) => (
             <TextField
               key={v.key}
@@ -472,6 +491,7 @@ const PreviewBlock = ({ title, text }) => (
       <Typography variant="h6" gutterBottom>
         {title}
       </Typography>
+      <TextStats text={text || ''} sx={{ mb: 1 }} />
       <Typography
         component="pre"
         sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 13, m: 0 }}
@@ -501,6 +521,11 @@ const PromptTab = ({ productId }) => {
         are on the{' '}
         <Link href="#/retention?tab=variables">Prompt variables</Link> tab.
       </Typography>
+      <TextStats
+        label="Total"
+        text={[preview?.system, preview?.user]}
+        sx={{ mb: 1.5 }}
+      />
       <PreviewBlock
         title="System message (retention Layer 1 core + Layer 2 retention KB)"
         text={preview?.system}
@@ -1784,12 +1809,12 @@ const COMPONENTS = {
 
 const SUBTABS = {
   config: [
-    ['config', 'Telegram config'],
-    ['guide', 'Setup guide'],
+    ['config', t('Telegram config')],
+    ['guide', t('Setup guide')],
   ],
   prompt: [
-    ['prompt', 'Prompt preview'],
-    ['variables', 'Prompt variables'],
+    ['prompt', t('Prompt preview')],
+    ['variables', t('Prompt variables')],
   ],
 };
 

@@ -197,6 +197,8 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `RETENTION_QUIET_HOURS_START` / `RETENTION_QUIET_HOURS_END` | no | `22` / `9` | Local quiet hours — no proactive messages inside the window (equal values = no quiet hours). |
 | `RETENTION_QUIET_HOURS_UTC_OFFSET` | no | `0` | Shifts "local" from UTC for the product's audience when evaluating quiet hours (and the prompt's current-time block). |
 | `RETENTION_PING_BATCH_SIZE` | no | `30` | Max events processed per product per worker sweep (cost guard). |
+| `RETENTION_SILENT_NOTIFICATIONS` | no | `false` | Default for `retention.silent_notifications` — deliver PROACTIVE Telegram messages silently (no sound/vibration); dialogue replies always notify normally. |
+| `RETENTION_SUB_CACHE_TTL_SEC` | no | `600` | Default for `retention.subscription_cache_ttl_sec` — how long a positive channel-subscription check is cached (0 = re-check on every message). |
 | `RETENTION_V2_LOSS_COMFORT_HOURS` | no | `24` | Default for `retention.v2_loss_comfort_hours` — after a big-loss signal: empathetic tone only, no play CTA, no photos, no links for this many hours. |
 | `RETENTION_V2_LOSS_HIGH_USD` | no | `100.0` | Default for `retention.v2_loss_high_usd` — 24h net loss that marks the player critical and starts the comfort window. |
 | `EXPOSE_API_DOCS` | no | — | Set to `1` to publish `/docs`, `/redoc` and `/openapi.json` (they describe the whole surface, `/admin` included, so they are **disabled by default**). Dev/stage only. |

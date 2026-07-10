@@ -18,6 +18,7 @@ Reading env defaults at call time (not import time) keeps tests that monkeypatch
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 import config
@@ -398,6 +399,14 @@ def retention() -> dict[str, Any]:
             "quiet_hours_utc_offset", config.RETENTION_QUIET_HOURS_UTC_OFFSET),
         "ping_batch_size": db_v.get("ping_batch_size",
                                     config.RETENTION_PING_BATCH_SIZE),
+        # Proactive messages arrive silently (no sound) when on; dialogue
+        # replies always notify normally.
+        "silent_notifications": db_v.get("silent_notifications",
+                                         config.RETENTION_SILENT_NOTIFICATIONS),
+        # Positive channel-subscription checks cache TTL (0 = re-check live
+        # on every message).
+        "subscription_cache_ttl_sec": db_v.get(
+            "subscription_cache_ttl_sec", config.RETENTION_SUB_CACHE_TTL_SEC),
         # How often the agent worker wakes up to drain the event queues. Hot:
         # read live on every loop iteration, no redeploy needed. Resolved at
         # the GLOBAL layer (the worker sweeps all products in one loop).
@@ -552,6 +561,8 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "quiet_hours_end", 0, 23)
         _require_int(value, "quiet_hours_utc_offset", -12, 14)
         _require_int(value, "ping_batch_size", 1, 500)
+        _require_bool(value, "silent_notifications")
+        _require_int(value, "subscription_cache_ttl_sec", 0, 86_400)  # 0 = off
         _require_int(value, "worker_interval_sec", 5, 3_600)
         _require_bool(value, "v2_enabled")
         _require_bool(value, "v2_dry_run")
@@ -621,6 +632,49 @@ def validate_test_profile(value: Any) -> dict[str, Any]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# English-only guard for MODEL-FACING content
+# ---------------------------------------------------------------------------
+# The model-facing prompt is English by design (invariant §7 — the most
+# token-efficient language; the Layer-3 language directive makes the model
+# answer in the player's language regardless). Everything that feeds the
+# prompt — prompt variables (support + retention), KB texts, KB variable
+# values, the retention KB document, site-map titles/purposes — must therefore
+# be written in English/Latin script. This guard REJECTS non-Latin-script
+# letters so a Russian KB paste can't silently degrade token efficiency.
+# Player-facing copy (translations) and the multilingual escalation keyword
+# stems are deliberately NOT guarded — they must stay multilingual.
+_NON_LATIN_SCRIPT_RE = re.compile(
+    "["
+    "Ͱ-Ͽ"   # Greek
+    "Ѐ-ԯ"   # Cyrillic + supplement
+    "֐-׿"   # Hebrew
+    "؀-ۿ"   # Arabic
+    "ऀ-ॿ"   # Devanagari
+    "฀-๿"   # Thai
+    "ᄀ-ᇿ"   # Hangul Jamo
+    "぀-ヿ"   # Hiragana / Katakana
+    "一-鿿"   # CJK
+    "가-힯"   # Hangul syllables
+    "]")
+
+
+def ensure_english(text: str, field: str) -> None:
+    """Raise ValueError when `text` carries non-Latin-script letters.
+
+    Applied to every admin write that feeds the MODEL-FACING prompt (KB texts,
+    prompt variables, KB variable values, site-map titles). Accented Latin
+    (café, señor) passes; Cyrillic/CJK/Arabic/etc. is rejected with the first
+    offending character named so the operator sees exactly what to fix.
+    """
+    m = _NON_LATIN_SCRIPT_RE.search(text or "")
+    if m:
+        raise ValueError(
+            f"{field} must be written in English (Latin script) - the "
+            f"model-facing prompt is English-only; found {m.group(0)!r}. "
+            "Player-facing copy belongs in Translations instead.")
+
+
 def validate_prompt_variables(value: Any) -> dict[str, str]:
     """Validate a prompt-variables write. Returns the cleaned map; raises ValueError.
 
@@ -643,6 +697,7 @@ def validate_prompt_variables(value: Any) -> dict[str, str]:
             raise ValueError(f"unknown prompt variable: {key!r}")
         if not isinstance(v, str):
             raise ValueError(f"{key} must be a string")
+        ensure_english(v, f"prompt variable {key!r}")
         if v.strip():
             out[key] = v.strip()
     return out
@@ -664,6 +719,7 @@ def validate_retention_prompt_variables(value: Any) -> dict[str, str]:
             raise ValueError(f"unknown retention prompt variable: {key!r}")
         if not isinstance(v, str):
             raise ValueError(f"{key} must be a string")
+        ensure_english(v, f"retention prompt variable {key!r}")
         if v.strip():
             out[key] = v.strip()
     return out
@@ -696,10 +752,15 @@ def validate_site_map(value: Any) -> list[dict[str, str]]:
         if not (url.startswith("http://") or url.startswith("https://")):
             raise ValueError(
                 f"site_map[{i}].url must start with http:// or https://")
+        title = str(item.get("title", "")).strip()[:_SITE_MAP_MAX_FIELD]
+        purpose = str(item.get("purpose", "")).strip()[:_SITE_MAP_MAX_FIELD]
+        # The site map feeds the model-facing Layer-1 block — English only.
+        ensure_english(title, f"site_map[{i}].title")
+        ensure_english(purpose, f"site_map[{i}].purpose")
         out.append({
-            "title": str(item.get("title", "")).strip()[:_SITE_MAP_MAX_FIELD],
+            "title": title,
             "url": url[:_SITE_MAP_MAX_FIELD],
-            "purpose": str(item.get("purpose", "")).strip()[:_SITE_MAP_MAX_FIELD],
+            "purpose": purpose,
         })
         if len(out) >= _SITE_MAP_MAX_PAGES:
             break

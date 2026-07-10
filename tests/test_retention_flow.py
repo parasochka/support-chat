@@ -17,15 +17,15 @@ class FakeTelegram:
         self.answered = []
         self.subscribed = True   # what is_subscribed returns
 
-    async def send_message(self, chat_id, text, *, reply_markup=None, parse_mode=None):
+    async def send_message(self, chat_id, text, *, reply_markup=None, parse_mode=None, **kwargs):
         self.messages.append((chat_id, text, reply_markup))
         return {"message_id": 1}
 
-    async def send_photo_file_id(self, chat_id, file_id, *, caption=None, parse_mode=None, reply_markup=None):
+    async def send_photo_file_id(self, chat_id, file_id, *, caption=None, parse_mode=None, reply_markup=None, **kwargs):
         self.photos.append((chat_id, file_id, caption))
         return {"ok": True}
 
-    async def send_photo_bytes(self, chat_id, content, filename, *, caption=None, parse_mode=None, reply_markup=None):
+    async def send_photo_bytes(self, chat_id, content, filename, *, caption=None, parse_mode=None, reply_markup=None, **kwargs):
         self.photos.append((chat_id, "uploaded", caption))
         return {"photo": [{"file_id": "newid"}]}
 

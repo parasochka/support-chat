@@ -6,6 +6,7 @@ import Tabs from '@mui/material/Tabs';
 import PromptPreview from './PromptPreview';
 import PromptVariables from './PromptVariables';
 import RequireProduct from '../components/RequireProduct';
+import { t } from '../i18n';
 
 /**
  * The Prompt surface: a read-only Preview of the whole assembled prompt and
@@ -28,8 +29,8 @@ const Prompt = () => {
         allowScrollButtonsMobile
         sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}
       >
-        <Tab value="preview" label="Preview" />
-        <Tab value="variables" label="Prompt variables" />
+        <Tab value="preview" label={t('Preview')} />
+        <Tab value="variables" label={t('Prompt variables')} />
       </Tabs>
       {tab === 'preview' ? <PromptPreview /> : <PromptVariables />}
     </Box>
