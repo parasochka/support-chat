@@ -415,16 +415,30 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
     """
     pid = int(product["id"])
     player_id = evt.get("player_id") or ""
-    ru = await db.get_retention_user_by_player(pid, player_id)
+    # Recipient resolution. An explicit payload `tg_user_id` (validated at
+    # ingest) pins the exact Telegram account; without it the most recently
+    # active link for the player_id wins — ambiguous when one player is linked
+    # to several Telegram accounts (the multi-tester setup), which is exactly
+    # what the explicit target exists for. An explicit target that is not
+    # linked NEVER falls back to another account silently — that would resend
+    # the confusion the field was added to remove.
+    target_tg = (evt.get("payload") or {}).get("tg_user_id")
+    if target_tg:
+        ru = await db.get_retention_user(pid, int(target_tg))
+        skip_reason = (f"tg_user_id {target_tg} is not linked to the "
+                       "Telegram bot for this product")
+    else:
+        ru = await db.get_retention_user_by_player(pid, player_id)
+        skip_reason = "player not linked to the Telegram bot"
 
-    # Cheap pre-filters that need no model: unknown player / log-only event.
+    # Cheap pre-filters that need no model: unknown recipient / log-only event.
     if ru is None:
         if evt.get("event_name") in DECISION_EVENTS:
             await db.insert_retention_v2_decision(
                 pid, retention_user_id=None, player_id=player_id,
                 trigger_kind="event", event_pk=evt["id"],
                 event_name=evt.get("event_name"), state={}, guard={},
-                action="skipped", reason="player not linked to the Telegram bot",
+                action="skipped", reason=skip_reason,
                 dry_run=bool(cfg.get("v2_dry_run")))
             return "skipped"
         return None

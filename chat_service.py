@@ -629,6 +629,9 @@ async def handle_retention_message(
         previous_history=previous_history or None,
         play_nudge=nudge,
         appearance=appearance,
+        # The audience clock (same offset the quiet hours run on) — without it
+        # the model guesses the time of day ("enjoy your evening" at 10:00).
+        tz_offset_hours=settings.retention()["quiet_hours_utc_offset"],
     )
     log.info(
         "retention_prompt_built session_id=%s history=%s prev_carry=%s "
@@ -786,6 +789,9 @@ async def generate_retention_ping(
         photo_candidates=candidates,
         occasion=occasion,
         comfort=comfort,
+        # A proactive touch is where a wrong time-of-day flourish stings most
+        # ("enjoy your evening" at 10:00) — give the model the audience clock.
+        tz_offset_hours=settings.retention()["quiet_hours_utc_offset"],
     )
     try:
         result = await client.complete(

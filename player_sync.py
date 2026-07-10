@@ -105,6 +105,24 @@ def _validate_event(evt: dict[str, Any]) -> dict[str, Any]:
         payload = {}
     if not isinstance(payload, dict):
         raise EventError("payload must be a JSON object")
+    # Optional explicit Telegram target: when one player_id is linked to
+    # several Telegram accounts (typical in testing — one demo player, many
+    # testers' phones), the sender otherwise picks the most recently updated
+    # link. A `tg_user_id` (top-level or in payload) pins the exact recipient;
+    # it rides in the payload so the append-only event row needs no new column.
+    tg_target = evt.get("tg_user_id")
+    if tg_target is None:
+        tg_target = payload.get("tg_user_id")
+    if tg_target is not None:
+        try:
+            # Via str() so non-integral floats and booleans are rejected too.
+            tg_target = int(str(tg_target).strip())
+        except (TypeError, ValueError):
+            raise EventError("tg_user_id must be an integer Telegram user id")
+        if tg_target <= 0:
+            raise EventError("tg_user_id must be a positive integer")
+        payload = dict(payload)
+        payload["tg_user_id"] = tg_target
     if len(json.dumps(payload)) > _MAX_PAYLOAD_BYTES:
         raise EventError("payload too large (max 8 KiB)")
     version = str(evt.get("event_version") or "1.0").strip()[:16]

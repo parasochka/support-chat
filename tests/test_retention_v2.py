@@ -343,6 +343,84 @@ async def test_process_event_unlinked_player(monkeypatch):
     assert "not linked" in rows[0]["reason"]
 
 
+def test_validate_event_tg_target_normalizes_into_payload():
+    # Top-level tg_user_id (the simulator / a partner pinning the recipient)
+    # lands in the payload as an int — the append-only event row needs no
+    # extra column and the pipeline reads it from there.
+    v = player_sync._validate_event({
+        "event_id": "e1", "event_name": "deposit_confirmed",
+        "player_id": "p1", "tg_user_id": "555"})
+    assert v["payload"]["tg_user_id"] == 555
+    # payload-level works too, and no target means no payload key.
+    v = player_sync._validate_event({
+        "event_id": "e2", "event_name": "deposit_confirmed",
+        "player_id": "p1", "payload": {"tg_user_id": 777, "amount": 5}})
+    assert v["payload"]["tg_user_id"] == 777
+    v = player_sync._validate_event({
+        "event_id": "e3", "event_name": "deposit_confirmed",
+        "player_id": "p1"})
+    assert "tg_user_id" not in v["payload"]
+
+
+@pytest.mark.parametrize("bad", ["abc", 0, -5, 1.5])
+def test_validate_event_tg_target_rejects(bad):
+    with pytest.raises(player_sync.EventError):
+        player_sync._validate_event({
+            "event_id": "e1", "event_name": "deposit_confirmed",
+            "player_id": "p1", "tg_user_id": bad})
+
+
+async def test_process_event_explicit_tg_target_pins_recipient(monkeypatch):
+    _capture_ledger(monkeypatch)
+    _patch_guard_env(monkeypatch)
+    looked = {}
+
+    async def _by_tg(product_id, tg_user_id):
+        looked["tg"] = tg_user_id
+        return _ru(tg_user_id=tg_user_id)
+
+    async def _by_player_boom(product_id, player_id):
+        raise AssertionError("explicit target must not resolve by player_id")
+
+    async def _loss(product_id, player_id):
+        return 0.0
+
+    async def _decide(product_id, ru, evt, state, guard):
+        return ({"action": "silence", "tone": "neutral", "intent": "",
+                 "reason": "quiet"}, 0.001)
+
+    monkeypatch.setattr(db, "get_retention_user", _by_tg)
+    monkeypatch.setattr(db, "get_retention_user_by_player", _by_player_boom)
+    monkeypatch.setattr(db, "player_net_loss_24h", _loss)
+    monkeypatch.setattr(retention_v2, "_decide", _decide)
+
+    out = await retention_v2._process_event(
+        {"id": 1}, _evt(payload={"amount": 50, "tg_user_id": 777}), _cfg())
+    assert looked == {"tg": 777}
+    assert out == "silence"
+
+
+async def test_process_event_unknown_tg_target_never_falls_back(monkeypatch):
+    # An explicit target that is not linked must SKIP, not silently deliver
+    # to another Telegram account of the same player (the exact confusion
+    # explicit targeting exists to remove).
+    rows = _capture_ledger(monkeypatch)
+
+    async def _by_tg(product_id, tg_user_id):
+        return None
+
+    async def _by_player_boom(product_id, player_id):
+        raise AssertionError("unknown explicit target must not fall back")
+
+    monkeypatch.setattr(db, "get_retention_user", _by_tg)
+    monkeypatch.setattr(db, "get_retention_user_by_player", _by_player_boom)
+
+    out = await retention_v2._process_event(
+        {"id": 1}, _evt(payload={"tg_user_id": 999}), _cfg())
+    assert out == "skipped"
+    assert "tg_user_id 999" in rows[0]["reason"]
+
+
 async def test_process_event_log_only_is_silent(monkeypatch):
     rows = _capture_ledger(monkeypatch)
 
@@ -523,3 +601,24 @@ def test_ping_prompt_occasion_and_comfort_switch():
         **base, occasion="a rough day", comfort=True)
     assert "COMFORT MODE" in comfort
     assert "do NOT invite them to play" in comfort
+
+
+def test_current_time_directive_rides_layer3():
+    # Without an offset the prompts are unchanged (None => no block).
+    assert prompts._current_time_directive(None) == ""
+    base = dict(user_context={}, resolved_lang="ru", idle_days=5,
+                reason="inactivity", intent="")
+    assert "CURRENT TIME" not in prompts.build_retention_ping_prompt(**base)
+
+    # With the audience clock the block names the local hour and the part of
+    # day, so "enjoy your evening" can never go out at 10:00 again.
+    block = prompts._current_time_directive(0)
+    assert "CURRENT TIME" in block
+    assert any(p in block for p in ("morning", "afternoon", "evening", "night"))
+
+    ping = prompts.build_retention_ping_prompt(**base, tz_offset_hours=0)
+    assert "CURRENT TIME" in ping
+    dialog = prompts.build_retention_dynamic_prompt(
+        user_context={}, resolved_lang="ru", user_text="привет",
+        tz_offset_hours=3)
+    assert "CURRENT TIME" in dialog
