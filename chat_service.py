@@ -745,8 +745,12 @@ async def generate_retention_ping(
     reason: str,
     intent: str,
     photo_candidates: Optional[list[dict[str, Any]]] = None,
+    occasion: Optional[str] = None,
+    comfort: bool = False,
 ) -> Optional[PingDraft]:
-    """Generate ONE proactive re-engagement message for a matched ping rule.
+    """Generate ONE proactive message: a matched ping rule (time-based) or —
+    with `occasion` set — a Retention-v2 event reaction (`comfort` hardens the
+    money-sensitive wording after a loss).
 
     Returns None on a transient model failure — the worker then simply skips
     the player this run (a ping is never replaced by a canned broadcast; the
@@ -780,6 +784,8 @@ async def generate_retention_ping(
         reason=reason,
         intent=intent,
         photo_candidates=candidates,
+        occasion=occasion,
+        comfort=comfort,
     )
     try:
         result = await client.complete(

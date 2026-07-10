@@ -30,6 +30,7 @@ import config
 import db
 import kb
 import language
+import player_sync
 import prompts
 import retention as retention_mod
 import settings as settings_mod
@@ -180,6 +181,28 @@ class PlayerUpdateReq(BaseModel):
     last_deposit_at: Optional[str] = None
 
 
+async def _partner_auth(product_id: int,
+                        authorization: Optional[str]
+                        ) -> tuple[Optional[dict[str, Any]],
+                                   Optional[JSONResponse]]:
+    """Shared partner-secret Bearer check for the /partner/* webhooks
+    (player-update and the canonical event feed). Returns (product, error)."""
+    product = await db.get_product(product_id)
+    if product is None:
+        return None, _err(404, "not_found", "Product not found.")
+    secret = await db.get_product_handshake_secret(product_id)
+    if not secret:
+        return None, _err(403, "no_partner_secret",
+                          "No partner secret configured for this product.")
+    try:
+        token = auth.extract_bearer(authorization)
+    except auth.TokenError as exc:
+        return None, _err(401, "unauthorized", str(exc))
+    if not hmac.compare_digest(token, secret):
+        return None, _err(401, "unauthorized", "Bad partner secret.")
+    return product, None
+
+
 @public_router.post("/partner/{product_id}/player-update")
 async def player_update(product_id: int, body: PlayerUpdateReq,
                         authorization: Optional[str] = Header(default=None)
@@ -187,24 +210,61 @@ async def player_update(product_id: int, body: PlayerUpdateReq,
     """CRM pushes a (partial) profile change. Authorized with the product's
     handshake secret as a shared partner secret (Bearer). Fields left null are
     not touched (partial update)."""
-    product = await db.get_product(product_id)
-    if product is None:
-        return _err(404, "not_found", "Product not found.")
-    secret = await db.get_product_handshake_secret(product_id)
-    if not secret:
-        return _err(403, "no_partner_secret",
-                    "No partner secret configured for this product.")
-    try:
-        token = auth.extract_bearer(authorization)
-    except auth.TokenError as exc:
-        return _err(401, "unauthorized", str(exc))
-    if not hmac.compare_digest(token, secret):
-        return _err(401, "unauthorized", "Bad partner secret.")
+    _product, err = await _partner_auth(product_id, authorization)
+    if err is not None:
+        return err
     profile = {k: v for k, v in body.model_dump().items()
                if k != "player_id" and v is not None}
-    updated = await db.update_retention_profile(product_id, body.player_id,
-                                                profile, profile_source="push")
+    updated = await player_sync.apply_profile_push(product_id, body.player_id,
+                                                   profile)
     return JSONResponse(content={"ok": True, "updated": updated})
+
+
+# ===========================================================================
+# Partner canonical-event feed (Retention v2; also bridges into the v1 fields)
+# ===========================================================================
+class PlayerEventsReq(BaseModel):
+    """One canonical event (flat fields) OR a batch (`events` list)."""
+    events: Optional[list[dict[str, Any]]] = None
+    event_id: Optional[str] = None
+    event_name: Optional[str] = None
+    player_id: Optional[str] = None
+    user_id: Optional[str] = None
+    timestamp: Optional[str] = None
+    event_version: Optional[str] = None
+    payload: Optional[dict[str, Any]] = None
+
+
+_MAX_EVENT_BATCH = 500
+
+
+@public_router.post("/partner/{product_id}/event")
+async def player_event(product_id: int, body: PlayerEventsReq,
+                       authorization: Optional[str] = Header(default=None)
+                       ) -> JSONResponse:
+    """Canonical casino events (the EPIC-1 taxonomy), single or batch.
+
+    Same partner-secret auth as player-update. Idempotent by event_id — resend
+    freely (at-least-once delivery); duplicates are counted, not stored. Every
+    stored event also bumps the matching v1 activity timestamps (the legacy
+    bridge), so this ONE feed powers both retention regimes.
+    """
+    _product, err = await _partner_auth(product_id, authorization)
+    if err is not None:
+        return err
+    if body.events is not None:
+        if len(body.events) > _MAX_EVENT_BATCH:
+            return _err(413, "batch_too_large",
+                        f"At most {_MAX_EVENT_BATCH} events per request.")
+        result = await player_sync.ingest_events(product_id, body.events)
+        return JSONResponse(content={"ok": True, **result})
+    evt = {k: v for k, v in body.model_dump().items()
+           if k != "events" and v is not None}
+    try:
+        result = await player_sync.ingest_event(product_id, evt)
+    except player_sync.EventError as exc:
+        return _err(422, "invalid_event", str(exc))
+    return JSONResponse(content={"ok": True, **result})
 
 
 # ===========================================================================
@@ -1002,6 +1062,98 @@ async def run_pings_now(product_id: int,
     stats = await retention_pings.run_product_pings(
         product, ignore_quiet_hours=True)
     await db.log_admin_event(None, "retention_ping_run_manual",
+                             {"stats": stats, "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"stats": stats})
+
+
+# ===========================================================================
+# Admin: Retention v2 (agentic) — event log, decision ledger, simulator
+# ===========================================================================
+class SimulateEventReq(BaseModel):
+    event_name: str
+    player_id: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    timestamp: Optional[str] = None
+
+
+@admin_router.get("/v2/status")
+async def v2_status(product_id: int,
+                    admin=Depends(require_admin)) -> JSONResponse:
+    """The v2 tab header: switches + today's spend vs budget + queue depth."""
+    await admin_auth.require_product_read(admin, product_id)
+    tenancy.set_current_product(product_id)
+    cfg = settings_mod.retention()
+    queued = await db.unprocessed_retention_events(product_id, limit=1000)
+    cost_today = await db.retention_v2_cost_today(product_id)
+    return JSONResponse(content={
+        "v2_enabled": bool(cfg.get("v2_enabled")),
+        "v2_dry_run": bool(cfg.get("v2_dry_run")),
+        "daily_budget_usd": float(cfg.get("v2_daily_budget_usd") or 0),
+        "cost_today_usd": cost_today,
+        "queued_events": len(queued),
+        "canonical_events": sorted(player_sync.CANONICAL_EVENTS),
+    })
+
+
+@admin_router.get("/v2/events")
+async def v2_events(product_id: int, page: int = 1, page_size: int = 50,
+                    admin=Depends(require_admin)) -> JSONResponse:
+    """The canonical-event log (webhook + simulator), newest first."""
+    await admin_auth.require_product_read(admin, product_id)
+    return JSONResponse(content=await db.list_retention_events(
+        product_id, page=max(page, 1), page_size=max(1, min(page_size, 200))))
+
+
+@admin_router.get("/v2/decisions")
+async def v2_decisions(product_id: int, page: int = 1, page_size: int = 50,
+                       admin=Depends(require_admin)) -> JSONResponse:
+    """The agent decision ledger: state snapshot, guard verdict, decision,
+    delivery and cost per row — the full audit trail."""
+    await admin_auth.require_product_read(admin, product_id)
+    return JSONResponse(content=await db.list_retention_v2_decisions(
+        product_id, page=max(page, 1), page_size=max(1, min(page_size, 200))))
+
+
+@admin_router.post("/v2/simulate-event")
+async def v2_simulate_event(product_id: int, body: SimulateEventReq,
+                            admin=Depends(require_admin_write)) -> JSONResponse:
+    """Inject one canonical event as if the casino had sent it (source is
+    marked 'simulator'), so the whole pipeline can be exercised end-to-end
+    before the partner integration exists."""
+    await admin_auth.require_product_write(admin, product_id)
+    evt = {
+        "event_id": f"sim_{uuid.uuid4().hex}",
+        "event_name": body.event_name,
+        "player_id": body.player_id,
+        "payload": body.payload,
+        "timestamp": body.timestamp,
+    }
+    try:
+        result = await player_sync.ingest_event(product_id, evt,
+                                                source="simulator")
+    except player_sync.EventError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    await db.log_admin_event(None, "retention_v2_simulated_event",
+                             {"event": body.event_name,
+                              "player_id": body.player_id,
+                              "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"ok": True, **result})
+
+
+@admin_router.post("/v2/run")
+async def v2_run_now(product_id: int,
+                     admin=Depends(require_admin_write)) -> JSONResponse:
+    """Drain this product's event queue through the v2 pipeline immediately
+    (the tab's test button; the worker loop does the same on its timer)."""
+    import retention_v2
+    await admin_auth.require_product_write(admin, product_id)
+    product = await db.get_product(product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    stats = await retention_v2.run_product_events(product)
+    await db.log_admin_event(None, "retention_v2_run_manual",
                              {"stats": stats, "by": admin.get("email")},
                              product_id=product_id)
     return JSONResponse(content={"stats": stats})

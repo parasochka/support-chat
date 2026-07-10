@@ -26,6 +26,7 @@ import antispam
 import chat_service
 import db
 import language
+import player_sync
 import settings
 import telegram_format
 import tenancy
@@ -36,44 +37,10 @@ from telegram_transport import (ParsedUpdate, TelegramClient, inline_keyboard,
 log = logging.getLogger(__name__)
 
 
-async def is_safe_outbound_url(url: str) -> bool:
-    """SSRF guard for admin-configured outbound URLs (the Player API).
-
-    `player_api_url` is set by a product-scoped admin — a semi-trusted role — so
-    it must never be able to make the server reach internal/cloud-metadata
-    addresses (169.254.169.254, RFC1918, loopback, link-local, …). We require an
-    http(s) scheme and reject a host that resolves to any non-global IP. All
-    resolved records are checked (a rebind that mixes public + private records is
-    rejected). DNS is resolved off the event loop.
-    """
-    import ipaddress
-    import socket
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return False
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        return False
-    host = parts.hostname
-    # A literal IP host is checked directly; a name is resolved and every record
-    # must be global (public).
-    try:
-        infos = await asyncio.to_thread(
-            socket.getaddrinfo, host, parts.port or (443 if parts.scheme == "https" else 80),
-            0, socket.SOCK_STREAM)
-    except (socket.gaierror, UnicodeError, OSError):
-        return False
-    if not infos:
-        return False
-    for info in infos:
-        sockaddr = info[4]
-        try:
-            ip = ipaddress.ip_address(sockaddr[0])
-        except ValueError:
-            return False
-        if not ip.is_global or ip.is_multicast:
-            return False
-    return True
+# SSRF guard for admin-configured outbound URLs — the implementation moved to
+# player_sync (the unified data-sync module) together with the lazy pull; the
+# re-export keeps this module's name (tests and callers monkeypatch/call it here).
+is_safe_outbound_url = player_sync.is_safe_outbound_url
 
 
 async def _send_ai_text(client: TelegramClient, chat_id: int, text: str, *,
@@ -163,64 +130,12 @@ def _profile_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 async def maybe_pull_profile(product: dict[str, Any], ru: dict[str, Any]
                              ) -> dict[str, Any]:
-    """Lazy profile refresh (§8 level 2): if the snapshot is stale and the product
-    exposes a Player API, pull the fresh profile and update the snapshot.
-
-    Best-effort — any failure leaves the existing snapshot untouched and returns
-    it, so the schema degrades (not breaks) when the casino's API is down/absent.
-    Returns the (possibly refreshed) retention_user row.
-    """
-    import datetime as _dt
-    import httpx
-    url = (product.get("player_api_url") or "").strip()
-    player_id = ru.get("player_id")
-    if not url or not player_id:
-        return ru
-    ttl = int(settings.retention()["profile_pull_ttl_sec"])
-    if ttl <= 0:
-        return ru
-    last = ru.get("profile_updated_at")
-    if last:
-        try:
-            last_dt = _dt.datetime.fromisoformat(str(last))
-            now = _dt.datetime.now(last_dt.tzinfo)
-            if (now - last_dt).total_seconds() < ttl:
-                return ru  # fresh enough
-        except (ValueError, TypeError):
-            pass
-    # SSRF guard: the product's OWN (decrypted) API key rides on this request as
-    # a Bearer header, so a malicious player_api_url pointed at an internal /
-    # cloud-metadata address would both pivot the server and leak that key. Reject
-    # any URL that does not resolve to a public address before we ever connect.
-    if not await is_safe_outbound_url(url):
-        log.warning("retention_profile_pull_blocked_unsafe_url product=%s",
-                    product.get("id"))
-        return ru
-    key = await db.get_product_player_api_key(product["id"])
-    headers = {"Authorization": f"Bearer {key}"} if key else {}
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(url, params={"player_id": player_id},
-                                    headers=headers)
-        if resp.status_code != 200:
-            log.warning("retention_profile_pull_http status=%s", resp.status_code)
-            return ru
-        data = resp.json()
-    except Exception as exc:  # noqa: BLE001 - a pull failure must not break the turn
-        log.warning("retention_profile_pull_failed error=%s", exc)
-        return ru
-    payload = data if isinstance(data, dict) else {}
-    profile = _profile_from_payload(payload)
-    # The Player API may also report casino activity (the ping matrix keys on
-    # these); pass the timestamps through — db parses/validates them.
-    for f in ("last_login_at", "last_played_at", "last_deposit_at"):
-        if payload.get(f) is not None:
-            profile[f] = payload[f]
-    if not profile:
-        return ru
-    await db.update_retention_profile(product["id"], player_id, profile, "pull")
-    refreshed = await db.get_retention_user(product["id"], ru["tg_user_id"])
-    return refreshed or ru
+    """Lazy profile refresh (§8 level 2) — the implementation lives in
+    player_sync (the unified data-sync module). The thin wrapper passes this
+    module's `is_safe_outbound_url` name so a test monkeypatching it here
+    still governs the pull."""
+    return await player_sync.maybe_pull_profile(
+        product, ru, url_guard=is_safe_outbound_url)
 
 
 def tier_ordinal(vip_level: Optional[str], cfg: dict[str, Any]) -> int:

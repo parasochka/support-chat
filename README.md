@@ -188,6 +188,11 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `RETENTION_QUIET_HOURS_START` / `RETENTION_QUIET_HOURS_END` | no | `22` / `9` | Local quiet hours — no pings are sent inside the window (equal values = no quiet hours). |
 | `RETENTION_QUIET_HOURS_UTC_OFFSET` | no | `0` | Shifts "local" from UTC for the product's audience when evaluating quiet hours. |
 | `RETENTION_PING_BATCH_SIZE` | no | `30` | Max players pinged per product per worker sweep (cost guard). |
+| `RETENTION_V2_ENABLED` | no | `false` | Default for `retention.v2_enabled` — the per-product switch from the v1 ping matrix to **Retention v2**, the agentic event-driven loop (exactly one proactive regime runs per product). |
+| `RETENTION_V2_DRY_RUN` | no | `true` | Default for `retention.v2_dry_run` — shadow mode: the v2 agent decides and logs to the decision ledger but sends nothing until the owner turns it off. |
+| `RETENTION_V2_DAILY_BUDGET_USD` | no | `5.0` | Default for `retention.v2_daily_budget_usd` — the per-product daily AI budget for v2 decisions+sends; reached ⇒ the loop goes quiet until tomorrow (0 = no budget). |
+| `RETENTION_V2_LOSS_COMFORT_HOURS` | no | `24` | Default for `retention.v2_loss_comfort_hours` — after a big-loss signal: empathetic tone only, no play CTA, no photos, no links for this many hours. |
+| `RETENTION_V2_LOSS_HIGH_USD` | no | `100.0` | Default for `retention.v2_loss_high_usd` — 24h net loss that marks the player critical and starts the comfort window. |
 | `EXPOSE_API_DOCS` | no | — | Set to `1` to publish `/docs`, `/redoc` and `/openapi.json` (they describe the whole surface, `/admin` included, so they are **disabled by default**). Dev/stage only. |
 
 The retention bot's per-product config (bot token, channel, player-API key) lives on the

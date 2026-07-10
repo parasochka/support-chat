@@ -1200,6 +1200,69 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `chat_messages` + `ai_interaction_logs`, carry the session's `product_id`, use the product's own
   (encrypted) OpenAI keys with the same failover, and DB access stays behind `db.*` helpers.
 
+### RETENTION V2 — the agentic, event-driven loop (`retention_v2.py`, `player_sync.py`)
+The PARALLEL proactive regime next to the v1 ping matrix. Per-product switch:
+`retention.v2_enabled` (hot) — **exactly one regime runs per product** (the v1
+sweep skips v2 products with `skipped: v2_enabled`, and vice versa).
+`retention.v2_dry_run` ships **ON**: the agent decides and logs but sends
+nothing until the owner flips it. Both workers start from `main.py` lifespan
+under the same `RETENTION_SCHEDULER_ENABLED` deploy switch, each under its own
+advisory lock.
+
+- **Data sync is ONE module now (`player_sync.py`)** — the rewritten seam every
+  piece of casino data enters through: the profile push webhook, the lazy
+  Player-API pull (moved from `retention.py`; thin delegating wrappers +
+  `is_safe_outbound_url` re-export keep the old names/tests working), the
+  handshake snapshot, and the NEW canonical-event feed. **Events**:
+  `POST /partner/{product_id}/event` (same partner-secret Bearer auth as
+  player-update; single event or `{events:[…]}` batch ≤500), validated against
+  the fixed taxonomy (`player_sync.CANONICAL_EVENTS`, 22 names:
+  `deposit_confirmed`, `bet_settled`, `session_started`, `level_up`, …),
+  idempotent by `(product_id, event_id)` (`retention_events`, append-only;
+  duplicates counted, not stored). Every stored event also runs the **legacy
+  bridge**: `deposit_confirmed`→`last_deposit_at`,
+  `session_started/ended`→`last_login_at`, `bet_settled`→`last_played_at`
+  (forward-only via GREATEST — out-of-order delivery never rewinds a
+  timestamp), plus profile-ish payload fields into the snapshot — so ONE
+  partner feed powers both regimes and v1 needs to know nothing about v2.
+- **The pipeline** (`retention_v2._process_event`): event → deterministic
+  **state resolver** (`resolve_player_state`: user_status / risk_state /
+  lifecycle_stage + the 24h net-loss window from `bet_settled` payloads) →
+  deterministic **guards** (`guard_check`: the SHARED v1 anti-annoyance state —
+  daily cap / min gap / quiet hours / `/stop` / unreachable / subscription —
+  plus the per-product **daily AI budget** (`v2_daily_budget_usd`, read from
+  the decision ledger), a 20h same-event cooldown, and the **loss comfort
+  window** (`v2_loss_comfort_hours` after a loss signal or `v2_loss_high_usd`
+  net loss in 24h: photo removed from the permitted actions, a hard comfort
+  constraint injected)) → **agent decision** (one cheap strict-JSON call,
+  `prompts.build_retention_v2_decision_messages`; urgency tactics banned,
+  silence explicitly first-class; `parse_decision` clamps — anything malformed
+  or non-permitted degrades to silence, the guard verdict always wins) →
+  **send** via the normal persona stack (`chat_service.generate_retention_ping`
+  grew `occasion=`/`comfort=`: the `_RETENTION_V2_TOUCH_TASK` event-reaction
+  wording + `_RETENTION_COMFORT_BLOCK` replace the idle-days task; delivery
+  mirrors the v1 ping send — `rtn_ping_header`, HTML + plain fallback, 403 ⇒
+  unreachable — and `db.record_retention_ping` bumps the SAME per-player
+  counters, so caps hold across regimes). Only decision-worthy events wake the
+  agent (`DECISION_EVENTS`; `bet_settled` only when the loss window crosses
+  `v2_loss_high_usd`); everything else is state food, marked processed
+  silently — no model call, no ledger row.
+- **The decision ledger (`retention_v2_decisions`)** is the audit trail: ONE
+  row per decision whatever the outcome — state snapshot, guard verdict +
+  reasons, the agent's action/tone/intent/reason, dry-run flag, delivery,
+  summed cost (decision + generation; each model call still lands in
+  `ai_interaction_logs`, invariant §4, session-less like the photo-metadata
+  calls). The daily budget reads this ledger.
+- **Admin**: the sidebar **Retention v2 (agent)** page
+  (`admin/src/pages/RetentionV2.jsx`, RequireProduct-gated) — status header
+  (enabled/dry-run/budget/queue), the **event simulator** (inject any canonical
+  event as `source='simulator'` — exercise the whole pipeline before the
+  partner integration exists), «Process queue now», the event log and the
+  decision ledger. API: `/admin/retention/v2/status|events|decisions|
+  simulate-event|run` (product-scoped via the admin_auth choke points). The v2
+  knobs are normal `retention`-group settings (Settings → Retention bot →
+  «Retention v2» section). Tests: `tests/test_retention_v2.py`.
+
 ## Invariants (these break silently — do not violate)
 
 1. The Layer-1 block (`get_system_core()` = `SYSTEM_CORE` + the static directives,
