@@ -102,7 +102,7 @@ in mind for every change:
   and the activity timestamps; other pages link here instead of duplicating the
   contracts), `GET /integration-chat-api` (the public Chat API reference + the
   mandatory client logic for a custom UI), `GET /integration-telegram` (the
-  Telegram retention bot: deeplink contract, subscription gate, ping matrix,
+  Telegram retention bot: deeplink contract, subscription gate, proactive agent,
   admin setup), and `GET /integration-admin` (wiring an external master admin
   panel: roles model, JWT login, `sak_…` service keys, the `/admin/*` endpoint
   reference) — same house style, all cross-link via header + footer. The example
@@ -368,27 +368,15 @@ itself under the registry-default brand) — so a new product never inherits ano
 seed so it applies immediately); (4) the **starter retention-KB document**
 (`starter_kb.STARTER_RETENTION_KB` via `db.seed_starter_retention_kb` — same brand-neutral
 English contract, seeded only when the product has no retention KB at all) so the Telegram
-bot also works out of the box; and (5) the **starter ping-matrix rules**
-(`starter_kb.STARTER_RETENTION_RULES` via `db.seed_starter_retention_rules`) — an escalating
-`bot_inactivity` re-engagement ladder (9 rules from a 3-day check-in through a 60-day last
-warm reach, message + photo actions, `priority` climbing with the idle window so the longest
-silence wins) with brand-neutral English `intent` hints only. The casino triggers
-(`casino_inactivity`, `no_deposit`) are deliberately **not** seeded — they stay silent until
-the partner feeds `last_login_at`/`last_played_at`/`last_deposit_at`. Unlike the other seeds,
-`seed_starter_retention_rules` runs BOTH at `create_product` AND **at boot for every existing
-product** (in `init_db`, after the tenancy migration): it is idempotent + additive — a rule is
-inserted only when the product has no rule of that exact name, so a hand-made or edited rule is
-never touched or duplicated (same never-overwrite contract as `seed_kb_variables`), and an
-already-live product picks up newly-shipped starter pings on the next deploy. Translations and
+bot also works out of the box. (The old item 5 — the starter ping-matrix rules — was removed
+with the v1 ping matrix; the retention agent needs no per-product rule seed.) Translations and
 the `retention`/other settings groups need
 **no** per-product seed: their shipped defaults resolve for every product until overridden.
 `db.seed_starter_kb` is idempotent-safe: it inserts only
 topics the product doesn't have and writes a KB entry only for a topic it just created — it
 can never overwrite existing content. The boot-seeded default product's KB/prompt-variables are
-untouched (it goes through `_migrate_tenancy`, not `create_product`; the ping-rules top-up is
-the one seed that DOES reach it, additively). Tests in `tests/test_starter_kb.py` pin
-the no-brand-leak contract + the priority-monotonicity invariant (support + retention + ping
-starters alike).
+untouched (it goes through `_migrate_tenancy`, not `create_product`). Tests in
+`tests/test_starter_kb.py` pin the no-brand-leak contract (support + retention starters).
 
 ### KB variables — `{placeholder}` registry (`db.py` + `kb.render_variables`)
 KB texts may contain `{key}` placeholders (e.g. `{min_deposit}`). The `kb_variables` table holds
@@ -1078,40 +1066,23 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   API just lives on the snapshot — the schema degrades, never breaks. Both pull and push now
   also accept the **casino activity timestamps** `last_login_at` / `last_played_at` /
   `last_deposit_at` (ISO-8601, parsed + validated in `db.update_retention_profile`; unparsable
-  values are dropped) — the ping matrix keys on them.
-- **PING MATRIX — proactive re-engagement (`retention_pings.py`)**: the one place the bot ever
-  writes FIRST. Admin-managed `retention_rules` per product (Retention → Pings tab):
-  `trigger_kind` (`bot_inactivity` / `casino_inactivity` / `no_deposit` — the casino triggers
-  only fire when the partner feeds the activity timestamps above), `inactivity_days`, `action`
-  (`message` | `photo`), free-text English `intent` for the model, `vip_tiers` filter,
-  `cooldown_days` (per player per rule, tracked in the `retention_pings` ledger), `priority`.
-  Every product ships with a **starter ladder of `bot_inactivity` rules** seeded from
-  `starter_kb.STARTER_RETENTION_RULES` (see the starter-baseline paragraph) — additive + never
-  overwriting, so the owner tunes/extends them freely.
-  A worker loop (started in `main.py` lifespan, deploy switch `RETENTION_SCHEDULER_ENABLED`,
-  interval `RETENTION_PING_INTERVAL_SEC`) sweeps under a Postgres **advisory lock** (multi-
-  instance safe); each product opts in via the hot `retention.pings_enabled` setting.
-  **Anti-annoyance is enforced by the worker, not trusted to rules**: per-player daily cap
-  (`ping_daily_cap`) + minimum gap (`ping_min_gap_hours`) via `db.eligible_ping_users`, local
-  **quiet hours** (`quiet_hours_start/end` + `quiet_hours_utc_offset`), batch bound
-  (`ping_batch_size`), the `/stop` opt-out (`pings_muted`; `/resume` re-enables — model-free
-  command handling in `_handle_message`), and the blocked-bot flag (`unreachable`, set on a
-  Telegram 403 via `send_message_verbose`, cleared when the player writes again). The message is
-  generated by the SAME retention prompt stack (`prompts.build_retention_ping_messages` — normal
-  Layer 1 + KB + history, the Layer-3 PROACTIVE TASK block with idle days/reason/intent;
-  `chat_service.generate_retention_ping` returns a `PingDraft` WITHOUT persisting) — the worker
-  sends first and persists only a delivered message (`db.persist_ping_turn`, assistant-only
-  atomic variant); an undelivered draft still gets its AI cost logged (invariant §4). Every
-  attempt lands in the `retention_pings` ledger + a `retention_ping` admin event. Manual bounded
-  test run: `POST /admin/retention/pings/run` (ignores quiet hours only). A photo-action rule
-  bypasses the proactive photo cooldown (`select_photo_candidates(bypass_cooldown=True)`) but
-  never the daily photo cap, and falls back to a text ping when no candidate is sendable.
-  **A ping is visually set apart + carries a CTA**: a text ping goes out with the localized
-  italic `rtn_ping_header` line ("✨ A little note from {persona}", translations registry, admin-
-  editable per language) above the generated text — the header is chrome, only the model text is
-  persisted — and when the model attached a `[[LINK:url]]` matching the rule's intent (come back
-  and play → games page, deposit → cashier, balance → account), the validated site-map page rides
-  under the ping (or the ping photo) as ONE inline button (`PingDraft.link_url/link_label`).
+  values are dropped) — the agent's state resolver keys on them.
+- **Proactive contact is the RETENTION AGENT** (see the "RETENTION AGENT" section
+  below) — the one place the bot ever writes FIRST. The old v1 "ping matrix"
+  (`retention_pings.py`, admin-managed `retention_rules`, the starter ping ladder,
+  `pings_enabled`) was REMOVED; the `retention_rules` table survives only as an
+  inert FK target of historical `retention_pings.rule_id` rows. The shared send
+  machinery stayed: a proactive message goes out with the localized italic
+  `rtn_ping_header` line ("✨ A little note from {persona}", translations registry)
+  above the generated text — the header is chrome, only the model text is
+  persisted (`db.persist_ping_turn`, assistant-only atomic variant) — a validated
+  `[[LINK:url]]` site-map page rides under it as ONE inline button, every attempt
+  lands in the `retention_pings` ledger (+ per-player counters via
+  `db.record_retention_ping`), the `/stop` opt-out (`pings_muted`; `/resume`
+  re-enables) and the blocked-bot flag (`unreachable`, set on a Telegram 403,
+  cleared when the player writes again) are honoured on every send. NB: the agent
+  is event-driven — with the ladder gone there is NO idle-player re-engagement
+  until an inactivity trigger is added to the agent.
 - **Telegram anti-spam gate** (`retention._handle_message`, mirrors the widget gate): per-user
   rate limit with its OWN chat-paced allowance — `antispam.check_rate_limit("tg:{pid}:{uid}",
   cfg["tg_rate_limit_max_per_user"])` (`antispam` group knob, env `TG_RATE_LIMIT_MAX_PER_USER`,
@@ -1182,9 +1153,9 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   editor (`GET/PUT /admin/retention/prompt-variables`; empty = the retention default — a
   SEPARATE prompt, no support inheritance, see "Prompt variables") —, **Prompt preview**,
   Media — bulk upload + AI metadata + filters —,
-  Managers, **Pings** — the ping-matrix rules editor + ledger + run-now —,
-  **Conversations** — the Telegram chat list + transcript dialog, see the lifecycle bullet
-  above —, Analytics);
+  Managers, the **Proactive agent** page (its own sidebar entry — see the
+  "RETENTION AGENT" section), **Conversations** — the Telegram chat list +
+  transcript dialog, see the lifecycle bullet above —, Analytics);
   API under `/admin/retention/*` (`api/retention.py`, guarded per
   product) + the `retention` group via the generic `/admin/settings/retention`. Retention copy
   (menu/gate/handoff strings, `rtn_*` keys) is in the translations registry (scope `retention`).
@@ -1200,14 +1171,28 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `chat_messages` + `ai_interaction_logs`, carry the session's `product_id`, use the product's own
   (encrypted) OpenAI keys with the same failover, and DB access stays behind `db.*` helpers.
 
-### RETENTION V2 — the agentic, event-driven loop (`retention_v2.py`, `player_sync.py`)
-The PARALLEL proactive regime next to the v1 ping matrix. Per-product switch:
-`retention.v2_enabled` (hot) — **exactly one regime runs per product** (the v1
-sweep skips v2 products with `skipped: v2_enabled`, and vice versa).
-`retention.v2_dry_run` ships **ON**: the agent decides and logs but sends
-nothing until the owner flips it. Both workers start from `main.py` lifespan
-under the same `RETENTION_SCHEDULER_ENABLED` deploy switch, each under its own
-advisory lock.
+### RETENTION AGENT — the event-driven proactive loop (`retention_v2.py`, `player_sync.py`)
+The ONE proactive regime (the old v1 "ping matrix" — `retention_pings.py`, the
+`retention_rules` CRUD, the Pings tab, `pings_enabled`, the starter rule ladder
+— was removed; the historic **`v2_` prefix survives only in internal
+identifiers** — settings keys, `/admin/retention/v2/*` endpoint paths, the
+`retention_v2_*` tables/admin-event types and the module name — for stored-data
+compatibility. Every user-visible surface says "agent"). Per-product switch:
+`retention.v2_enabled` (hot, ships **ON**) — off means NO proactive messages at
+all (the dialogue bot still answers). `retention.v2_dry_run` ships **ON**: the
+agent decides and logs but sends nothing until the owner flips it. The worker
+starts from `main.py` lifespan under the `RETENTION_SCHEDULER_ENABLED` deploy
+switch and wakes every **`retention.worker_interval_sec`** (hot, global-layer,
+default 5s, clamped 5..3600 — read live each tick, so the cadence is tuned from
+Settings without a redeploy; env default `RETENTION_WORKER_INTERVAL_SEC`), under
+an advisory lock. **Event pickup is an atomic claim**
+(`db.claim_retention_events`: UPDATE … FOR UPDATE SKIP LOCKED stamps
+`processed_at` in the same statement that selects the batch) — the worker
+sweep, the admin «Process queue now» button and a second instance can run
+concurrently and an event still reaches the pipeline exactly once. This fixed
+the duplicate-send bug where one `deposit_confirmed` produced two thank-you
+messages: the old plain-SELECT + mark-after-processing let two concurrent
+drainers pick up the same event.
 
 - **Data sync is ONE module now (`player_sync.py`)** — the rewritten seam every
   piece of casino data enters through: the profile push webhook, the lazy
@@ -1230,18 +1215,19 @@ advisory lock.
   exposes it as the «Telegram recipient» picker (fed by
   `GET /admin/retention/users`; picking an account also fills its player id)
   and the Decisions ledger shows the actual recipient's `@username` under the
-  player name. Every stored event also runs the **legacy
-  bridge**: `deposit_confirmed`→`last_deposit_at`,
+  player name. Every stored event also bumps the **activity timestamps** the
+  state resolver reads: `deposit_confirmed`→`last_deposit_at`,
   `session_started/ended`→`last_login_at`, `bet_settled`→`last_played_at`
   (forward-only via GREATEST — out-of-order delivery never rewinds a
-  timestamp), plus profile-ish payload fields into the snapshot — so ONE
-  partner feed powers both regimes and v1 needs to know nothing about v2.
+  timestamp), plus profile-ish payload fields into the snapshot.
 - **The pipeline** (`retention_v2._process_event`): event → deterministic
   **state resolver** (`resolve_player_state`: user_status / risk_state /
   lifecycle_stage + the 24h net-loss window from `bet_settled` payloads) →
-  deterministic **guards** (`guard_check`: the SHARED v1 anti-annoyance state —
-  daily cap / min gap / quiet hours / `/stop` / unreachable / subscription —
-  plus the per-product **daily AI budget** (`v2_daily_budget_usd`, read from
+  deterministic **guards** (`guard_check`: the per-player anti-annoyance state
+  on `retention_users` — daily cap `ping_daily_cap` (default 3) / min gap
+  `ping_min_gap_hours` (default 2h, 0 = off) / quiet hours / `/stop` /
+  unreachable / subscription — plus the per-product **daily AI budget**
+  (`v2_daily_budget_usd`, read from
   the decision ledger), the **same-event cooldown** (one reaction per event
   TYPE per player per window — the hot `v2_same_event_cooldown_hours` knob,
   default 20h, **0 = off**: the repeat-testing mode), and the **loss comfort
@@ -1252,12 +1238,11 @@ advisory lock.
   silence explicitly first-class; `parse_decision` clamps — anything malformed
   or non-permitted degrades to silence, the guard verdict always wins) →
   **send** via the normal persona stack (`chat_service.generate_retention_ping`
-  grew `occasion=`/`comfort=`: the `_RETENTION_V2_TOUCH_TASK` event-reaction
-  wording + `_RETENTION_COMFORT_BLOCK` replace the idle-days task; delivery
-  mirrors the v1 ping send — `rtn_ping_header`, HTML + plain fallback, 403 ⇒
-  unreachable — and `db.record_retention_ping` bumps the SAME per-player
-  counters, so caps hold across regimes). Every retention Layer 3 (dialogue
-  turns, v1 pings, v2 touches) carries a **CURRENT TIME block**
+  with `occasion=`/`comfort=`: the `_RETENTION_V2_TOUCH_TASK` event-reaction
+  wording + `_RETENTION_COMFORT_BLOCK`; delivery = `rtn_ping_header`, HTML +
+  plain fallback, 403 ⇒ unreachable — and `db.record_retention_ping` bumps the
+  per-player counters the guards read). Every retention Layer 3 (dialogue
+  turns and agent touches) carries a **CURRENT TIME block**
   (`prompts._current_time_directive`, fed with
   `retention.quiet_hours_utc_offset` — the audience clock the quiet hours
   already run on): local weekday + HH:MM + part of day, with a hard "match
@@ -1273,8 +1258,9 @@ advisory lock.
   summed cost (decision + generation; each model call still lands in
   `ai_interaction_logs`, invariant §4, session-less like the photo-metadata
   calls). The daily budget reads this ledger.
-- **Admin**: the sidebar **Retention v2 (agent)** page
-  (`admin/src/pages/RetentionV2.jsx`, RequireProduct-gated) — status header
+- **Admin**: the sidebar **Proactive agent** page
+  (`admin/src/pages/RetentionAgent.jsx`, route `/retention-agent` with a
+  legacy `/retention-v2` alias, RequireProduct-gated) — status header
   (enabled/dry-run/budget/queue **plus the worker-liveness row**: the deploy
   scheduler switch + sweep interval and a DB-derived activity snapshot — last
   event / last processed / last decision / today's decision mix — via
@@ -1297,17 +1283,20 @@ advisory lock.
   lines — the pipeline emits one structured line per decision
   (`retention_v2_decision`), per guard block (`retention_v2_guard_blocked`)
   and per failed send (`retention_v2_send_failed`)), and **How it works &
-  testing** (the operator's guide: the pipeline, what flips on the v1↔v2
-  switch, where persona/tone/KB/header/photos/language come from, which
-  events wake the agent — fed live from `/v2/status`'s `decision_events` /
-  `photo_events` split so the guide always matches the code —, the
-  guard-reason → settings-knob table, a step-by-step testing checklist and
-  the cost model). The v1 **Pings tab shows a standing-down banner** when v2
-  is enabled for the product (rules stay saved, they just don't fire). API:
+  testing** (the operator's guide: the pipeline, the on/off + dry-run + worker
+  interval knobs, where persona/tone/KB/header/photos/language come from,
+  which events wake the agent — fed live from `/v2/status`'s
+  `decision_events` / `photo_events` split so the guide always matches the
+  code —, the guard-reason → settings-knob table **with the product's CURRENT
+  effective values** (from `/v2/status`'s `guards` block), a step-by-step
+  testing checklist and the cost model). API:
   `/admin/retention/v2/status|events|decisions|logs|simulate-event|run` +
   the four DELETE routes (product-scoped via the admin_auth choke points).
-  The v2 knobs are normal `retention`-group settings (Settings → Retention
-  bot → «Retention v2» section). Tests: `tests/test_retention_v2.py`.
+  The agent knobs are normal `retention`-group settings (Settings → Retention
+  bot → «Proactive agent» + «Send-frequency guards» sections; the
+  send-frequency guards — daily cap, min gap, same-event cooldown, quiet
+  hours, budget, loss window — are THE dials for how often one player may be
+  written to). Tests: `tests/test_retention_v2.py`.
 
 ## Invariants (these break silently — do not violate)
 

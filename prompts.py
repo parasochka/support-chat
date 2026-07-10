@@ -1934,7 +1934,7 @@ def build_retention_ping_messages(
 
 
 # ---------------------------------------------------------------------------
-# Retention v2 — the agent DECISION call (event-driven proactive loop)
+# Retention agent — the DECISION call (event-driven proactive loop)
 # ---------------------------------------------------------------------------
 # A separate, cheap meta-call that decides IF and HOW Nika reacts to a casino
 # event — it never writes the player-facing text (the normal retention ping

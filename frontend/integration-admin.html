@@ -250,18 +250,10 @@ bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию
   <tr><td><span class="tag post">POST</span><code>/admin/retention/photos/generate-metadata</code></td>
       <td>AI-каталогизация выбранных фото (<code>{"ids":[…]}</code>, ≤20 за запрос): модель продукта
           заполняет описание, теги, стадию откровенности и минимальный VIP-уровень.</td></tr>
-  <tr><td><span class="tag get">GET</span><span class="tag post">POST</span><span class="tag put">PUT</span><span class="tag del">DEL</span><code>/admin/retention/pings/rules</code></td>
-      <td>Правила матрицы пингов: триггер (<code>bot_inactivity</code> / <code>casino_inactivity</code> /
-          <code>no_deposit</code>), дни, действие (message/photo), intent, VIP-тиры, cooldown, приоритет.
-          Подробно — на <a href="/integration-telegram#pings" style="color:var(--accent)">странице
-          retention-бота</a>.</td></tr>
-  <tr><td><span class="tag post">POST</span><code>/admin/retention/pings/run</code></td>
-      <td>Прогнать один ограниченный свип пингов немедленно (тест/QA; тихие часы игнорируются,
-          остальные гарантии действуют).</td></tr>
   <tr><td><span class="tag get">GET</span><code>/admin/retention/users</code> · <code>/admin/retention/sessions</code></td>
       <td>Игроки бота / Telegram-чаты (транскрипт — через общий <code>GET /admin/session/{id}</code>).</td></tr>
   <tr><td><span class="tag get">GET</span><span class="tag post">POST</span><span class="tag del">DEL</span><code>/admin/retention/v2/*</code></td>
-      <td>Retention v2 (агентный событийный режим): <code>GET …/status</code> (переключатели,
+      <td>Проактивный агент (событийный режим): <code>GET …/status</code> (переключатели,
           статус воркера и активность, очередь, бюджет дня, таксономия событий),
           <code>GET …/events</code> / <code>…/decisions</code> / <code>…/logs</code> (журнал
           канонических событий, леджер решений агента, системный лог),

@@ -2,7 +2,7 @@
 
 Rewritten from the three scattered entry points (handshake snapshot, the
 player-update push webhook, the lazy Player-API pull) into a single seam, plus
-the fourth input that powers Retention v2: CANONICAL EVENTS.
+the fourth input that powers the retention agent: CANONICAL EVENTS.
 
 Inputs (all per product, all landing in the same stores):
   1. Profile push  — POST /partner/{id}/player-update (api/retention.py)
@@ -17,7 +17,7 @@ Inputs (all per product, all landing in the same stores):
 Events are append-only rows in `retention_events` (idempotent by
 (product_id, event_id)), and every event ALSO feeds the LEGACY BRIDGE: the
 activity timestamps (`last_login_at` / `last_played_at` / `last_deposit_at`)
-the v1 ping matrix keys on are bumped forward from the matching events, so a
+the state resolver keys on are bumped forward from the matching events, so a
 partner that starts sending events automatically feeds the old regime too —
 v1 needs to know nothing about v2. The bridge is forward-only (GREATEST), so
 out-of-order delivery can never rewind a timestamp.
@@ -291,7 +291,7 @@ async def maybe_pull_profile(product: dict[str, Any], ru: dict[str, Any],
         return ru
     payload = data if isinstance(data, dict) else {}
     profile = _profile_from_payload(payload)
-    # The Player API may also report casino activity (the ping matrix keys on
+    # The Player API may also report casino activity (the state resolver keys on
     # these); pass the timestamps through — db parses/validates them.
     for f in ("last_login_at", "last_played_at", "last_deposit_at"):
         if payload.get(f) is not None:

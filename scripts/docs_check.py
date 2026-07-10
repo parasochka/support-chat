@@ -53,7 +53,8 @@ def _changed_files(base: str) -> set[str]:
 # Emitted only when the wanted doc is NOT itself among the changed files.
 _ARCH_PY = {
     "settings.py", "prompts.py", "db.py", "chat_service.py", "retention.py",
-    "retention_pings.py", "escalation.py", "openai_client.py", "antispam.py",
+    "retention_v2.py", "player_sync.py", "escalation.py", "openai_client.py",
+    "antispam.py",
     "language.py", "tenancy.py", "translations.py", "starter_kb.py", "main.py",
     "secretbox.py", "kb.py", "metrics.py", "telegram_transport.py",
     "telegram_format.py",
@@ -113,7 +114,7 @@ def main(argv: list[str]) -> int:
         if src in changed and page not in changed:
             reminders.append(f"{page} — {why} ({src}).")
     # Retention transport/orchestration also feeds the telegram page.
-    if ({"retention.py", "retention_pings.py", "telegram_transport.py"} & changed
+    if ({"retention.py", "retention_v2.py", "telegram_transport.py"} & changed
             and "frontend/integration-telegram.html" not in changed):
         reminders.append(
             "frontend/integration-telegram.html — retention internals changed; "

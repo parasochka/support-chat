@@ -1,11 +1,11 @@
-"""Retention v2 (agentic, event-driven) + the rewritten player_sync module.
+"""The retention agent (event-driven proactive loop) + player_sync.
 
-Covers: canonical-event validation and the legacy bridge (events feed the same
-activity timestamps the v1 matrix keys on), the deterministic state resolver,
-the guard rails (opt-out/caps/gap/quiet-hours/budget/comfort window), the
-strict-JSON decision parser (guard verdict always wins), the event pipeline
-(unknown player, log-only events, guard block, dry-run never sends), the
-v1<->v2 regime toggle, the new settings knobs, and the prompt builders.
+Covers: canonical-event validation and the activity-timestamp bridge, the
+deterministic state resolver, the guard rails (opt-out/caps/gap/quiet-hours/
+budget/comfort window), the strict-JSON decision parser (guard verdict always
+wins), the event pipeline (unknown player, log-only events, guard block,
+dry-run never sends), the atomic event claim (no double-send), the enable
+switch, the settings knobs, and the prompt builders.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ import pytest
 import db
 import player_sync
 import prompts
-import retention_pings
 import retention_v2
 import settings
 import tenancy
@@ -29,7 +28,7 @@ def _iso_days_ago(days: float) -> str:
 
 def _cfg(**over):
     base = {
-        "pings_enabled": False, "ping_daily_cap": 1, "ping_min_gap_hours": 48,
+        "ping_daily_cap": 1, "ping_min_gap_hours": 48,
         "quiet_hours_start": 22, "quiet_hours_end": 9,
         "quiet_hours_utc_offset": 0, "ping_batch_size": 30,
         "v2_enabled": True, "v2_dry_run": True,
@@ -524,20 +523,43 @@ async def test_process_event_live_sends_and_ledgers(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# The regime toggle: exactly one proactive loop per product
+# The enable switch + the atomic event claim
 # ---------------------------------------------------------------------------
-async def test_v1_sweep_skips_v2_products(monkeypatch):
-    monkeypatch.setattr(settings, "retention", lambda: _cfg(v2_enabled=True))
-    monkeypatch.setattr(tenancy, "set_current_product", lambda pid: None)
-    stats = await retention_pings.run_product_pings({"id": 1})
-    assert stats == {"skipped": "v2_enabled"}
-
-
-async def test_v2_sweep_skips_v1_products(monkeypatch):
+async def test_sweep_skips_disabled_products(monkeypatch):
     monkeypatch.setattr(settings, "retention", lambda: _cfg(v2_enabled=False))
     monkeypatch.setattr(tenancy, "set_current_product", lambda pid: None)
     stats = await retention_v2.run_product_events({"id": 1})
-    assert stats == {"skipped": "v2_disabled"}
+    assert stats == {"skipped": "agent_disabled"}
+
+
+async def test_sweep_claims_events_atomically(monkeypatch):
+    """The drain must use db.claim_retention_events (atomic pick-up) — a plain
+    SELECT let the worker sweep and the admin «Process queue now» button pick
+    up the SAME event concurrently and each send a message (the duplicate
+    deposit thank-you bug)."""
+    claimed = []
+
+    async def _claim(pid, limit):
+        claimed.append((pid, limit))
+        return []
+    monkeypatch.setattr(settings, "retention", lambda: _cfg(v2_enabled=True))
+    monkeypatch.setattr(tenancy, "set_current_product", lambda pid: None)
+    monkeypatch.setattr(db, "claim_retention_events", _claim)
+    stats = await retention_v2.run_product_events({"id": 1})
+    assert stats == {"events": 0, "decided": 0, "sent": 0}
+    assert claimed == [(1, 30)]  # ping_batch_size from _cfg
+
+
+def test_worker_interval_is_hot_and_clamped(monkeypatch):
+    monkeypatch.setattr(settings, "retention",
+                        lambda: _cfg(worker_interval_sec=1))
+    assert retention_v2.worker_interval_sec() == 5   # clamped low
+    monkeypatch.setattr(settings, "retention",
+                        lambda: _cfg(worker_interval_sec=42))
+    assert retention_v2.worker_interval_sec() == 42
+    monkeypatch.setattr(settings, "retention",
+                        lambda: _cfg(worker_interval_sec=999999))
+    assert retention_v2.worker_interval_sec() == 3600  # clamped high
 
 
 # ---------------------------------------------------------------------------
@@ -546,8 +568,11 @@ async def test_v2_sweep_skips_v1_products(monkeypatch):
 def test_retention_v2_settings_validation():
     ok = {"v2_enabled": True, "v2_dry_run": False,
           "v2_daily_budget_usd": 2.5, "v2_loss_comfort_hours": 12,
-          "v2_loss_high_usd": 200.0, "v2_same_event_cooldown_hours": 0}
+          "v2_loss_high_usd": 200.0, "v2_same_event_cooldown_hours": 0,
+          "worker_interval_sec": 5}
     assert settings.validate_setting("retention", ok) == ok
+    with pytest.raises(ValueError):
+        settings.validate_setting("retention", {"worker_interval_sec": 2})
     with pytest.raises(ValueError):
         settings.validate_setting("retention", {"v2_enabled": "yes"})
     with pytest.raises(ValueError):
@@ -561,10 +586,12 @@ def test_retention_v2_settings_validation():
 
 def test_retention_settings_resolve_v2_defaults():
     cfg = settings.retention()
-    assert cfg["v2_enabled"] is False       # ships off
+    assert cfg["v2_enabled"] is True        # the agent is the one regime
     assert cfg["v2_dry_run"] is True        # shadow mode by default
     assert cfg["v2_daily_budget_usd"] > 0
     assert cfg["v2_same_event_cooldown_hours"] == 20
+    assert cfg["worker_interval_sec"] == 5  # near-realtime by default
+    assert "pings_enabled" not in cfg       # the v1 ping matrix is gone
 
 
 # ---------------------------------------------------------------------------

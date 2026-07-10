@@ -434,36 +434,36 @@ RETENTION_CARRY_CONTEXT_TURNS: int = _env_int(
 RETENTION_PLAY_REMINDER_EVERY_MSGS: int = _env_int(
     "RETENTION_PLAY_REMINDER_EVERY_MSGS", 5)
 
-# --- Proactive pings (the "retention matrix") --------------------------------
-# Env defaults for the `retention` settings group's ping knobs (hot-reloadable
-# per product). PINGS master switch ships OFF: a product opts in from the admin.
-RETENTION_PINGS_ENABLED: bool = _env_bool("RETENTION_PINGS_ENABLED", False)
-# Hard per-player caps so the matrix can never spam: at most this many pings a
-# day and never two pings closer than the gap, regardless of how many rules match.
-RETENTION_PING_DAILY_CAP: int = _env_int("RETENTION_PING_DAILY_CAP", 1)
-RETENTION_PING_MIN_GAP_HOURS: int = _env_int("RETENTION_PING_MIN_GAP_HOURS", 48)
-# Local quiet hours (no pings sent between start and end, e.g. 22 -> 9). The
-# offset shifts "local" from UTC for the product's audience.
+# --- Proactive-contact guard rails (shared per-player protection) ------------
+# Env defaults for the `retention` settings group's guard knobs (hot-reloadable
+# per product). Hard per-player caps so the agent can never spam: at most this
+# many proactive messages a day and never two closer than the gap, regardless
+# of how many events fire.
+RETENTION_PING_DAILY_CAP: int = _env_int("RETENTION_PING_DAILY_CAP", 3)
+RETENTION_PING_MIN_GAP_HOURS: int = _env_int("RETENTION_PING_MIN_GAP_HOURS", 2)
+# Local quiet hours (no proactive messages between start and end, e.g. 22 -> 9).
+# The offset shifts "local" from UTC for the product's audience.
 RETENTION_QUIET_HOURS_START: int = _env_int("RETENTION_QUIET_HOURS_START", 22)
 RETENTION_QUIET_HOURS_END: int = _env_int("RETENTION_QUIET_HOURS_END", 9)
 RETENTION_QUIET_HOURS_UTC_OFFSET: int = _env_int(
     "RETENTION_QUIET_HOURS_UTC_OFFSET", 0)
-# How many players one worker run may ping per product (cost guard), and how
-# often the worker wakes up. The scheduler switch is deploy-level (not a
-# setting): it decides whether this instance runs the loop at all.
+# How many queued events one worker run may drain per product (cost guard), and
+# how often the worker wakes up (default for the hot `worker_interval_sec`
+# setting). The scheduler switch is deploy-level (not a setting): it decides
+# whether this instance runs the loop at all.
 RETENTION_PING_BATCH_SIZE: int = _env_int("RETENTION_PING_BATCH_SIZE", 30)
-RETENTION_PING_INTERVAL_SEC: int = _env_int("RETENTION_PING_INTERVAL_SEC", 300)
+RETENTION_WORKER_INTERVAL_SEC: int = _env_int("RETENTION_WORKER_INTERVAL_SEC", 5)
 RETENTION_SCHEDULER_ENABLED: bool = _env_bool("RETENTION_SCHEDULER_ENABLED", True)
 
-# --- Retention v2 (agentic, event-driven) -------------------------------------
-# The parallel decision loop over canonical casino events. Per-product opt-in
-# (`v2_enabled` in the hot `retention` group): a v2 product is skipped by the v1
-# ping sweep and vice versa — exactly one proactive regime runs per product.
-RETENTION_V2_ENABLED: bool = _env_bool("RETENTION_V2_ENABLED", False)
+# --- Retention agent (event-driven proactive loop) ---------------------------
+# The decision loop over canonical casino events — the ONE proactive regime.
+# Per-product switch (`v2_enabled` in the hot `retention` group; the historic
+# `v2_` key prefix survives for stored-override compatibility).
+RETENTION_V2_ENABLED: bool = _env_bool("RETENTION_V2_ENABLED", True)
 # Dry-run ships ON: a freshly-enabled product logs full agent decisions to the
 # ledger without sending anything until the owner flips the switch.
 RETENTION_V2_DRY_RUN: bool = _env_bool("RETENTION_V2_DRY_RUN", True)
-# Per-product daily AI budget for v2 decisions+sends (USD). The worker stops
+# Per-product daily AI budget for agent decisions+sends (USD). The worker stops
 # deciding for the day once the ledger's summed cost reaches it. 0 = no budget.
 RETENTION_V2_DAILY_BUDGET_USD: float = _env_float(
     "RETENTION_V2_DAILY_BUDGET_USD", 5.0)

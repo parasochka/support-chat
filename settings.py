@@ -384,10 +384,8 @@ def retention() -> dict[str, Any]:
         "play_reminder_every_msgs": db_v.get(
             "play_reminder_every_msgs",
             config.RETENTION_PLAY_REMINDER_EVERY_MSGS),
-        # Proactive pings (the "retention matrix"): per-product opt-in + the
-        # anti-annoyance guardrails the worker enforces on every send.
-        "pings_enabled": db_v.get("pings_enabled",
-                                  config.RETENTION_PINGS_ENABLED),
+        # Proactive-contact guard rails: the per-player anti-annoyance
+        # protection the agent worker enforces on every send.
         "ping_daily_cap": db_v.get("ping_daily_cap",
                                    config.RETENTION_PING_DAILY_CAP),
         "ping_min_gap_hours": db_v.get("ping_min_gap_hours",
@@ -400,10 +398,14 @@ def retention() -> dict[str, Any]:
             "quiet_hours_utc_offset", config.RETENTION_QUIET_HOURS_UTC_OFFSET),
         "ping_batch_size": db_v.get("ping_batch_size",
                                     config.RETENTION_PING_BATCH_SIZE),
-        # Retention v2 (agentic, event-driven). `v2_enabled` switches the
-        # product between the v1 ping matrix and the v2 event/agent loop —
-        # exactly one proactive regime runs per product. Dry-run logs full
-        # decisions to the ledger without sending.
+        # How often the agent worker wakes up to drain the event queues. Hot:
+        # read live on every loop iteration, no redeploy needed. Resolved at
+        # the GLOBAL layer (the worker sweeps all products in one loop).
+        "worker_interval_sec": db_v.get("worker_interval_sec",
+                                        config.RETENTION_WORKER_INTERVAL_SEC),
+        # The retention agent (event-driven proactive loop). The historic
+        # `v2_` key prefix survives for stored-override compatibility.
+        # Dry-run logs full decisions to the ledger without sending.
         "v2_enabled": db_v.get("v2_enabled", config.RETENTION_V2_ENABLED),
         "v2_dry_run": db_v.get("v2_dry_run", config.RETENTION_V2_DRY_RUN),
         "v2_daily_budget_usd": db_v.get("v2_daily_budget_usd",
@@ -540,13 +542,13 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "session_idle_minutes", 0, 525_600)  # 0 = never close
         _require_int(value, "carry_context_turns", 0, 50)
         _require_int(value, "play_reminder_every_msgs", 0, 1_000)  # 0 = off
-        _require_bool(value, "pings_enabled")
         _require_int(value, "ping_daily_cap", 1, 24)
-        _require_int(value, "ping_min_gap_hours", 1, 720)   # <= 30 days
+        _require_int(value, "ping_min_gap_hours", 0, 720)   # <= 30 days; 0 = off
         _require_int(value, "quiet_hours_start", 0, 23)
         _require_int(value, "quiet_hours_end", 0, 23)
         _require_int(value, "quiet_hours_utc_offset", -12, 14)
         _require_int(value, "ping_batch_size", 1, 500)
+        _require_int(value, "worker_interval_sec", 5, 3_600)
         _require_bool(value, "v2_enabled")
         _require_bool(value, "v2_dry_run")
         _require_float(value, "v2_daily_budget_usd", 0.0, 10_000.0)  # 0 = no budget
