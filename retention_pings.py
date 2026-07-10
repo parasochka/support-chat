@@ -105,6 +105,10 @@ async def run_product_pings(product: dict[str, Any], *,
     pid = int(product["id"])
     tenancy.set_current_product(pid)
     cfg = settings.retention()
+    if cfg.get("v2_enabled"):
+        # The product runs the v2 agentic loop — exactly one proactive regime
+        # per product, so the v1 matrix stands down entirely.
+        return {"skipped": "v2_enabled"}
     if not cfg["pings_enabled"]:
         return {"skipped": "pings_disabled"}
     token = await db.get_product_telegram_token(pid)

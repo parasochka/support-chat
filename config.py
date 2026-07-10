@@ -455,6 +455,26 @@ RETENTION_PING_BATCH_SIZE: int = _env_int("RETENTION_PING_BATCH_SIZE", 30)
 RETENTION_PING_INTERVAL_SEC: int = _env_int("RETENTION_PING_INTERVAL_SEC", 300)
 RETENTION_SCHEDULER_ENABLED: bool = _env_bool("RETENTION_SCHEDULER_ENABLED", True)
 
+# --- Retention v2 (agentic, event-driven) -------------------------------------
+# The parallel decision loop over canonical casino events. Per-product opt-in
+# (`v2_enabled` in the hot `retention` group): a v2 product is skipped by the v1
+# ping sweep and vice versa — exactly one proactive regime runs per product.
+RETENTION_V2_ENABLED: bool = _env_bool("RETENTION_V2_ENABLED", False)
+# Dry-run ships ON: a freshly-enabled product logs full agent decisions to the
+# ledger without sending anything until the owner flips the switch.
+RETENTION_V2_DRY_RUN: bool = _env_bool("RETENTION_V2_DRY_RUN", True)
+# Per-product daily AI budget for v2 decisions+sends (USD). The worker stops
+# deciding for the day once the ledger's summed cost reaches it. 0 = no budget.
+RETENTION_V2_DAILY_BUDGET_USD: float = _env_float(
+    "RETENTION_V2_DAILY_BUDGET_USD", 5.0)
+# After a loss signal (high 24h net loss from bet_settled events) the comfort
+# window applies: no play CTA, no reward photos, empathetic tone only.
+RETENTION_V2_LOSS_COMFORT_HOURS: int = _env_int(
+    "RETENTION_V2_LOSS_COMFORT_HOURS", 24)
+# 24h net-loss threshold (USD) that classifies risk_state=critical and starts
+# the comfort window (the EPIC-5 "loss high" tier).
+RETENTION_V2_LOSS_HIGH_USD: float = _env_float("RETENTION_V2_LOSS_HIGH_USD", 100.0)
+
 # Serve /docs, /redoc and /openapi.json (they describe the WHOLE API surface,
 # /admin included) — off by default; enable only on dev/stage deployments.
 EXPOSE_API_DOCS: bool = _env_bool("EXPOSE_API_DOCS", False)

@@ -400,6 +400,18 @@ def retention() -> dict[str, Any]:
             "quiet_hours_utc_offset", config.RETENTION_QUIET_HOURS_UTC_OFFSET),
         "ping_batch_size": db_v.get("ping_batch_size",
                                     config.RETENTION_PING_BATCH_SIZE),
+        # Retention v2 (agentic, event-driven). `v2_enabled` switches the
+        # product between the v1 ping matrix and the v2 event/agent loop —
+        # exactly one proactive regime runs per product. Dry-run logs full
+        # decisions to the ledger without sending.
+        "v2_enabled": db_v.get("v2_enabled", config.RETENTION_V2_ENABLED),
+        "v2_dry_run": db_v.get("v2_dry_run", config.RETENTION_V2_DRY_RUN),
+        "v2_daily_budget_usd": db_v.get("v2_daily_budget_usd",
+                                        config.RETENTION_V2_DAILY_BUDGET_USD),
+        "v2_loss_comfort_hours": db_v.get("v2_loss_comfort_hours",
+                                          config.RETENTION_V2_LOSS_COMFORT_HOURS),
+        "v2_loss_high_usd": db_v.get("v2_loss_high_usd",
+                                     config.RETENTION_V2_LOSS_HIGH_USD),
     }
 
 
@@ -532,6 +544,11 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "quiet_hours_end", 0, 23)
         _require_int(value, "quiet_hours_utc_offset", -12, 14)
         _require_int(value, "ping_batch_size", 1, 500)
+        _require_bool(value, "v2_enabled")
+        _require_bool(value, "v2_dry_run")
+        _require_float(value, "v2_daily_budget_usd", 0.0, 10_000.0)  # 0 = no budget
+        _require_int(value, "v2_loss_comfort_hours", 0, 720)
+        _require_float(value, "v2_loss_high_usd", 0.0, 1_000_000.0)
         if "stage_advance_msgs" in value:
             v = value["stage_advance_msgs"]
             if (not isinstance(v, list)

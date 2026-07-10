@@ -440,6 +440,52 @@ CREATE TABLE IF NOT EXISTS retention_pings (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- RETENTION V2 (agentic, event-driven) --------------------------------
+-- Canonical casino events (the EPIC-1 taxonomy) pushed by the partner event
+-- webhook or the admin simulator. Append-only; idempotent by
+-- (product_id, event_id). The v2 worker consumes rows with processed_at NULL;
+-- the same log also feeds the deterministic state resolver (loss window,
+-- activity), so rows stay after processing.
+CREATE TABLE IF NOT EXISTS retention_events (
+  id            BIGSERIAL PRIMARY KEY,
+  product_id    INT NOT NULL REFERENCES products(id),
+  event_id      TEXT NOT NULL,               -- partner's idempotency key (ULID)
+  event_name    TEXT NOT NULL,               -- canonical name (deposit_confirmed, ...)
+  event_version TEXT NOT NULL DEFAULT '1.0',
+  player_id     TEXT NOT NULL,
+  ts            TIMESTAMPTZ NOT NULL,        -- when it happened at the casino
+  payload       JSONB NOT NULL DEFAULT '{}',
+  source        TEXT NOT NULL DEFAULT 'webhook',  -- 'webhook' | 'simulator'
+  processed_at  TIMESTAMPTZ,                 -- NULL = still queued for the worker
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (product_id, event_id)
+);
+
+-- The v2 decision ledger: ONE row per agent decision (event-triggered or
+-- sweep), whatever the outcome — including 'silence' and guard blocks — so
+-- "why did/didn't the bot write?" is always answerable from one row
+-- (state snapshot + guard verdict + the agent's decision + cost + delivery).
+CREATE TABLE IF NOT EXISTS retention_v2_decisions (
+  id                BIGSERIAL PRIMARY KEY,
+  product_id        INT NOT NULL REFERENCES products(id),
+  retention_user_id BIGINT REFERENCES retention_users(id),
+  player_id         TEXT,
+  trigger_kind      TEXT NOT NULL,           -- 'event' | 'manual'
+  event_pk          BIGINT REFERENCES retention_events(id),
+  event_name        TEXT,
+  state             JSONB NOT NULL DEFAULT '{}',  -- resolved state snapshot
+  guard             JSONB NOT NULL DEFAULT '{}',  -- guard verdict + reasons
+  action            TEXT NOT NULL,           -- 'message'|'photo'|'silence'|'blocked'|'skipped'
+  intent            TEXT,                    -- the agent's brief for the text generator
+  tone              TEXT,                    -- 'warm'|'celebrate'|'comfort'|'neutral'
+  reason            TEXT,                    -- the agent's (or guard's) why
+  dry_run           BOOLEAN NOT NULL DEFAULT FALSE,
+  delivered         BOOLEAN NOT NULL DEFAULT FALSE,
+  detail            TEXT,
+  cost_usd          NUMERIC(12, 6),
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- MACHINE ADMIN CREDENTIALS -------------------------------------------
 -- Service API keys for the /admin API (an external master admin panel, a
 -- partner backend). Bearer 'sak_...' tokens; only the SHA-256 hash is stored.
@@ -487,6 +533,12 @@ CREATE INDEX IF NOT EXISTS idx_retention_pings_user
   ON retention_pings(retention_user_id, rule_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_retention_nonces_expires
   ON retention_nonces(expires_at);
+CREATE INDEX IF NOT EXISTS idx_retention_events_queue
+  ON retention_events(product_id, id) WHERE processed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_retention_events_player
+  ON retention_events(product_id, player_id, ts);
+CREATE INDEX IF NOT EXISTS idx_retention_v2_decisions_product
+  ON retention_v2_decisions(product_id, created_at);
 """
 # NB: indexes over the product_id columns of PRE-TENANCY tables live in
 # _ensure_columns — they must run AFTER the ADD COLUMN guards (_SCHEMA runs
@@ -3192,6 +3244,242 @@ async def list_retention_pings(product_id: int, page: int = 1,
             d["created_at"] = d["created_at"].isoformat()
         items.append(d)
     return {"items": items, "total": int(total or 0)}
+
+
+# ---------------------------------------------------------------------------
+# Retention v2: canonical event log + the agent decision ledger
+# ---------------------------------------------------------------------------
+def _row_to_retention_event(row: asyncpg.Record) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "product_id": row["product_id"],
+        "event_id": row["event_id"],
+        "event_name": row["event_name"],
+        "event_version": row["event_version"],
+        "player_id": row["player_id"],
+        "ts": _iso(row["ts"]),
+        "payload": _json_value(row["payload"]) or {},
+        "source": row["source"],
+        "processed_at": _iso(row["processed_at"]),
+        "created_at": _iso(row["created_at"]),
+    }
+
+
+async def ingest_retention_event(product_id: int, *, event_id: str,
+                                 event_name: str, player_id: str,
+                                 ts: Any, payload: dict[str, Any],
+                                 event_version: str = "1.0",
+                                 source: str = "webhook") -> Optional[int]:
+    """Append one canonical event. Idempotent by (product_id, event_id):
+    a duplicate returns None and writes nothing (at-least-once delivery)."""
+    row = await _pool.fetchrow(
+        "INSERT INTO retention_events (product_id, event_id, event_name, "
+        " event_version, player_id, ts, payload, source) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8) "
+        "ON CONFLICT (product_id, event_id) DO NOTHING RETURNING id",
+        product_id, event_id, event_name, event_version, player_id,
+        _as_ts(ts), json.dumps(payload or {}), source,
+    )
+    return int(row["id"]) if row else None
+
+
+async def unprocessed_retention_events(product_id: int, limit: int = 50
+                                       ) -> list[dict[str, Any]]:
+    """The v2 worker's queue: oldest unprocessed events first."""
+    rows = await _pool.fetch(
+        "SELECT * FROM retention_events "
+        "WHERE product_id = $1 AND processed_at IS NULL "
+        "ORDER BY id ASC LIMIT $2",
+        product_id, int(limit),
+    )
+    return [_row_to_retention_event(r) for r in rows]
+
+
+async def mark_retention_event_processed(event_pk: int) -> None:
+    await _pool.execute(
+        "UPDATE retention_events SET processed_at = now() WHERE id = $1",
+        int(event_pk),
+    )
+
+
+async def list_retention_events(product_id: int, page: int = 1,
+                                page_size: int = 50) -> dict[str, Any]:
+    """The event log for the admin tab (newest first)."""
+    offset = max(page - 1, 0) * page_size
+    total = await _pool.fetchval(
+        "SELECT COUNT(*) FROM retention_events WHERE product_id = $1",
+        product_id)
+    rows = await _pool.fetch(
+        "SELECT * FROM retention_events WHERE product_id = $1 "
+        "ORDER BY id DESC LIMIT $2 OFFSET $3",
+        product_id, page_size, offset,
+    )
+    return {"items": [_row_to_retention_event(r) for r in rows],
+            "total": int(total or 0)}
+
+
+async def recent_retention_events_for_player(product_id: int, player_id: str,
+                                             limit: int = 10
+                                             ) -> list[dict[str, Any]]:
+    """The player's recent event tail (newest first) — decision-prompt context
+    and the state resolver's activity/loss inputs."""
+    rows = await _pool.fetch(
+        "SELECT * FROM retention_events "
+        "WHERE product_id = $1 AND player_id = $2 "
+        "ORDER BY ts DESC LIMIT $3",
+        product_id, player_id, int(limit),
+    )
+    return [_row_to_retention_event(r) for r in rows]
+
+
+async def player_net_loss_24h(product_id: int, player_id: str) -> float:
+    """Net real-money loss over the last 24h from bet_settled events
+    (bets minus wins; bonus-money rounds excluded) — the EPIC-5 loss window.
+    Negative = the player is up; clamped to 0 by the caller if needed."""
+    val = await _pool.fetchval(
+        "SELECT COALESCE(SUM( "
+        "  COALESCE((payload->>'amount')::numeric, 0) "
+        "  - COALESCE((payload->>'win_amount')::numeric, 0)), 0) "
+        "FROM retention_events "
+        "WHERE product_id = $1 AND player_id = $2 "
+        "  AND event_name = 'bet_settled' "
+        "  AND COALESCE((payload->>'bonus_money')::boolean, FALSE) = FALSE "
+        "  AND ts > now() - interval '24 hours'",
+        product_id, player_id,
+    )
+    return float(val or 0)
+
+
+async def last_loss_signal_at(product_id: int, player_id: str) -> Optional[str]:
+    """When the player last had a losing settled bet (comfort-window anchor)."""
+    val = await _pool.fetchval(
+        "SELECT MAX(ts) FROM retention_events "
+        "WHERE product_id = $1 AND player_id = $2 "
+        "  AND event_name = 'bet_settled' "
+        "  AND COALESCE((payload->>'win_amount')::numeric, 0) "
+        "      < COALESCE((payload->>'amount')::numeric, 0)",
+        product_id, player_id,
+    )
+    return _iso(val) if val else None
+
+
+async def touch_retention_activity(product_id: int, player_id: str,
+                                   field: str, ts: Any) -> int:
+    """Forward-only bump of one casino-activity timestamp (the legacy bridge:
+    canonical events feed the same last_login/played/deposit_at fields the v1
+    ping matrix keys on). GREATEST guards out-of-order event delivery — an
+    older event never rewinds the timestamp. No linked player row = no-op."""
+    if field not in _RETENTION_ACTIVITY_FIELDS:
+        raise ValueError(f"not an activity field: {field!r}")
+    parsed = _as_ts(ts)
+    if parsed is None:
+        return 0
+    result = await _pool.execute(
+        f"UPDATE retention_users SET {field} = "
+        f"GREATEST(COALESCE({field}, $3), $3), updated_at = now() "
+        "WHERE product_id = $1 AND player_id = $2",
+        product_id, player_id, parsed,
+    )
+    try:
+        return int(result.split()[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+async def get_retention_user_by_player(product_id: int, player_id: str
+                                       ) -> Optional[dict[str, Any]]:
+    """The Telegram-linked retention user for a casino player_id, if any."""
+    row = await _pool.fetchrow(
+        f"SELECT {_RU_COLS} FROM retention_users "
+        "WHERE product_id = $1 AND player_id = $2 "
+        "ORDER BY updated_at DESC LIMIT 1",
+        product_id, player_id,
+    )
+    return _row_to_retention_user(row) if row else None
+
+
+async def insert_retention_v2_decision(
+        product_id: int, *, retention_user_id: Optional[int],
+        player_id: Optional[str], trigger_kind: str,
+        event_pk: Optional[int], event_name: Optional[str],
+        state: dict[str, Any], guard: dict[str, Any], action: str,
+        intent: Optional[str] = None, tone: Optional[str] = None,
+        reason: Optional[str] = None, dry_run: bool = False,
+        delivered: bool = False, detail: Optional[str] = None,
+        cost_usd: Optional[float] = None) -> int:
+    row = await _pool.fetchrow(
+        "INSERT INTO retention_v2_decisions (product_id, retention_user_id, "
+        " player_id, trigger_kind, event_pk, event_name, state, guard, action, "
+        " intent, tone, reason, dry_run, delivered, detail, cost_usd) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, "
+        "        $12, $13, $14, $15, $16) RETURNING id",
+        product_id, retention_user_id, player_id, trigger_kind, event_pk,
+        event_name, json.dumps(state or {}), json.dumps(guard or {}), action,
+        intent, tone, reason, dry_run, delivered, detail, cost_usd,
+    )
+    return int(row["id"])
+
+
+async def list_retention_v2_decisions(product_id: int, page: int = 1,
+                                      page_size: int = 50) -> dict[str, Any]:
+    """The decision ledger for the admin tab (newest first, player joined)."""
+    offset = max(page - 1, 0) * page_size
+    total = await _pool.fetchval(
+        "SELECT COUNT(*) FROM retention_v2_decisions WHERE product_id = $1",
+        product_id)
+    rows = await _pool.fetch(
+        "SELECT d.*, u.tg_username, u.full_name "
+        "FROM retention_v2_decisions d "
+        "LEFT JOIN retention_users u ON u.id = d.retention_user_id "
+        "WHERE d.product_id = $1 ORDER BY d.id DESC LIMIT $2 OFFSET $3",
+        product_id, page_size, offset,
+    )
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        for k in ("retention_user_id", "event_pk"):
+            if d.get(k) is not None:
+                d[k] = int(d[k])
+        for k in ("state", "guard"):
+            d[k] = _json_value(d[k]) or {}
+        if d.get("cost_usd") is not None:
+            d["cost_usd"] = float(d["cost_usd"])
+        d["created_at"] = _iso(d["created_at"])
+        items.append(d)
+    return {"items": items, "total": int(total or 0)}
+
+
+async def recent_v2_decision_exists(product_id: int, player_id: str, *,
+                                    hours: int,
+                                    event_name: Optional[str] = None,
+                                    exclude_silence: bool = False) -> bool:
+    """True when a v2 decision for this player exists within the window —
+    the same-event cooldown (one reaction per event type per window) and the
+    loss-comfort dedup read this."""
+    q = ("SELECT EXISTS(SELECT 1 FROM retention_v2_decisions "
+         "WHERE product_id = $1 AND player_id = $2 "
+         "  AND created_at > now() - make_interval(hours => $3)")
+    args: list[Any] = [product_id, player_id, int(hours)]
+    if event_name is not None:
+        args.append(event_name)
+        q += f" AND event_name = ${len(args)}"
+    if exclude_silence:
+        q += " AND action NOT IN ('silence', 'blocked', 'skipped')"
+    q += ")"
+    val = await _pool.fetchval(q, *args)
+    return bool(val)
+
+
+async def retention_v2_cost_today(product_id: int) -> float:
+    """Summed decision-ledger cost since local midnight UTC — the daily-budget
+    stop switch reads this before every new decision."""
+    val = await _pool.fetchval(
+        "SELECT COALESCE(SUM(cost_usd), 0) FROM retention_v2_decisions "
+        "WHERE product_id = $1 AND created_at >= date_trunc('day', now())",
+        product_id,
+    )
+    return float(val or 0)
 
 
 async def persist_ping_turn(session_id: str, assistant_text: str,
