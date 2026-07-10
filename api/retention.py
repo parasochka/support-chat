@@ -174,8 +174,8 @@ class PlayerUpdateReq(BaseModel):
     balance: Optional[str] = None
     vip_level: Optional[str] = None
     registration_date: Optional[str] = None
-    # Casino-side activity signals (ISO-8601 timestamps) — the ping matrix keys
-    # on them ("hasn't logged in for a week", "no deposit in 30 days", ...).
+    # Casino-side activity signals (ISO-8601 timestamps) — the agent's state
+    # resolver keys on them (idle days, days since deposit).
     last_login_at: Optional[str] = None
     last_played_at: Optional[str] = None
     last_deposit_at: Optional[str] = None
@@ -221,7 +221,8 @@ async def player_update(product_id: int, body: PlayerUpdateReq,
 
 
 # ===========================================================================
-# Partner canonical-event feed (Retention v2; also bridges into the v1 fields)
+# Partner canonical-event feed (the retention agent; also refreshes the
+# player activity timestamps the state resolver reads)
 # ===========================================================================
 class PlayerEventsReq(BaseModel):
     """One canonical event (flat fields) OR a batch (`events` list)."""
@@ -951,124 +952,9 @@ async def delete_manager(manager_id: int,
 
 
 # ===========================================================================
-# Admin: ping matrix (proactive re-engagement rules + ledger + run-now)
-# ===========================================================================
-_RULE_TRIGGERS = ("bot_inactivity", "casino_inactivity", "no_deposit")
-_RULE_ACTIONS = ("message", "photo")
-
-
-class RuleWrite(BaseModel):
-    name: Optional[str] = None
-    enabled: Optional[bool] = None
-    trigger_kind: Optional[str] = None
-    inactivity_days: Optional[int] = Field(default=None, ge=1, le=365)
-    action: Optional[str] = None
-    intent: Optional[str] = None
-    vip_tiers: Optional[list[str]] = None
-    cooldown_days: Optional[int] = Field(default=None, ge=0, le=365)
-    priority: Optional[int] = Field(default=None, ge=-1000, le=1000)
-
-    def clean_fields(self) -> dict[str, Any]:
-        fields = {k: v for k, v in self.model_dump().items() if v is not None}
-        if "trigger_kind" in fields and fields["trigger_kind"] not in _RULE_TRIGGERS:
-            raise HTTPException(status_code=400,
-                                detail=f"trigger_kind must be one of "
-                                       f"{', '.join(_RULE_TRIGGERS)}.")
-        if "action" in fields and fields["action"] not in _RULE_ACTIONS:
-            raise HTTPException(status_code=400,
-                                detail=f"action must be one of "
-                                       f"{', '.join(_RULE_ACTIONS)}.")
-        if "vip_tiers" in fields:
-            fields["vip_tiers"] = [str(t).strip().lower()
-                                   for t in fields["vip_tiers"] if str(t).strip()]
-        if "intent" in fields:
-            fields["intent"] = fields["intent"].strip()
-        return fields
-
-
-@admin_router.get("/pings/rules")
-async def list_ping_rules(product_id: int,
-                          admin=Depends(require_admin)) -> JSONResponse:
-    await admin_auth.require_product_read(admin, product_id)
-    return JSONResponse(content={
-        "items": await db.list_retention_rules(product_id)})
-
-
-@admin_router.post("/pings/rules")
-async def create_ping_rule(product_id: int, body: RuleWrite,
-                           admin=Depends(require_admin_write)) -> JSONResponse:
-    await admin_auth.require_product_write(admin, product_id)
-    fields = body.clean_fields()
-    if not (fields.get("name") or "").strip():
-        raise HTTPException(status_code=400, detail="Rule name is required.")
-    fields["name"] = fields["name"].strip()
-    rule = await db.create_retention_rule(product_id, fields,
-                                          updated_by=admin.get("email"))
-    await db.log_admin_event(None, "retention_rule_created",
-                             {"id": rule["id"], "name": rule["name"],
-                              "by": admin.get("email")}, product_id=product_id)
-    return JSONResponse(content={"rule": rule})
-
-
-@admin_router.put("/pings/rules/{rule_id}")
-async def update_ping_rule(rule_id: int, product_id: int, body: RuleWrite,
-                           admin=Depends(require_admin_write)) -> JSONResponse:
-    await admin_auth.require_product_write(admin, product_id)
-    fields = body.clean_fields()
-    if not fields:
-        raise HTTPException(status_code=400, detail="Nothing to update.")
-    rule = await db.update_retention_rule(rule_id, product_id, fields,
-                                          updated_by=admin.get("email"))
-    if rule is None:
-        raise HTTPException(status_code=404, detail="Rule not found.")
-    return JSONResponse(content={"rule": rule})
-
-
-@admin_router.delete("/pings/rules/{rule_id}")
-async def delete_ping_rule(rule_id: int, product_id: int,
-                           admin=Depends(require_admin_write)) -> JSONResponse:
-    await admin_auth.require_product_write(admin, product_id)
-    ok = await db.delete_retention_rule(rule_id, product_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Rule not found.")
-    return JSONResponse(content={"ok": True})
-
-
-@admin_router.get("/pings")
-async def list_pings(product_id: int, page: int = 1, page_size: int = 50,
-                     admin=Depends(require_admin)) -> JSONResponse:
-    """The ping ledger: what was sent to whom, by which rule, at what cost."""
-    await admin_auth.require_product_read(admin, product_id)
-    return JSONResponse(content=await db.list_retention_pings(
-        product_id, page=max(page, 1), page_size=max(1, min(page_size, 200))))
-
-
-@admin_router.post("/pings/run")
-async def run_pings_now(product_id: int,
-                        admin=Depends(require_admin_write)) -> JSONResponse:
-    """Run one bounded sweep for this product immediately (test/QA button).
-
-    Quiet hours are ignored (the operator is explicitly asking); every other
-    guard — per-player caps, gaps, rule cooldowns, opt-outs — still applies.
-    """
-    import retention_pings
-    await admin_auth.require_product_write(admin, product_id)
-    product = await db.get_product(product_id)
-    if product is None:
-        raise HTTPException(status_code=404, detail="Product not found.")
-    if not product.get("retention_enabled"):
-        raise HTTPException(status_code=409,
-                            detail="Retention is not enabled for this product.")
-    stats = await retention_pings.run_product_pings(
-        product, ignore_quiet_hours=True)
-    await db.log_admin_event(None, "retention_ping_run_manual",
-                             {"stats": stats, "by": admin.get("email")},
-                             product_id=product_id)
-    return JSONResponse(content={"stats": stats})
-
-
-# ===========================================================================
-# Admin: Retention v2 (agentic) — event log, decision ledger, simulator
+# Admin: the retention agent — event log, decision ledger, simulator.
+# (Endpoint paths keep the historic /v2/ segment so stored bookmarks and API
+# consumers survive; every user-visible label says "agent".)
 # ===========================================================================
 class SimulateEventReq(BaseModel):
     event_name: str
@@ -1083,17 +969,17 @@ class SimulateEventReq(BaseModel):
 @admin_router.get("/v2/status")
 async def v2_status(product_id: int,
                     admin=Depends(require_admin)) -> JSONResponse:
-    """The v2 tab header: switches + today's spend vs budget + queue depth,
-    the worker's deploy config (is the scheduler running at all, how often),
-    a DB-derived liveness snapshot (last event / last processed / last
-    decision + today's decision mix), and the event taxonomy split
-    (decision-worthy / photo-eligible / state-food) so the tab's
-    How-it-works guide always matches the code."""
+    """The agent tab header: switches + today's spend vs budget + queue depth,
+    the worker wiring (deploy scheduler switch + the hot sweep cadence), a
+    DB-derived liveness snapshot (last event / last processed / last decision
+    + today's decision mix), the event taxonomy split (decision-worthy /
+    photo-eligible / state-food) and the EFFECTIVE guard knob values — so the
+    tab's How-it-works guide always matches the code and the current tuning."""
     import retention_v2
     await admin_auth.require_product_read(admin, product_id)
     tenancy.set_current_product(product_id)
     cfg = settings_mod.retention()
-    queued = await db.unprocessed_retention_events(product_id, limit=1000)
+    queued = await db.count_unprocessed_retention_events(product_id)
     cost_today = await db.retention_v2_cost_today(product_id)
     activity = await db.retention_v2_activity(product_id)
     return JSONResponse(content={
@@ -1101,17 +987,33 @@ async def v2_status(product_id: int,
         "v2_dry_run": bool(cfg.get("v2_dry_run")),
         "daily_budget_usd": float(cfg.get("v2_daily_budget_usd") or 0),
         "cost_today_usd": cost_today,
-        "queued_events": len(queued),
-        # Worker wiring (deploy-level): whether the background sweeps run at
-        # all in this deployment and how often they wake up.
+        "queued_events": queued,
+        # Worker wiring: the deploy-level scheduler switch + the hot cadence
+        # setting (retention.worker_interval_sec — Settings → Retention bot).
         "scheduler_enabled": bool(config.RETENTION_SCHEDULER_ENABLED),
-        "sweep_interval_sec": int(config.RETENTION_PING_INTERVAL_SEC),
+        "sweep_interval_sec": retention_v2.worker_interval_sec(),
         "activity": activity,
         "canonical_events": sorted(player_sync.CANONICAL_EVENTS),
         "decision_events": sorted(retention_v2.DECISION_EVENTS),
         "photo_events": sorted(retention_v2._PHOTO_EVENTS),
         "same_event_cooldown_hours": int(
             cfg.get("v2_same_event_cooldown_hours") or 0),
+        # The effective per-player send-frequency guards, so the admin page
+        # can show (and link to) the knobs that decide how often the agent
+        # may write to one player.
+        "guards": {
+            "ping_daily_cap": int(cfg.get("ping_daily_cap") or 0),
+            "ping_min_gap_hours": int(cfg.get("ping_min_gap_hours") or 0),
+            "quiet_hours_start": int(cfg.get("quiet_hours_start") or 0),
+            "quiet_hours_end": int(cfg.get("quiet_hours_end") or 0),
+            "quiet_hours_utc_offset": int(
+                cfg.get("quiet_hours_utc_offset") or 0),
+            "same_event_cooldown_hours": int(
+                cfg.get("v2_same_event_cooldown_hours") or 0),
+            "daily_budget_usd": float(cfg.get("v2_daily_budget_usd") or 0),
+            "loss_comfort_hours": int(cfg.get("v2_loss_comfort_hours") or 0),
+            "loss_high_usd": float(cfg.get("v2_loss_high_usd") or 0),
+        },
     })
 
 

@@ -30,14 +30,14 @@ import { withProduct } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
 
 /**
- * Retention v2 (agentic, event-driven) — the parallel proactive regime next to
- * the v1 ping matrix. This tab is its home: the status header (switches live
- * in Settings → Retention bot → "Retention v2"), the canonical-event log with
- * a simulator (exercise the pipeline before the casino integration exists),
- * the agent decision ledger (state snapshot + guard verdict + decision +
- * cost per row — the full audit trail, dry-run rows included), and the
- * "How it works & testing" guide. Events and decisions are deletable (one row
- * or the whole log) so live testing never leaves duplicated rows behind.
+ * The proactive agent (event-driven) — the one regime that writes to players
+ * first. This page is its home: the status header (switches and knobs live in
+ * Settings → Retention bot), the canonical-event log with a simulator
+ * (exercise the pipeline before the casino integration exists), the agent
+ * decision ledger (state snapshot + guard verdict + decision + cost per row —
+ * the full audit trail, dry-run rows included), and the "How it works &
+ * testing" guide. Events and decisions are deletable (one row or the whole
+ * log) so live testing never leaves duplicated rows behind.
  */
 
 const fmtDT = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
@@ -153,7 +153,7 @@ const StatusHeader = ({ status, onRefresh, onRun, canWrite, running }) => {
       <CardContent>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
           <Chip
-            label={status.v2_enabled ? 'v2 ENABLED (v1 ping matrix standing down)' : 'v2 disabled (v1 ping matrix active)'}
+            label={status.v2_enabled ? 'Agent ENABLED' : 'Agent DISABLED (no proactive messages)'}
             color={status.v2_enabled ? 'success' : 'default'}
           />
           <Chip
@@ -209,12 +209,12 @@ const StatusHeader = ({ status, onRefresh, onRun, canWrite, running }) => {
           />
         </Stack>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-          Switches and knobs live in Settings → Retention bot → «Retention v2».
-          While v2 is enabled the v1 ping matrix stands down for this product:
-          its Pings rules stop firing (they stay saved) — disable v2 and they
-          resume. Dry-run ships ON: the agent decides and logs to the ledger
-          below without sending — review its decisions, then turn dry-run off.
-          New here? Read the «How it works &amp; testing» tab.
+          Switches and knobs live in Settings → Retention bot («Proactive
+          agent» + «Send-frequency guards»). The worker interval is a live
+          setting too — 5s means near-realtime reactions. Dry-run ships ON:
+          the agent decides and logs to the ledger below without sending —
+          review its decisions, then turn dry-run off. New here? Read the
+          «How it works &amp; testing» tab.
         </Typography>
       </CardContent>
     </Card>
@@ -580,7 +580,7 @@ const LogsTab = ({ logs }) => (
   <Card>
     <CardContent>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-        Every v2 action leaves a durable trace here: agent decisions, simulator
+        Every agent action leaves a durable trace here: decisions, simulator
         injections, manual queue runs, deletes. The same facts stream to the
         deploy (Railway) logs as <code>retention_v2_*</code> lines — decisions,
         guard blocks and failed sends included — so this view and the deploy
@@ -628,7 +628,7 @@ const LogsTab = ({ logs }) => (
 );
 
 // ---------------------------------------------------------------------------
-// How it works & testing — the operator's guide to the whole v2 loop
+// How it works & testing — the operator's guide to the whole agent loop
 // ---------------------------------------------------------------------------
 const Section = ({ title, children }) => (
   <Box sx={{ mb: 3 }}>
@@ -652,6 +652,7 @@ const LI = ({ children }) => (
 );
 
 const GuideTab = ({ status }) => {
+  const g = status?.guards || {};
   const decisionEvents = status?.decision_events || [];
   const photoEvents = status?.photo_events || [];
   const canonical = status?.canonical_events || [];
@@ -661,11 +662,10 @@ const GuideTab = ({ status }) => {
   return (
     <Card>
       <CardContent>
-        <Section title="What Retention v2 is">
+        <Section title="What the proactive agent is">
           <P>
             An event-driven agent that reacts to what just happened at the
-            casino — instead of the v1 ping matrix’s fixed “N idle days →
-            send” rules. A canonical event (deposit, big loss, level-up, …)
+            casino. A canonical event (deposit, big loss, level-up, …)
             arrives, a cheap AI call decides whether Nika should say
             something, and if yes the normal retention persona writes the
             message. Very often the correct decision is <b>silence</b> — that
@@ -705,7 +705,7 @@ const GuideTab = ({ status }) => {
             <LI>
               <b>Message generation</b> — the SAME persona stack that answers
               Telegram chats writes the text from the agent’s brief. Nothing
-              here is v2-specific: persona, tone of voice, KB, language all
+              here is agent-specific: persona, tone of voice, KB, language all
               come from the regular retention configuration (next section).
             </LI>
             <LI>
@@ -719,39 +719,30 @@ const GuideTab = ({ status }) => {
         </Section>
         <Divider sx={{ mb: 2 }} />
 
-        <Section title="What flips when you switch v1 ↔ v2">
-          <P>
-            Exactly ONE proactive regime runs per product. The switch is{' '}
-            <b>Settings → Retention bot → «Retention v2 enabled»</b>, applies
-            on the next worker sweep (no redeploy) and changes only who is
-            allowed to write first:
-          </P>
+        <Section title="Turning it on and off">
           <Box component="ul" sx={{ pl: 3, my: 0 }}>
             <LI>
-              <b>v2 ON</b> — the v1 ping matrix (Retention → Pings) stands
-              down: its rules stop firing but stay saved and editable, and the
-              send ledger stays readable. The v2 event loop takes over
-              proactive contact.
+              <b>Agent enabled</b> (Settings → Retention bot → «Proactive
+              agent») is the per-product switch. Off = the agent never writes
+              first; queued events wait unprocessed and the ledger stays
+              readable. The dialogue bot (replies to players who write),
+              escalation hand-offs and the photo machinery inside dialogue are
+              never affected.
             </LI>
             <LI>
-              <b>v2 OFF</b> — the v1 rules resume on the next sweep exactly as
-              configured; the v2 loop stops deciding (queued events wait
-              unprocessed, the ledger stays readable).
+              <b>Dry-run</b> keeps the agent deciding and logging without
+              sending — the safe review mode.
             </LI>
             <LI>
-              <b>Never affected by the switch</b>: the dialogue bot itself
-              (replies to players who write), the photo machinery inside
-              dialogue, escalation hand-offs, and the shared anti-annoyance
-              protection — daily cap, min gap, quiet hours, /stop and the
-              blocked-bot flag are ONE set of per-player counters used by both
-              regimes, so switching never resets a player’s protection.
+              <b>Worker interval</b> (same Settings section) is how often the
+              background worker drains the event queue — it applies live on
+              the next tick, and 5 seconds gives near-realtime reactions.
             </LI>
             <LI>
               <b>Deploy-level master switch</b>:{' '}
               <code>RETENTION_SCHEDULER_ENABLED</code> (Railway env) starts
-              both background workers; with it off neither regime sweeps and
-              only «Process queue now» moves the v2 queue. The worker chip in
-              the header shows this.
+              the background worker at all; with it off only «Process queue
+              now» moves the queue. The worker chip in the header shows this.
             </LI>
           </Box>
         </Section>
@@ -762,7 +753,7 @@ const GuideTab = ({ status }) => {
             <LI>
               <b>Persona &amp; tone of voice</b> — Retention → Prompt
               variables (persona name, role, brand, products,{' '}
-              <code>retention_tone_of_voice</code>). The v2 agent only writes
+              <code>retention_tone_of_voice</code>). The agent only writes
               a short brief; the persona prompt writes the actual words. The
               full assembled prompt is visible in Retention → Prompt preview.
             </LI>
@@ -803,7 +794,7 @@ const GuideTab = ({ status }) => {
           <P>
             <b>Special:</b> <code>bet_settled</code> wakes the agent only when
             the player’s 24h net loss crosses the high-loss threshold
-            (Settings → «v2 high-loss threshold»); below it the event silently
+            (Settings → «High-loss threshold»); below it the event silently
             feeds the loss window.
           </P>
           <P>
@@ -812,44 +803,48 @@ const GuideTab = ({ status }) => {
             <code>{stateFood.join(', ') || '—'}</code>
           </P>
           <P>
-            Every stored event also runs the legacy bridge into the v1 fields:{' '}
-            <code>deposit_confirmed → last_deposit_at</code>,{' '}
+            Every stored event also refreshes the player's activity
+            timestamps: <code>deposit_confirmed → last_deposit_at</code>,{' '}
             <code>session_started/ended → last_login_at</code>,{' '}
-            <code>bet_settled → last_played_at</code> — so one partner feed
-            powers both regimes.
+            <code>bet_settled → last_played_at</code> — the state resolver
+            (idle days, days since deposit) reads them.
           </P>
         </Section>
         <Divider sx={{ mb: 2 }} />
 
-        <Section title="Guards and the settings behind them">
+        <Section title="Guards — how often the agent may write to one player">
           <P>
-            All knobs live in Settings → Retention bot (the «Retention v2»
-            section plus the shared ping-protection knobs). Each blocked
-            decision lists its reasons in the Guards column:
+            Deterministic rails the model can never override. They are the
+            knobs that decide the send frequency — all editable live in
+            Settings → Retention bot → «Send-frequency guards». Current
+            values for this product are shown in the table. Each blocked
+            decision lists its reasons in the Guards column of the ledger:
           </P>
-          <Table size="small" sx={{ maxWidth: 900 }}>
+          <Table size="small" sx={{ maxWidth: 980 }}>
             <TableHead>
               <TableRow>
                 <TableCell>Guard reason</TableCell>
+                <TableCell>Current value</TableCell>
                 <TableCell>What it means / which setting drives it</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {[
-                ['not_subscribed', 'The player has not passed the channel-subscription gate.'],
-                ['player_opted_out', 'The player sent /stop (they can /resume).'],
-                ['bot_blocked_by_player', 'Telegram returned 403 — the player blocked the bot.'],
-                ['min_gap_not_elapsed', '«Ping min gap (hours)» — shared with v1, one counter per player.'],
-                ['daily_cap_reached', '«Ping daily cap» — shared with v1.'],
-                ['quiet_hours', '«Quiet hours start/end/UTC offset» — no proactive contact at night.'],
-                ['daily_budget_reached', '«v2 daily AI budget (USD)» — today’s ledger cost hit the budget.'],
-                ['same_event_cooldown', '«v2 same-event cooldown (hours)» — one reaction per event type per player per window. Set 0 while testing to re-run the same event.'],
-                ['comfort window', '«v2 loss comfort window» + «v2 high-loss threshold» — after a big loss: empathetic tone only, no photo, no link, no play talk.'],
-              ].map(([k, v]) => (
+                ['not_subscribed', '—', 'The player has not passed the channel-subscription gate.'],
+                ['player_opted_out', '—', 'The player sent /stop (they can /resume).'],
+                ['bot_blocked_by_player', '—', 'Telegram returned 403 — the player blocked the bot.'],
+                ['daily_cap_reached', `${g.ping_daily_cap ?? '—'} / day`, '«Max proactive messages per player per day» — the hard daily ceiling.'],
+                ['min_gap_not_elapsed', `${g.ping_min_gap_hours ?? '—'} h`, '«Min gap between messages (hours)» — spacing between any two proactive messages to one player (0 = off). Lower it to react to several events per day.'],
+                ['same_event_cooldown', `${g.same_event_cooldown_hours ?? '—'} h`, '«Same-event cooldown (hours)» — one reaction per event type per player per window. Set 0 while testing to re-run the same event.'],
+                ['quiet_hours', `${g.quiet_hours_start ?? '—'}–${g.quiet_hours_end ?? '—'} (UTC${(g.quiet_hours_utc_offset ?? 0) >= 0 ? '+' : ''}${g.quiet_hours_utc_offset ?? 0})`, '«Quiet hours start/end/UTC offset» — no proactive contact at night.'],
+                ['daily_budget_reached', g.daily_budget_usd ? `$${g.daily_budget_usd} / day` : 'no budget', '«Daily AI budget (USD)» — today’s ledger cost hit the budget.'],
+                ['comfort window', `${g.loss_comfort_hours ?? '—'} h / $${g.loss_high_usd ?? '—'}`, '«Loss comfort window» + «High-loss threshold» — after a big loss: empathetic tone only, no photo, no link, no play talk.'],
+              ].map(([k, cur, v]) => (
                 <TableRow key={k}>
                   <TableCell>
                     <code>{k}</code>
                   </TableCell>
+                  <TableCell sx={{ whiteSpace: 'nowrap' }}>{cur}</TableCell>
                   <TableCell>{v}</TableCell>
                 </TableRow>
               ))}
@@ -862,8 +857,8 @@ const GuideTab = ({ status }) => {
           <Box component="ol" sx={{ pl: 3, my: 0 }}>
             <LI>
               Select the product in the header switcher, then in Settings →
-              Retention bot → «Retention v2» turn <b>v2 enabled</b> ON and
-              leave <b>dry-run</b> ON (safe: nothing is sent).
+              Retention bot → «Proactive agent» turn <b>Agent enabled</b> ON
+              and leave <b>dry-run</b> ON (safe: nothing is sent).
             </LI>
             <LI>
               Link a test player to the Telegram bot: open the bot through a
@@ -890,10 +885,11 @@ const GuideTab = ({ status }) => {
               comfort constraints appear.
             </LI>
             <LI>
-              Blocked? The Guards column names the reason. For repeated
-              testing: set «v2 same-event cooldown» to 0, raise «Ping daily
-              cap», widen quiet hours — or simply delete the previous decision
-              row (that re-arms the cooldown and refunds the budget).
+              Blocked? The Guards column names the reason and the table above
+              names the setting. For repeated testing: set «Same-event
+              cooldown» to 0, raise the daily cap, widen quiet hours — or
+              simply delete the previous decision row (that re-arms the
+              cooldown and refunds the budget).
             </LI>
             <LI>
               When the decisions look right, turn <b>dry-run OFF</b> and
@@ -925,7 +921,7 @@ const GuideTab = ({ status }) => {
   );
 };
 
-const RetentionV2Inner = () => {
+const RetentionAgentInner = () => {
   const notify = useNotify();
   const { permissions } = usePermissions();
   const canWrite = permissions === 'admin';
@@ -991,12 +987,13 @@ const RetentionV2Inner = () => {
 
   return (
     <Box sx={{ p: 2 }}>
-      <Title title="Retention v2 (agent)" />
+      <Title title="Proactive agent" />
       {status && !status.v2_enabled && (
         <Alert severity="info" sx={{ mb: 2 }}>
-          Retention v2 is OFF for this product — the v1 ping matrix is running.
-          Enable it in Settings → Retention bot → «Retention v2» (dry-run stays
-          on until you turn it off, so enabling is safe).
+          The agent is OFF for this product — no proactive messages are sent
+          (the dialogue bot still answers players who write). Enable it in
+          Settings → Retention bot → «Proactive agent» (dry-run stays on until
+          you turn it off, so enabling is safe).
         </Alert>
       )}
       <StatusHeader
@@ -1011,7 +1008,7 @@ const RetentionV2Inner = () => {
       )}
       <Tabs
         value={tab}
-        onChange={(_, v) => navigate(`/retention-v2?tab=${v}`)}
+        onChange={(_, v) => navigate(`/retention-agent?tab=${v}`)}
         sx={{ mb: 2 }}
       >
         <Tab value="events" label={`Events${events ? ` (${events.total})` : ''}`} />
@@ -1051,10 +1048,10 @@ const RetentionV2Inner = () => {
   );
 };
 
-const RetentionV2 = () => (
-  <RequireProduct title="Retention v2 (agent)">
-    <RetentionV2Inner />
+const RetentionAgent = () => (
+  <RequireProduct title="Proactive agent">
+    <RetentionAgentInner />
   </RequireProduct>
 );
 
-export default RetentionV2;
+export default RetentionAgent;

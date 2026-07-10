@@ -16,7 +16,6 @@ import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
-import CampaignIcon from '@mui/icons-material/Campaign';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
@@ -48,7 +47,7 @@ import { KbVariableEdit, KbVariableList } from './resources/KbVariables';
 import { UserCreate, UserEdit, UserList } from './resources/Users';
 import Prompt from './pages/Prompt';
 import Retention from './pages/Retention';
-import RetentionV2 from './pages/RetentionV2';
+import RetentionAgent from './pages/RetentionAgent';
 import Settings from './pages/Settings';
 import SiteMap from './pages/SiteMap';
 import Structure from './pages/Structure';
@@ -206,12 +205,11 @@ const AppMenu = () => {
         <RetentionSubItem tab="prompt" label="Prompt" icon={<TuneIcon fontSize="small" />} />
         <RetentionSubItem tab="photos" label="Media" icon={<PhotoLibraryIcon fontSize="small" />} />
         <RetentionSubItem tab="managers" label="Managers" icon={<SupportAgentIcon fontSize="small" />} />
-        <RetentionSubItem tab="pings" label="Pings" icon={<CampaignIcon fontSize="small" />} />
-        {/* Retention v2 — the agentic, event-driven regime; a full page of its
-            own (per-product toggle in Settings switches between v1 and v2). */}
+        {/* The proactive agent — the event-driven regime that writes first;
+            a full page of its own (enable + tune in Settings → Retention bot). */}
         <Menu.Item
-          to="/retention-v2"
-          primaryText="Retention v2 (agent)"
+          to="/retention-agent"
+          primaryText="Proactive agent"
           leftIcon={<SmartToyIcon />}
         />
         <RetentionSubItem tab="chats" label="Conversations" icon={<ForumIcon fontSize="small" />} />
@@ -298,7 +296,9 @@ const App = () => (
       <Route path="/settings" element={<Settings />} />
       <Route path="/structure" element={<Structure />} />
       <Route path="/retention" element={<Retention />} />
-      <Route path="/retention-v2" element={<RetentionV2 />} />
+      <Route path="/retention-agent" element={<RetentionAgent />} />
+      {/* Legacy bookmark: the old Retention v2 path lands on the agent page. */}
+      <Route path="/retention-v2" element={<RetentionAgent />} />
       <Route path="/api-keys" element={<ApiKeys />} />
     </CustomRoutes>
   </Admin>

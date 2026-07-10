@@ -325,7 +325,7 @@ CREATE TABLE IF NOT EXISTS retention_users (
   session_id           UUID REFERENCES chat_sessions(id),
   last_active_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   -- casino-side activity signals (fed by the partner push webhook / Player-API
-  -- pull; the ping matrix keys on them). NULL until the casino supplies them.
+  -- pull; the agent's state resolver keys on them). NULL until the casino supplies them.
   last_login_at        TIMESTAMPTZ,
   last_played_at       TIMESTAMPTZ,
   last_deposit_at      TIMESTAMPTZ,
@@ -397,10 +397,10 @@ CREATE TABLE IF NOT EXISTS retention_nonces (
   expires_at  TIMESTAMPTZ NOT NULL
 );
 
--- PING MATRIX ---------------------------------------------------------
--- Proactive re-engagement rules: the per-product, admin-managed
--- condition -> action schedule the ping worker evaluates (NOT the KB —
--- rules are settings-like structured data, edited in Retention -> Pings).
+-- LEGACY (retention v1 ping matrix, removed) --------------------------
+-- The rules table stays only as the FK target of historical
+-- retention_pings.rule_id rows on already-deployed databases; no code
+-- reads or writes it anymore.
 CREATE TABLE IF NOT EXISTS retention_rules (
   id               BIGSERIAL PRIMARY KEY,
   product_id       INT NOT NULL REFERENCES products(id),
@@ -425,9 +425,9 @@ CREATE TABLE IF NOT EXISTS retention_rules (
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Ledger of proactive pings: one row per attempted outbound send, so the
--- worker can enforce per-rule cooldowns / caps and the admin can audit what
--- was sent to whom (and what it cost).
+-- Ledger of proactive sends: one row per attempted outbound message, so the
+-- agent worker can enforce per-player caps/gaps and the analytics can audit
+-- what was sent to whom (and what it cost). rule_id is legacy-v1 history.
 CREATE TABLE IF NOT EXISTS retention_pings (
   id                BIGSERIAL PRIMARY KEY,
   product_id        INT NOT NULL REFERENCES products(id),
@@ -440,10 +440,10 @@ CREATE TABLE IF NOT EXISTS retention_pings (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- RETENTION V2 (agentic, event-driven) --------------------------------
+-- RETENTION AGENT (event-driven) --------------------------------------
 -- Canonical casino events (the EPIC-1 taxonomy) pushed by the partner event
 -- webhook or the admin simulator. Append-only; idempotent by
--- (product_id, event_id). The v2 worker consumes rows with processed_at NULL;
+-- (product_id, event_id). The agent worker claims rows with processed_at NULL;
 -- the same log also feeds the deterministic state resolver (loss window,
 -- activity), so rows stay after processing.
 CREATE TABLE IF NOT EXISTS retention_events (
@@ -853,11 +853,6 @@ async def init_db() -> None:
             default_product_id = await _migrate_tenancy(conn)
             await seed_kb_variables(conn, default_product_id)
             await _migrate_legacy_contact_url(conn, default_product_id)
-            # Top up EVERY product's ping matrix with any starter rules it is
-            # missing (idempotent, additive — never touches existing rules), so
-            # an already-live product picks up new starter pings on deploy.
-            for pid in await conn.fetch("SELECT id FROM products"):
-                await seed_starter_retention_rules(conn, int(pid["id"]))
 
 
 # ---------------------------------------------------------------------------
@@ -1673,7 +1668,7 @@ async def create_product(partner_id: int, slug: str, name: str
 
     A new casino starts working out of the box: widget key generated, the KB
     variables registry, the generic starter topics + KB texts (starter_kb.py),
-    the starter retention-KB document, the starter ping-matrix rules and the
+    the starter retention-KB document and the
     full prompt-variables sets — support AND retention (template defaults,
     brand name = the product's name) — are all seeded into the PRODUCT layer,
     so nothing is inherited from another brand's global overrides. The owner then translates/uniquifies
@@ -1696,7 +1691,6 @@ async def create_product(partner_id: int, slug: str, name: str
     await seed_kb_variables(product_id=row["id"])
     await seed_starter_kb(row["id"])
     await seed_starter_retention_kb(row["id"])
-    await seed_starter_retention_rules(product_id=row["id"])
     await set_product_setting(row["id"], "prompt_variables",
                               starter_kb.starter_prompt_variables(name),
                               updated_by="starter-seed")
@@ -3054,132 +3048,8 @@ async def set_retention_unreachable(rid: int, unreachable: bool = True) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Ping matrix: rules CRUD + eligibility + ledger
+# Proactive-send ledger + the shared per-player anti-annoyance counters
 # ---------------------------------------------------------------------------
-_RULE_COLS = ("id, product_id, name, enabled, trigger_kind, inactivity_days, "
-              "action, intent, vip_tiers, cooldown_days, priority, updated_by, "
-              "created_at, updated_at")
-
-
-def _row_to_rule(row: asyncpg.Record) -> dict[str, Any]:
-    d = dict(row)
-    d["id"] = int(d["id"])
-    tiers = d.get("vip_tiers")
-    if isinstance(tiers, str):
-        try:
-            d["vip_tiers"] = json.loads(tiers)
-        except ValueError:
-            d["vip_tiers"] = []
-    for ts in ("created_at", "updated_at"):
-        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
-            d[ts] = d[ts].isoformat()
-    return d
-
-
-async def list_retention_rules(product_id: int,
-                               only_enabled: bool = False) -> list[dict[str, Any]]:
-    q = (f"SELECT {_RULE_COLS} FROM retention_rules WHERE product_id = $1 "
-         + ("AND enabled " if only_enabled else "")
-         + "ORDER BY priority DESC, id")
-    rows = await _pool.fetch(q, product_id)
-    return [_row_to_rule(r) for r in rows]
-
-
-async def create_retention_rule(product_id: int, fields: dict[str, Any],
-                                updated_by: Optional[str] = None) -> dict[str, Any]:
-    row = await _pool.fetchrow(
-        "INSERT INTO retention_rules (product_id, name, enabled, trigger_kind, "
-        " inactivity_days, action, intent, vip_tiers, cooldown_days, priority, "
-        " updated_by) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
-        f"RETURNING {_RULE_COLS}",
-        product_id, fields["name"], bool(fields.get("enabled", True)),
-        fields.get("trigger_kind", "bot_inactivity"),
-        int(fields.get("inactivity_days", 7)),
-        fields.get("action", "message"), fields.get("intent", ""),
-        json.dumps(fields.get("vip_tiers") or []),
-        int(fields.get("cooldown_days", 14)), int(fields.get("priority", 0)),
-        updated_by,
-    )
-    return _row_to_rule(row)
-
-
-async def update_retention_rule(rule_id: int, product_id: int,
-                                fields: dict[str, Any],
-                                updated_by: Optional[str] = None
-                                ) -> Optional[dict[str, Any]]:
-    """Partial update; only supplied fields change. Scoped by product_id."""
-    sets = ["updated_at = now()", "updated_by = $3"]
-    args: list[Any] = [rule_id, product_id, updated_by]
-    scalar = {"name": str, "trigger_kind": str, "action": str, "intent": str}
-    for f, cast in scalar.items():
-        if f in fields:
-            args.append(cast(fields[f]))
-            sets.append(f"{f} = ${len(args)}")
-    for f in ("inactivity_days", "cooldown_days", "priority"):
-        if f in fields:
-            args.append(int(fields[f]))
-            sets.append(f"{f} = ${len(args)}")
-    if "enabled" in fields:
-        args.append(bool(fields["enabled"]))
-        sets.append(f"enabled = ${len(args)}")
-    if "vip_tiers" in fields:
-        args.append(json.dumps(fields.get("vip_tiers") or []))
-        sets.append(f"vip_tiers = ${len(args)}")
-    row = await _pool.fetchrow(
-        f"UPDATE retention_rules SET {', '.join(sets)} "
-        f"WHERE id = $1 AND product_id = $2 RETURNING {_RULE_COLS}",
-        *args,
-    )
-    return _row_to_rule(row) if row else None
-
-
-async def delete_retention_rule(rule_id: int, product_id: int) -> bool:
-    # The ledger keeps history: detach its rows instead of failing on the FK.
-    async with _acquire() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                "UPDATE retention_pings SET rule_id = NULL WHERE rule_id = $1",
-                rule_id)
-            result = await conn.execute(
-                "DELETE FROM retention_rules WHERE id = $1 AND product_id = $2",
-                rule_id, product_id)
-    return result.endswith("1")
-
-
-async def eligible_ping_users(product_id: int, *, min_gap_hours: int,
-                              daily_cap: int, limit: int = 50
-                              ) -> list[dict[str, Any]]:
-    """Players the worker may consider this run: subscribed, not opted out, not
-    unreachable, past the global inter-ping gap and under the daily ping cap.
-    Most-idle first. Per-rule thresholds/cooldowns are evaluated by the caller.
-    """
-    rows = await _pool.fetch(
-        f"SELECT {_RU_COLS} FROM retention_users "
-        "WHERE product_id = $1 AND subscribed AND NOT pings_muted "
-        "  AND NOT unreachable "
-        "  AND (last_ping_at IS NULL "
-        "       OR last_ping_at < now() - make_interval(hours => $2)) "
-        "  AND (pings_day IS DISTINCT FROM CURRENT_DATE "
-        "       OR pings_sent_today < $3) "
-        "ORDER BY last_active_at ASC LIMIT $4",
-        product_id, int(min_gap_hours), int(daily_cap), int(limit),
-    )
-    return [_row_to_retention_user(r) for r in rows]
-
-
-async def ping_rule_recently_fired(rid: int, rule_id: int,
-                                   cooldown_days: int) -> bool:
-    """True when this rule already pinged this player within its cooldown."""
-    val = await _pool.fetchval(
-        "SELECT EXISTS(SELECT 1 FROM retention_pings "
-        "WHERE retention_user_id = $1 AND rule_id = $2 AND status = 'sent' "
-        "AND created_at > now() - make_interval(days => $3))",
-        rid, rule_id, int(cooldown_days),
-    )
-    return bool(val)
-
-
 async def record_retention_ping(product_id: int, rid: int,
                                 rule_id: Optional[int], action: str,
                                 status: str, detail: Optional[str] = None,
@@ -3214,40 +3084,8 @@ async def record_retention_ping(product_id: int, rid: int,
                 )
 
 
-async def list_retention_pings(product_id: int, page: int = 1,
-                               page_size: int = 50) -> dict[str, Any]:
-    """The ping ledger for the admin (joined with player + rule names)."""
-    offset = max(page - 1, 0) * page_size
-    total = await _pool.fetchval(
-        "SELECT COUNT(*) FROM retention_pings WHERE product_id = $1", product_id)
-    rows = await _pool.fetch(
-        "SELECT p.id, p.retention_user_id, p.rule_id, p.action, p.status, "
-        "       p.detail, p.cost_usd, p.created_at, "
-        "       u.tg_username, u.full_name, u.player_id, r.name AS rule_name "
-        "FROM retention_pings p "
-        "JOIN retention_users u ON u.id = p.retention_user_id "
-        "LEFT JOIN retention_rules r ON r.id = p.rule_id "
-        "WHERE p.product_id = $1 "
-        "ORDER BY p.id DESC LIMIT $2 OFFSET $3",
-        product_id, page_size, offset,
-    )
-    items = []
-    for r in rows:
-        d = dict(r)
-        d["id"] = int(d["id"])
-        d["retention_user_id"] = int(d["retention_user_id"])
-        if d.get("rule_id") is not None:
-            d["rule_id"] = int(d["rule_id"])
-        if d.get("cost_usd") is not None:
-            d["cost_usd"] = float(d["cost_usd"])
-        if hasattr(d.get("created_at"), "isoformat"):
-            d["created_at"] = d["created_at"].isoformat()
-        items.append(d)
-    return {"items": items, "total": int(total or 0)}
-
-
 # ---------------------------------------------------------------------------
-# Retention v2: canonical event log + the agent decision ledger
+# Retention agent: canonical event log + the decision ledger
 # ---------------------------------------------------------------------------
 def _row_to_retention_event(row: asyncpg.Record) -> dict[str, Any]:
     return {
@@ -3283,23 +3121,38 @@ async def ingest_retention_event(product_id: int, *, event_id: str,
     return int(row["id"]) if row else None
 
 
-async def unprocessed_retention_events(product_id: int, limit: int = 50
-                                       ) -> list[dict[str, Any]]:
-    """The v2 worker's queue: oldest unprocessed events first."""
+async def claim_retention_events(product_id: int, limit: int = 50
+                                 ) -> list[dict[str, Any]]:
+    """Atomically CLAIM a batch of unprocessed events (oldest first).
+
+    Claiming = stamping processed_at in the same statement that selects the
+    rows (FOR UPDATE SKIP LOCKED), so two concurrent drainers — the worker
+    sweep and the admin «Process queue now» button, or two service instances —
+    can never pick up the same event and each send a message for it (the bug
+    behind one deposit producing two thank-you notes). A claimed event that
+    later fails mid-pipeline stays processed — identical to the previous
+    mark-in-finally behaviour, just race-free.
+    """
     rows = await _pool.fetch(
-        "SELECT * FROM retention_events "
-        "WHERE product_id = $1 AND processed_at IS NULL "
-        "ORDER BY id ASC LIMIT $2",
+        "UPDATE retention_events SET processed_at = now() "
+        "WHERE id IN (SELECT id FROM retention_events "
+        "             WHERE product_id = $1 AND processed_at IS NULL "
+        "             ORDER BY id ASC LIMIT $2 FOR UPDATE SKIP LOCKED) "
+        "RETURNING *",
         product_id, int(limit),
     )
+    rows = sorted(rows, key=lambda r: r["id"])  # UPDATE..RETURNING has no ORDER
     return [_row_to_retention_event(r) for r in rows]
 
 
-async def mark_retention_event_processed(event_pk: int) -> None:
-    await _pool.execute(
-        "UPDATE retention_events SET processed_at = now() WHERE id = $1",
-        int(event_pk),
+async def count_unprocessed_retention_events(product_id: int) -> int:
+    """Queue depth for the admin status header."""
+    val = await _pool.fetchval(
+        "SELECT COUNT(*) FROM retention_events "
+        "WHERE product_id = $1 AND processed_at IS NULL",
+        product_id,
     )
+    return int(val or 0)
 
 
 async def list_retention_events(product_id: int, page: int = 1,
@@ -3367,7 +3220,7 @@ async def touch_retention_activity(product_id: int, player_id: str,
                                    field: str, ts: Any) -> int:
     """Forward-only bump of one casino-activity timestamp (the legacy bridge:
     canonical events feed the same last_login/played/deposit_at fields the v1
-    ping matrix keys on). GREATEST guards out-of-order event delivery — an
+    state resolver keys on). GREATEST guards out-of-order event delivery — an
     older event never rewinds the timestamp. No linked player row = no-op."""
     if field not in _RETENTION_ACTIVITY_FIELDS:
         raise ValueError(f"not an activity field: {field!r}")
@@ -3976,36 +3829,6 @@ async def seed_starter_retention_kb(product_id: int) -> None:
         "VALUES ($1, $2, $3, '[]'::jsonb, 'starter-seed')",
         product_id, RETENTION_KB_DOC_TITLE, starter_kb.STARTER_RETENTION_KB,
     )
-
-
-async def seed_starter_retention_rules(conn: Optional[asyncpg.Connection] = None,
-                                       product_id: int = 0) -> None:
-    """Top up a product's ping matrix with the starter re-engagement rules.
-
-    Runs both at boot (for every existing product) and at create_product (for a
-    new one), so each casino starts with a working `bot_inactivity` ping ladder.
-    Idempotent and additive: a rule is inserted only when the product has no
-    rule with that exact name, so it never touches (or duplicates) rules the
-    owner already created or edited — same never-overwrite contract as
-    seed_kb_variables / seed_starter_kb.
-    """
-    import starter_kb  # local import (starter_kb → prompts) to avoid a cycle
-
-    target = conn or _pool
-    for r in starter_kb.STARTER_RETENTION_RULES:
-        await target.execute(
-            """
-            INSERT INTO retention_rules
-                (product_id, name, enabled, trigger_kind, inactivity_days,
-                 action, intent, vip_tiers, cooldown_days, priority, updated_by)
-            SELECT $1, $2, TRUE, $3, $4, $5, $6, '[]'::jsonb, $7, $8, 'starter-seed'
-            WHERE NOT EXISTS (
-                SELECT 1 FROM retention_rules WHERE product_id = $1 AND name = $2
-            )
-            """,
-            product_id, r["name"], r["trigger_kind"], int(r["inactivity_days"]),
-            r["action"], r["intent"], int(r["cooldown_days"]), int(r["priority"]),
-        )
 
 
 # --- retention_managers ----------------------------------------------------

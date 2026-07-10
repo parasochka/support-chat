@@ -31,7 +31,8 @@ const GROUP_ORDER = ['antispam', 'model', 'general', 'retention', 'language'];
 // Sub-headers for grouped fields inside a settings group (schema `section`).
 const SECTION_LABELS = {
   progression: 'Photo unlock progression (Stage × VIP Level)',
-  v2: 'Retention v2 (agentic, event-driven)',
+  agent: 'Proactive agent (event-driven)',
+  guards: 'Send-frequency guards (per-player protection)',
 };
 
 // ---------------------------------------------------------------------------

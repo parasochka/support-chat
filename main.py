@@ -79,31 +79,25 @@ async def lifespan(app: FastAPI):
         os.makedirs(config.RETENTION_MEDIA_DIR, exist_ok=True)
     except OSError as exc:
         log.warning("could not create RETENTION_MEDIA_DIR: %s", exc)
-    # Proactive ping worker (the retention "ping matrix"). Deploy-level switch;
-    # each product still opts in via the `retention.pings_enabled` setting, and
-    # the sweep takes a Postgres advisory lock so multiple instances don't race.
-    ping_task = None
-    v2_task = None
+    # The retention-agent worker (event-driven proactive loop). Deploy-level
+    # switch; each product still opts in via the hot `retention.v2_enabled`
+    # setting, the cadence is the hot `retention.worker_interval_sec` setting,
+    # and event pickup is an atomic claim (plus a Postgres advisory lock per
+    # sweep), so multiple instances never double-send.
+    agent_task = None
     if config.RETENTION_SCHEDULER_ENABLED:
-        import retention_pings
         import retention_v2
-        ping_task = asyncio.create_task(retention_pings.scheduler_loop())
-        # Retention v2 (agentic, event-driven) runs NEXT TO the v1 sweep under
-        # the same deploy switch; per product exactly one regime acts (the
-        # hot `retention.v2_enabled` setting — each sweep skips the other's
-        # products), so both loops idle cheaply when unused.
-        v2_task = asyncio.create_task(retention_v2.scheduler_loop())
+        agent_task = asyncio.create_task(retention_v2.scheduler_loop())
     log.info("Startup complete")
     try:
         yield
     finally:
-        for task in (ping_task, v2_task):
-            if task is not None:
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
+        if agent_task is not None:
+            agent_task.cancel()
+            try:
+                await agent_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         await db.close()
         log.info("Shutdown complete")
 

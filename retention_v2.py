@@ -1,9 +1,9 @@
-"""Retention v2 — the agentic, event-driven proactive loop.
+"""The retention agent — the event-driven proactive loop.
 
-The parallel regime next to the v1 ping matrix (retention_pings.py): canonical
-casino events (player_sync.py -> retention_events) wake an AGENT that decides
-whether Nika reacts — congratulate a deposit, sympathize after a rough losing
-day, celebrate a level-up, or (very often, correctly) stay silent. The split of
+The ONE proactive regime: canonical casino events (player_sync.py ->
+retention_events) wake an AGENT that decides whether Nika reacts —
+congratulate a deposit, sympathize after a rough losing day, celebrate a
+level-up, or (very often, correctly) stay silent. The split of
 responsibilities is the whole design:
 
   - DETERMINISTIC GUARDS decide whether contact is ALLOWED at all and which
@@ -19,12 +19,13 @@ responsibilities is the whole design:
     the outcome — state snapshot, guard verdict, agent decision, cost,
     delivery — so "why did/didn't the bot write?" is always answerable.
 
-Per-product switch: `retention.v2_enabled` (hot). Exactly one proactive regime
-runs per product — the v1 sweep skips v2 products and vice versa. `v2_dry_run`
-(ships ON) makes the loop decide and log WITHOUT sending, so an owner reviews
-real decisions before giving the agent a voice. Anti-annoyance state
-(last_ping_at, daily counters) is SHARED with v1 via db.record_retention_ping,
-so switching regimes never resets the player's protection.
+Per-product switch: `retention.v2_enabled` (hot; the historic `v2_` key prefix
+survives in settings keys, endpoint paths, table names and admin-event types
+for stored-data compatibility — every user-visible surface says "agent").
+`v2_dry_run` (ships ON) makes the loop decide and log WITHOUT sending, so an
+owner reviews real decisions before giving the agent a voice. Anti-annoyance
+state (last_ping_at, daily counters) lives on retention_users via
+db.record_retention_ping.
 """
 from __future__ import annotations
 
@@ -45,13 +46,11 @@ import retention
 import settings
 import telegram_format
 import tenancy
-from retention_pings import _in_quiet_hours
 from telegram_transport import TelegramClient, inline_keyboard
 
 log = logging.getLogger(__name__)
 
-# Arbitrary but stable: the advisory-lock key for the v2 sweep (distinct from
-# the v1 ping sweep's, so the two regimes never serialize each other).
+# Arbitrary but stable: the advisory-lock key for the agent sweep.
 _ADVISORY_LOCK_KEY = 0x50494E56  # "PINV"
 
 # Events that may wake the agent at all. Everything else is state food: it
@@ -100,12 +99,28 @@ _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 # ---------------------------------------------------------------------------
 # Scheduler loop (started from main.py lifespan, next to the v1 loop)
 # ---------------------------------------------------------------------------
+def worker_interval_sec() -> int:
+    """The hot worker cadence (`retention.worker_interval_sec`, global layer).
+
+    Read live on every loop iteration so a Settings save applies on the next
+    tick without a redeploy. Clamped to 5s..1h — a sweep is a couple of cheap
+    SELECTs when the queues are empty, so a short cadence is fine.
+    """
+    tenancy.set_current_product(None)  # the loop is global — never read a
+    # per-product override left on the ContextVar by the previous sweep
+    try:
+        v = int(settings.retention().get("worker_interval_sec") or 0)
+    except Exception:  # noqa: BLE001 - a bad stored value must not kill the loop
+        v = 0
+    return min(max(v or config.RETENTION_WORKER_INTERVAL_SEC, 5), 3600)
+
+
 async def scheduler_loop() -> None:
-    """Wake up every RETENTION_PING_INTERVAL_SEC and drain the event queues."""
-    interval = max(int(config.RETENTION_PING_INTERVAL_SEC), 30)
-    log.info("retention_v2_scheduler_started interval_sec=%s", interval)
+    """Drain the event queues on the hot-reloaded worker cadence."""
+    log.info("retention_agent_scheduler_started interval_sec=%s",
+             worker_interval_sec())
     while True:
-        await asyncio.sleep(interval)
+        await asyncio.sleep(worker_interval_sec())
         try:
             stats = await run_due_events()
             if stats.get("decided") or stats.get("sent"):
@@ -142,14 +157,20 @@ async def run_due_events() -> dict[str, Any]:
 
 async def run_product_events(product: dict[str, Any], *,
                              limit: Optional[int] = None) -> dict[str, Any]:
-    """Drain one product's unprocessed events through the decision pipeline."""
+    """Drain one product's unprocessed events through the decision pipeline.
+
+    Events are CLAIMED atomically (db.claim_retention_events): the worker
+    sweep, the admin «Process queue now» button and any second service
+    instance can all run concurrently — each event still reaches the pipeline
+    exactly once, so one deposit can never produce two thank-you messages.
+    """
     pid = int(product["id"])
     tenancy.set_current_product(pid)
     cfg = settings.retention()
     if not cfg.get("v2_enabled"):
-        return {"skipped": "v2_disabled"}
+        return {"skipped": "agent_disabled"}
     batch = int(limit or cfg["ping_batch_size"])
-    events = await db.unprocessed_retention_events(pid, limit=batch)
+    events = await db.claim_retention_events(pid, limit=batch)
     if not events:
         return {"events": 0, "decided": 0, "sent": 0}
     decided = sent = 0
@@ -163,8 +184,6 @@ async def run_product_events(product: dict[str, Any], *,
         except Exception:  # noqa: BLE001 - one bad event must not wedge the queue
             log.exception("retention_v2_event_failed product=%s event=%s",
                           pid, evt.get("id"))
-        finally:
-            await db.mark_retention_event_processed(evt["id"])
     return {"events": len(events), "decided": decided, "sent": sent}
 
 
@@ -246,6 +265,19 @@ async def resolve_player_state(product_id: int, ru: dict[str, Any],
 # ---------------------------------------------------------------------------
 # Guards (deterministic — the agent picks only among what these permit)
 # ---------------------------------------------------------------------------
+def _in_quiet_hours(cfg: dict[str, Any]) -> bool:
+    """True when the product's local time sits inside the no-contact window."""
+    start = int(cfg["quiet_hours_start"])
+    end = int(cfg["quiet_hours_end"])
+    if start == end:
+        return False  # zero-length window = no quiet hours
+    offset = int(cfg["quiet_hours_utc_offset"])
+    hour = (_dt.datetime.now(_dt.timezone.utc).hour + offset) % 24
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end  # window wraps midnight
+
+
 async def guard_check(product_id: int, ru: dict[str, Any],
                       evt: dict[str, Any], state: dict[str, Any],
                       cfg: dict[str, Any]) -> dict[str, Any]:
