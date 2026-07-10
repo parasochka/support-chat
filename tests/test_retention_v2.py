@@ -201,7 +201,7 @@ def _patch_guard_env(monkeypatch, *, cost=0.0, recent=False, loss=None):
     monkeypatch.setattr(db, "retention_v2_cost_today", _cost)
     monkeypatch.setattr(db, "recent_v2_decision_exists", _recent)
     monkeypatch.setattr(db, "last_loss_signal_at", _last_loss)
-    monkeypatch.setattr(retention_v2, "_in_quiet_hours", lambda cfg: False)
+    monkeypatch.setattr(retention_v2, "_in_quiet_hours", lambda cfg, ru=None: False)
 
 
 async def test_guard_allows_clean_player_and_offers_photo(monkeypatch):
@@ -505,7 +505,7 @@ async def test_process_event_live_sends_and_ledgers(monkeypatch):
         return ({"action": "message", "tone": "warm", "intent": "hi",
                  "reason": "r"}, 0.001)
 
-    async def _send(product, ru, evt, decision, *, comfort, cfg):
+    async def _send(product, ru, evt, decision, *, comfort, cfg, state=None):
         sent["comfort"] = comfort
         return True, 0.003, None
 

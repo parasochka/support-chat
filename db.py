@@ -335,6 +335,21 @@ CREATE TABLE IF NOT EXISTS retention_users (
   last_ping_at         TIMESTAMPTZ,
   pings_day            DATE,
   pings_sent_today     INT NOT NULL DEFAULT 0,
+  -- responsible-gaming hold from the casino feed (rg_hold / self-exclusion):
+  -- TRUE blocks every proactive touch, permanently, with no bot-side override.
+  rg_hold              BOOLEAN NOT NULL DEFAULT FALSE,
+  -- the player's timezone from the casino profile feed (IANA name or a
+  -- "+03:00"/"UTC+3" offset); quiet hours + the CURRENT TIME block use it,
+  -- falling back to the product-level quiet_hours_utc_offset.
+  tz_name              TEXT,
+  -- consecutive delivered proactive touches with no player reply since —
+  -- the reply-adaptive backoff counter (reset on any inbound message).
+  unanswered_touches   INT NOT NULL DEFAULT 0,
+  -- inactivity-ladder state: the current cycle number (bumped when the player
+  -- comes back) and the highest ladder step CONSUMED in this cycle (a step is
+  -- consumed only by a terminal outcome, not by event creation).
+  inact_cycle          INT NOT NULL DEFAULT 0,
+  inact_step_done      INT NOT NULL DEFAULT 0,
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -455,7 +470,11 @@ CREATE TABLE IF NOT EXISTS retention_events (
   player_id     TEXT NOT NULL,
   ts            TIMESTAMPTZ NOT NULL,        -- when it happened at the casino
   payload       JSONB NOT NULL DEFAULT '{}',
-  source        TEXT NOT NULL DEFAULT 'webhook',  -- 'webhook' | 'simulator'
+  source        TEXT NOT NULL DEFAULT 'webhook',  -- 'webhook'|'simulator'|'system'
+  -- deferred processing: NULL = due immediately; otherwise the worker claims
+  -- the event only once due_at has passed (transient-guard deferral, the loss
+  -- delay, follow-up touches — one primitive for every "later" contour).
+  due_at        TIMESTAMPTZ,
   processed_at  TIMESTAMPTZ,                 -- NULL = still queued for the worker
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (product_id, event_id)
@@ -679,6 +698,26 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         "pings_day DATE",
         "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
         "pings_sent_today INT NOT NULL DEFAULT 0",
+        # --- Retention agent: RG hold, per-player timezone, backoff, ladder --
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "rg_hold BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "tz_name TEXT",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "unanswered_touches INT NOT NULL DEFAULT 0",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "inact_cycle INT NOT NULL DEFAULT 0",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "inact_step_done INT NOT NULL DEFAULT 0",
+        # Deferred events (transient-guard deferral / loss delay / follow-ups).
+        "ALTER TABLE retention_events ADD COLUMN IF NOT EXISTS "
+        "due_at TIMESTAMPTZ",
+        "CREATE INDEX IF NOT EXISTS idx_retention_events_queue "
+        "ON retention_events(product_id, due_at) WHERE processed_at IS NULL",
+        # Read-only offers feed (the platform's Player Offers API, Stage-4
+        # contract): base URL only; auth reuses player_api_key_enc.
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "offers_api_url TEXT",
         # Retention analytics + the Telegram-session join key on the ping
         # reply-rate metric probe by (product, tg_user).
         "CREATE INDEX IF NOT EXISTS idx_chat_sessions_product_tg "
@@ -1411,7 +1450,8 @@ _event_sample_hits: dict[str, "_deque[float]"] = {}
 
 
 async def log_admin_event_sampled(session_id: Optional[str], type_: str,
-                                  payload: Optional[dict[str, Any]] = None) -> None:
+                                  payload: Optional[dict[str, Any]] = None,
+                                  product_id: Optional[int] = None) -> None:
     """log_admin_event with a per-type budget; excess events are dropped."""
     import time as _time
     now = _time.monotonic()
@@ -1421,7 +1461,10 @@ async def log_admin_event_sampled(session_id: Optional[str], type_: str,
     if len(hits) >= _EVENT_SAMPLE_MAX_PER_WINDOW:
         return
     hits.append(now)
-    await log_admin_event(session_id, type_, payload)
+    if product_id is None:
+        await log_admin_event(session_id, type_, payload)
+    else:
+        await log_admin_event(session_id, type_, payload, product_id=product_id)
 
 
 async def record_rate_hit(ip: str) -> None:
@@ -1547,6 +1590,7 @@ def _row_to_product(row: asyncpg.Record) -> dict[str, Any]:
         "telegram_channel_id": row["telegram_channel_id"],
         "telegram_channel_url": row["telegram_channel_url"],
         "player_api_url": row["player_api_url"],
+        "offers_api_url": row["offers_api_url"],
         "site_url": row["site_url"],
         "has_player_api_key": row["player_api_key_enc"] is not None,
         "retention_enabled": row["retention_enabled"],
@@ -1564,7 +1608,7 @@ _PRODUCT_COLS = ("id, partner_id, slug, name, widget_key, active, "
                  "handshake_secret_enc, telegram_bot_token_enc, "
                  "telegram_bot_username, telegram_webhook_secret, "
                  "telegram_channel_id, telegram_channel_url, player_api_url, "
-                 "site_url, player_api_key_enc, retention_enabled, "
+                 "offers_api_url, site_url, player_api_key_enc, retention_enabled, "
                  "turnstile_site_key, turnstile_secret_enc, "
                  "created_at, updated_at")
 
@@ -1808,6 +1852,7 @@ async def update_product_telegram_config(
     telegram_channel_id: Any = UNSET,
     telegram_channel_url: Any = UNSET,
     player_api_url: Any = UNSET,
+    offers_api_url: Any = UNSET,
     retention_enabled: Any = UNSET,
 ) -> Optional[dict[str, Any]]:
     """Set the NON-secret Telegram/player config on a product (partial update)."""
@@ -1817,6 +1862,7 @@ async def update_product_telegram_config(
                      ("telegram_channel_id", telegram_channel_id),
                      ("telegram_channel_url", telegram_channel_url),
                      ("player_api_url", player_api_url),
+                     ("offers_api_url", offers_api_url),
                      ("retention_enabled", retention_enabled)):
         if val is UNSET:
             continue
@@ -2855,7 +2901,15 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any,
 _RETENTION_PROFILE_FIELDS = (
     "full_name", "email", "activation_status", "country",
     "balance", "vip_level", "registration_date",
+    # not model-visible (outside prompts._CONTEXT_FIELDS), but part of the
+    # partner profile feed: the player's timezone (quiet hours / time block).
+    "tz_name",
 )
+
+# Boolean profile flags from the casino feed. rg_hold is the responsible-gaming
+# hold (rg_hold / self-exclusion, normalized in player_sync): TRUE permanently
+# blocks every proactive touch; only the casino clears it.
+_RETENTION_PROFILE_BOOL_FIELDS = ("rg_hold",)
 
 
 def _row_to_retention_user(row: asyncpg.Record) -> dict[str, Any]:
@@ -2880,6 +2934,7 @@ _RU_COLS = (
     "msgs_since_photo, photos_day, photos_sent_today, conv_lang, session_id, "
     "last_active_at, last_login_at, last_played_at, last_deposit_at, "
     "pings_muted, unreachable, last_ping_at, pings_day, pings_sent_today, "
+    "rg_hold, tz_name, unanswered_touches, inact_cycle, inact_step_done, "
     "created_at, updated_at"
 )
 
@@ -2983,15 +3038,20 @@ async def update_retention_profile(product_id: int, player_id: str,
     value that doesn't parse is dropped rather than failing the update.
     """
     prof_cols = [f for f in _RETENTION_PROFILE_FIELDS if f in profile]
+    bool_cols = [f for f in _RETENTION_PROFILE_BOOL_FIELDS
+                 if isinstance(profile.get(f), bool)]
     act_cols = [f for f in _RETENTION_ACTIVITY_FIELDS
                 if f in profile and _as_ts(profile.get(f)) is not None]
-    if not prof_cols and not act_cols:
+    if not prof_cols and not bool_cols and not act_cols:
         return 0
     sets = ["profile_source = $3", "profile_updated_at = now()",
             "updated_at = now()"]
     args: list[Any] = [product_id, player_id, profile_source]
     for f in prof_cols:
         args.append(_as_text(profile.get(f)))
+        sets.append(f"{f} = ${len(args)}")
+    for f in bool_cols:
+        args.append(bool(profile.get(f)))
         sets.append(f"{f} = ${len(args)}")
     for f in act_cols:
         args.append(_as_ts(profile.get(f)))
@@ -3074,7 +3134,11 @@ async def record_retention_ping(product_id: int, rid: int,
                     "UPDATE retention_users SET last_ping_at = now(), "
                     "pings_sent_today = CASE WHEN pings_day = CURRENT_DATE "
                     "  THEN pings_sent_today + 1 ELSE 1 END, "
-                    "pings_day = CURRENT_DATE, updated_at = now() "
+                    "pings_day = CURRENT_DATE, "
+                    # reply-adaptive backoff: one more delivered touch with no
+                    # reply yet; any inbound player message resets the counter.
+                    "unanswered_touches = unanswered_touches + 1, "
+                    "updated_at = now() "
                     "WHERE id = $1", rid,
                 )
             else:
@@ -3098,6 +3162,7 @@ def _row_to_retention_event(row: asyncpg.Record) -> dict[str, Any]:
         "ts": _iso(row["ts"]),
         "payload": _json_value(row["payload"]) or {},
         "source": row["source"],
+        "due_at": _iso(row["due_at"]) if "due_at" in row.keys() else None,
         "processed_at": _iso(row["processed_at"]),
         "created_at": _iso(row["created_at"]),
     }
@@ -3107,16 +3172,18 @@ async def ingest_retention_event(product_id: int, *, event_id: str,
                                  event_name: str, player_id: str,
                                  ts: Any, payload: dict[str, Any],
                                  event_version: str = "1.0",
-                                 source: str = "webhook") -> Optional[int]:
+                                 source: str = "webhook",
+                                 due_at: Any = None) -> Optional[int]:
     """Append one canonical event. Idempotent by (product_id, event_id):
-    a duplicate returns None and writes nothing (at-least-once delivery)."""
+    a duplicate returns None and writes nothing (at-least-once delivery).
+    `due_at` schedules processing for later (synthetic follow-ups)."""
     row = await _pool.fetchrow(
         "INSERT INTO retention_events (product_id, event_id, event_name, "
-        " event_version, player_id, ts, payload, source) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8) "
+        " event_version, player_id, ts, payload, source, due_at) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9) "
         "ON CONFLICT (product_id, event_id) DO NOTHING RETURNING id",
         product_id, event_id, event_name, event_version, player_id,
-        _as_ts(ts), json.dumps(payload or {}), source,
+        _as_ts(ts), json.dumps(payload or {}), source, _as_ts(due_at),
     )
     return int(row["id"]) if row else None
 
@@ -3137,12 +3204,47 @@ async def claim_retention_events(product_id: int, limit: int = 50
         "UPDATE retention_events SET processed_at = now() "
         "WHERE id IN (SELECT id FROM retention_events "
         "             WHERE product_id = $1 AND processed_at IS NULL "
+        "               AND (due_at IS NULL OR due_at <= now()) "
         "             ORDER BY id ASC LIMIT $2 FOR UPDATE SKIP LOCKED) "
         "RETURNING *",
         product_id, int(limit),
     )
     rows = sorted(rows, key=lambda r: r["id"])  # UPDATE..RETURNING has no ORDER
     return [_row_to_retention_event(r) for r in rows]
+
+
+async def defer_retention_event(event_pk: int, due_at: Any) -> None:
+    """Put a CLAIMED event back on the queue with a due time (transient-guard
+    deferral / the loss delay). The claim stamped processed_at; clearing it +
+    setting due_at re-queues the row for the first sweep past due_at."""
+    await _pool.execute(
+        "UPDATE retention_events SET processed_at = NULL, due_at = $2 "
+        "WHERE id = $1", int(event_pk), _as_ts(due_at),
+    )
+
+
+async def close_retention_event(event_pk: int) -> None:
+    """Terminally close an event that may or may not be claimed (supersede /
+    cancel-on-return of a still-queued synthetic event)."""
+    await _pool.execute(
+        "UPDATE retention_events SET processed_at = COALESCE(processed_at, now()) "
+        "WHERE id = $1", int(event_pk),
+    )
+
+
+async def get_open_retention_event(product_id: int, player_id: str,
+                                   event_name: str
+                                   ) -> Optional[dict[str, Any]]:
+    """The player's LIVE (unprocessed, possibly deferred) event of one type —
+    the ladder's one-live-inactivity-event invariant reads through this."""
+    row = await _pool.fetchrow(
+        "SELECT * FROM retention_events "
+        "WHERE product_id = $1 AND player_id = $2 AND event_name = $3 "
+        "  AND processed_at IS NULL "
+        "ORDER BY id DESC LIMIT 1",
+        product_id, player_id, event_name,
+    )
+    return _row_to_retention_event(row) if row else None
 
 
 async def count_unprocessed_retention_events(product_id: int) -> int:
@@ -3249,6 +3351,119 @@ async def get_retention_user_by_player(product_id: int, player_id: str
         product_id, player_id,
     )
     return _row_to_retention_user(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Inactivity ladder state (the agent's dormancy contour)
+# ---------------------------------------------------------------------------
+async def inactivity_candidates(product_id: int, min_days: int,
+                                limit: int = 500) -> list[dict[str, Any]]:
+    """Players idle past the FIRST ladder step, eligible for a proactive touch.
+
+    Idleness basis = the most recent of the casino activity timestamps AND the
+    player's own Telegram activity (last_active_at) — a player who chatted with
+    the bot yesterday is not "gone" even if the casino feed is silent. Hard
+    exclusions (unlinked, unsubscribed, opted out, blocked bot, rg_hold) are
+    filtered here; the transient guards run later, per event, in the pipeline.
+    """
+    rows = await _pool.fetch(
+        f"SELECT {_RU_COLS}, "
+        "GREATEST(last_login_at, last_played_at, last_active_at) AS last_seen "
+        "FROM retention_users "
+        "WHERE product_id = $1 AND player_id IS NOT NULL "
+        "  AND subscribed AND NOT pings_muted AND NOT unreachable "
+        "  AND NOT rg_hold "
+        "  AND GREATEST(last_login_at, last_played_at, last_active_at) "
+        "      < now() - make_interval(days => $2) "
+        "ORDER BY last_seen ASC LIMIT $3",
+        product_id, int(min_days), int(limit),
+    )
+    out = []
+    for r in rows:
+        d = _row_to_retention_user(r)
+        seen = r["last_seen"]
+        d["last_seen"] = seen.isoformat() if seen is not None else None
+        out.append(d)
+    return out
+
+
+async def consume_inactivity_step(rid: int, step: int) -> None:
+    """A ladder step was consumed by a TERMINAL outcome (delivered, agent
+    silence, opt-out, unreachable, rg_hold). Deferrals never call this."""
+    await _pool.execute(
+        "UPDATE retention_users SET "
+        "inact_step_done = GREATEST(inact_step_done, $2), updated_at = now() "
+        "WHERE id = $1", rid, int(step),
+    )
+
+
+async def bump_inactivity_cycle(product_id: int, player_id: str,
+                                force: bool = False) -> None:
+    """The player came back: restart the ladder for the next idle spell.
+
+    Bumps only when there is ladder state to reset (a consumed step), or
+    unconditionally with `force` (a live ladder event was just cancelled —
+    the cycle must advance so the next spell's event_ids never collide with
+    the closed ones). Called on every activity signal, so the no-state case
+    must be a cheap no-op.
+    """
+    cond = "" if force else " AND inact_step_done <> 0"
+    await _pool.execute(
+        "UPDATE retention_users SET inact_cycle = inact_cycle + 1, "
+        "inact_step_done = 0, updated_at = now() "
+        f"WHERE product_id = $1 AND player_id = $2{cond}",
+        product_id, player_id,
+    )
+
+
+async def reset_unanswered_touches(rid: int) -> None:
+    """Any inbound player message clears the reply-adaptive backoff counter."""
+    await _pool.execute(
+        "UPDATE retention_users SET unanswered_touches = 0, updated_at = now() "
+        "WHERE id = $1 AND unanswered_touches <> 0", rid,
+    )
+
+
+async def retention_v2_touch_stats(product_id: int, frm: Any, to: Any
+                                   ) -> list[dict[str, Any]]:
+    """Touch effectiveness per trigger type: delivered touches, replies within
+    72h (a player message in the player's Telegram sessions after the touch)
+    and reactivations within 72h (a casino activity event after the touch).
+    The channel's own KPI probe — feeds the 4-week baseline."""
+    rows = await _pool.fetch(
+        """
+        SELECT d.event_name,
+               COUNT(*)                                  AS sent,
+               COUNT(*) FILTER (WHERE EXISTS (
+                 SELECT 1 FROM chat_messages m
+                 JOIN chat_sessions s ON s.id = m.session_id
+                 WHERE s.product_id = d.product_id
+                   AND s.tg_user_id = ru.tg_user_id
+                   AND m.role = 'user'
+                   AND m.created_at > d.created_at
+                   AND m.created_at <= d.created_at + interval '72 hours'
+               ))                                        AS replied_72h,
+               COUNT(*) FILTER (WHERE EXISTS (
+                 SELECT 1 FROM retention_events e
+                 WHERE e.product_id = d.product_id
+                   AND e.player_id = d.player_id
+                   AND e.event_name IN ('session_started', 'bet_settled',
+                                        'deposit_confirmed')
+                   AND e.ts > d.created_at
+                   AND e.ts <= d.created_at + interval '72 hours'
+               ))                                        AS reactivated_72h
+        FROM retention_v2_decisions d
+        JOIN retention_users ru ON ru.id = d.retention_user_id
+        WHERE d.product_id = $1 AND d.delivered
+          AND d.created_at >= $2 AND d.created_at < $3
+        GROUP BY d.event_name
+        ORDER BY sent DESC
+        """,
+        product_id, _as_ts(frm), _as_ts(to),
+    )
+    return [{"event_name": r["event_name"], "sent": int(r["sent"]),
+             "replied_72h": int(r["replied_72h"]),
+             "reactivated_72h": int(r["reactivated_72h"])} for r in rows]
 
 
 async def insert_retention_v2_decision(

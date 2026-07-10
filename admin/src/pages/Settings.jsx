@@ -30,9 +30,12 @@ const GROUP_ORDER = ['antispam', 'model', 'general', 'retention', 'language'];
 
 // Sub-headers for grouped fields inside a settings group (schema `section`).
 const SECTION_LABELS = {
-  progression: 'Photo unlock progression (Stage × VIP Level)',
+  dialogue: 'Dialogue & photos (the reactive chat)',
   agent: 'Proactive agent (event-driven)',
+  inactivity: 'Inactivity ladder (write-first to silent players)',
   guards: 'Send-frequency guards (per-player protection)',
+  progression: 'Photo unlock progression (Stage × VIP Level)',
+  plumbing: 'Plumbing (rarely touched)',
 };
 
 // ---------------------------------------------------------------------------

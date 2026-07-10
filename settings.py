@@ -50,6 +50,9 @@ SETTING_KEYS = ("escalation", "language", "antispam", "model", "general",
 # tier ordinal (its index) so a photo's `level_min` (int) gates by tier. Every
 # scalar has an env-backed default in config; the maps/lists default here.
 _DEFAULT_RETENTION: dict[str, Any] = {
+    # Inactivity-ladder day-steps (the EPIC-5 dormancy cohorts, strictly per
+    # spec). One step = at most one touch per idle spell (cycle).
+    "inactivity_steps": [7, 10, 14, 21, 30],
     "vip_tiers": ["none", "bronze", "silver", "gold", "platinum", "diamond"],
     # tier name (lowercased) -> the highest photo stage that tier may unlock.
     # Higher VIP tiers unlock hotter (higher-stage) photos; the base tier stops
@@ -417,6 +420,20 @@ def retention() -> dict[str, Any]:
         "v2_same_event_cooldown_hours": db_v.get(
             "v2_same_event_cooldown_hours",
             config.RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS),
+        # Inactivity ladder + touch pacing (the dormancy contour).
+        "inactivity_enabled": db_v.get("inactivity_enabled",
+                                       config.RETENTION_INACTIVITY_ENABLED),
+        "inactivity_steps": db_v.get(
+            "inactivity_steps", list(_DEFAULT_RETENTION["inactivity_steps"])),
+        "v2_loss_delay_min": db_v.get("v2_loss_delay_min",
+                                      config.RETENTION_V2_LOSS_DELAY_MIN),
+        "v2_backoff_after_ignored": db_v.get(
+            "v2_backoff_after_ignored",
+            config.RETENTION_V2_BACKOFF_AFTER_IGNORED),
+        "v2_follow_up_hours": db_v.get("v2_follow_up_hours",
+                                       config.RETENTION_V2_FOLLOW_UP_HOURS),
+        "v2_vip_at_risk_days": db_v.get("v2_vip_at_risk_days",
+                                        config.RETENTION_V2_VIP_AT_RISK_DAYS),
     }
 
 
@@ -555,6 +572,18 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "v2_loss_comfort_hours", 0, 720)
         _require_float(value, "v2_loss_high_usd", 0.0, 1_000_000.0)
         _require_int(value, "v2_same_event_cooldown_hours", 0, 720)  # 0 = off
+        _require_bool(value, "inactivity_enabled")
+        _require_int(value, "v2_loss_delay_min", 0, 1_440)       # <= 24h; 0 = off
+        _require_int(value, "v2_backoff_after_ignored", 0, 50)   # 0 = off
+        _require_int(value, "v2_follow_up_hours", 0, 720)        # 0 = off
+        _require_int(value, "v2_vip_at_risk_days", 0, 365)       # 0 = off
+        if "inactivity_steps" in value:
+            v = value["inactivity_steps"]
+            if (not isinstance(v, list)
+                    or not all(isinstance(x, int) and not isinstance(x, bool)
+                               and 1 <= x <= 365 for x in v)):
+                raise ValueError("inactivity_steps must be a list of "
+                                 "day numbers (1..365)")
         if "stage_advance_msgs" in value:
             v = value["stage_advance_msgs"]
             if (not isinstance(v, list)

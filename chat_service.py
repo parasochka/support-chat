@@ -574,6 +574,7 @@ async def handle_retention_message(
     user_text: str,
     photo_candidates: Optional[list[dict[str, Any]]] = None,
     appearance: Optional[dict[str, Any]] = None,
+    tz_offset_hours: Optional[float] = None,
 ) -> RetentionReply:
     """Process one retention (Telegram) turn for an already-linked session.
 
@@ -629,9 +630,11 @@ async def handle_retention_message(
         previous_history=previous_history or None,
         play_nudge=nudge,
         appearance=appearance,
-        # The audience clock (same offset the quiet hours run on) — without it
-        # the model guesses the time of day ("enjoy your evening" at 10:00).
-        tz_offset_hours=settings.retention()["quiet_hours_utc_offset"],
+        # The audience clock — without it the model guesses the time of day
+        # ("enjoy your evening" at 10:00). The player's own timezone when the
+        # caller resolved one, else the product-level quiet-hours offset.
+        tz_offset_hours=(tz_offset_hours if tz_offset_hours is not None
+                         else settings.retention()["quiet_hours_utc_offset"]),
     )
     log.info(
         "retention_prompt_built session_id=%s history=%s prev_carry=%s "
@@ -750,6 +753,9 @@ async def generate_retention_ping(
     photo_candidates: Optional[list[dict[str, Any]]] = None,
     occasion: Optional[str] = None,
     comfort: bool = False,
+    offers: Optional[list[dict[str, Any]]] = None,
+    no_bonus_talk: bool = False,
+    tz_offset_hours: Optional[float] = None,
 ) -> Optional[PingDraft]:
     """Generate ONE proactive message: a matched ping rule (time-based) or —
     with `occasion` set — a Retention-v2 event reaction (`comfort` hardens the
@@ -790,8 +796,13 @@ async def generate_retention_ping(
         occasion=occasion,
         comfort=comfort,
         # A proactive touch is where a wrong time-of-day flourish stings most
-        # ("enjoy your evening" at 10:00) — give the model the audience clock.
-        tz_offset_hours=settings.retention()["quiet_hours_utc_offset"],
+        # ("enjoy your evening" at 10:00) — give the model the audience clock:
+        # the PLAYER's own timezone when the caller resolved one, else the
+        # product-level offset.
+        tz_offset_hours=(tz_offset_hours if tz_offset_hours is not None
+                         else settings.retention()["quiet_hours_utc_offset"]),
+        offers=offers,
+        no_bonus_talk=no_bonus_talk,
     )
     try:
         result = await client.complete(
@@ -827,6 +838,17 @@ async def generate_retention_ping(
     if photo_id is not None and photo_id not in candidate_ids:
         photo_id = None
     link_url, link_label = resolve_site_link(link_raw)
+    if link_url is None and link_raw:
+        # The offers feed extends the [[LINK:url]] allowance: an EXACT match
+        # against one of THIS turn's listed offer deeplinks is a valid button
+        # target too (label = the offer's title). Anything else still dies.
+        wanted = link_raw.strip().rstrip("/").lower()
+        for offer in offers or []:
+            deeplink = (offer.get("deeplink") or "").strip()
+            if deeplink and deeplink.rstrip("/").lower() == wanted:
+                link_url = deeplink
+                link_label = offer.get("title") or deeplink
+                break
     if not clean_text and photo_id is None:
         # Nothing usable came back — treat like a failure, skip the ping.
         log.warning("retention_ping_empty session_id=%s", session_id)

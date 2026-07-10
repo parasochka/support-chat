@@ -480,6 +480,28 @@ RETENTION_V2_LOSS_HIGH_USD: float = _env_float("RETENTION_V2_LOSS_HIGH_USD", 100
 # decision instead of a same_event_cooldown block).
 RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS: int = _env_int(
     "RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS", 20)
+# --- Inactivity ladder (the dormancy contour) --------------------------------
+# The agent's "player went quiet -> write first" trigger: synthetic
+# inactivity_check events at the spec ladder days (the `inactivity_steps`
+# knob, default 7/10/14/21/30). Master switch; the whole contour also sits
+# behind v2_enabled + v2_dry_run like every proactive send.
+RETENTION_INACTIVITY_ENABLED: bool = _env_bool(
+    "RETENTION_INACTIVITY_ENABLED", True)
+# Delay a high-loss reaction this many minutes after the triggering bet, so
+# the comfort note never lands mid-session (EPIC-5: 30-60 min). 0 = react
+# immediately.
+RETENTION_V2_LOSS_DELAY_MIN: int = _env_int("RETENTION_V2_LOSS_DELAY_MIN", 45)
+# Reply-adaptive backoff: after this many consecutive unanswered proactive
+# touches the min-gap stretches 4x until the player writes again. 0 = off.
+RETENTION_V2_BACKOFF_AFTER_IGNORED: int = _env_int(
+    "RETENTION_V2_BACKOFF_AFTER_IGNORED", 3)
+# Journey-lite: one gentle follow-up N hours after an unanswered
+# inactivity/VIP re-engagement touch. 0 = off (ships off; the operator opts in).
+RETENTION_V2_FOLLOW_UP_HOURS: int = _env_int("RETENTION_V2_FOLLOW_UP_HOURS", 0)
+# VIP-at-risk: a top-two-tier player idle this many days gets a dedicated
+# warm touch + a durable admin event (the manager sees it). 0 = off.
+RETENTION_V2_VIP_AT_RISK_DAYS: int = _env_int(
+    "RETENTION_V2_VIP_AT_RISK_DAYS", 45)
 
 # Serve /docs, /redoc and /openapi.json (they describe the WHOLE API surface,
 # /admin included) — off by default; enable only on dev/stage deployments.

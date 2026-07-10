@@ -197,6 +197,11 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `RETENTION_PING_BATCH_SIZE` | no | `30` | Max events processed per product per worker sweep (cost guard). |
 | `RETENTION_V2_LOSS_COMFORT_HOURS` | no | `24` | Default for `retention.v2_loss_comfort_hours` — after a big-loss signal: empathetic tone only, no play CTA, no photos, no links for this many hours. |
 | `RETENTION_V2_LOSS_HIGH_USD` | no | `100.0` | Default for `retention.v2_loss_high_usd` — 24h net loss that marks the player critical and starts the comfort window. |
+| `RETENTION_V2_LOSS_DELAY_MIN` | no | `45` | Default for `retention.v2_loss_delay_min` — a high-loss reaction is deferred this many minutes after the triggering bet so the comfort note never lands mid-session (0 = immediate). |
+| `RETENTION_INACTIVITY_ENABLED` | no | `true` | Default for `retention.inactivity_enabled` — the inactivity ladder: write FIRST to a player idle past a ladder step (`retention.inactivity_steps`, default 7/10/14/21/30 days). Dry-run + all guards apply; rg_hold players are never touched. |
+| `RETENTION_V2_BACKOFF_AFTER_IGNORED` | no | `3` | Default for `retention.v2_backoff_after_ignored` — after N consecutive unanswered proactive touches the min-gap stretches 4× until the player writes again (0 = off). |
+| `RETENTION_V2_FOLLOW_UP_HOURS` | no | `0` | Default for `retention.v2_follow_up_hours` — one gentle follow-up N hours after an unanswered inactivity/VIP touch (0 = off). |
+| `RETENTION_V2_VIP_AT_RISK_DAYS` | no | `45` | Default for `retention.v2_vip_at_risk_days` — a top-two-tier VIP idle this many days gets a dedicated touch + a durable admin event (0 = off). |
 | `EXPOSE_API_DOCS` | no | — | Set to `1` to publish `/docs`, `/redoc` and `/openapi.json` (they describe the whole surface, `/admin` included, so they are **disabled by default**). Dev/stage only. |
 
 The retention bot's per-product config (bot token, channel, player-API key) lives on the

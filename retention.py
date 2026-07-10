@@ -147,6 +147,43 @@ def tier_ordinal(vip_level: Optional[str], cfg: dict[str, Any]) -> int:
     return 0
 
 
+def is_vip_tier(vip_level: Optional[str], cfg: dict[str, Any]) -> bool:
+    """True for the ladder's top two tiers — the players the VIP-at-risk
+    signal watches. No knob on purpose: 'VIP' follows the product's own
+    vip_tiers ladder, whatever names/length the operator configured."""
+    tiers = cfg.get("vip_tiers") or []
+    if len(tiers) < 2:
+        return False
+    return tier_ordinal(vip_level, cfg) >= len(tiers) - 2
+
+
+def player_tz_offset(ru: Optional[dict[str, Any]],
+                     cfg: dict[str, Any]) -> float:
+    """The player's UTC offset in hours: their profile timezone (IANA name,
+    '+03:00' or 'UTC+3' — geo-derived, fed by the casino) when parsable, else
+    the product-level quiet_hours_utc_offset. Quiet hours and the CURRENT TIME
+    prompt block both key on this, so they always agree."""
+    import datetime as _dt2
+    raw = str((ru or {}).get("tz_name") or "").strip()
+    if raw:
+        try:
+            from zoneinfo import ZoneInfo
+            off = _dt2.datetime.now(ZoneInfo(raw)).utcoffset()
+            if off is not None:
+                return off.total_seconds() / 3600.0
+        except Exception:  # noqa: BLE001 - fall through to offset parsing
+            pass
+        m = re.fullmatch(r"(?:UTC|GMT)?\s*([+-]?\d{1,2})(?::(\d{2}))?",
+                         raw, re.IGNORECASE)
+        if m:
+            hours = float(m.group(1))
+            minutes = float(m.group(2) or 0)
+            off = hours + (minutes / 60.0 if hours >= 0 else -minutes / 60.0)
+            if -12.0 <= off <= 14.0:
+                return off
+    return float(cfg["quiet_hours_utc_offset"])
+
+
 def tier_stage_ceiling(vip_level: Optional[str], cfg: dict[str, Any]) -> int:
     """The highest photo stage this player's VIP tier may unlock."""
     v = (vip_level or "").strip().lower()
@@ -658,6 +695,19 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
     # They wrote to us — whatever blocked state we recorded is stale.
     if ru.get("unreachable"):
         await db.set_retention_unreachable(int(ru["id"]), False)
+    # An inbound message is real activity: clear the reply-adaptive backoff
+    # counter and cancel any live inactivity/follow-up event (the ladder
+    # re-arms for the player's next idle spell). Best-effort — never block
+    # the turn on lifecycle bookkeeping.
+    try:
+        await db.reset_unanswered_touches(int(ru["id"]))
+        if ru.get("player_id"):
+            await player_sync.cancel_pending_touches(
+                int(product["id"]), str(ru["player_id"]),
+                trigger="player_message")
+    except Exception:  # noqa: BLE001
+        log.exception("retention_return_bookkeeping_failed product=%s",
+                      product.get("id"))
 
     # Proactive-ping opt-out/in commands (model-free).
     command = (pu.text or "").strip().lower()
@@ -844,8 +894,11 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
                     product["id"], ru.get("id"))
         appearance = None
 
-    reply = await chat_service.handle_retention_message(session, text, candidates,
-                                                        appearance=appearance)
+    reply = await chat_service.handle_retention_message(
+        session, text, candidates, appearance=appearance,
+        # The player's own clock (profile timezone from the casino feed,
+        # falling back to the product offset) drives the CURRENT TIME block.
+        tz_offset_hours=player_tz_offset(ru, settings.retention()))
 
     # Keep the retention_users row's sticky language in step with the answer
     # drift (chat_service persists it on the session; the ru copy drives the

@@ -34,7 +34,7 @@ import ipaddress
 import json
 import logging
 import socket
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlsplit
 
 import db
@@ -58,6 +58,14 @@ CANONICAL_EVENTS: frozenset[str] = frozenset({
     "check_in_done", "mission_completed",
 })
 
+# SYNTHETIC events the service itself generates (never accepted from the
+# partner webhook): the inactivity ladder, the one-shot follow-up after an
+# unanswered touch, and the VIP-at-risk signal. They ride the same queue and
+# pipeline as canonical events; the admin simulator may inject them too.
+SYNTHETIC_EVENTS: frozenset[str] = frozenset({
+    "inactivity_check", "touch_follow_up", "vip_at_risk",
+})
+
 # Legacy bridge: which canonical event bumps which v1 activity timestamp.
 _ACTIVITY_BRIDGE: dict[str, str] = {
     "session_started": "last_login_at",
@@ -70,7 +78,8 @@ _ACTIVITY_BRIDGE: dict[str, str] = {
 # a fresh balance/vip on deposit_confirmed); routed into the snapshot.
 _PROFILE_PAYLOAD_FIELDS = ("full_name", "email", "activation_status",
                            "country", "balance", "vip_level",
-                           "registration_date")
+                           "registration_date", "timezone", "rg_hold",
+                           "self_excluded")
 
 _MAX_EVENT_ID_LEN = 64
 _MAX_PAYLOAD_BYTES = 8192
@@ -80,7 +89,8 @@ class EventError(ValueError):
     """A single event failed validation (message is safe to echo back)."""
 
 
-def _validate_event(evt: dict[str, Any]) -> dict[str, Any]:
+def _validate_event(evt: dict[str, Any],
+                    allow_synthetic: bool = False) -> dict[str, Any]:
     """Normalize + validate one incoming event dict. Raises EventError."""
     if not isinstance(evt, dict):
         raise EventError("event must be a JSON object")
@@ -88,7 +98,9 @@ def _validate_event(evt: dict[str, Any]) -> dict[str, Any]:
     if not event_id or len(event_id) > _MAX_EVENT_ID_LEN:
         raise EventError("event_id is required (non-empty, <= 64 chars)")
     event_name = str(evt.get("event_name") or "").strip()
-    if event_name not in CANONICAL_EVENTS:
+    allowed = CANONICAL_EVENTS | (SYNTHETIC_EVENTS if allow_synthetic
+                                  else frozenset())
+    if event_name not in allowed:
         raise EventError(
             f"unknown event_name {event_name!r}; canonical names: "
             + ", ".join(sorted(CANONICAL_EVENTS)))
@@ -131,6 +143,32 @@ def _validate_event(evt: dict[str, Any]) -> dict[str, Any]:
             "event_version": version}
 
 
+def normalize_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    """Map partner-feed field names/shapes onto the snapshot columns.
+
+    - `timezone` (IANA name or a UTC offset string) -> tz_name
+    - `rg_hold` / `self_excluded` (booleans; truthy strings accepted) ->
+      the single rg_hold flag. Either one TRUE holds; the hold clears only
+      when the feed explicitly sends both false (self-exclusion alone never
+      un-holds via an rg_hold=false).
+    """
+    out = {k: v for k, v in profile.items()
+           if k not in ("timezone", "rg_hold", "self_excluded")}
+    if profile.get("timezone") is not None:
+        out["tz_name"] = str(profile["timezone"]).strip()[:64]
+    flags = [profile.get("rg_hold"), profile.get("self_excluded")]
+    supplied = [f for f in flags if f is not None]
+    if supplied:
+        out["rg_hold"] = any(_as_bool(f) for f in supplied)
+    return out
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 async def ingest_event(product_id: int, evt: dict[str, Any],
                        source: str = "webhook") -> dict[str, Any]:
     """Validate + append one canonical event and run the legacy bridge.
@@ -138,7 +176,7 @@ async def ingest_event(product_id: int, evt: dict[str, Any],
     Returns {"stored": bool, "duplicate": bool, "id": int|None}. Raises
     EventError on a validation failure (the caller maps it to 422).
     """
-    v = _validate_event(evt)
+    v = _validate_event(evt, allow_synthetic=source in ("system", "simulator"))
     pk = await db.ingest_retention_event(
         product_id, event_id=v["event_id"], event_name=v["event_name"],
         player_id=v["player_id"], ts=v["ts"], payload=v["payload"],
@@ -153,15 +191,60 @@ async def ingest_event(product_id: int, evt: dict[str, Any],
         if field:
             await db.touch_retention_activity(product_id, v["player_id"],
                                               field, v["ts"])
-        profile = {k: v["payload"][k] for k in _PROFILE_PAYLOAD_FIELDS
-                   if v["payload"].get(k) is not None}
+        profile = normalize_profile(
+            {k: v["payload"][k] for k in _PROFILE_PAYLOAD_FIELDS
+             if v["payload"].get(k) is not None})
         if profile:
             await db.update_retention_profile(product_id, v["player_id"],
                                               profile, profile_source="event")
     except Exception:  # noqa: BLE001
         log.exception("player_sync_bridge_failed product=%s event=%s",
                       product_id, v["event_name"])
+    if _ACTIVITY_BRIDGE.get(v["event_name"]):
+        # Real casino activity ends the current idle spell: any live
+        # (queued/deferred) inactivity or follow-up event is cancelled and the
+        # ladder re-arms for the player's NEXT idle spell. Best-effort, on its
+        # own — lifecycle bookkeeping must never mask a bridge write.
+        try:
+            await cancel_pending_touches(product_id, v["player_id"],
+                                         trigger=v["event_name"])
+        except Exception:  # noqa: BLE001
+            log.exception("player_sync_cancel_failed product=%s", product_id)
     return {"stored": True, "duplicate": False, "id": pk}
+
+
+async def cancel_pending_touches(product_id: int, player_id: str,
+                                 trigger: str = "activity") -> int:
+    """cancelled_by_return: the player is back (a casino activity event or an
+    inbound Telegram message), so every live synthetic proactive event dies and
+    the inactivity cycle restarts. Each cancellation lands in the decision
+    ledger, so the lifecycle is auditable end to end. Returns cancellations."""
+    cancelled = 0
+    ladder_died = False
+    ru = None
+    for name in ("inactivity_check", "touch_follow_up", "vip_at_risk"):
+        evt = await db.get_open_retention_event(product_id, player_id, name)
+        if evt is None:
+            continue
+        await db.close_retention_event(evt["id"])
+        if ru is None:
+            ru = await db.get_retention_user_by_player(product_id, player_id)
+        await db.insert_retention_v2_decision(
+            product_id,
+            retention_user_id=int(ru["id"]) if ru else None,
+            player_id=player_id, trigger_kind="system",
+            event_pk=evt["id"], event_name=name, state={}, guard={},
+            action="cancelled",
+            reason=f"cancelled_by_return: {trigger}", dry_run=False)
+        cancelled += 1
+        if name in ("inactivity_check", "vip_at_risk"):
+            ladder_died = True
+    # Restart the ladder for the next idle spell. Without a live event this
+    # only fires when a step was consumed this cycle (cheap no-op otherwise);
+    # with one, the bump is forced so the next spell's event_ids never collide
+    # with the rows just closed.
+    await db.bump_inactivity_cycle(product_id, player_id, force=ladder_died)
+    return cancelled
 
 
 async def ingest_events(product_id: int, events: list[dict[str, Any]],
@@ -187,9 +270,15 @@ async def ingest_events(product_id: int, events: list[dict[str, Any]],
 # ---------------------------------------------------------------------------
 async def apply_profile_push(product_id: int, player_id: str,
                              profile: dict[str, Any]) -> int:
-    """Partial profile update from the partner CRM push. Returns rows touched."""
-    return await db.update_retention_profile(product_id, player_id, profile,
-                                             profile_source="push")
+    """Partial profile update from the partner CRM push. Returns rows touched.
+
+    Accepts, beyond the snapshot fields and activity timestamps, the player's
+    `timezone` and the responsible-gaming flags `rg_hold`/`self_excluded`
+    (normalized into the single rg_hold hold — see normalize_profile).
+    """
+    return await db.update_retention_profile(
+        product_id, player_id, normalize_profile(profile),
+        profile_source="push")
 
 
 # ---------------------------------------------------------------------------
@@ -292,12 +381,90 @@ async def maybe_pull_profile(product: dict[str, Any], ru: dict[str, Any],
     payload = data if isinstance(data, dict) else {}
     profile = _profile_from_payload(payload)
     # The Player API may also report casino activity (the state resolver keys on
-    # these); pass the timestamps through — db parses/validates them.
-    for f in ("last_login_at", "last_played_at", "last_deposit_at"):
+    # these), the player's timezone and the responsible-gaming hold; pass them
+    # through — db/normalize validate them.
+    for f in ("last_login_at", "last_played_at", "last_deposit_at",
+              "timezone", "rg_hold", "self_excluded"):
         if payload.get(f) is not None:
             profile[f] = payload[f]
+    profile = normalize_profile(profile)
     if not profile:
         return ru
     await db.update_retention_profile(product["id"], player_id, profile, "pull")
     refreshed = await db.get_retention_user(product["id"], ru["tg_user_id"])
     return refreshed or ru
+
+
+# ---------------------------------------------------------------------------
+# Player offers — the read-only platform contract (Stage 4)
+# ---------------------------------------------------------------------------
+# The platform owns offers end to end (catalogue, eligibility, granting); this
+# module only READS the offers currently available to one player so the persona
+# can mention a real offer with its real deeplink instead of speaking in
+# generalities. Contract: GET {offers_api_url}?player_id=... with the product's
+# player-API key as a Bearer header, returning {"offers": [{"id", "title",
+# "description", "deeplink", "expires_at", "type"}, ...]} (or a bare list).
+# Unconfigured / unreachable / malformed => [] — offers are an enrichment, the
+# touch goes out without them.
+_MAX_OFFERS = 5
+_OFFER_TEXT_CAP = 200
+
+
+def _normalize_offer(raw: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    title = str(raw.get("title") or raw.get("name") or "").strip()
+    deeplink = str(raw.get("deeplink") or raw.get("url") or "").strip()
+    if not title:
+        return None
+    if deeplink and not deeplink.startswith(("http://", "https://")):
+        deeplink = ""
+    return {
+        "id": str(raw.get("id") or raw.get("offer_id") or "")[:64],
+        "title": title[:_OFFER_TEXT_CAP],
+        "description": str(raw.get("description") or "").strip()[:_OFFER_TEXT_CAP],
+        "deeplink": deeplink[:500],
+        "expires_at": str(raw.get("expires_at") or "")[:40] or None,
+        "type": str(raw.get("type") or "")[:40] or None,
+    }
+
+
+async def fetch_player_offers(product: dict[str, Any], player_id: str,
+                              url_guard: Any = None) -> list[dict[str, Any]]:
+    """The offers currently available to the player, per the platform's
+    eligibility. Best-effort: any failure returns []."""
+    import httpx
+    url = (product.get("offers_api_url") or "").strip()
+    if not url or not player_id:
+        return []
+    guard = url_guard or is_safe_outbound_url
+    if not await guard(url):
+        log.warning("player_offers_blocked_unsafe_url product=%s",
+                    product.get("id"))
+        return []
+    key = await db.get_product_player_api_key(product["id"])
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.get(url, params={"player_id": player_id},
+                                    headers=headers)
+        if resp.status_code != 200:
+            log.warning("player_offers_http product=%s status=%s",
+                        product.get("id"), resp.status_code)
+            return []
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001 - offers are optional enrichment
+        log.warning("player_offers_failed product=%s error=%s",
+                    product.get("id"), exc)
+        return []
+    raw = data.get("offers") if isinstance(data, dict) else data
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw[:_MAX_OFFERS * 2]:
+        offer = _normalize_offer(item)
+        if offer:
+            out.append(offer)
+        if len(out) >= _MAX_OFFERS:
+            break
+    return out

@@ -35,6 +35,7 @@ import html
 import json
 import logging
 import re
+import time
 from typing import Any, Optional
 
 import chat_service
@@ -42,6 +43,7 @@ import config
 import db
 import openai_client
 import prompts
+import player_sync
 import retention
 import settings
 import telegram_format
@@ -60,7 +62,10 @@ _ADVISORY_LOCK_KEY = 0x50494E56  # "PINV"
 DECISION_EVENTS: frozenset[str] = frozenset({
     "deposit_confirmed", "deposit_failed", "withdrawal_settled",
     "level_up", "class_up", "kyc_approved",
-    "bonus_completed", "bonus_expired",
+    "bonus_granted", "bonus_completed", "bonus_expired",
+    # Synthetic (service-generated) triggers: the inactivity ladder, the
+    # one-shot follow-up after an unanswered touch, the VIP-at-risk signal.
+    "inactivity_check", "touch_follow_up", "vip_at_risk",
 })
 
 # Positive moments where a photo is a permissible gesture (never after losses,
@@ -79,11 +84,36 @@ _OCCASIONS: dict[str, str] = {
     "level_up": "the player just reached a new loyalty level",
     "class_up": "the player just reached a whole new loyalty class",
     "kyc_approved": "the player just passed account verification",
+    "bonus_granted": "the player was just granted a bonus (name it only if "
+                     "the event names it; never invent its terms)",
     "bonus_completed": "the player just completed a bonus's wagering and "
                        "received the payout",
     "bonus_expired": "one of the player's bonuses just expired unused",
     "bet_settled": "the player has had a rough, losing day",
+    "touch_follow_up": "your earlier note went unanswered - ONE gentle, "
+                       "unpushy follow-up from a fresh angle, then let it "
+                       "rest (never mention the unanswered message)",
+    "vip_at_risk": "a valued VIP player has been away for a long while - "
+                   "a warm, personal 'thinking of you' with zero pressure",
 }
+
+# Payload keys safe to surface to the persona alongside a bonus occasion.
+# Deliberately NO amounts (the money-hygiene rule stands even for real data).
+_BONUS_PAYLOAD_KEYS = ("bonus_name", "name", "title", "type", "expiry_at",
+                       "expires_at")
+
+# Guard reasons that are TRANSIENT (a bad moment, not a bad idea): a synthetic
+# ladder event is DEFERRED to the next allowed window instead of consumed.
+# Everything else (rg_hold, opt-out, unsubscribed, blocked bot) is terminal.
+_TRANSIENT_GUARD_REASONS = frozenset({
+    "min_gap_not_elapsed", "daily_cap_reached", "quiet_hours",
+    "daily_budget_reached", "same_event_cooldown", "ignored_backoff",
+})
+
+# Reply-adaptive backoff: after this many consecutive unanswered proactive
+# touches the min-gap requirement stretches by this factor (reset on any
+# inbound player message). The threshold knob is v2_backoff_after_ignored.
+_BACKOFF_GAP_MULT = 4
 
 # One reaction per event type per window — a partner retrying webhooks or a
 # player making five deposits in an evening gets ONE warm note, not five.
@@ -169,6 +199,13 @@ async def run_product_events(product: dict[str, Any], *,
     cfg = settings.retention()
     if not cfg.get("v2_enabled"):
         return {"skipped": "agent_disabled"}
+    # The inactivity ladder feeds the same queue with synthetic events before
+    # each drain (self-throttled — a scan is one indexed SELECT, but there is
+    # no point re-walking the user base every 5-second sweep).
+    try:
+        await scan_inactivity(product, cfg)
+    except Exception:  # noqa: BLE001 - a scan failure must not stop the drain
+        log.exception("retention_inactivity_scan_failed product=%s", pid)
     batch = int(limit or cfg["ping_batch_size"])
     events = await db.claim_retention_events(pid, limit=batch)
     if not events:
@@ -185,6 +222,124 @@ async def run_product_events(product: dict[str, Any], *,
             log.exception("retention_v2_event_failed product=%s event=%s",
                           pid, evt.get("id"))
     return {"events": len(events), "decided": decided, "sent": sent}
+
+
+# ---------------------------------------------------------------------------
+# Inactivity ladder — the dormancy contour (EPIC-5 lite, agent-decided)
+# ---------------------------------------------------------------------------
+# The scan turns "the player has been gone N days" into synthetic
+# `inactivity_check` events on the SAME queue the casino events ride, so the
+# whole existing pipeline (state -> guards -> agent decision -> persona send ->
+# ledger) applies unchanged. Ladder invariants (per the approved design):
+#   - steps come from the `inactivity_steps` knob (spec ladder 7/10/14/21/30);
+#   - at most ONE live inactivity event per player; a later-crossed step
+#     SUPERSEDES a still-live earlier one (latest-step-wins — this also covers
+#     worker downtime: the player gets the highest crossed step, once);
+#   - a step is CONSUMED only by a terminal outcome (delivery, agent silence,
+#     opt-out/unreachable/rg_hold); transient guard verdicts DEFER the event
+#     (due_at) instead — see _process_event;
+#   - any real player activity cancels the live event and restarts the cycle
+#     (player_sync.cancel_pending_touches).
+_INACT_SCAN_INTERVAL_SEC = 900  # per product; the ladder moves in days
+_last_inact_scan: dict[int, float] = {}
+
+
+def parse_inactivity_steps(cfg: dict[str, Any]) -> list[int]:
+    """The ladder's day-steps, ascending. Accepts a list or a '7,10,14' string
+    (the Settings editor stores a string); junk entries are dropped."""
+    raw = cfg.get("inactivity_steps")
+    if isinstance(raw, str):
+        raw = raw.replace(";", ",").split(",")
+    steps = set()
+    for item in raw or []:
+        try:
+            v = int(str(item).strip())
+        except (TypeError, ValueError):
+            continue
+        if 1 <= v <= 365:
+            steps.add(v)
+    return sorted(steps)
+
+
+async def scan_inactivity(product: dict[str, Any], cfg: dict[str, Any],
+                          force: bool = False) -> dict[str, Any]:
+    """Queue synthetic inactivity/vip_at_risk events for idle players."""
+    pid = int(product["id"])
+    if not cfg.get("inactivity_enabled"):
+        return {"skipped": "inactivity_disabled"}
+    steps = parse_inactivity_steps(cfg)
+    vip_days = int(cfg.get("v2_vip_at_risk_days") or 0)
+    if not steps and vip_days <= 0:
+        return {"skipped": "no_steps"}
+    now_mono = time.monotonic()
+    if not force and now_mono - _last_inact_scan.get(pid, 0.0) \
+            < _INACT_SCAN_INTERVAL_SEC:
+        return {"skipped": "throttled"}
+    _last_inact_scan[pid] = now_mono
+
+    min_days = min([s for s in steps] + ([vip_days] if vip_days > 0 else []))
+    candidates = await db.inactivity_candidates(pid, min_days=min_days)
+    created = superseded = 0
+    now_utc = _dt.datetime.now(_dt.timezone.utc)
+    for ru in candidates:
+        player_id = str(ru.get("player_id") or "")
+        idle = _days_since(ru.get("last_seen"))
+        if not player_id or idle is None:
+            continue
+        cycle = int(ru.get("inact_cycle") or 0)
+        step = max((s for s in steps if idle >= s), default=0)
+        if step and step > int(ru.get("inact_step_done") or 0):
+            live = await db.get_open_retention_event(pid, player_id,
+                                                     "inactivity_check")
+            live_step = int(((live or {}).get("payload") or {}).get("step") or 0)
+            if live is None or live_step < step:
+                if live is not None:
+                    # latest-step-wins: the deferred/queued earlier step dies,
+                    # the higher one replaces it. Ledger row per transition.
+                    await db.close_retention_event(live["id"])
+                    await db.insert_retention_v2_decision(
+                        pid, retention_user_id=int(ru["id"]),
+                        player_id=player_id, trigger_kind="system",
+                        event_pk=live["id"], event_name="inactivity_check",
+                        state={}, guard={}, action="superseded",
+                        reason=f"latest-step-wins: D{live_step} -> D{step}",
+                        dry_run=False)
+                    superseded += 1
+                pk = await db.ingest_retention_event(
+                    pid, event_id=f"inact:{player_id}:{step}:{cycle}",
+                    event_name="inactivity_check", player_id=player_id,
+                    ts=now_utc,
+                    payload={"step": step, "cycle": cycle,
+                             "idle_days": round(idle, 1)},
+                    source="system")
+                if pk:
+                    created += 1
+        # VIP-at-risk: a long-idle top-tier player gets its own signal (over
+        # and above the ladder) + a durable operator-visible admin event with
+        # the assigned manager, so a human can also reach out. Once per cycle
+        # (the event_id carries the cycle; idempotent by design).
+        if (vip_days > 0 and idle >= vip_days
+                and retention.is_vip_tier(ru.get("vip_level"), cfg)):
+            pk = await db.ingest_retention_event(
+                pid, event_id=f"vipar:{player_id}:{cycle}",
+                event_name="vip_at_risk", player_id=player_id, ts=now_utc,
+                payload={"idle_days": round(idle, 1), "cycle": cycle},
+                source="system")
+            if pk:
+                created += 1
+                await db.log_admin_event(
+                    None, "retention_vip_at_risk",
+                    {"player_id": player_id,
+                     "vip_level": ru.get("vip_level"),
+                     "idle_days": round(idle, 1),
+                     "manager_id": ru.get("assigned_manager_id")},
+                    product_id=pid)
+    if created or superseded:
+        log.info("retention_inactivity_scan product=%s created=%s "
+                 "superseded=%s candidates=%s", pid, created, superseded,
+                 len(candidates))
+    return {"created": created, "superseded": superseded,
+            "candidates": len(candidates)}
 
 
 # ---------------------------------------------------------------------------
@@ -265,14 +420,20 @@ async def resolve_player_state(product_id: int, ru: dict[str, Any],
 # ---------------------------------------------------------------------------
 # Guards (deterministic — the agent picks only among what these permit)
 # ---------------------------------------------------------------------------
-def _in_quiet_hours(cfg: dict[str, Any]) -> bool:
-    """True when the product's local time sits inside the no-contact window."""
+def _in_quiet_hours(cfg: dict[str, Any],
+                    ru: Optional[dict[str, Any]] = None) -> bool:
+    """True when the player's local time sits inside the no-contact window.
+
+    The clock is the PLAYER's (their profile timezone when the casino feed
+    supplies one, else the product offset) — retention.player_tz_offset, the
+    same offset the CURRENT TIME prompt block runs on, so the two always agree.
+    """
     start = int(cfg["quiet_hours_start"])
     end = int(cfg["quiet_hours_end"])
     if start == end:
         return False  # zero-length window = no quiet hours
-    offset = int(cfg["quiet_hours_utc_offset"])
-    hour = (_dt.datetime.now(_dt.timezone.utc).hour + offset) % 24
+    hour = (_dt.datetime.now(_dt.timezone.utc)
+            + _dt.timedelta(hours=retention.player_tz_offset(ru, cfg))).hour
     if start < end:
         return start <= hour < end
     return hour >= start or hour < end  # window wraps midnight
@@ -285,6 +446,10 @@ async def guard_check(product_id: int, ru: dict[str, Any],
     "constraints", "comfort"} — every deny carries its reason so the ledger
     explains itself."""
     reasons: list[str] = []
+    if ru.get("rg_hold"):
+        # Responsible-gaming hold from the casino feed: absolute, no bot-side
+        # override — the ONE rule that even a VIP flow must never bend.
+        reasons.append("rg_hold")
     if not ru.get("subscribed"):
         reasons.append("not_subscribed")
     if ru.get("pings_muted"):
@@ -292,22 +457,41 @@ async def guard_check(product_id: int, ru: dict[str, Any],
     if ru.get("unreachable"):
         reasons.append("bot_blocked_by_player")
     # Shared anti-annoyance state (same fields the v1 matrix maintains).
+    # Reply-adaptive backoff: a player who ignored the last K touches earns a
+    # stretched min-gap — the channel quiets down instead of insisting.
     gap_h = int(cfg["ping_min_gap_hours"])
+    backoff_after = int(cfg.get("v2_backoff_after_ignored") or 0)
+    ignored = int(ru.get("unanswered_touches") or 0)
+    backing_off = backoff_after > 0 and ignored >= backoff_after
+    eff_gap_h = gap_h * (_BACKOFF_GAP_MULT if backing_off else 1)
     last_ping_days = _days_since(ru.get("last_ping_at"))
-    if last_ping_days is not None and last_ping_days * 24 < gap_h:
-        reasons.append("min_gap_not_elapsed")
+    if last_ping_days is not None and last_ping_days * 24 < eff_gap_h:
+        reasons.append("ignored_backoff" if backing_off
+                       and last_ping_days * 24 >= gap_h
+                       else "min_gap_not_elapsed")
     pings_day = ru.get("pings_day")
     today = _dt.date.today().isoformat()
     if (pings_day is not None and str(pings_day)[:10] == today
             and int(ru.get("pings_sent_today") or 0) >= int(cfg["ping_daily_cap"])):
         reasons.append("daily_cap_reached")
-    if _in_quiet_hours(cfg):
+    if _in_quiet_hours(cfg, ru):
         reasons.append("quiet_hours")
     budget = float(cfg.get("v2_daily_budget_usd") or 0)
     if budget > 0:
         spent = await db.retention_v2_cost_today(product_id)
         if spent >= budget:
             reasons.append("daily_budget_reached")
+            # The one guard worth an operator alert: the agent has gone quiet
+            # for the rest of the day because the budget is spent (sampled,
+            # best-effort — an alert failure must never block the verdict).
+            try:
+                await db.log_admin_event_sampled(
+                    None, "retention_budget_exhausted",
+                    {"budget_usd": budget, "spent_usd": round(spent, 4)},
+                    product_id=product_id)
+            except Exception:  # noqa: BLE001
+                log.warning("retention_budget_alert_failed product=%s",
+                            product_id)
     player_id = ru.get("player_id") or ""
     cooldown_h = cfg.get("v2_same_event_cooldown_hours")
     cooldown_h = (_SAME_EVENT_COOLDOWN_HOURS if cooldown_h is None
@@ -347,6 +531,68 @@ async def guard_check(product_id: int, ru: dict[str, Any],
         "constraints": constraints,
         "comfort": comfort,
     }
+
+
+def _defer_due_at(reasons: list[str], ru: dict[str, Any],
+                  cfg: dict[str, Any]) -> _dt.datetime:
+    """The nearest moment every transient guard reason has cleared.
+
+    Approximate on purpose (the guards re-run at claim time anyway — a wrong
+    guess just means one extra defer): quiet hours -> the window's local end;
+    min-gap/backoff -> last_ping_at + the effective gap; daily cap / budget ->
+    the next local midnight. Floor 15 minutes, ceiling 7 days.
+    """
+    now = _dt.datetime.now(_dt.timezone.utc)
+    reasons_set = set(reasons)
+    candidates = [now + _dt.timedelta(minutes=15)]
+    offset = retention.player_tz_offset(ru, cfg)
+    local_now = now + _dt.timedelta(hours=offset)
+    if "quiet_hours" in reasons_set:
+        end = int(cfg["quiet_hours_end"])
+        local_end = local_now.replace(hour=end, minute=5, second=0,
+                                      microsecond=0)
+        if local_end <= local_now:
+            local_end += _dt.timedelta(days=1)
+        candidates.append(local_end - _dt.timedelta(hours=offset))
+    if reasons_set & {"min_gap_not_elapsed", "ignored_backoff"}:
+        last_ping = db._as_ts(ru.get("last_ping_at"))
+        gap_h = int(cfg["ping_min_gap_hours"])
+        if "ignored_backoff" in reasons_set:
+            gap_h *= _BACKOFF_GAP_MULT
+        if last_ping is not None:
+            candidates.append(last_ping + _dt.timedelta(hours=gap_h,
+                                                        minutes=5))
+    if reasons_set & {"daily_cap_reached", "daily_budget_reached",
+                      "same_event_cooldown"}:
+        local_midnight = (local_now + _dt.timedelta(days=1)).replace(
+            hour=0, minute=15, second=0, microsecond=0)
+        candidates.append(local_midnight - _dt.timedelta(hours=offset))
+    due = max(candidates)
+    return min(due, now + _dt.timedelta(days=7))
+
+
+def _occasion_for(evt: dict[str, Any]) -> str:
+    """The plain-English occasion line, enriched (for bonus events) with the
+    safe payload facts — the bonus NAME and expiry, never amounts."""
+    name = evt.get("event_name") or ""
+    base = _OCCASIONS.get(name, "a notable moment")
+    if name.startswith("bonus_"):
+        payload = evt.get("payload") or {}
+        facts = []
+        title = next((str(payload[k]).strip() for k in
+                      ("bonus_name", "name", "title") if payload.get(k)), "")
+        if title:
+            facts.append(f"the bonus is called \"{title[:80]}\"")
+        expiry = next((str(payload[k]).strip() for k in
+                       ("expiry_at", "expires_at") if payload.get(k)), "")
+        if expiry:
+            facts.append(f"it expires at {expiry[:40]}")
+        btype = str(payload.get("type") or "").strip()
+        if btype:
+            facts.append(f"type: {btype[:40]}")
+        if facts:
+            return f"{base} ({'; '.join(facts)})"
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -475,21 +721,85 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
             return "skipped"
         return None
 
+    name = evt.get("event_name") or ""
+    payload = evt.get("payload") or {}
+    step = int(payload.get("step") or 0)
+    synthetic = name in ("inactivity_check", "touch_follow_up", "vip_at_risk")
     state = await resolve_player_state(pid, ru, cfg)
+
+    # cancelled_by_return, claim-time re-check: the world may have moved while
+    # the synthetic event sat queued/deferred (the sweep-time cancellation in
+    # player_sync covers the event feed; this covers everything else).
+    if synthetic:
+        idle = state.get("idle_days")
+        came_back = (
+            (name == "inactivity_check" and (idle is None or idle < step))
+            or (name == "touch_follow_up"
+                and int(ru.get("unanswered_touches") or 0) == 0)
+            or (name == "vip_at_risk"
+                and (idle is None
+                     or idle < int(cfg.get("v2_vip_at_risk_days") or 0))))
+        if came_back:
+            await db.insert_retention_v2_decision(
+                pid, retention_user_id=int(ru["id"]), player_id=player_id,
+                trigger_kind="system", event_pk=evt["id"], event_name=name,
+                state=state, guard={}, action="cancelled",
+                reason="cancelled_by_return: player active again",
+                dry_run=bool(cfg.get("v2_dry_run")))
+            if name in ("inactivity_check", "vip_at_risk"):
+                await db.bump_inactivity_cycle(pid, player_id, force=True)
+            return "cancelled"
+
     if not _is_decision_worthy(evt, state, cfg):
         return None
+
+    # Loss reaction delay (EPIC-5: 30-60 min after the last bet, not mid-
+    # session): the first time a high-loss bet_settled comes through, defer it;
+    # when it comes due the loss window is re-resolved fresh.
+    loss_delay_min = int(cfg.get("v2_loss_delay_min") or 0)
+    if (name == "bet_settled" and loss_delay_min > 0
+            and evt.get("due_at") is None):
+        due = (_dt.datetime.now(_dt.timezone.utc)
+               + _dt.timedelta(minutes=loss_delay_min))
+        await db.defer_retention_event(evt["id"], due)
+        await db.insert_retention_v2_decision(
+            pid, retention_user_id=int(ru["id"]), player_id=player_id,
+            trigger_kind="event", event_pk=evt["id"], event_name=name,
+            state=state, guard={}, action="deferred",
+            reason=f"loss reaction delayed {loss_delay_min}min "
+                   f"(due {due.isoformat(timespec='minutes')})",
+            dry_run=bool(cfg.get("v2_dry_run")))
+        return "deferred"
 
     guard = await guard_check(pid, ru, evt, state, cfg)
     dry_run = bool(cfg.get("v2_dry_run"))
     if not guard["allow"]:
+        transient = set(guard["reasons"]) <= _TRANSIENT_GUARD_REASONS
+        if synthetic and transient:
+            # A bad MOMENT, not a bad idea: the ladder step is NOT consumed —
+            # the event is re-queued for the nearest allowed window.
+            due = _defer_due_at(guard["reasons"], ru, cfg)
+            await db.defer_retention_event(evt["id"], due)
+            await db.insert_retention_v2_decision(
+                pid, retention_user_id=int(ru["id"]), player_id=player_id,
+                trigger_kind="system", event_pk=evt["id"], event_name=name,
+                state=state, guard=guard, action="deferred",
+                reason="; ".join(guard["reasons"])
+                       + f" (due {due.isoformat(timespec='minutes')})",
+                dry_run=dry_run)
+            return "deferred"
         await db.insert_retention_v2_decision(
             pid, retention_user_id=int(ru["id"]), player_id=player_id,
-            trigger_kind="event", event_pk=evt["id"],
-            event_name=evt.get("event_name"), state=state, guard=guard,
+            trigger_kind="system" if synthetic else "event",
+            event_pk=evt["id"], event_name=name, state=state, guard=guard,
             action="blocked", reason="; ".join(guard["reasons"]),
             dry_run=dry_run)
+        if name == "inactivity_check" and step:
+            # Terminal verdict (rg_hold / opt-out / unreachable / not
+            # subscribed): the step is consumed — no retry loop.
+            await db.consume_inactivity_step(int(ru["id"]), step)
         log.info("retention_v2_guard_blocked product=%s player=%s event=%s "
-                 "reasons=%s", pid, player_id, evt.get("event_name"),
+                 "reasons=%s", pid, player_id, name,
                  ",".join(guard["reasons"]))
         return "blocked"
 
@@ -497,8 +807,8 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
     if decision is None:
         await db.insert_retention_v2_decision(
             pid, retention_user_id=int(ru["id"]), player_id=player_id,
-            trigger_kind="event", event_pk=evt["id"],
-            event_name=evt.get("event_name"), state=state, guard=guard,
+            trigger_kind="system" if synthetic else "event",
+            event_pk=evt["id"], event_name=name, state=state, guard=guard,
             action="skipped", reason="decision model call failed",
             dry_run=dry_run, cost_usd=decision_cost)
         return "skipped"
@@ -509,15 +819,32 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
     total_cost = decision_cost
     if action in ("message", "photo") and not dry_run:
         delivered, send_cost, detail = await _send_touch(
-            product, ru, evt, decision, comfort=guard["comfort"], cfg=cfg)
+            product, ru, evt, decision, comfort=guard["comfort"], cfg=cfg,
+            state=state)
         total_cost += send_cost
     await db.insert_retention_v2_decision(
         pid, retention_user_id=int(ru["id"]), player_id=player_id,
-        trigger_kind="event", event_pk=evt["id"],
-        event_name=evt.get("event_name"), state=state, guard=guard,
+        trigger_kind="system" if synthetic else "event",
+        event_pk=evt["id"], event_name=name, state=state, guard=guard,
         action=action, intent=decision["intent"], tone=decision["tone"],
         reason=decision["reason"], dry_run=dry_run, delivered=delivered,
         detail=detail, cost_usd=total_cost)
+    # The agent has SPOKEN on this step (or chosen silence): terminal either
+    # way — the ladder never re-runs a decided step within a cycle.
+    if name == "inactivity_check" and step:
+        await db.consume_inactivity_step(int(ru["id"]), step)
+    # Journey-lite: one gentle follow-up when a delivered re-engagement touch
+    # stays unanswered (knob v2_follow_up_hours; 0 = off). Reactive event
+    # touches never chain — only the ladder/VIP contour does.
+    fup_h = int(cfg.get("v2_follow_up_hours") or 0)
+    if (delivered and fup_h > 0
+            and name in ("inactivity_check", "vip_at_risk")):
+        now_utc = _dt.datetime.now(_dt.timezone.utc)
+        await db.ingest_retention_event(
+            pid, event_id=f"fup:{evt['id']}",
+            event_name="touch_follow_up", player_id=player_id, ts=now_utc,
+            payload={"origin": name, "step": step},
+            source="system", due_at=now_utc + _dt.timedelta(hours=fup_h))
     await db.log_admin_event(
         None, "retention_v2_decision",
         {"event": evt.get("event_name"), "action": action,
@@ -540,12 +867,14 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
 # ---------------------------------------------------------------------------
 async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
                       evt: dict[str, Any], decision: dict[str, Any], *,
-                      comfort: bool, cfg: dict[str, Any]
+                      comfort: bool, cfg: dict[str, Any],
+                      state: Optional[dict[str, Any]] = None
                       ) -> tuple[bool, float, Optional[str]]:
     """Generate + deliver the agent-decided touch. Returns
     (delivered, generation_cost_usd, detail)."""
     pid = int(product["id"])
     rid = int(ru["id"])
+    name = evt.get("event_name") or ""
     token = await db.get_product_telegram_token(pid)
     if not token:
         return False, 0.0, "no_bot_token"
@@ -560,10 +889,36 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
         candidates = await retention.select_photo_candidates(
             pid, ru, "", bypass_cooldown=True)
 
-    occasion = _OCCASIONS.get(evt.get("event_name") or "", "a notable moment")
+    # Real offers (the platform's read-only Offers API, Stage-4 contract):
+    # fetched per touch when configured; never in comfort mode. With none, the
+    # re-engagement wording is hard-locked to bonus-free warmth.
+    offers: list[dict[str, Any]] = []
+    if not comfort and (product.get("offers_api_url") or "").strip():
+        offers = await player_sync.fetch_player_offers(
+            product, str(ru.get("player_id") or ""))
+
+    # An inactivity/VIP touch is the classic idle re-engagement (the PING task
+    # wording); reactive event touches carry the occasion wording instead.
+    if name in ("inactivity_check", "vip_at_risk"):
+        occasion = None
+        idle_days = int(float((state or {}).get("idle_days") or 0)) or 1
+        step = int((evt.get("payload") or {}).get("step") or 0)
+        reason = (f"inactivity ladder step D{step}" if step
+                  else "long-idle VIP player")
+    elif name == "touch_follow_up":
+        occasion = _OCCASIONS["touch_follow_up"]
+        idle_days, reason = 0, ""
+    else:
+        occasion = _occasion_for(evt)
+        idle_days, reason = 0, ""
     draft = await chat_service.generate_retention_ping(
-        session, idle_days=0, reason="", intent=decision["intent"],
-        photo_candidates=candidates, occasion=occasion, comfort=comfort)
+        session, idle_days=idle_days, reason=reason,
+        intent=decision["intent"],
+        photo_candidates=candidates, occasion=occasion, comfort=comfort,
+        offers=offers,
+        no_bonus_talk=(name in ("inactivity_check", "touch_follow_up",
+                                "vip_at_risk") and not offers),
+        tz_offset_hours=retention.player_tz_offset(ru, cfg))
     if draft is None:
         await db.record_retention_ping(pid, rid, None, decision["action"],
                                        "failed", detail="v2:model_error")

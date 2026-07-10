@@ -60,6 +60,18 @@ const ACTION_COLORS = {
 // the different branches (win/loss, comfort, profile refresh) are one click.
 // ---------------------------------------------------------------------------
 const PAYLOAD_SAMPLES = {
+  // Synthetic (service-generated) events — injectable here to test the
+  // inactivity/follow-up/VIP contour without waiting days.
+  inactivity_check: [
+    { label: 'ladder step D7', payload: { step: 7, cycle: 0, idle_days: 8 } },
+    { label: 'ladder step D30', payload: { step: 30, cycle: 0, idle_days: 31 } },
+  ],
+  touch_follow_up: [
+    { label: 'after unanswered touch', payload: { origin: 'inactivity_check', step: 7 } },
+  ],
+  vip_at_risk: [
+    { label: 'long-idle VIP', payload: { idle_days: 46, cycle: 0 } },
+  ],
   deposit_confirmed: [
     { label: 'regular deposit', payload: { amount: 100, currency: 'USDT', method: 'crypto' } },
     { label: 'first deposit', payload: { amount: 25, currency: 'USDT', method: 'card', first_deposit: true } },
@@ -306,7 +318,8 @@ const Simulator = ({ status, onDone, canWrite }) => {
             onChange={(e) => pickEvent(e.target.value)}
             sx={{ flex: '0 0 240px' }}
           >
-            {(status?.canonical_events || []).map((n) => (
+            {[...(status?.canonical_events || []),
+              ...(status?.synthetic_events || [])].map((n) => (
               <MenuItem key={n} value={n}>
                 {n}
               </MenuItem>
@@ -628,6 +641,60 @@ const LogsTab = ({ logs }) => (
 );
 
 // ---------------------------------------------------------------------------
+// Effectiveness — the channel's own KPI baseline (reply / reactivation rates)
+// ---------------------------------------------------------------------------
+const pct = (num, den) => (den ? `${Math.round((num / den) * 100)}%` : '—');
+
+const EffectivenessTab = ({ stats }) => (
+  <Card>
+    <CardContent>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+        Delivered proactive touches over the last 28 days, per trigger type:
+        how many got a player reply within 72 hours, and how many were followed
+        by real casino activity (a session, a bet, a deposit) within 72 hours.
+        This is the baseline the channel&apos;s KPI targets are set from.
+      </Typography>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell>Trigger</TableCell>
+            <TableCell align="right">Sent</TableCell>
+            <TableCell align="right">Replied ≤72h</TableCell>
+            <TableCell align="right">Reply rate</TableCell>
+            <TableCell align="right">Reactivated ≤72h</TableCell>
+            <TableCell align="right">Reactivation rate</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {(stats?.items || []).map((r) => (
+            <TableRow key={r.event_name}>
+              <TableCell>
+                <Chip size="small" variant="outlined" label={r.event_name} />
+              </TableCell>
+              <TableCell align="right">{r.sent}</TableCell>
+              <TableCell align="right">{r.replied_72h}</TableCell>
+              <TableCell align="right">{pct(r.replied_72h, r.sent)}</TableCell>
+              <TableCell align="right">{r.reactivated_72h}</TableCell>
+              <TableCell align="right">{pct(r.reactivated_72h, r.sent)}</TableCell>
+            </TableRow>
+          ))}
+          {!(stats?.items || []).length && (
+            <TableRow>
+              <TableCell colSpan={6}>
+                <Typography variant="body2" color="text.secondary">
+                  No delivered touches in the window yet — rows appear once the
+                  agent actually sends (dry-run decisions don&apos;t count).
+                </Typography>
+              </TableCell>
+            </TableRow>
+          )}
+        </TableBody>
+      </Table>
+    </CardContent>
+  </Card>
+);
+
+// ---------------------------------------------------------------------------
 // How it works & testing — the operator's guide to the whole agent loop
 // ---------------------------------------------------------------------------
 const Section = ({ title, children }) => (
@@ -714,6 +781,64 @@ const GuideTab = ({ status }) => {
               guard verdict, the agent’s reasoning and the summed cost. “Why
               did/didn’t the bot write?” is always answerable from the
               Decisions tab.
+            </LI>
+          </Box>
+        </Section>
+        <Divider sx={{ mb: 2 }} />
+
+        <Section title="Inactivity ladder (write-first to silent players)">
+          <P>
+            The one place the agent writes without a casino event: a player
+            idle past a ladder step
+            {status?.inactivity?.steps?.length
+              ? ` (${status.inactivity.steps.map((d) => `D${d}`).join(' / ')})`
+              : ''}{' '}
+            gets a synthetic <code>inactivity_check</code> event on the same
+            queue, and the whole pipeline above applies — guards, agent
+            decision (silence included), dry-run, ledger.
+            {status?.inactivity && !status.inactivity.enabled
+              ? ' Currently OFF for this product (Settings → Retention bot → «Inactivity ladder»).'
+              : ''}
+          </P>
+          <Box component="ul" sx={{ pl: 3, my: 0 }}>
+            <LI>
+              <b>One step = one touch per idle spell.</b> A step is consumed
+              only by a terminal outcome (delivered, agent silence, opt-out,
+              blocked bot, RG-hold). A bad <i>moment</i> (quiet hours, daily
+              cap, min-gap, budget) only defers the touch — the Decisions tab
+              shows it as <code>deferred</code> with the retry time.
+            </LI>
+            <LI>
+              <b>Latest step wins:</b> if a deferred D7 is still pending when
+              the player crosses D10, the D7 dies as <code>superseded</code>{' '}
+              and D10 replaces it — a player never gets two ladder messages in
+              a row.
+            </LI>
+            <LI>
+              <b>Any real activity re-arms the ladder:</b> a casino event or a
+              message to the bot cancels the pending touch
+              (<code>cancelled</code> in the ledger) and the next idle spell
+              starts from the first step again.
+            </LI>
+            <LI>
+              <b>RG-hold is absolute:</b> a player the casino flags with{' '}
+              <code>rg_hold</code> / self-exclusion is never touched
+              proactively, with no bot-side override.
+            </LI>
+            <LI>
+              <b>Wording is bonus-free</b> until an Offers API is configured
+              (Telegram config → Offers API URL): a warm personal touch plus
+              at most a site-map button. With offers configured, the persona
+              may mention one REAL offer with its real deeplink.
+            </LI>
+            <LI>
+              <b>Follow-up</b> (optional): one gentle follow-up{' '}
+              {status?.inactivity?.follow_up_hours
+                ? `${status.inactivity.follow_up_hours}h`
+                : 'N hours'}{' '}
+              after an unanswered touch; <b>VIP at-risk</b>: a long-idle
+              top-tier player gets a dedicated touch + a durable admin event
+              with their manager.
             </LI>
           </Box>
         </Section>
@@ -933,6 +1058,7 @@ const RetentionAgentInner = () => {
   const [events, setEvents] = useState(null);
   const [decisions, setDecisions] = useState(null);
   const [logs, setLogs] = useState(null);
+  const [stats, setStats] = useState(null);
   const [running, setRunning] = useState(false);
 
   const load = useCallback(() => {
@@ -947,6 +1073,9 @@ const RetentionAgentInner = () => {
       .catch(() => {});
     httpClient(withProduct(`${API_URL}/admin/retention/v2/logs`))
       .then(({ json }) => setLogs(json))
+      .catch(() => {});
+    httpClient(withProduct(`${API_URL}/admin/retention/v2/effectiveness`))
+      .then(({ json }) => setStats(json))
       .catch(() => {});
   }, [notify]);
 
@@ -1003,9 +1132,10 @@ const RetentionAgentInner = () => {
         canWrite={canWrite}
         running={running}
       />
-      {(tab === 'events' || tab === 'decisions') && (
-        <Simulator status={status} onDone={load} canWrite={canWrite} />
-      )}
+      {/* Tabs sit ABOVE the (tab-specific) simulator, so switching tabs never
+          moves the tab row — the old layout mounted the simulator above the
+          tabs on two tabs only, and the row jumped on every switch. The
+          min-height on the panel container keeps the page height steady too. */}
       <Tabs
         value={tab}
         onChange={(_, v) => navigate(`/retention-agent?tab=${v}`)}
@@ -1013,37 +1143,44 @@ const RetentionAgentInner = () => {
       >
         <Tab value="events" label={`Events${events ? ` (${events.total})` : ''}`} />
         <Tab value="decisions" label={`Decisions${decisions ? ` (${decisions.total})` : ''}`} />
+        <Tab value="stats" label="Effectiveness" />
         <Tab value="logs" label={`System log${logs ? ` (${logs.total})` : ''}`} />
         <Tab value="guide" label="How it works & testing" />
       </Tabs>
-      {tab === 'events' && (
-        <EventsTab
-          events={events}
-          canWrite={canWrite}
-          onDelete={(id) => del(`${API_URL}/admin/retention/v2/events/${id}`)}
-          onClear={() =>
-            del(
-              `${API_URL}/admin/retention/v2/events`,
-              'Delete ALL events for this product? The loss window and recent-activity state derived from them resets too.',
-            )
-          }
-        />
-      )}
-      {tab === 'decisions' && (
-        <DecisionsTab
-          decisions={decisions}
-          canWrite={canWrite}
-          onDelete={(id) => del(`${API_URL}/admin/retention/v2/decisions/${id}`)}
-          onClear={() =>
-            del(
-              `${API_URL}/admin/retention/v2/decisions`,
-              "Delete ALL decisions for this product? Today's budget counter and all same-event cooldowns reset.",
-            )
-          }
-        />
-      )}
-      {tab === 'logs' && <LogsTab logs={logs} />}
-      {tab === 'guide' && <GuideTab status={status} />}
+      <Box sx={{ minHeight: 480 }}>
+        {(tab === 'events' || tab === 'decisions') && (
+          <Simulator status={status} onDone={load} canWrite={canWrite} />
+        )}
+        {tab === 'events' && (
+          <EventsTab
+            events={events}
+            canWrite={canWrite}
+            onDelete={(id) => del(`${API_URL}/admin/retention/v2/events/${id}`)}
+            onClear={() =>
+              del(
+                `${API_URL}/admin/retention/v2/events`,
+                'Delete ALL events for this product? The loss window and recent-activity state derived from them resets too.',
+              )
+            }
+          />
+        )}
+        {tab === 'decisions' && (
+          <DecisionsTab
+            decisions={decisions}
+            canWrite={canWrite}
+            onDelete={(id) => del(`${API_URL}/admin/retention/v2/decisions/${id}`)}
+            onClear={() =>
+              del(
+                `${API_URL}/admin/retention/v2/decisions`,
+                "Delete ALL decisions for this product? Today's budget counter and all same-event cooldowns reset.",
+              )
+            }
+          />
+        )}
+        {tab === 'stats' && <EffectivenessTab stats={stats} />}
+        {tab === 'logs' && <LogsTab logs={logs} />}
+        {tab === 'guide' && <GuideTab status={status} />}
+      </Box>
     </Box>
   );
 };

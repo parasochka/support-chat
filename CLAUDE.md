@@ -1080,9 +1080,19 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   lands in the `retention_pings` ledger (+ per-player counters via
   `db.record_retention_ping`), the `/stop` opt-out (`pings_muted`; `/resume`
   re-enables) and the blocked-bot flag (`unreachable`, set on a Telegram 403,
-  cleared when the player writes again) are honoured on every send. NB: the agent
-  is event-driven — with the ladder gone there is NO idle-player re-engagement
-  until an inactivity trigger is added to the agent.
+  cleared when the player writes again) are honoured on every send. Idle-player
+  re-engagement is the agent's **inactivity ladder** (see the RETENTION AGENT
+  section): synthetic `inactivity_check` events on the same queue/pipeline.
+- **The profile feed also carries governance fields** (`player_sync.normalize_profile`,
+  accepted by player-update push, Player-API pull and event payloads):
+  `timezone` (IANA name or a `UTC+3`-style offset, geo-derived by the casino)
+  → `retention_users.tz_name` — quiet hours and the prompt's CURRENT TIME block
+  run on the PLAYER's clock when present (`retention.player_tz_offset`, falling
+  back to the product `quiet_hours_utc_offset`); and `rg_hold` /
+  `self_excluded` (either TRUE ⇒ `retention_users.rg_hold`) — the
+  responsible-gaming hold that permanently blocks every proactive touch with NO
+  bot-side override (a terminal guard reason; only the casino clears it by
+  sending both flags false). The dialogue bot still answers a held player.
 - **Telegram anti-spam gate** (`retention._handle_message`, mirrors the widget gate): per-user
   rate limit with its OWN chat-paced allowance — `antispam.check_rate_limit("tg:{pid}:{uid}",
   cfg["tg_rate_limit_max_per_user"])` (`antispam` group knob, env `TG_RATE_LIMIT_MAX_PER_USER`,
@@ -1247,11 +1257,78 @@ drainers pick up the same event.
   `retention.quiet_hours_utc_offset` — the audience clock the quiet hours
   already run on): local weekday + HH:MM + part of day, with a hard "match
   the clock or drop the time-of-day wording" rule — without it the model
-  guessed («наслаждайся вечером» sent at 10:00). Tuning the offset knob
-  (Settings → Retention bot) tunes both quiet hours and this block. Only decision-worthy events wake the
-  agent (`DECISION_EVENTS`; `bet_settled` only when the loss window crosses
+  guessed («наслаждайся вечером» sent at 10:00). Quiet hours AND this block
+  run on the **player's own clock** when the casino feed supplies a timezone
+  (`retention.player_tz_offset`: `retention_users.tz_name` — IANA or offset
+  string — falling back to the product `quiet_hours_utc_offset` knob). Only
+  decision-worthy events wake the
+  agent (`DECISION_EVENTS`, now incl. `bonus_granted` — bonus occasions are
+  enriched with the SAFE payload facts, name/expiry/type, never amounts, via
+  `_occasion_for`; `bet_settled` only when the loss window crosses
   `v2_loss_high_usd`); everything else is state food, marked processed
-  silently — no model call, no ledger row.
+  silently — no model call, no ledger row. A high-loss `bet_settled` is first
+  **deferred** `v2_loss_delay_min` minutes (default 45, 0 = off) so the
+  comfort note never lands mid-session (EPIC-5's 30–60 min rule); the loss
+  window re-resolves fresh when it comes due.
+- **INACTIVITY LADDER — the dormancy contour (write-first to silent players).**
+  The one non-event trigger: on each sweep (per-product, self-throttled to
+  15 min) `retention_v2.scan_inactivity` finds linked, subscribed, un-held
+  players whose idleness (most recent of `last_login_at`/`last_played_at`/
+  `last_active_at` — bot chat counts as presence) crossed a ladder step
+  (`inactivity_steps` knob, spec ladder **7/10/14/21/30**) and queues a
+  synthetic `inactivity_check` event (`source='system'`, id
+  `inact:{player}:{step}:{cycle}`) into the SAME pipeline — guards, agent
+  decision (silence included), dry-run, ledger all apply unchanged. Lifecycle
+  (the approved design, every transition a ledger row): at most ONE live
+  ladder event per player; **latest-step-wins** — a higher crossed step closes
+  a still-live lower one as `superseded` (also covers worker downtime); a step
+  is **consumed** (`retention_users.inact_step_done`) only by a TERMINAL
+  outcome — delivery, agent silence, dry-run decision, opt-out/unreachable/
+  not-subscribed/`rg_hold`, failed send — while TRANSIENT guard verdicts
+  (quiet hours, daily cap, min-gap, budget, same-event cooldown, backoff)
+  **defer** the event instead: `retention_events.due_at` is set to the nearest
+  allowed window (`_defer_due_at`) and the claim query skips it until then
+  (`deferred` in the ledger, reasons + due time). Any real activity — a casino
+  activity event (`player_sync.cancel_pending_touches`, called from the
+  ingest bridge) or an inbound Telegram message (`retention._handle_message`)
+  — cancels live synthetic events (`cancelled_by_return`) and restarts the
+  cycle (`db.bump_inactivity_cycle`; forced when a live event died so the next
+  spell's event_ids never collide); a claim-time re-check catches everything
+  else. Touch wording is the idle re-engagement PING task, **hard-locked
+  bonus-free** (`no_bonus_talk` → `prompts._RETENTION_NO_BONUS_LINE`) unless
+  the offers feed supplies real offers. Master switch `inactivity_enabled`
+  (ships ON — but dry-run ships ON too, and **rg_hold was a blocking
+  requirement**: held players are excluded at scan AND guard level).
+  **Journey-lite follow-up**: a DELIVERED inactivity/VIP touch with
+  `v2_follow_up_hours` > 0 (default 0 = off) schedules ONE `touch_follow_up`
+  event (`fup:{event_pk}`, due_at) — cancelled if the player replies
+  (`unanswered_touches` reset), otherwise one gentle nudge; follow-ups never
+  chain further, and reactive event touches never chain at all.
+  **VIP-at-risk**: a top-two-tier player (`retention.is_vip_tier`, relative to
+  the product's own `vip_tiers` ladder) idle `v2_vip_at_risk_days` (default
+  45, 0 = off) gets a dedicated `vip_at_risk` touch (once per cycle) + a
+  durable `retention_vip_at_risk` admin event carrying the assigned manager.
+  **Reply-adaptive backoff**: `retention_users.unanswered_touches` counts
+  consecutive delivered touches with no reply (bumped in
+  `db.record_retention_ping`, reset on any inbound message); past
+  `v2_backoff_after_ignored` (default 3, 0 = off) the min-gap stretches 4×
+  (`ignored_backoff` guard reason — transient) until the player writes again.
+  Tests: `tests/test_retention_inactivity.py`.
+- **PLAYER OFFERS — the read-only platform contract (Stage 4).** The platform
+  owns the offer catalogue, eligibility and granting; the bot only READS the
+  offers currently available to one player: `products.offers_api_url` (edited
+  in Retention → Telegram config; empty = feature off) + the existing
+  `player_api_key_enc` as Bearer auth. `player_sync.fetch_player_offers` (SSRF
+  guard, 6s timeout, best-effort []) GETs `?player_id=…` expecting
+  `{"offers":[{id,title,description,deeplink,expires_at,type}…]}` (≤5 used,
+  normalized/length-capped, non-http deeplinks dropped). On proactive touches
+  (`retention_v2._send_touch`, never in comfort mode) the list renders as the
+  Layer-3 `AVAILABLE OFFERS` block (`prompts._offers_directive`): the persona
+  may weave in AT MOST ONE offer, strictly by its listed facts, and its
+  deeplink becomes a valid `[[LINK:url]]` target — `generate_retention_ping`
+  validates the emitted link against the site map first, then EXACT-matches
+  this turn's offer deeplinks (label = offer title), so an invented URL still
+  dies. With offers present the bonus-free hard-lock lifts for that touch.
 - **The decision ledger (`retention_v2_decisions`)** is the audit trail: ONE
   row per decision whatever the outcome — state snapshot, guard verdict +
   reasons, the agent's action/tone/intent/reason, dry-run flag, delivery,
@@ -1277,7 +1354,11 @@ drainers pick up the same event.
   event log feeds the state resolver, so deletes rewrite the loss window);
   deleting a decision "refunds" its cost from today's budget and re-arms the
   same-event cooldown (both read the ledger); every delete logs a
-  `retention_v2_*` admin event. Two more tabs: **System log**
+  `retention_v2_*` admin event. Three more tabs: **Effectiveness**
+  (`GET /admin/retention/v2/effectiveness` → `db.retention_v2_touch_stats`:
+  delivered touches per trigger type over 28 days with reply-rate ≤72h and
+  reactivation-rate ≤72h — the channel's KPI baseline; dry-run decisions
+  don't count), **System log**
   (`GET /admin/retention/v2/logs` → `db.list_retention_v2_logs`: the durable
   `retention_v2_*` admin events, the admin-readable mirror of the Railway
   lines — the pipeline emits one structured line per decision

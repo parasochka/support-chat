@@ -179,6 +179,7 @@ const ConfigTab = ({ productId }) => {
           telegram_channel_id: p.telegram_channel_id || '',
           telegram_channel_url: p.telegram_channel_url || '',
           player_api_url: p.player_api_url || '',
+          offers_api_url: p.offers_api_url || '',
           retention_enabled: Boolean(p.retention_enabled),
         });
       })
@@ -272,6 +273,7 @@ const ConfigTab = ({ productId }) => {
           ['telegram_channel_id', 'Channel id (@channel or -100…)'],
           ['telegram_channel_url', 'Channel URL (subscription gate)'],
           ['player_api_url', 'Player API URL (profile pull)'],
+          ['offers_api_url', 'Offers API URL (read-only player offers; empty = no offers in touches)'],
         ].map(([f, label]) => (
           <TextField
             key={f}
@@ -1825,7 +1827,11 @@ const Retention = () => {
           ))}
         </Tabs>
       )}
-      <Component productId={productId} />
+      {/* Constant-height floor: tab panels differ a lot in height, and without
+          it the tab row (and the scrollbar) jumped on every switch. */}
+      <Box sx={{ minHeight: 480 }}>
+        <Component productId={productId} />
+      </Box>
     </Box>
   );
 };

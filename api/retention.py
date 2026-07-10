@@ -276,6 +276,7 @@ class TelegramConfigWrite(BaseModel):
     telegram_channel_id: Optional[str] = None
     telegram_channel_url: Optional[str] = None
     player_api_url: Optional[str] = None
+    offers_api_url: Optional[str] = None
     retention_enabled: Optional[bool] = None
 
 
@@ -299,7 +300,8 @@ async def put_telegram_config(product_id: int, body: TelegramConfigWrite,
     await admin_auth.require_product_write(admin, product_id)
     fields: dict[str, Any] = {}
     for f in ("telegram_bot_username", "telegram_channel_id",
-              "telegram_channel_url", "player_api_url", "retention_enabled"):
+              "telegram_channel_url", "player_api_url", "offers_api_url",
+              "retention_enabled"):
         v = getattr(body, f)
         if v is not None:
             fields[f] = v
@@ -994,6 +996,7 @@ async def v2_status(product_id: int,
         "sweep_interval_sec": retention_v2.worker_interval_sec(),
         "activity": activity,
         "canonical_events": sorted(player_sync.CANONICAL_EVENTS),
+        "synthetic_events": sorted(player_sync.SYNTHETIC_EVENTS),
         "decision_events": sorted(retention_v2.DECISION_EVENTS),
         "photo_events": sorted(retention_v2._PHOTO_EVENTS),
         "same_event_cooldown_hours": int(
@@ -1013,8 +1016,35 @@ async def v2_status(product_id: int,
             "daily_budget_usd": float(cfg.get("v2_daily_budget_usd") or 0),
             "loss_comfort_hours": int(cfg.get("v2_loss_comfort_hours") or 0),
             "loss_high_usd": float(cfg.get("v2_loss_high_usd") or 0),
+            "backoff_after_ignored": int(
+                cfg.get("v2_backoff_after_ignored") or 0),
+            "loss_delay_min": int(cfg.get("v2_loss_delay_min") or 0),
+        },
+        # The dormancy contour: the ladder switch + steps + follow-up/VIP
+        # knobs, so the agent page can render the inactivity block truthfully.
+        "inactivity": {
+            "enabled": bool(cfg.get("inactivity_enabled")),
+            "steps": retention_v2.parse_inactivity_steps(cfg),
+            "follow_up_hours": int(cfg.get("v2_follow_up_hours") or 0),
+            "vip_at_risk_days": int(cfg.get("v2_vip_at_risk_days") or 0),
         },
     })
+
+
+@admin_router.get("/v2/effectiveness")
+async def v2_effectiveness(product_id: int, frm: Optional[str] = None,
+                           to: Optional[str] = None,
+                           admin=Depends(require_admin)) -> JSONResponse:
+    """Touch effectiveness per trigger type: delivered / replied within 72h /
+    reactivated within 72h — the channel's own KPI baseline (reply-rate and
+    reactivation-72h per the agreed 4-week measurement)."""
+    import datetime as _dt
+    await admin_auth.require_product_read(admin, product_id)
+    now = _dt.datetime.now(_dt.timezone.utc)
+    frm_ts = frm or (now - _dt.timedelta(days=28)).isoformat()
+    to_ts = to or now.isoformat()
+    rows = await db.retention_v2_touch_stats(product_id, frm_ts, to_ts)
+    return JSONResponse(content={"items": rows, "from": frm_ts, "to": to_ts})
 
 
 @admin_router.get("/v2/events")
