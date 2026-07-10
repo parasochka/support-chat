@@ -1621,6 +1621,41 @@ def _rough_age_text(created_at: Any) -> str:
     return f"{int(hours // 24)} days ago"
 
 
+def _current_time_directive(utc_offset_hours: Optional[float]) -> str:
+    """Layer-3 current-time block for the retention persona.
+
+    Without it the model has NO idea what time it is and still reaches for
+    time-of-day flourishes — a "enjoy your evening" sent at 10:00 reads
+    instantly botlike. The offset is the product-level
+    `retention.quiet_hours_utc_offset` (the same audience clock the quiet
+    hours run on) — the operator's best approximation of the player's local
+    time, not a per-player timezone. None ⇒ no block (prompt unchanged).
+    """
+    if utc_offset_hours is None:
+        return ""
+    import datetime as _dt
+    now = (_dt.datetime.now(_dt.timezone.utc)
+           + _dt.timedelta(hours=float(utc_offset_hours)))
+    hour = now.hour
+    if 5 <= hour < 12:
+        part = "morning"
+    elif 12 <= hour < 17:
+        part = "afternoon"
+    elif 17 <= hour < 22:
+        part = "evening"
+    else:
+        part = "night"
+    return (
+        "=== CURRENT TIME (the player's local clock) ===\n"
+        f"Right now it is {now.strftime('%A')}, {now.strftime('%H:%M')} — "
+        f"{part} — for the player.\n"
+        "Any time-of-day wording MUST match this clock: greetings, 'enjoy "
+        "your evening', 'good night', 'have a great weekend', references to "
+        "later today. Never assume a different time of day; when the time of "
+        "day adds nothing, simply leave it out."
+    )
+
+
 def build_retention_dynamic_prompt(
     user_context: dict[str, Any],
     resolved_lang: str,
@@ -1630,6 +1665,7 @@ def build_retention_dynamic_prompt(
     previous_history: Optional[list[dict[str, Any]]] = None,
     play_nudge: bool = False,
     appearance: Optional[dict[str, Any]] = None,
+    tz_offset_hours: Optional[float] = None,
 ) -> str:
     """Assemble the retention Layer-3 user message.
 
@@ -1656,6 +1692,9 @@ def build_retention_dynamic_prompt(
     if prev_block:
         parts += [prev_block, ""]
     parts += [_language_directive(resolved_lang), ""]
+    time_block = _current_time_directive(tz_offset_hours)
+    if time_block:
+        parts += [time_block, ""]
     appearance_block = _appearance_directive(appearance)
     if appearance_block:
         parts += [appearance_block, ""]
@@ -1691,6 +1730,7 @@ def build_retention_messages(
     previous_history: Optional[list[dict[str, Any]]] = None,
     play_nudge: bool = False,
     appearance: Optional[dict[str, Any]] = None,
+    tz_offset_hours: Optional[float] = None,
 ) -> list[dict[str, str]]:
     """The OpenAI `messages` array for a retention (Telegram) turn.
 
@@ -1723,6 +1763,7 @@ def build_retention_messages(
             previous_history=previous_history if first_turn else None,
             play_nudge=play_nudge,
             appearance=appearance,
+            tz_offset_hours=tz_offset_hours,
         ),
     })
     return messages
@@ -1807,6 +1848,7 @@ def build_retention_ping_prompt(
     photo_candidates: Optional[list[dict[str, Any]]] = None,
     occasion: Optional[str] = None,
     comfort: bool = False,
+    tz_offset_hours: Optional[float] = None,
 ) -> str:
     """Assemble the Layer-3 user message for a proactive ping.
 
@@ -1836,6 +1878,9 @@ def build_retention_ping_prompt(
         "line, then the message.",
         "",
     ]
+    time_block = _current_time_directive(tz_offset_hours)
+    if time_block:
+        parts += [time_block, ""]
     photo_block = _photo_candidates_directive(photo_candidates or [])
     if photo_block:
         parts += [photo_block, ""]
@@ -1855,6 +1900,7 @@ def build_retention_ping_messages(
     history_window: int = 10,
     occasion: Optional[str] = None,
     comfort: bool = False,
+    tz_offset_hours: Optional[float] = None,
 ) -> list[dict[str, str]]:
     """The OpenAI `messages` array for a proactive retention ping.
 
@@ -1881,6 +1927,7 @@ def build_retention_ping_messages(
             photo_candidates=photo_candidates,
             occasion=occasion,
             comfort=comfort,
+            tz_offset_hours=tz_offset_hours,
         ),
     })
     return messages

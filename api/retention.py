@@ -1075,6 +1075,9 @@ class SimulateEventReq(BaseModel):
     player_id: str
     payload: dict[str, Any] = Field(default_factory=dict)
     timestamp: Optional[str] = None
+    # Optional explicit recipient: pins the exact Telegram account when the
+    # player_id is linked to several (the one-test-player-many-testers setup).
+    tg_user_id: Optional[int] = None
 
 
 @admin_router.get("/v2/status")
@@ -1213,6 +1216,7 @@ async def v2_simulate_event(product_id: int, body: SimulateEventReq,
         "player_id": body.player_id,
         "payload": body.payload,
         "timestamp": body.timestamp,
+        "tg_user_id": body.tg_user_id,
     }
     try:
         result = await player_sync.ingest_event(product_id, evt,

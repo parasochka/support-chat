@@ -1219,7 +1219,18 @@ advisory lock.
   the fixed taxonomy (`player_sync.CANONICAL_EVENTS`, 22 names:
   `deposit_confirmed`, `bet_settled`, `session_started`, `level_up`, …),
   idempotent by `(product_id, event_id)` (`retention_events`, append-only;
-  duplicates counted, not stored). Every stored event also runs the **legacy
+  duplicates counted, not stored). An event may carry an optional
+  **`tg_user_id`** (top-level or in payload; validated + normalized into the
+  payload — no extra column): the explicit Telegram recipient for when one
+  `player_id` is linked to several Telegram accounts (multi-tester setups).
+  Without it the v2 send resolves the player's most recently updated link
+  (`db.get_retention_user_by_player`, `ORDER BY updated_at DESC`); with it the
+  exact account is targeted, and an unknown target SKIPS with a ledgered
+  reason — never a silent fallback to another account. The admin simulator
+  exposes it as the «Telegram recipient» picker (fed by
+  `GET /admin/retention/users`; picking an account also fills its player id)
+  and the Decisions ledger shows the actual recipient's `@username` under the
+  player name. Every stored event also runs the **legacy
   bridge**: `deposit_confirmed`→`last_deposit_at`,
   `session_started/ended`→`last_login_at`, `bet_settled`→`last_played_at`
   (forward-only via GREATEST — out-of-order delivery never rewinds a
@@ -1245,7 +1256,14 @@ advisory lock.
   wording + `_RETENTION_COMFORT_BLOCK` replace the idle-days task; delivery
   mirrors the v1 ping send — `rtn_ping_header`, HTML + plain fallback, 403 ⇒
   unreachable — and `db.record_retention_ping` bumps the SAME per-player
-  counters, so caps hold across regimes). Only decision-worthy events wake the
+  counters, so caps hold across regimes). Every retention Layer 3 (dialogue
+  turns, v1 pings, v2 touches) carries a **CURRENT TIME block**
+  (`prompts._current_time_directive`, fed with
+  `retention.quiet_hours_utc_offset` — the audience clock the quiet hours
+  already run on): local weekday + HH:MM + part of day, with a hard "match
+  the clock or drop the time-of-day wording" rule — without it the model
+  guessed («наслаждайся вечером» sent at 10:00). Tuning the offset knob
+  (Settings → Retention bot) tunes both quiet hours and this block. Only decision-worthy events wake the
   agent (`DECISION_EVENTS`; `bet_settled` only when the loss window crosses
   `v2_loss_high_usd`); everything else is state food, marked processed
   silently — no model call, no ledger row.

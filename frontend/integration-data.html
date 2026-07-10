@@ -210,7 +210,8 @@ Authorization: Bearer &lt;handshake-секрет продукта&gt;
   "event_name": "deposit_confirmed",               // каноническое имя, см. список ниже
   "player_id":  "player-123",
   "timestamp":  "2026-07-05T19:02:00Z",            // ISO-8601; когда произошло у вас
-  "payload":    { "amount": 50.0, "currency": "USDT", "method": "trc20" }
+  "payload":    { "amount": 50.0, "currency": "USDT", "method": "trc20" },
+  "tg_user_id": 123456789                          // опционально: точный Telegram-получатель
 }
 → 200 { "ok": true, "stored": true, "duplicate": false }
 
@@ -227,6 +228,11 @@ Authorization: Bearer &lt;handshake-секрет продукта&gt;
 <code>level_up</code>, <code>class_up</code>, <code>downgrade</code>,
 <code>highlights_pack_opened</code>, <code>highlights_pack_completed</code>,
 <code>check_in_done</code>, <code>mission_completed</code>.</p>
+<p>Получатель в Telegram по умолчанию резолвится по <code>player_id</code> — берётся его
+последняя активная привязка к боту. Если один <code>player_id</code> привязан к нескольким
+Telegram-аккаунтам (типично на тестовых стендах), передайте опциональный
+<code>tg_user_id</code> — реакция уйдёт ровно этому аккаунту; незнакомый <code>tg_user_id</code>
+не «падает» на другой аккаунт, а фиксируется в леджере решений как skipped.</p>
 <div class="warnbox">Доставка — at-least-once: шлите смело повторно, дубликаты по
 <code>event_id</code> не сохраняются. Один фид кормит <b>оба</b> ретеншн-режима: события
 автоматически обновляют таймстемпы активности из раздела 6 (v1 ping-матрица), а при включённом

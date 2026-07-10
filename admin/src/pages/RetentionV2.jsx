@@ -229,6 +229,25 @@ const Simulator = ({ status, onDone, canWrite }) => {
     JSON.stringify(samplesFor('deposit_confirmed')[0].payload),
   );
   const [busy, setBusy] = useState(false);
+  // Linked Telegram accounts — the explicit-recipient picker. With one test
+  // player linked to several Telegram accounts, "auto" sends to whichever
+  // link was updated last; picking an account pins the recipient.
+  const [linked, setLinked] = useState([]);
+  const [tgUserId, setTgUserId] = useState('');
+
+  useEffect(() => {
+    httpClient(withProduct(`${API_URL}/admin/retention/users?limit=200`))
+      .then(({ json }) => setLinked(json.items || []))
+      .catch(() => {});
+  }, []);
+
+  const pickTgUser = (value) => {
+    setTgUserId(value);
+    // Convenience: picking an account also fills its player_id, so the event
+    // is consistent without retyping.
+    const u = linked.find((x) => String(x.tg_user_id) === String(value));
+    if (u?.player_id) setPlayerId(u.player_id);
+  };
 
   const decisionEvents = status?.decision_events || [];
   const samples = samplesFor(eventName);
@@ -256,7 +275,12 @@ const Simulator = ({ status, onDone, canWrite }) => {
     try {
       await httpClient(withProduct(`${API_URL}/admin/retention/v2/simulate-event`), {
         method: 'POST',
-        body: JSON.stringify({ event_name: eventName, player_id: playerId, payload: parsed }),
+        body: JSON.stringify({
+          event_name: eventName,
+          player_id: playerId,
+          payload: parsed,
+          tg_user_id: tgUserId ? Number(tgUserId) : null,
+        }),
       });
       notify('Event injected', { type: 'success' });
       onDone();
@@ -285,6 +309,27 @@ const Simulator = ({ status, onDone, canWrite }) => {
             {(status?.canonical_events || []).map((n) => (
               <MenuItem key={n} value={n}>
                 {n}
+              </MenuItem>
+            ))}
+          </TextField>
+          <TextField
+            select
+            label="Telegram recipient"
+            size="small"
+            value={tgUserId}
+            onChange={(e) => pickTgUser(e.target.value)}
+            sx={{ flex: '0 0 240px' }}
+            helperText={
+              tgUserId
+                ? undefined
+                : 'auto = the player’s most recently active link'
+            }
+          >
+            <MenuItem value="">auto (by player id)</MenuItem>
+            {linked.map((u) => (
+              <MenuItem key={u.tg_user_id} value={String(u.tg_user_id)}>
+                {u.tg_username ? `@${u.tg_username}` : u.tg_user_id}
+                {u.player_id ? ` · ${u.player_id}` : ''}
               </MenuItem>
             ))}
           </TextField>
@@ -459,7 +504,18 @@ const DecisionsTab = ({ decisions, canWrite, onDelete, onClear }) => (
           {(decisions?.items || []).map((d) => (
             <TableRow key={d.id}>
               <TableCell>{fmtDT(d.created_at)}</TableCell>
-              <TableCell>{d.full_name || d.tg_username || d.player_id || '—'}</TableCell>
+              <TableCell>
+                {/* One player_id can be linked to several Telegram accounts
+                    (test setups) — the @username names the actual recipient. */}
+                <Typography variant="body2">
+                  {d.full_name || d.player_id || '—'}
+                </Typography>
+                {d.tg_username && (
+                  <Typography variant="caption" color="text.secondary">
+                    @{d.tg_username}
+                  </Typography>
+                )}
+              </TableCell>
               <TableCell>
                 <code>{d.event_name}</code>
               </TableCell>
@@ -820,7 +876,11 @@ const GuideTab = ({ status }) => {
             <LI>
               In the simulator pick an event (e.g.{' '}
               <code>deposit_confirmed</code>), enter that player id, pick a
-              sample payload, «Inject event».
+              sample payload, «Inject event». If several Telegram accounts are
+              linked to the same test player, pick the exact recipient in
+              «Telegram recipient» — on «auto» the message goes to the
+              player’s most recently active link (the Decisions tab shows the
+              actual @username either way).
             </LI>
             <LI>
               Press «Process queue now» and open the Decisions tab: you should
