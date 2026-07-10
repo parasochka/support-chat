@@ -3471,6 +3471,119 @@ async def recent_v2_decision_exists(product_id: int, player_id: str, *,
     return bool(val)
 
 
+async def delete_retention_event(product_id: int, event_pk: int) -> bool:
+    """Delete ONE canonical event (admin test-cleanup). Ledger rows that
+    referenced it keep their event_name snapshot but drop the FK (SET NULL by
+    hand — the column has no ON DELETE clause). NB: the event log also feeds
+    the state resolver (loss window / recent activity), so deleting real
+    partner events rewrites history — this exists for wiping simulator rows."""
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE retention_v2_decisions SET event_pk = NULL "
+                "WHERE product_id = $1 AND event_pk = $2",
+                product_id, int(event_pk))
+            result = await conn.execute(
+                "DELETE FROM retention_events WHERE product_id = $1 AND id = $2",
+                product_id, int(event_pk))
+    return result.split()[-1] == "1"
+
+
+async def clear_retention_events(product_id: int) -> int:
+    """Delete ALL of one product's canonical events (admin test-cleanup).
+    Returns the number of rows removed."""
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE retention_v2_decisions SET event_pk = NULL "
+                "WHERE product_id = $1 AND event_pk IS NOT NULL",
+                product_id)
+            result = await conn.execute(
+                "DELETE FROM retention_events WHERE product_id = $1",
+                product_id)
+    try:
+        return int(result.split()[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+async def delete_retention_v2_decision(product_id: int,
+                                       decision_pk: int) -> bool:
+    """Delete ONE decision-ledger row (admin test-cleanup). NB: the daily
+    budget and the same-event cooldown read this ledger, so deleting a row
+    also 'refunds' its cost and re-arms the cooldown for that event type."""
+    result = await _pool.execute(
+        "DELETE FROM retention_v2_decisions WHERE product_id = $1 AND id = $2",
+        product_id, int(decision_pk))
+    return result.split()[-1] == "1"
+
+
+async def clear_retention_v2_decisions(product_id: int) -> int:
+    """Delete ALL of one product's decision-ledger rows (admin test-cleanup).
+    Returns the number of rows removed."""
+    result = await _pool.execute(
+        "DELETE FROM retention_v2_decisions WHERE product_id = $1",
+        product_id)
+    try:
+        return int(result.split()[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+async def retention_v2_activity(product_id: int) -> dict[str, Any]:
+    """Liveness snapshot for the v2 status header — derived from the durable
+    tables (not an in-process heartbeat), so it is correct across multiple
+    instances: when an event last arrived / was last processed, when the agent
+    last decided, and today's decision mix by action."""
+    ev = await _pool.fetchrow(
+        "SELECT MAX(created_at) AS last_event_at, "
+        "       MAX(processed_at) AS last_processed_at "
+        "FROM retention_events WHERE product_id = $1",
+        product_id)
+    last_decision = await _pool.fetchval(
+        "SELECT MAX(created_at) FROM retention_v2_decisions "
+        "WHERE product_id = $1",
+        product_id)
+    today = await _pool.fetch(
+        "SELECT action, COUNT(*) AS n, "
+        "       COUNT(*) FILTER (WHERE delivered) AS delivered "
+        "FROM retention_v2_decisions "
+        "WHERE product_id = $1 AND created_at >= date_trunc('day', now()) "
+        "GROUP BY action",
+        product_id)
+    return {
+        "last_event_at": _iso(ev["last_event_at"]) if ev else None,
+        "last_processed_at": _iso(ev["last_processed_at"]) if ev else None,
+        "last_decision_at": _iso(last_decision),
+        "decisions_today": {r["action"]: int(r["n"]) for r in today},
+        "delivered_today": sum(int(r["delivered"]) for r in today),
+    }
+
+
+async def list_retention_v2_logs(product_id: int, page: int = 1,
+                                 page_size: int = 50) -> dict[str, Any]:
+    """The v2 system-log view: the durable `retention_v2_*` admin events
+    (decisions, simulator injections, manual runs, deletes/clears) — the same
+    facts the Railway log lines carry, readable from the admin."""
+    offset = max(page - 1, 0) * page_size
+    total = await _pool.fetchval(
+        "SELECT COUNT(*) FROM admin_events "
+        "WHERE product_id = $1 AND type LIKE 'retention_v2%'",
+        product_id)
+    rows = await _pool.fetch(
+        "SELECT id, type, payload, created_at FROM admin_events "
+        "WHERE product_id = $1 AND type LIKE 'retention_v2%' "
+        "ORDER BY id DESC LIMIT $2 OFFSET $3",
+        product_id, page_size, offset,
+    )
+    return {"items": [{
+        "id": int(r["id"]),
+        "type": r["type"],
+        "payload": _json_value(r["payload"]) or {},
+        "created_at": _iso(r["created_at"]),
+    } for r in rows], "total": int(total or 0)}
+
+
 async def retention_v2_cost_today(product_id: int) -> float:
     """Summed decision-ledger cost since local midnight UTC — the daily-budget
     stop switch reads this before every new decision."""

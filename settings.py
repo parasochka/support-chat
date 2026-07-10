@@ -412,6 +412,9 @@ def retention() -> dict[str, Any]:
                                           config.RETENTION_V2_LOSS_COMFORT_HOURS),
         "v2_loss_high_usd": db_v.get("v2_loss_high_usd",
                                      config.RETENTION_V2_LOSS_HIGH_USD),
+        "v2_same_event_cooldown_hours": db_v.get(
+            "v2_same_event_cooldown_hours",
+            config.RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS),
     }
 
 
@@ -549,6 +552,7 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_float(value, "v2_daily_budget_usd", 0.0, 10_000.0)  # 0 = no budget
         _require_int(value, "v2_loss_comfort_hours", 0, 720)
         _require_float(value, "v2_loss_high_usd", 0.0, 1_000_000.0)
+        _require_int(value, "v2_same_event_cooldown_hours", 0, 720)  # 0 = off
         if "stage_advance_msgs" in value:
             v = value["stage_advance_msgs"]
             if (not isinstance(v, list)

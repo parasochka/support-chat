@@ -34,7 +34,7 @@ def _cfg(**over):
         "quiet_hours_utc_offset": 0, "ping_batch_size": 30,
         "v2_enabled": True, "v2_dry_run": True,
         "v2_daily_budget_usd": 5.0, "v2_loss_comfort_hours": 24,
-        "v2_loss_high_usd": 100.0,
+        "v2_loss_high_usd": 100.0, "v2_same_event_cooldown_hours": 20,
     }
     base.update(over)
     return base
@@ -245,6 +245,38 @@ async def test_guard_budget_and_same_event_cooldown(monkeypatch):
     assert "same_event_cooldown" in g["reasons"]
 
 
+async def test_guard_same_event_cooldown_knob(monkeypatch):
+    """The cooldown window is the hot `v2_same_event_cooldown_hours` knob:
+    0 disables it (repeat-testing mode) and a custom value reaches the DB
+    check verbatim."""
+    st = {"net_loss_24h_usd": 0}
+    seen: dict = {}
+
+    async def _recent(product_id, player_id, *, hours, event_name=None,
+                      exclude_silence=False):
+        seen["hours"] = hours
+        return True
+
+    _patch_guard_env(monkeypatch, recent=True)
+    monkeypatch.setattr(db, "recent_v2_decision_exists", _recent)
+
+    # 0 = off: the DB is never asked, no cooldown reason.
+    g = await retention_v2.guard_check(
+        1, _ru(), _evt(), st, _cfg(v2_same_event_cooldown_hours=0))
+    assert "same_event_cooldown" not in g["reasons"] and "hours" not in seen
+
+    # A custom window is passed through.
+    g = await retention_v2.guard_check(
+        1, _ru(), _evt(), st, _cfg(v2_same_event_cooldown_hours=4))
+    assert "same_event_cooldown" in g["reasons"] and seen["hours"] == 4
+
+    # A cfg without the key (older override sets) falls back to the default.
+    cfg = _cfg()
+    del cfg["v2_same_event_cooldown_hours"]
+    g = await retention_v2.guard_check(1, _ru(), _evt(), st, cfg)
+    assert seen["hours"] == retention_v2._SAME_EVENT_COOLDOWN_HOURS
+
+
 async def test_guard_comfort_window_blocks_photo_and_constrains(monkeypatch):
     _patch_guard_env(monkeypatch)
     st = {"net_loss_24h_usd": 250.0}
@@ -436,7 +468,7 @@ async def test_v2_sweep_skips_v1_products(monkeypatch):
 def test_retention_v2_settings_validation():
     ok = {"v2_enabled": True, "v2_dry_run": False,
           "v2_daily_budget_usd": 2.5, "v2_loss_comfort_hours": 12,
-          "v2_loss_high_usd": 200.0}
+          "v2_loss_high_usd": 200.0, "v2_same_event_cooldown_hours": 0}
     assert settings.validate_setting("retention", ok) == ok
     with pytest.raises(ValueError):
         settings.validate_setting("retention", {"v2_enabled": "yes"})
@@ -444,6 +476,9 @@ def test_retention_v2_settings_validation():
         settings.validate_setting("retention", {"v2_daily_budget_usd": -1})
     with pytest.raises(ValueError):
         settings.validate_setting("retention", {"v2_loss_comfort_hours": 100000})
+    with pytest.raises(ValueError):
+        settings.validate_setting("retention",
+                                  {"v2_same_event_cooldown_hours": -1})
 
 
 def test_retention_settings_resolve_v2_defaults():
@@ -451,6 +486,7 @@ def test_retention_settings_resolve_v2_defaults():
     assert cfg["v2_enabled"] is False       # ships off
     assert cfg["v2_dry_run"] is True        # shadow mode by default
     assert cfg["v2_daily_budget_usd"] > 0
+    assert cfg["v2_same_event_cooldown_hours"] == 20
 
 
 # ---------------------------------------------------------------------------

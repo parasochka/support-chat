@@ -88,6 +88,8 @@ _OCCASIONS: dict[str, str] = {
 
 # One reaction per event type per window — a partner retrying webhooks or a
 # player making five deposits in an evening gets ONE warm note, not five.
+# The default for the hot `retention.v2_same_event_cooldown_hours` knob
+# (0 = off, useful while testing the pipeline with repeated simulator events).
 _SAME_EVENT_COOLDOWN_HOURS = 20
 
 _TONES = ("warm", "celebrate", "comfort", "neutral")
@@ -275,8 +277,11 @@ async def guard_check(product_id: int, ru: dict[str, Any],
         if spent >= budget:
             reasons.append("daily_budget_reached")
     player_id = ru.get("player_id") or ""
-    if await db.recent_v2_decision_exists(
-            product_id, player_id, hours=_SAME_EVENT_COOLDOWN_HOURS,
+    cooldown_h = cfg.get("v2_same_event_cooldown_hours")
+    cooldown_h = (_SAME_EVENT_COOLDOWN_HOURS if cooldown_h is None
+                  else int(cooldown_h))
+    if cooldown_h > 0 and await db.recent_v2_decision_exists(
+            product_id, player_id, hours=cooldown_h,
             event_name=evt.get("event_name"), exclude_silence=True):
         reasons.append("same_event_cooldown")
 
@@ -437,6 +442,9 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
             event_name=evt.get("event_name"), state=state, guard=guard,
             action="blocked", reason="; ".join(guard["reasons"]),
             dry_run=dry_run)
+        log.info("retention_v2_guard_blocked product=%s player=%s event=%s "
+                 "reasons=%s", pid, player_id, evt.get("event_name"),
+                 ",".join(guard["reasons"]))
         return "blocked"
 
     decision, decision_cost = await _decide(pid, ru, evt, state, guard)
@@ -470,6 +478,14 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
          "tone": decision["tone"], "dry_run": dry_run,
          "delivered": delivered, "cost_usd": total_cost},
         product_id=pid)
+    # One Railway line per agent decision — the log mirror of the ledger row,
+    # so "what is the agent doing right now?" is answerable from the deploy
+    # logs alone.
+    log.info(
+        "retention_v2_decision product=%s player=%s event=%s action=%s "
+        "tone=%s dry_run=%s delivered=%s detail=%s cost_usd=%.6f",
+        pid, player_id, evt.get("event_name"), action, decision["tone"],
+        dry_run, delivered, detail, total_cost)
     return "sent" if delivered else action
 
 
@@ -539,6 +555,8 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
         delivered = result is not None
         if not delivered:
             detail = f"{err_code}: {err_desc}" if err_desc else "send_failed"
+            log.warning("retention_v2_send_failed product=%s player=%s "
+                        "detail=%s", pid, ru.get("player_id"), detail)
             if err_code == 403:
                 await db.set_retention_unreachable(rid, True)
 
