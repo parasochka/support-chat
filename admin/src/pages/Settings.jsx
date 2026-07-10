@@ -394,14 +394,14 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
         </Typography>
         <Stack spacing={1} sx={{ mb: 2 }}>
           {supported.map((c) => (
-            <Stack key={c} direction="row" spacing={1} alignItems="center">
+            <Stack key={c} direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
               <Chip label={c} size="small" sx={{ minWidth: 52 }} />
               <TextField
                 size="small"
                 value={names[c] ?? ''}
                 placeholder={nameFor(c)}
                 onChange={(e) => setNames((n) => ({ ...n, [c]: e.target.value }))}
-                sx={{ minWidth: 220 }}
+                sx={{ minWidth: { xs: 150, sm: 220 }, flex: '1 1 150px', maxWidth: 320 }}
               />
               {def === c && <Chip label="default" size="small" color="primary" variant="outlined" />}
               <IconButton
@@ -459,6 +459,7 @@ const Settings = () => {
   const [settings, setSettings] = useState(null);
   const [meta, setMeta] = useState(null);
   const [tab, setTab] = useState('antispam');
+  const [loadError, setLoadError] = useState(null);
 
   const load = () =>
     Promise.all([
@@ -466,16 +467,36 @@ const Settings = () => {
       httpClient(withProduct(`${API_URL}/admin/meta`)),
     ])
       .then(([s, m]) => {
+        setLoadError(null);
         setSettings(s.json);
         setMeta(m.json);
       })
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => {
+        // A partner/product-scoped admin at the All-products scope gets a 403
+        // (global settings need a global account) — show a way out instead of
+        // an eternal "Loading…".
+        setLoadError(e.body?.detail || e.message || 'Load failed');
+        notify(e.message || 'Load failed', { type: 'error' });
+      });
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  if (!settings && loadError) {
+    return (
+      <Box sx={{ p: 2, maxWidth: 720 }}>
+        <Title title="Settings" />
+        <Alert severity="warning">
+          <AlertTitle>Settings could not be loaded</AlertTitle>
+          {String(loadError)} — global defaults are editable only by a global
+          admin account. Pick a concrete product in the Partner → Product
+          switcher (top-right) to edit that product's settings.
+        </Alert>
+      </Box>
+    );
+  }
   if (!settings) return <Box sx={{ p: 2 }}>Loading…</Box>;
 
   const groups = GROUP_ORDER.filter(
@@ -541,7 +562,10 @@ const Settings = () => {
           />
         ) : (
           <GroupEditor
-            key={g}
+            // Key on the resolved values so the form re-syncs after a save —
+            // server-side clamping/normalization (e.g. worker interval 5..3600)
+            // becomes visible immediately instead of after a tab switch.
+            key={`${g}:${JSON.stringify(settings.resolved?.[g] || {})}`}
             group={g}
             resolved={settings.resolved?.[g]}
             onSaved={load}

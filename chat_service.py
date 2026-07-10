@@ -190,7 +190,10 @@ async def handle_message(
         kb.suggestable_topics(exclude_topic_id=topic_id, lang=title_lang),
         kb.kb_block_for_topic(topic_id),
         db.get_history(
-            session_id, limit=settings.general()["history_max_turns"],
+            # history_max_turns is a TURN knob; a turn is two rows (user +
+            # assistant), and build_messages trims to history_window turns.
+            session_id,
+            limit=int(settings.general()["history_max_turns"]) * 2,
             after_id=context_reset_id,
         ),
         openai_client.client_for_product(product_id),
@@ -224,6 +227,7 @@ async def handle_message(
         # so the model would otherwise treat the next turn as a brand-new chat
         # and greet again mid-conversation.
         ongoing=context_reset_id > 0,
+        history_window=int(settings.general()["history_max_turns"]),
     )
     log.info(
         "chat_prompt_built session_id=%s topic_slug=%s history_turns=%s kb_chars=%s messages=%s",
@@ -328,7 +332,7 @@ async def handle_message(
     # the topic in English ("Deposits"). Re-localize the title to `answer_lang`
     # so the whole notice reads in one language.
     if suggested_topic and answer_lang != title_lang:
-        raw_topic = await db.get_topic_by_slug(suggested_topic["slug"])
+        raw_topic = await kb.topic_by_slug(suggested_topic["slug"])
         if raw_topic:
             suggested_topic = {
                 **suggested_topic,
@@ -599,7 +603,8 @@ async def handle_retention_message(
     kb_text, history, client = await asyncio.gather(
         db.retention_kb_block(product_id) if product_id else _none(),
         db.get_history(
-            session_id, limit=settings.general()["history_max_turns"],
+            session_id,
+            limit=int(settings.general()["history_max_turns"]) * 2,
         ),
         openai_client.client_for_product(product_id),
     )
@@ -632,6 +637,7 @@ async def handle_retention_message(
         # The audience clock (same offset the quiet hours run on) — without it
         # the model guesses the time of day ("enjoy your evening" at 10:00).
         tz_offset_hours=settings.retention()["quiet_hours_utc_offset"],
+        history_window=int(settings.general()["history_max_turns"]),
     )
     log.info(
         "retention_prompt_built session_id=%s history=%s prev_carry=%s "
@@ -770,7 +776,8 @@ async def generate_retention_ping(
     kb_text, history, client = await asyncio.gather(
         db.retention_kb_block(product_id) if product_id else _none(),
         db.get_history(
-            session_id, limit=settings.general()["history_max_turns"],
+            session_id,
+            limit=int(settings.general()["history_max_turns"]) * 2,
         ),
         openai_client.client_for_product(product_id),
     )
@@ -792,6 +799,7 @@ async def generate_retention_ping(
         # A proactive touch is where a wrong time-of-day flourish stings most
         # ("enjoy your evening" at 10:00) — give the model the audience clock.
         tz_offset_hours=settings.retention()["quiet_hours_utc_offset"],
+        history_window=int(settings.general()["history_max_turns"]),
     )
     try:
         result = await client.complete(

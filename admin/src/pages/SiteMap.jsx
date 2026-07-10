@@ -89,7 +89,7 @@ const SiteMapEditor = () => {
                 key={i}
                 direction={{ xs: 'column', md: 'row' }}
                 spacing={1}
-                alignItems={{ md: 'flex-start' }}
+                alignItems={{ xs: 'stretch', md: 'flex-start' }}
                 sx={{ mb: 1.5 }}
               >
                 <TextField
@@ -98,7 +98,7 @@ const SiteMapEditor = () => {
                   onChange={(e) => setRow(i, { title: e.target.value })}
                   disabled={readOnly}
                   size="small"
-                  sx={{ flex: '0 0 200px' }}
+                  sx={{ flex: { xs: '1 1 auto', md: '0 0 200px' } }}
                   placeholder="Cashier"
                 />
                 <TextField
@@ -123,7 +123,7 @@ const SiteMapEditor = () => {
                   aria-label="remove page"
                   onClick={() => removeRow(i)}
                   disabled={readOnly}
-                  sx={{ mt: { md: 0.5 } }}
+                  sx={{ mt: { md: 0.5 }, alignSelf: { xs: 'flex-start', md: 'auto' } }}
                 >
                   <DeleteIcon />
                 </IconButton>

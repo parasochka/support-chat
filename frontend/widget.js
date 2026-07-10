@@ -30,18 +30,14 @@ export const CONFIG = {
   // configured in the admin Structure tab). A host page may still pin one
   // explicitly via mount({ TURNSTILE_SITE_KEY: "..." }).
   TURNSTILE_SITE_KEY: "",
-  // Sample user_context for the test build. In production the host page supplies this.
-  // `language` is the account/profile language. It is the strongest signal for the
-  // widget chrome (after an explicit LANG), so a Russian account on an English
-  // browser opens in Russian — and it does so on the FIRST paint, before any
-  // network round-trip, so the chrome never flips after open.
-  USER_CONTEXT: {
-    id: "demo-12345",
-    full_name: "Test Player",
-    email: "test.player@example.com",
-    activation_status: "active",
-    language: null,
-  },
+  // Player context supplied by the host page via mount({ USER_CONTEXT: {...} }).
+  // Empty by default: an anonymous embed sends no identity (in dev, the server's
+  // admin-managed test profile stands in; in production the signed handshake is
+  // the trusted source anyway). `language` is the account/profile language — the
+  // strongest chrome-language signal, applied on the FIRST paint before any
+  // network round-trip, so a Russian account on an English browser opens in
+  // Russian with no flicker.
+  USER_CONTEXT: {},
   // Signed handshake blob from the host backend (HMAC over user_context+exp).
   // When the service has WIDGET_HANDSHAKE_SECRET set, this is the ONLY trusted
   // source of user_context; the raw USER_CONTEXT above is ignored server-side.
@@ -68,7 +64,7 @@ const I18N = {
   en: { support: "Support", topics: "What can we help you with?", other: "Other",
         back: "Back to topics",
         greeting: "Hi, I'm Nika! How can I help you?", placeholder: "Type your message…",
-        send: "Send", launcher: "Open support chat",
+        send: "Send", launcher: "Open support chat", close: "Close chat",
         startError: "Could not start chat. Please try again later.",
         sendError: "Something went wrong. Please try again.",
         switching: 'Looks like your question is about "{topic}", switching you there…',
@@ -77,7 +73,7 @@ const I18N = {
   ru: { support: "Поддержка", topics: "Чем мы можем помочь?", other: "Другое",
         back: "К выбору темы",
         greeting: "Привет, я Ника, чем могу тебе помочь?", placeholder: "Введите сообщение…",
-        send: "Отправить", launcher: "Открыть чат поддержки",
+        send: "Отправить", launcher: "Открыть чат поддержки", close: "Закрыть чат",
         startError: "Не удалось начать чат. Попробуйте позже.",
         sendError: "Что-то пошло не так. Попробуйте ещё раз.",
         switching: 'Похоже, твой вопрос про "{topic}", переключаю тему…',
@@ -86,7 +82,7 @@ const I18N = {
   es: { support: "Soporte", topics: "¿En qué podemos ayudarte?", other: "Otro",
         back: "Volver a los temas",
         greeting: "¡Hola, soy Nika! ¿En qué puedo ayudarte?", placeholder: "Escribe tu mensaje…",
-        send: "Enviar", launcher: "Abrir chat de soporte",
+        send: "Enviar", launcher: "Abrir chat de soporte", close: "Cerrar chat",
         startError: "No se pudo iniciar el chat. Inténtalo más tarde.",
         sendError: "Algo salió mal. Inténtalo de nuevo.",
         switching: 'Parece que tu pregunta es sobre "{topic}", cambiando de tema…',
@@ -95,7 +91,8 @@ const I18N = {
   tr: { support: "Destek", topics: "Size nasıl yardımcı olabiliriz?", other: "Diğer",
         back: "Konulara dön",
         greeting: "Merhaba, ben Nika! Sana nasıl yardımcı olabilirim?",
-        placeholder: "Mesajınızı yazın…", send: "Gönder", launcher: "Destek sohbetini aç",
+        placeholder: "Mesajınızı yazın…", send: "Gönder",
+        launcher: "Destek sohbetini aç", close: "Sohbeti kapat",
         startError: "Sohbet başlatılamadı. Lütfen daha sonra tekrar deneyin.",
         sendError: "Bir şeyler ters gitti. Lütfen tekrar deneyin.",
         switching: 'Görünüşe göre sorunuz "{topic}" ile ilgili, konuyu değiştiriyorum…',
@@ -104,7 +101,7 @@ const I18N = {
   pt: { support: "Suporte", topics: "Como podemos ajudar?", other: "Outro",
         back: "Voltar aos tópicos",
         greeting: "Oi, eu sou a Nika! Como posso te ajudar?", placeholder: "Digite sua mensagem…",
-        send: "Enviar", launcher: "Abrir chat de suporte",
+        send: "Enviar", launcher: "Abrir chat de suporte", close: "Fechar chat",
         startError: "Não foi possível iniciar o chat. Tente novamente mais tarde.",
         sendError: "Algo deu errado. Tente novamente.",
         switching: 'Parece que sua pergunta é sobre "{topic}", mudando de tópico…',
@@ -138,12 +135,17 @@ function baseLang(code) {
 }
 
 // The widget's STARTING language, decided synchronously at load — before the
-// panel is ever painted — from the browser language, falling back to English.
-// This is the same language the backend resolves from the locale, so chrome and
+// panel is ever painted — from the account/profile language (the strongest
+// signal, when the host supplied one), then the browser language, falling back
+// to English. This is the same chain the backend resolves, so chrome and
 // answers agree from turn one with no post-/session flicker. It can later follow
 // the conversation if the player switches language mid-chat (see maybeSwitchLang).
 function resolveLang() {
-  return baseLang(CONFIG.LOCALE) || "en";
+  return (
+    baseLang(CONFIG.USER_CONTEXT && CONFIG.USER_CONTEXT.language) ||
+    baseLang(CONFIG.LOCALE) ||
+    "en"
+  );
 }
 
 function t(key) {
@@ -196,6 +198,16 @@ const state = {
   // True while the mobile full-screen sheet is active (geometry driven by JS).
   fullscreen: false,
   greetingEl: null,
+  // Conversation generation counter. Bumped every time the current conversation
+  // is torn down (back / close / finish / escalation), so an in-flight /message
+  // response from an ABANDONED conversation can be recognized and dropped
+  // instead of clobbering the new one (ending its session, injecting stale
+  // switch notes / suggestion bubbles).
+  generation: 0,
+  // True while a player turn is in flight; blocks a second concurrent send
+  // (Enter mashing, suggestion-bubble taps) that would 429 on the cooldown and
+  // interleave replies out of order.
+  sending: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -284,6 +296,24 @@ async function turnstileToken(action) {
 // ---------------------------------------------------------------------------
 // API calls
 // ---------------------------------------------------------------------------
+// Hard client-side timeout so a stalled connection (mobile network drop
+// mid-request) rejects into the normal error handling instead of leaving the
+// typing dots up for the browser's own multi-minute timeout.
+const API_TIMEOUT_MS = 45000;
+
+function apiTimeoutSignal() {
+  try {
+    if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) {
+      return AbortSignal.timeout(API_TIMEOUT_MS);
+    }
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), API_TIMEOUT_MS);
+    return ctl.signal;
+  } catch (_) {
+    return undefined; // very old browser: no timeout, previous behaviour
+  }
+}
+
 async function api(path, { method = "POST", body = null, auth = false } = {}) {
   const headers = { "Content-Type": "application/json" };
   if (auth && state.token) headers["Authorization"] = `Bearer ${state.token}`;
@@ -291,6 +321,7 @@ async function api(path, { method = "POST", body = null, auth = false } = {}) {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    signal: apiTimeoutSignal(),
   });
   let data = null;
   try { data = await res.json(); } catch (_) { data = {}; }
@@ -333,6 +364,17 @@ async function fetchI18n() {
   for (const [code, dict] of Object.entries(data.strings)) {
     I18N[code] = Object.assign({}, I18N[code] || I18N.en, dict);
   }
+  // A language ADDED from the admin (beyond the baked-in set) only becomes
+  // resolvable now that its strings arrived. If the first paint fell back to
+  // English because the browser locale wasn't baked in, adopt it — but only
+  // before any conversation starts, so an active chat never flips mid-turn.
+  if (!state.topicChosen) {
+    const wanted = resolveLang();
+    if (wanted !== state.lang) {
+      state.lang = wanted;
+      fetchTopics().catch(() => { /* titles refresh on next open */ });
+    }
+  }
   // Re-apply anything already painted from the defaults.
   applyStaticLabels();
   if (state.greetingEl) state.greetingEl.textContent = t("greeting");
@@ -362,6 +404,8 @@ function ensureSession() {
 }
 
 function resetSessionState() {
+  state.generation += 1;
+  state.sending = false;
   state.sessionId = null;
   state.token = null;
   state.sessionPromise = null;
@@ -394,7 +438,7 @@ async function createSession() {
   const token = await turnstileToken("chat_session");
   const { ok, data } = await api("/api/chat/session", {
     body: {
-      consumer: "web-test",
+      consumer: "web",
       player_id: CONFIG.USER_CONTEXT.id || null,
       user_context: CONFIG.USER_CONTEXT,
       signed_context: CONFIG.SIGNED_CONTEXT,
@@ -426,10 +470,11 @@ async function createSession() {
 }
 
 async function selectTopic(slug) {
-  await api("/api/chat/topic", {
+  const { ok } = await api("/api/chat/topic", {
     auth: true,
     body: { session_id: state.sessionId, topic_slug: slug },
   });
+  if (!ok) throw new Error("topic select failed");
   state.topicChosen = true;
 }
 
@@ -501,6 +546,7 @@ function buildUI() {
 
   const headerRight = el("div", "npchat-header-right");
   const closeBtn = el("button", "npchat-close", "✕");
+  closeBtn.setAttribute("aria-label", t("close"));
   closeBtn.addEventListener("click", togglePanel);
   headerRight.appendChild(closeBtn);
   header.appendChild(headerRight);
@@ -508,6 +554,9 @@ function buildUI() {
   const body = el("div", "npchat-body");
   const topics = el("div", "npchat-topics");
   const messages = el("div", "npchat-messages npchat-hidden");
+  // Announce new assistant turns to assistive tech without stealing focus.
+  messages.setAttribute("role", "log");
+  messages.setAttribute("aria-live", "polite");
 
   // One-tap "guide-to-KB" question bubbles (+ the resolved "finish chat" button)
   // sit just above the input field. Populated per assistant turn from the
@@ -519,7 +568,10 @@ function buildUI() {
   input.type = "text";
   input.placeholder = t("placeholder");
   input.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter") onSend();
+    // isComposing: don't fire on the Enter that confirms an IME candidate
+    // (Japanese/Chinese/Korean and some Android keyboards) — that would send
+    // the half-composed text.
+    if (ev.key === "Enter" && !ev.isComposing && ev.keyCode !== 229) onSend();
   });
   // The on-screen keyboard animates in over ~300ms and some browsers fire the
   // VisualViewport resize late (or not at all) on focus — re-pin the sheet a
@@ -594,7 +646,10 @@ function applyStaticLabels() {
   const title = els.panel.querySelector(".npchat-title");
   if (title) title.textContent = t("support");
   if (els.back) els.back.setAttribute("aria-label", t("back"));
+  const closeBtn = els.panel.querySelector(".npchat-close");
+  if (closeBtn) closeBtn.setAttribute("aria-label", t("close"));
   els.input.placeholder = t("placeholder");
+  els.input.setAttribute("aria-label", t("placeholder"));
   els.sendBtn.textContent = t("send");
 }
 
@@ -677,6 +732,10 @@ function topicButton(slug, title, extraCls) {
 // Only assistant turns go through here; user input is always rendered literally.
 function escapeHtml(s) {
   return String(s)
+    // Strip the private-use sentinels renderInline() stashes tokens behind, so
+    // a literal U+E000/U+E001 in the model/KB text can't forge a token
+    // reference and corrupt the rendered output.
+    .replace(/[\uE000\uE001]/g, "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -801,6 +860,8 @@ function addMessage(role, text) {
 // answer is coming. Replaced in place by fillTyping() once the turn resolves.
 function addTyping() {
   const m = el("div", "npchat-msg npchat-msg-assistant npchat-typing");
+  m.setAttribute("role", "status");
+  m.setAttribute("aria-label", "…");
   m.innerHTML =
     '<span class="npchat-dot"></span>' +
     '<span class="npchat-dot"></span>' +
@@ -847,9 +908,13 @@ function addEscalation(esc) {
     a.rel = "noopener";
     wrap.appendChild(a);
   } else if (esc.button) {
-    wrap.appendChild(el("div", "npchat-esc-note",
-      "(Contact form URL not configured - set contact_url in the admin " +
-      "Translations tab)"));
+    // Operator misconfiguration (empty/unsafe contact URL): log the hint for
+    // the developer console only — never leak admin guidance to the player.
+    try {
+      console.warn(
+        "npchat: contact button URL missing or unsafe - set contact_url in " +
+        "the admin Translations tab");
+    } catch (_) { /* no console */ }
   }
   els.messages.appendChild(wrap);
   scrollToBottom();
@@ -875,24 +940,34 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // the CORRECT KB and render that grounded answer. `depth` guards against loops.
 async function autoSwitchTopic(suggested, originalText, depth) {
   if (!suggested || !suggested.slug) return;
+  const gen = state.generation;
   const title = suggested.title || suggested.slug;
   const note = el("div", "npchat-switch-note", tTopic("switching", title));
   els.messages.appendChild(note);
   scrollToBottom();
   // Switch the session's topic (loads the new KB + resets the prompt-history
-  // boundary server-side); non-fatal if it fails — still attempt the re-ask.
+  // boundary server-side). A FAILED switch must not re-ask: the question would
+  // run against the OLD topic's KB, the model would route again, and the loop
+  // would only die at the depth guard after two wasted calls.
   try {
     await selectTopic(suggested.slug);
-  } catch (_) { /* non-fatal: still attempt the re-ask */ }
+  } catch (_) {
+    if (gen !== state.generation) return; // conversation was abandoned
+    addMessage("assistant", t("switchStuck"));
+    return;
+  }
   await sleep(SWITCH_NOTE_MS);
+  if (gen !== state.generation) return; // conversation was abandoned mid-switch
   // The player's question is already in the transcript — re-ask it under the new
   // topic and stream the grounded answer into a fresh assistant bubble.
   const typing = addTyping();
   try {
     const data = await sendMessage(originalText);
+    if (gen !== state.generation) { typing.remove(); return; }
     fillTyping(typing, data.reply || "");
     applyTurnExtras(data, originalText, depth + 1);
   } catch (e) {
+    if (gen !== state.generation) { typing.remove(); return; }
     fillTyping(typing, t("sendError"), true);
   }
 }
@@ -1264,16 +1339,26 @@ async function onSend() {
 // bubbles are stale the moment a new turn starts, so clear them up front; the
 // fresh set (and any finish button) is rendered from the response.
 async function submitText(text) {
-  if (!text) return;
+  if (!text || state.sending) return;
+  state.sending = true;
+  if (els.sendBtn) els.sendBtn.disabled = true;
+  const gen = state.generation;
   clearSuggestions();
   addMessage("user", text);
   const typing = addTyping();
   try {
     const data = await sendMessage(text);
+    // The conversation may have been abandoned (back / close / new topic) while
+    // this response was in flight — drop it instead of clobbering the new chat.
+    if (gen !== state.generation) { typing.remove(); return; }
     fillTyping(typing, data.reply || "");
     applyTurnExtras(data, text);
   } catch (e) {
+    if (gen !== state.generation) { typing.remove(); return; }
     fillTyping(typing, t("sendError"), true);
+  } finally {
+    if (gen === state.generation) state.sending = false;
+    if (els.sendBtn) els.sendBtn.disabled = false;
   }
 }
 

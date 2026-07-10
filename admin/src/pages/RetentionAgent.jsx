@@ -304,7 +304,7 @@ const Simulator = ({ status, onDone, canWrite }) => {
             size="small"
             value={eventName}
             onChange={(e) => pickEvent(e.target.value)}
-            sx={{ flex: '0 0 240px' }}
+            sx={{ flex: { xs: '1 1 auto', md: '0 0 240px' } }}
           >
             {(status?.canonical_events || []).map((n) => (
               <MenuItem key={n} value={n}>
@@ -318,7 +318,7 @@ const Simulator = ({ status, onDone, canWrite }) => {
             size="small"
             value={tgUserId}
             onChange={(e) => pickTgUser(e.target.value)}
-            sx={{ flex: '0 0 240px' }}
+            sx={{ flex: { xs: '1 1 auto', md: '0 0 240px' } }}
             helperText={
               tgUserId
                 ? undefined
@@ -338,7 +338,7 @@ const Simulator = ({ status, onDone, canWrite }) => {
             size="small"
             value={playerId}
             onChange={(e) => setPlayerId(e.target.value)}
-            sx={{ flex: '0 0 200px' }}
+            sx={{ flex: { xs: '1 1 auto', md: '0 0 200px' } }}
             placeholder="the casino player_id"
           />
           <TextField
@@ -417,7 +417,8 @@ const EventsTab = ({ events, canWrite, onDelete, onClear }) => (
           canWrite={canWrite}
         />
       </Stack>
-      <Table size="small">
+      <Box sx={{ overflowX: 'auto' }}>
+      <Table size="small" sx={{ minWidth: 720 }}>
         <TableHead>
           <TableRow>
             <TableCell>When (casino time)</TableCell>
@@ -466,6 +467,7 @@ const EventsTab = ({ events, canWrite, onDelete, onClear }) => (
           )}
         </TableBody>
       </Table>
+      </Box>
     </CardContent>
   </Card>
 );
@@ -485,7 +487,8 @@ const DecisionsTab = ({ decisions, canWrite, onDelete, onClear }) => (
           canWrite={canWrite}
         />
       </Stack>
-      <Table size="small">
+      <Box sx={{ overflowX: 'auto' }}>
+      <Table size="small" sx={{ minWidth: 900 }}>
         <TableHead>
           <TableRow>
             <TableCell>When</TableCell>
@@ -562,6 +565,7 @@ const DecisionsTab = ({ decisions, canWrite, onDelete, onClear }) => (
           )}
         </TableBody>
       </Table>
+      </Box>
     </CardContent>
   </Card>
 );
@@ -586,7 +590,8 @@ const LogsTab = ({ logs }) => (
         guard blocks and failed sends included — so this view and the deploy
         logs always tell one story.
       </Typography>
-      <Table size="small">
+      <Box sx={{ overflowX: 'auto' }}>
+      <Table size="small" sx={{ minWidth: 560 }}>
         <TableHead>
           <TableRow>
             <TableCell>When</TableCell>
@@ -623,6 +628,7 @@ const LogsTab = ({ logs }) => (
           )}
         </TableBody>
       </Table>
+      </Box>
     </CardContent>
   </Card>
 );
@@ -820,7 +826,8 @@ const GuideTab = ({ status }) => {
             values for this product are shown in the table. Each blocked
             decision lists its reasons in the Guards column of the ledger:
           </P>
-          <Table size="small" sx={{ maxWidth: 980 }}>
+          <Box sx={{ overflowX: 'auto', maxWidth: 980 }}>
+          <Table size="small" sx={{ minWidth: 640 }}>
             <TableHead>
               <TableRow>
                 <TableCell>Guard reason</TableCell>
@@ -850,6 +857,7 @@ const GuideTab = ({ status }) => {
               ))}
             </TableBody>
           </Table>
+          </Box>
         </Section>
         <Divider sx={{ mb: 2 }} />
 
@@ -1009,6 +1017,8 @@ const RetentionAgentInner = () => {
       <Tabs
         value={tab}
         onChange={(_, v) => navigate(`/retention-agent?tab=${v}`)}
+        variant="scrollable"
+        allowScrollButtonsMobile
         sx={{ mb: 2 }}
       >
         <Tab value="events" label={`Events${events ? ` (${events.total})` : ''}`} />

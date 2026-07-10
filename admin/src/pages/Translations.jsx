@@ -128,18 +128,22 @@ const TranslationsInner = () => {
   const save = async () => {
     setSaving(true);
     try {
-      // Copy overrides: store only values that differ from the shipped default
-      // for every language visited in this editing session; untouched
-      // languages keep their stored overrides as-is.
+      // Copy overrides: `data.overrides` is the raw PRODUCT-layer value (the
+      // layer this PUT writes). Only fields the operator actually CHANGED from
+      // the load-time resolved copy are touched — an untouched field showing a
+      // global-layer override must never be baked into the product layer, or
+      // later global copy edits would stop reaching this product.
       const value = JSON.parse(JSON.stringify(data.overrides || {}));
       Object.entries(texts).forEach(([lg, entries]) => {
         const langDefaults = data.defaults?.[lg] || {};
-        const edited = {};
+        const baseline = data.resolved?.[lg] || {};
+        const edited = { ...(value[lg] || {}) };
         (data.keys || []).forEach((k) => {
           const v = entries[k.key];
-          if (typeof v === 'string' && v.trim() && v !== (langDefaults[k.key] || '')) {
-            edited[k.key] = v;
-          }
+          if (typeof v !== 'string') return;
+          if (v === (baseline[k.key] ?? '')) return; // untouched
+          if (v.trim() && v !== (langDefaults[k.key] || '')) edited[k.key] = v;
+          else delete edited[k.key]; // cleared / reset to the shipped default
         });
         if (Object.keys(edited).length) value[lg] = edited;
         else delete value[lg];

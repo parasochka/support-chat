@@ -235,8 +235,10 @@ const dataProvider = {
       return { data: { ...params.data, ...topic, content: params.data.content } };
     }
     if (resource === 'kb_variables') {
+      // withProduct: without the scope param the backend resolves the DEFAULT
+      // product and the edit silently lands in the wrong tenant's registry.
       const { json } = await httpClient(
-        `${API_URL}/admin/kb/variables/${encodeURIComponent(params.id)}`,
+        withProduct(`${API_URL}/admin/kb/variables/${encodeURIComponent(params.id)}`),
         {
           method: 'PUT',
           body: JSON.stringify({

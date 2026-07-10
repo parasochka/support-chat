@@ -451,7 +451,7 @@ class _FakeClient:
     async def __aexit__(self, *a):
         return False
 
-    async def get(self, url, params=None, headers=None):
+    async def get(self, url, params=None, headers=None, extensions=None):
         return _FakeResp(self.status, self.payload)
 
 
@@ -479,10 +479,15 @@ async def test_maybe_pull_profile_stale_pulls(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
 
     # This test exercises the pull logic, not the SSRF guard — the fake host
-    # doesn't resolve, so bypass the guard here (a dedicated test below covers it).
+    # doesn't resolve, so bypass the guard AND the DNS pinning here (dedicated
+    # tests cover them).
     async def _safe(url):
         return True
     monkeypatch.setattr(retention, "is_safe_outbound_url", _safe)
+
+    async def _pin(url):
+        return {"url": url, "host": "api", "sni": "api", "scheme": "https"}
+    monkeypatch.setattr(retention.player_sync, "resolve_pinned_outbound", _pin)
 
     async def _key(pid):
         return "apikey"

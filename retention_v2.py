@@ -184,6 +184,27 @@ async def run_due_events() -> dict[str, Any]:
                                _ADVISORY_LOCK_KEY)
 
 
+async def run_product_events_locked(product: dict[str, Any], *,
+                                    limit: Optional[int] = None
+                                    ) -> dict[str, Any]:
+    """run_product_events under the SAME advisory lock the worker sweep holds.
+
+    The admin «Process queue now» button used to call the pipeline directly:
+    event CLAIMING stayed atomic, but two different events for the same player
+    processed concurrently (button + worker) both read the per-player guard
+    counters before either write — both passed the min-gap/daily-cap guards and
+    both sent. Blocking lock (not try-lock): the button should run right after
+    the worker finishes, not silently no-op."""
+    pool = db.pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT pg_advisory_lock($1)", _ADVISORY_LOCK_KEY)
+        try:
+            return await run_product_events(product, limit=limit)
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock($1)",
+                               _ADVISORY_LOCK_KEY)
+
+
 async def run_product_events(product: dict[str, Any], *,
                              limit: Optional[int] = None) -> dict[str, Any]:
     """Drain one product's unprocessed events through the decision pipeline.
@@ -326,7 +347,8 @@ async def guard_check(product_id: int, ru: dict[str, Any],
     if last_ping_days is not None and last_ping_days * 24 < gap_h:
         reasons.append("min_gap_not_elapsed")
     pings_day = ru.get("pings_day")
-    today = _dt.date.today().isoformat()
+    # UTC: same clock as the DB-side day rollover (see db.record_retention_ping).
+    today = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
     if (pings_day is not None and str(pings_day)[:10] == today
             and int(ru.get("pings_sent_today") or 0) >= int(cfg["ping_daily_cap"])):
         reasons.append("daily_cap_reached")
@@ -624,11 +646,17 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
                                                     draft.lang)
         if trigger_line:
             caption = f"{trigger_line}\n\n{caption}"
-        delivered = await retention._send_photo(
+        # Tri-state: "photo" | "text" (caption-only fallback DELIVERED — the
+        # player got a message, so it must be persisted/recorded as sent) |
+        # None (nothing reached the player).
+        photo_status = await retention._send_photo(
             client, product, ru, chat_id, draft.photo_id, caption,
             session_id=session["id"], reply_markup=markup)
+        delivered = photo_status is not None
         if not delivered:
             detail = "photo_send_failed"
+        elif photo_status == "text":
+            detail = "photo_fallback_text"
     else:
         header = retention._rtn_text("rtn_ping_header", draft.lang).strip()
         text_html = telegram_format.to_html(draft.text)
@@ -659,9 +687,12 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
                                    ping_context=ping_context)
         # Shared anti-annoyance state: the SAME ledger/counters the v1 matrix
         # uses, so caps and min-gap hold across regimes.
+        sent_detail = f"v2:{evt.get('event_name')}"
+        if detail == "photo_fallback_text":
+            sent_detail += " (photo fallback: text)"
         await db.record_retention_ping(
             pid, rid, None, decision["action"], "sent",
-            detail=f"v2:{evt.get('event_name')}", cost_usd=gen_cost)
+            detail=sent_detail, cost_usd=gen_cost)
         return True, gen_cost, None
 
     # The generation call happened but nothing reached the player: account the

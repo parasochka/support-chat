@@ -106,7 +106,8 @@ const GUIDE_STEPS = [
         document — what Nika may offer and talk about; a generic English starter
         is pre-filled, replace it with the brand&apos;s own), tune the Telegram
         persona in <Link href="#/retention?tab=variables">Prompt variables</Link>{' '}
-        (name/role/tone — empty fields inherit the support chat), upload photos
+        (name/role/tone — empty fields use the built-in retention defaults),
+        upload photos
         in <Link href="#/retention?tab=photos">Media</Link> (bulk upload, then
         select them and press <b>Generate metadata</b> to have the AI fill the
         description, tags, <code>stage</code> = explicitness and{' '}
@@ -379,10 +380,9 @@ const KbTab = ({ productId }) => {
 
 // ---------------------------------------------------------------------------
 // Prompt variables tab — the Telegram-persona values (name, role, brand,
-// products, tone of voice). Every field except the tone INHERITS the support
-// chat's value when left empty, so by default the bot mirrors the support
-// persona and the operator overrides only what should differ (e.g. a bolder,
-// more intimate Telegram girl with her own name).
+// products, tone of voice). A SEPARATE prompt with its own defaults: an empty
+// field falls back to the built-in retention default, never to the support
+// chat's value, so a support edit can never leak into the bot.
 // ---------------------------------------------------------------------------
 const VariablesTab = ({ productId }) => {
   const notify = useNotify();
@@ -681,6 +681,10 @@ const PhotosTab = ({ productId }) => {
       });
       setFiles([]);
       load();
+    } catch (e) {
+      // Network failure: without this the rejection escapes the click handler
+      // and the operator gets no feedback at all.
+      notify(e.message || 'Upload failed', { type: 'error' });
     } finally {
       setUploading(false);
     }

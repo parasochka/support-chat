@@ -34,8 +34,8 @@ import ipaddress
 import json
 import logging
 import socket
-from typing import Any
-from urllib.parse import urlsplit
+from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import db
 import settings
@@ -244,6 +244,52 @@ async def is_safe_outbound_url(url: str) -> bool:
     return True
 
 
+async def resolve_pinned_outbound(url: str) -> Optional[dict[str, str]]:
+    """Resolve + vet the URL's host ONCE and pin the connection to that IP.
+
+    is_safe_outbound_url alone is TOCTOU: it resolves DNS, then httpx
+    re-resolves independently for the actual request — a low-TTL rebinding
+    domain can answer the guard with a public IP and the connect with
+    169.254.169.254/RFC1918. Here the SAME vetted record is used for the
+    connection: the returned dict carries a `url` whose host is the literal
+    IP, the original `host` for the Host header, and `sni` for TLS (httpcore's
+    sni_hostname extension drives both SNI and certificate-hostname checks).
+    Returns None when the URL is unsafe/unresolvable.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return None
+    host = parts.hostname
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        infos = await asyncio.to_thread(
+            socket.getaddrinfo, host, port, 0, socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError, OSError):
+        return None
+    if not infos:
+        return None
+    ips = []
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return None
+        if not ip.is_global or ip.is_multicast:
+            return None
+        ips.append(ip)
+    pinned = ips[0]
+    ip_host = f"[{pinned}]" if pinned.version == 6 else str(pinned)
+    netloc = f"{ip_host}:{parts.port}" if parts.port else ip_host
+    pinned_url = urlunsplit((parts.scheme, netloc, parts.path,
+                             parts.query, parts.fragment))
+    host_header = f"{host}:{parts.port}" if parts.port else host
+    return {"url": pinned_url, "host": host_header, "sni": host,
+            "scheme": parts.scheme}
+
+
 async def maybe_pull_profile(product: dict[str, Any], ru: dict[str, Any],
                              url_guard: Any = None) -> dict[str, Any]:
     """Lazy profile refresh: if the snapshot is stale and the product exposes a
@@ -275,12 +321,24 @@ async def maybe_pull_profile(product: dict[str, Any], ru: dict[str, Any],
         log.warning("retention_profile_pull_blocked_unsafe_url product=%s",
                     product.get("id"))
         return ru
+    # Pin the connection to the vetted resolution (anti-DNS-rebinding): the
+    # request below connects to the literal IP the guard just approved, with
+    # the original hostname preserved for the Host header + TLS SNI/cert check.
+    pinned = await resolve_pinned_outbound(url)
+    if pinned is None:
+        log.warning("retention_profile_pull_blocked_unsafe_url product=%s",
+                    product.get("id"))
+        return ru
     key = await db.get_product_player_api_key(product["id"])
     headers = {"Authorization": f"Bearer {key}"} if key else {}
+    headers["Host"] = pinned["host"]
+    extensions = ({"sni_hostname": pinned["sni"]}
+                  if pinned["scheme"] == "https" else {})
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(url, params={"player_id": player_id},
-                                    headers=headers)
+            resp = await client.get(pinned["url"],
+                                    params={"player_id": player_id},
+                                    headers=headers, extensions=extensions)
         if resp.status_code != 200:
             log.warning("retention_profile_pull_http status=%s",
                         resp.status_code)
