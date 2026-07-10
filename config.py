@@ -174,14 +174,18 @@ DB_HEALTHCHECK_TIMEOUT_SEC: int = _env_int("DB_HEALTHCHECK_TIMEOUT_SEC", 5)
 LOW_CONTENT_BLOCK: bool = _env_bool("LOW_CONTENT_BLOCK", True)
 MIN_MEANINGFUL_CHARS: int = _env_int("MIN_MEANINGFUL_CHARS", 2)
 
-# --- reCaptcha --------------------------------------------------------------
-# Deploy-level DEFAULT pair. Each product (domain) can carry its OWN reCaptcha
-# site key + secret (products.recaptcha_site_key / recaptcha_secret_enc, edited
+# --- Cloudflare Turnstile ----------------------------------------------------
+# Deploy-level DEFAULT pair. Each product (domain) can carry its OWN Turnstile
+# site key + secret (products.turnstile_site_key / turnstile_secret_enc, edited
 # in the admin Structure tab); these env values are only the fallback for
 # products that haven't configured their own (and for the default product).
-RECAPTCHA_SECRET: str | None = _env_opt("RECAPTCHA_SECRET")
-RECAPTCHA_SITE_KEY: str | None = _env_opt("RECAPTCHA_SITE_KEY")
-RECAPTCHA_MIN_SCORE: float = _env_float("RECAPTCHA_MIN_SCORE", 0.5)
+# The Turnstile widget must be created as an INVISIBLE widget in the Cloudflare
+# dashboard — the chat widget never shows a challenge UI. Verification is
+# ADVISORY: a missing token (Turnstile blocked/unreachable on the client) or a
+# verifier outage SKIPS the check instead of blocking the player — the other
+# anti-spam layers (rate limit, cooldown, low-content, injection) still apply.
+TURNSTILE_SECRET: str | None = _env_opt("TURNSTILE_SECRET")
+TURNSTILE_SITE_KEY: str | None = _env_opt("TURNSTILE_SITE_KEY")
 
 # --- Escalation -------------------------------------------------------------
 # Default contact-button URL. Per-language URLs are set in the admin

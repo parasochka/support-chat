@@ -116,18 +116,13 @@ def test_model_validate_rejects_bad():
 
 # --- antispam fields folded in from env ------------------------------------
 def test_antispam_new_fields_default_to_env(monkeypatch):
-    monkeypatch.setattr(config, "RECAPTCHA_MIN_SCORE", 0.9)
     monkeypatch.setattr(config, "INJECTION_HARD_BLOCK", True)
     cfg = settings.antispam()
-    assert cfg["recaptcha_min_score"] == 0.9
     assert cfg["injection_hard_block"] is True
 
 
 def test_antispam_validate_new_fields():
-    settings.validate_setting("antispam", {"recaptcha_min_score": 0.5,
-                                           "injection_hard_block": True})
-    with pytest.raises(ValueError):
-        settings.validate_setting("antispam", {"recaptcha_min_score": 2})  # > 1.0
+    settings.validate_setting("antispam", {"injection_hard_block": True})
     with pytest.raises(ValueError):
         settings.validate_setting("antispam", {"injection_hard_block": "yes"})
 

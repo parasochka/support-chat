@@ -70,10 +70,14 @@ panel.
   gets a one-time in-persona "give me a moment" notice (further ones in the same window are
   dropped silently), and low-content/injection get model-free canned replies; the other
   `antispam` settings knobs are shared.
-- **Per-product reCaptcha v3** — each product/domain gets its own site key (Structure tab;
-  served to the widget via `GET /api/chat/i18n` and adopted automatically, no embed change)
-  and its own secret (stored encrypted, write-only via product secrets). The deploy env
-  `RECAPTCHA_SITE_KEY`/`RECAPTCHA_SECRET` pair remains only a fallback.
+- **Per-product Cloudflare Turnstile** (invisible mode) — each product/domain gets its own
+  site key (Structure tab; served to the widget via `GET /api/chat/i18n` and adopted
+  automatically, no embed change) and its own secret (stored encrypted, write-only via
+  product secrets). The deploy env `TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET` pair remains only
+  a fallback. Verification is **advisory (fail-open)**: if the Turnstile script is blocked or
+  unreachable for a player (it happens in some regions), the check is simply skipped and the
+  other anti-spam layers still gate the request — a player never loses the chat over a
+  blocked Cloudflare.
 - **Two-key OpenAI failover** — a fallback API key is raced in after a switch timeout so a
   silent primary key doesn't stall answers.
 - **Admin dashboard** (`/admin` — the React Admin SPA in `admin/`, compiled by the
@@ -153,8 +157,8 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `ADMIN_TOKEN_TTL_MIN` | no | `10080` | Admin login **inactivity window** (minutes; default 1 week). The session **slides** — an active operator's token is auto-renewed past its half-life, so daily use never logs you out, while an account left untouched for this long expires. Also a live `general` settings knob (admin **Settings** tab). |
 | `SECRETS_MASTER_KEY` | no | `SESSION_JWT_SECRET` | Master key encrypting per-product secrets (OpenAI keys, handshake secrets) at rest. Set a distinct strong **≥32-char** value (**required on a real deployment**); rotating it invalidates stored product secrets (re-enter them in the admin). |
 | `WIDGET_HANDSHAKE_SECRET` | no | — | Deploy-level HMAC secret for signed host-site `user_context`. A product's own handshake secret (Structure tab) takes precedence. Neither set ⇒ dev mode. |
-| `RECAPTCHA_SECRET` | no | — | Deploy-level fallback reCaptcha v3 secret, verified at session create. A product's own secret (Structure tab, stored encrypted) takes precedence; neither set ⇒ the check is skipped. |
-| `RECAPTCHA_SITE_KEY` | no | — | Deploy-level fallback reCaptcha v3 **site key**, served to the widget via `GET /api/chat/i18n`. Fallback pair to `RECAPTCHA_SECRET`: each product should carry its own per-domain site key + secret (Structure tab); these env values apply only to products without their own. |
+| `TURNSTILE_SECRET` | no | — | Deploy-level fallback Cloudflare Turnstile secret, verified at session create. A product's own secret (Structure tab, stored encrypted) takes precedence; neither set ⇒ the check is skipped. Advisory: a missing client token or a verifier outage also skips (fail-open) — only an explicit "invalid token" verdict blocks. |
+| `TURNSTILE_SITE_KEY` | no | — | Deploy-level fallback Turnstile **site key** (create the Turnstile widget as **Invisible** in the Cloudflare dashboard), served to the chat widget via `GET /api/chat/i18n`. Fallback pair to `TURNSTILE_SECRET`: each product should carry its own per-domain site key + secret (Structure tab); these env values apply only to products without their own. |
 | `CONTACT_FORM_URL` | no | — | Optional deploy-level fallback URL behind the escalation contact button — applies to the **default product only**, never to other products. The URL's real home is the admin Translations tab (`contact_url`, per product/per language); a value stored by old builds in the DB is auto-migrated there on boot. |
 | `DEFAULT_LANGUAGE` / `SUPPORTED_LANGUAGES` | no | `en` / `en,es,ru,tr,pt` | Language defaults. |
 | `CORS_ALLOW_ORIGINS` | no | `*` | Comma-separated allowed origins (restrict in prod). |

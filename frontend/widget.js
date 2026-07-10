@@ -23,11 +23,13 @@ export const CONFIG = {
       (document.querySelector("script[data-widget-key]") || { dataset: {} })
         .dataset.widgetKey) ||
     "",
-  // reCaptcha v3 site key. Normally left "" — the widget adopts the PRODUCT's
-  // own site key served by GET /api/chat/i18n (each client domain runs its own
-  // reCAPTCHA property, configured in the admin Structure tab). A host page may
-  // still pin one explicitly via mount({ RECAPTCHA_SITE_KEY: "..." }).
-  RECAPTCHA_SITE_KEY: "",
+  // Cloudflare Turnstile site key (the widget MUST be created as an INVISIBLE
+  // widget in the Cloudflare dashboard — no challenge UI is ever shown).
+  // Normally left "" — the widget adopts the PRODUCT's own site key served by
+  // GET /api/chat/i18n (each client domain runs its own Turnstile widget,
+  // configured in the admin Structure tab). A host page may still pin one
+  // explicitly via mount({ TURNSTILE_SITE_KEY: "..." }).
+  TURNSTILE_SITE_KEY: "",
   // Sample user_context for the test build. In production the host page supplies this.
   // `language` is the account/profile language. It is the strongest signal for the
   // widget chrome (after an explicit LANG), so a Russian account on an English
@@ -161,7 +163,7 @@ const state = {
   // True once the lightweight catalogue (GET /topics) has been fetched, so the
   // panel can paint the category buttons before the session exists.
   topicsLoaded: false,
-  // In-flight promise for the (slow) reCaptcha + session create, started in the
+  // In-flight promise for the (slow) Turnstile + session create, started in the
   // background on open so it never blocks the first paint. ensureSession() awaits
   // it lazily before any action that actually needs a token.
   sessionPromise: null,
@@ -170,8 +172,8 @@ const state = {
   // paint IMMEDIATELY on tap; sendMessage() awaits this so the player's first
   // message transparently waits for the setup instead of failing without a token.
   setupPromise: null,
-  // Mount-time /i18n fetch (chrome copy + the product's reCAPTCHA site key);
-  // recaptchaToken() awaits it when the key hasn't arrived yet.
+  // Mount-time /i18n fetch (chrome copy + the product's Turnstile site key);
+  // turnstileToken() awaits it when the key hasn't arrived yet.
   i18nPromise: null,
   // The widget chrome language. Starts at the browser locale and may later
   // follow the conversation if the player switches language (maybeSwitchLang).
@@ -197,13 +199,17 @@ const state = {
 };
 
 // ---------------------------------------------------------------------------
-// reCaptcha helper (no-op when no site key configured)
+// Cloudflare Turnstile helper (no-op when no site key configured)
 // ---------------------------------------------------------------------------
-// An ad/privacy blocker can silently drop the google.com/recaptcha request —
-// then neither onload nor onerror ever fires and a stalled execute() never
-// settles, wedging session creation forever. Every step therefore races a
-// timeout and degrades to a null token (the backend decides what to do).
-const RECAPTCHA_TIMEOUT_MS = 8000;
+// The Turnstile widget is created as INVISIBLE in the Cloudflare dashboard, so
+// it never shows any challenge UI — it is rendered into a hidden container and
+// hands back a token via callback. A blocker (or a region where Cloudflare is
+// unreachable) can silently drop the challenges.cloudflare.com request — then
+// neither onload nor onerror ever fires and a stalled render never settles,
+// wedging session creation forever. Every step therefore races a timeout and
+// degrades to a null token; the backend treats a missing token as "skip the
+// check" (fail-open by design — the other anti-spam layers still apply).
+const TURNSTILE_TIMEOUT_MS = 8000;
 
 function withTimeout(promise, ms, fallback) {
   return new Promise((resolve) => {
@@ -215,37 +221,64 @@ function withTimeout(promise, ms, fallback) {
   });
 }
 
-function loadRecaptcha(siteKey) {
+function loadTurnstile() {
   return new Promise((resolve) => {
-    if (!siteKey) return resolve(null);
-    if (window.grecaptcha) return resolve(window.grecaptcha);
+    if (window.turnstile) return resolve(window.turnstile);
+    const existing = document.querySelector("script[data-npchat-turnstile]");
+    if (existing) {
+      // Already injected (e.g. the mount-time pre-load); wait for it.
+      existing.addEventListener("load", () => resolve(window.turnstile || null));
+      existing.addEventListener("error", () => resolve(null));
+      return;
+    }
     const s = document.createElement("script");
-    s.src = `https://www.google.com/recaptcha/api.js?render=${siteKey}`;
-    s.onload = () => resolve(window.grecaptcha);
+    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    s.async = true;
+    s.setAttribute("data-npchat-turnstile", "1");
+    s.onload = () => resolve(window.turnstile || null);
     s.onerror = () => resolve(null);
     document.head.appendChild(s);
   });
 }
 
-async function recaptchaToken(action) {
+async function turnstileToken(action) {
   // The product's site key may still be in flight (it arrives with /i18n);
   // wait for that fetch before concluding there is no captcha to run.
-  if (!CONFIG.RECAPTCHA_SITE_KEY && state.i18nPromise) {
+  if (!CONFIG.TURNSTILE_SITE_KEY && state.i18nPromise) {
     await state.i18nPromise;
   }
-  if (!CONFIG.RECAPTCHA_SITE_KEY) return null;
-  const grc = await withTimeout(
-    loadRecaptcha(CONFIG.RECAPTCHA_SITE_KEY), RECAPTCHA_TIMEOUT_MS, null
-  );
-  if (!grc) return null;
+  if (!CONFIG.TURNSTILE_SITE_KEY) return null;
+  const ts = await withTimeout(loadTurnstile(), TURNSTILE_TIMEOUT_MS, null);
+  if (!ts) return null;
+  // Render an invisible widget into an off-screen container; the token arrives
+  // via callback. Tokens are single-use, so a fresh container is rendered per
+  // token and removed afterwards.
+  const holder = document.createElement("div");
+  holder.style.position = "fixed";
+  holder.style.left = "-9999px";
+  holder.style.top = "0";
+  document.body.appendChild(holder);
+  let widgetId = null;
   const exec = new Promise((resolve) => {
-    grc.ready(() => {
-      grc.execute(CONFIG.RECAPTCHA_SITE_KEY, { action })
-        .then(resolve)
-        .catch(() => resolve(null));
-    });
+    try {
+      widgetId = ts.render(holder, {
+        sitekey: CONFIG.TURNSTILE_SITE_KEY,
+        action,
+        callback: (token) => resolve(token || null),
+        "error-callback": () => resolve(null),
+        "unsupported-callback": () => resolve(null),
+      });
+      if (widgetId === undefined || widgetId === null) resolve(null);
+    } catch (_) {
+      resolve(null);
+    }
   });
-  return withTimeout(exec, RECAPTCHA_TIMEOUT_MS, null);
+  const token = await withTimeout(exec, TURNSTILE_TIMEOUT_MS, null);
+  try {
+    if (widgetId !== null && widgetId !== undefined && ts.remove) ts.remove(widgetId);
+  } catch (_) { /* best-effort cleanup */ }
+  holder.remove();
+  return token;
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +297,7 @@ async function api(path, { method = "POST", body = null, auth = false } = {}) {
   return { ok: res.ok, status: res.status, data };
 }
 
-// Fetch just the topic catalogue — no session, token, or reCaptcha — so the
+// Fetch just the topic catalogue — no session, token, or Turnstile — so the
 // panel can paint the category buttons instantly on open. Cheap + cacheable;
 // safe to call speculatively on mount. We pass the already-resolved chrome
 // language so the titles come back in the right language on the first paint —
@@ -290,12 +323,12 @@ async function fetchI18n() {
     ? `?widget_key=${encodeURIComponent(CONFIG.WIDGET_KEY)}` : "";
   const { ok, data } = await api(`/api/chat/i18n${qs}`, { method: "GET" });
   if (!ok || !data || !data.strings) return;
-  // Adopt the product's reCAPTCHA site key (served with the copy) unless the
+  // Adopt the product's Turnstile site key (served with the copy) unless the
   // host page pinned its own — then pre-load the script so the first topic tap
   // doesn't pay for it.
-  if (!CONFIG.RECAPTCHA_SITE_KEY && data.recaptcha_site_key) {
-    CONFIG.RECAPTCHA_SITE_KEY = data.recaptcha_site_key;
-    loadRecaptcha(CONFIG.RECAPTCHA_SITE_KEY);
+  if (!CONFIG.TURNSTILE_SITE_KEY && data.turnstile_site_key) {
+    CONFIG.TURNSTILE_SITE_KEY = data.turnstile_site_key;
+    loadTurnstile();
   }
   for (const [code, dict] of Object.entries(data.strings)) {
     I18N[code] = Object.assign({}, I18N[code] || I18N.en, dict);
@@ -317,7 +350,7 @@ function ensureSession() {
   if (state.sessionId) return Promise.resolve();
   if (!state.sessionPromise) {
     // Don't cache a REJECTED promise: a transient createSession failure (network
-    // blip, a session-create rate-limit 429, a reCaptcha hiccup) must not wedge
+    // blip, a session-create rate-limit 429, a Turnstile hiccup) must not wedge
     // every later attempt forever — clear it on failure so the next call retries
     // cleanly instead of replaying the same rejection ("nothing happens").
     state.sessionPromise = createSession().catch((e) => {
@@ -358,7 +391,7 @@ function resetToPicker({ abandon } = {}) {
 }
 
 async function createSession() {
-  const token = await recaptchaToken("chat_session");
+  const token = await turnstileToken("chat_session");
   const { ok, data } = await api("/api/chat/session", {
     body: {
       consumer: "web-test",
@@ -372,7 +405,7 @@ async function createSession() {
       // back / close / finish stays in the drifted language instead of snapping
       // back to the browser locale.
       locale: state.locale,
-      recaptcha_token: token,
+      turnstile_token: token,
       // Names the product (casino) this widget belongs to; empty = the
       // service's default product (single-product deployments).
       widget_key: CONFIG.WIDGET_KEY || null,
@@ -538,18 +571,19 @@ function buildUI() {
 
   // Speculatively warm the topic catalogue so the very first open paints the
   // category buttons instantly. It's a cheap, cacheable, session-free GET and
-  // touches no reCaptcha or DB, so doing it on mount is cheap insurance.
+  // touches no Turnstile or DB, so doing it on mount is cheap insurance.
   fetchTopics().catch(() => { /* the open handler retries if this missed */ });
   // Merge the admin-edited chrome copy over the baked-in defaults (non-fatal).
-  // The promise is kept: the per-product reCAPTCHA site key rides in this
-  // response, so recaptchaToken() awaits it when no key is known yet — a
+  // The promise is kept: the per-product Turnstile site key rides in this
+  // response, so turnstileToken() awaits it when no key is known yet — a
   // topic tap racing the fetch must not mint a token-less session.
   state.i18nPromise = fetchI18n().catch(() => { /* baked-in copy stands */ });
-  // Pre-load the reCaptcha script too: it's the slowest piece of the session
+  // Pre-load the Turnstile script too: it's the slowest piece of the session
   // create (a third-party script fetch), and without this it only started
   // loading when the player tapped a topic — adding seconds before the first
-  // message could be sent. Loading it at mount costs nothing when unused.
-  loadRecaptcha(CONFIG.RECAPTCHA_SITE_KEY);
+  // message could be sent. Loading it at mount costs nothing when unused
+  // (fetchI18n also kicks it off once the product's site key arrives).
+  if (CONFIG.TURNSTILE_SITE_KEY) loadTurnstile();
 }
 
 // Re-apply chrome strings. Idempotent, and re-run whenever the language changes
@@ -1142,7 +1176,7 @@ async function togglePanel() {
     resetToPicker({ abandon: true });
     // Paint the category buttons as fast as we can. If the speculative mount
     // prefetch already landed, this is instant; otherwise fetch them now —
-    // either way it does NOT wait on reCaptcha or the session create.
+    // either way it does NOT wait on Turnstile or the session create.
     try {
       if (!state.topicsLoaded) await fetchTopics();
       renderTopics();
@@ -1173,7 +1207,7 @@ async function onTopic(slug) {
   state.topicChosen = true;
   // Paint the conversation view IMMEDIATELY — the greeting bubble is canned and
   // client-side, so nothing about it needs the network. The slow parts
-  // (reCaptcha + session create + topic select) run in the background below;
+  // (Turnstile + session create + topic select) run in the background below;
   // the player can already read the greeting and start typing, and their first
   // send just awaits the setup (sendMessage). Previously this whole function
   // awaited the session create FIRST, so tapping a category left the picker

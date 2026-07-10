@@ -50,7 +50,7 @@ class SessionCreate(BaseModel):
     # Browser language (navigator.language); the single source for the session's
     # answer + chrome language.
     locale: Optional[str] = None
-    recaptcha_token: Optional[str] = None
+    turnstile_token: Optional[str] = None
     # Public product identifier (multi-tenancy): tells the service WHICH casino
     # this widget belongs to. Absent -> the boot-seeded default product, so a
     # single-product deployment keeps working without an embed change.
@@ -150,7 +150,7 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
     ip = _client_ip(req)
 
     # IP rate-limit session creation too (separate budget from /message) so a
-    # bot can't mint unlimited sessions/tokens/DB rows when reCaptcha is unset.
+    # bot can't mint unlimited sessions/tokens/DB rows when Turnstile is unset.
     try:
         antispam.check_rate_limit(f"session:{ip}")
     except antispam.AntiSpamError as exc:
@@ -159,7 +159,7 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
         return _err(exc.status, exc.code, exc.detail)
 
     # --- resolve the product (multi-tenancy) ---------------------------------
-    # The widget key names the casino; everything below (reCaptcha secret,
+    # The widget key names the casino; everything below (Turnstile secret,
     # handshake secret, test profile, language set, topics) resolves for it.
     product, err = await _resolve_product(body.widget_key)
     if err:
@@ -167,20 +167,23 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
         return err
     tenancy.set_current_product(product["id"])
 
-    # reCaptcha (skips gracefully in dev; logs the skip, sampled — it fires on
-    # EVERY dev session create otherwise). Verified against the PRODUCT's own
-    # reCAPTCHA secret when it has one (each client domain runs its own
-    # reCAPTCHA property); the deploy env secret is only the fallback.
-    product_recaptcha = await db.get_product_recaptcha_secret(product["id"])
-    captcha = await antispam.verify_recaptcha(body.recaptcha_token, ip,
-                                              secret=product_recaptcha)
+    # Cloudflare Turnstile — ADVISORY, fail-open: a missing token (the Turnstile
+    # script is blocked in some regions) and a verifier outage SKIP the check
+    # (logged, sampled — the skip fires on EVERY dev session create otherwise);
+    # only an explicit "invalid token" verdict from Cloudflare blocks. Verified
+    # against the PRODUCT's own Turnstile secret when it has one (each client
+    # domain runs its own Turnstile widget); the deploy env secret is only the
+    # fallback.
+    product_turnstile = await db.get_product_turnstile_secret(product["id"])
+    captcha = await antispam.verify_turnstile(body.turnstile_token, ip,
+                                              secret=product_turnstile)
     if captcha.get("skipped"):
-        await db.log_admin_event_sampled(None, "recaptcha_skipped",
+        await db.log_admin_event_sampled(None, "turnstile_skipped",
                                          {"reason": captcha.get("reason")})
     elif not captcha.get("ok"):
-        await db.log_admin_event(None, "recaptcha_blocked",
-                                 {"reason": captcha.get("reason"), "score": captcha.get("score")})
-        return _err(403, "recaptcha_failed", "reCaptcha verification failed.")
+        await db.log_admin_event(None, "turnstile_blocked",
+                                 {"reason": captcha.get("reason")})
+        return _err(403, "turnstile_failed", "Turnstile verification failed.")
 
     # --- resolve trusted user_context (signed handshake §9) -----------------
     # Precedence of trust:
@@ -277,13 +280,13 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
 async def list_catalogue(lang: Optional[str] = None,
                          locale: Optional[str] = None,
                          widget_key: Optional[str] = None) -> JSONResponse:
-    """Return the topic picker without a session, token, reCaptcha, or DB write.
+    """Return the topic picker without a session, token, Turnstile, or DB write.
 
     The category buttons are static, language-derivable data, yet in POST
-    /session they were trapped behind the (slow) reCaptcha script load + session
+    /session they were trapped behind the (slow) Turnstile script load + session
     create, so the widget showed an empty panel for seconds on open. Splitting
     the catalogue into its own cacheable GET lets the widget paint the buttons
-    immediately while reCaptcha + session creation run in the background. The
+    immediately while Turnstile + session creation run in the background. The
     language is the browser language — the widget passes the code it already
     resolved as `lang` (or the raw `locale`); both map to the same base code as
     create_session, so the titles match the session from the first paint.
@@ -334,11 +337,11 @@ async def widget_i18n(widget_key: Optional[str] = None) -> JSONResponse:
         content={
             "languages": codes,
             "strings": translations.widget_strings(codes),
-            # The product's PUBLIC reCAPTCHA site key (env pair as fallback):
+            # The product's PUBLIC Turnstile site key (env pair as fallback):
             # the widget adopts it unless the host page pinned its own, so a
             # per-domain key needs no embed change.
-            "recaptcha_site_key": (product.get("recaptcha_site_key")
-                                   or config.RECAPTCHA_SITE_KEY or None),
+            "turnstile_site_key": (product.get("turnstile_site_key")
+                                   or config.TURNSTILE_SITE_KEY or None),
         },
     )
     # Same short cache as /topics: changes only on an admin edit.

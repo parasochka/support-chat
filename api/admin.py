@@ -1037,9 +1037,9 @@ class ProductCreate(BaseModel):
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
     active: Optional[bool] = None
-    # Per-product reCAPTCHA site key (PUBLIC config, pairs with the encrypted
-    # recaptcha_secret below). Empty string clears it (env fallback applies).
-    recaptcha_site_key: Optional[str] = None
+    # Per-product Turnstile site key (PUBLIC config, pairs with the encrypted
+    # turnstile_secret below). Empty string clears it (env fallback applies).
+    turnstile_site_key: Optional[str] = None
     # Public main-site URL (home page). The Telegram hand-off's "support on the
     # site" button lands here. Empty string clears it.
     site_url: Optional[str] = None
@@ -1053,9 +1053,9 @@ class ProductSecretsWrite(BaseModel):
     # Retention / Telegram secrets (encrypted at rest, like the keys above).
     telegram_bot_token: Optional[str] = None
     player_api_key: Optional[str] = None
-    # Per-product (per-domain) reCAPTCHA secret — each client site runs its own
-    # reCAPTCHA property, so the pair lives on the product, not in deploy env.
-    recaptcha_secret: Optional[str] = None
+    # Per-product (per-domain) Turnstile secret — each client site runs its own
+    # Turnstile widget, so the pair lives on the product, not in deploy env.
+    turnstile_secret: Optional[str] = None
 
 
 def _validate_slug(slug: str) -> str:
@@ -1158,9 +1158,9 @@ async def update_product(product_id: int, body: ProductUpdate,
                                       active=body.active)
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found.")
-    if body.recaptcha_site_key is not None:
-        product = await db.set_product_recaptcha_site_key(
-            product_id, body.recaptcha_site_key)
+    if body.turnstile_site_key is not None:
+        product = await db.set_product_turnstile_site_key(
+            product_id, body.turnstile_site_key)
     if body.site_url is not None:
         product = await db.set_product_site_url(product_id, body.site_url)
     await db.log_admin_event(None, "product_updated",
@@ -1189,8 +1189,8 @@ async def put_product_secrets(product_id: int, body: ProductSecretsWrite,
         fields["telegram_bot_token"] = body.telegram_bot_token
     if body.player_api_key is not None:
         fields["player_api_key"] = body.player_api_key
-    if body.recaptcha_secret is not None:
-        fields["recaptcha_secret"] = body.recaptcha_secret
+    if body.turnstile_secret is not None:
+        fields["turnstile_secret"] = body.turnstile_secret
     if not fields:
         raise HTTPException(status_code=400, detail="Nothing to update.")
     ok = await db.set_product_secrets(product_id, **fields)

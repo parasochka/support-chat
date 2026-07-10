@@ -19,7 +19,7 @@ export const GROUP_LABELS = {
 
 export const GROUP_HELP = {
   antispam:
-    'Rate limiting, cooldowns, reCaptcha and the injection / low-content guards that run before the model.',
+    'Rate limiting, cooldowns and the injection / low-content guards that run before the model.',
   model:
     'OpenAI request tuning. Edits are hot — the next turn uses them (the client is rebuilt on save).',
   general:
@@ -37,7 +37,6 @@ export const GROUP_FIELDS = {
     { name: 'window_sec', label: 'Rate-limit window (sec)', type: 'int', min: 1, max: 86400, help: 'Length of the rate-limit window in seconds.' },
     { name: 'cooldown_sec', label: 'Message cooldown (sec)', type: 'int', min: 0, max: 3600, help: 'Minimum seconds between two messages in one session.' },
     { name: 'max_input_chars', label: 'Max input characters', type: 'int', min: 1, max: 100000, help: 'Longest single message the API accepts.' },
-    { name: 'recaptcha_min_score', label: 'reCaptcha min score', type: 'float', min: 0, max: 1, step: 0.05, help: 'Minimum reCaptcha v3 score to accept a new session (0–1).' },
     { name: 'injection_hard_block', label: 'Hard-block injection attempts', type: 'bool', help: 'Reject prompt-injection with HTTP 400 (off = audit only, still answered).' },
     { name: 'low_content_block', label: 'Block low-content messages', type: 'bool', help: 'Nudge instead of calling the model on empty/one-character spam.' },
     { name: 'min_meaningful_chars', label: 'Min meaningful characters', type: 'int', min: 1, max: 100, help: 'Distinct letters/digits a message must carry to reach the model.' },

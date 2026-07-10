@@ -88,7 +88,7 @@ async def test_rate_limit_notifies_once_then_silent(monkeypatch):
     monkeypatch.setattr(settings, "antispam", lambda: {
         "rate_limit_max_per_ip": 0, "tg_rate_limit_max_per_user": 0,
         "window_sec": 60, "cooldown_sec": 0,
-        "max_input_chars": 1000, "recaptcha_min_score": 0.5,
+        "max_input_chars": 1000,
         "injection_hard_block": True, "low_content_block": True,
         "min_meaningful_chars": 2})
 
@@ -113,7 +113,7 @@ async def test_rate_limit_uses_telegram_allowance(monkeypatch):
     monkeypatch.setattr(settings, "antispam", lambda: {
         "rate_limit_max_per_ip": 0, "tg_rate_limit_max_per_user": 100,
         "window_sec": 60, "cooldown_sec": 0,
-        "max_input_chars": 1000, "recaptcha_min_score": 0.5,
+        "max_input_chars": 1000,
         "injection_hard_block": True, "low_content_block": True,
         "min_meaningful_chars": 2})
 

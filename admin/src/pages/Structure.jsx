@@ -29,7 +29,7 @@ const SECRET_FIELDS = [
   ['openai_key_primary', 'OpenAI key (primary)', 'has_openai_key', false],
   ['openai_key_fallback', 'OpenAI key (fallback)', 'has_openai_key_fallback', false],
   ['handshake_secret', 'Widget handshake secret', 'has_handshake_secret', true],
-  ['recaptcha_secret', 'reCAPTCHA secret key', 'has_recaptcha_secret', false],
+  ['turnstile_secret', 'Turnstile secret key', 'has_turnstile_secret', false],
   ['telegram_bot_token', 'Telegram bot token', 'has_telegram_bot_token', false],
   ['player_api_key', 'Player API key', 'has_player_api_key', false],
 ];
@@ -39,8 +39,8 @@ const mono = { fontFamily: 'monospace', fontSize: 13 };
 const ProductCard = ({ product, onChanged }) => {
   const notify = useNotify();
   const [name, setName] = useState(product.name);
-  const [recaptchaSiteKey, setRecaptchaSiteKey] = useState(
-    product.recaptcha_site_key || ''
+  const [turnstileSiteKey, setTurnstileSiteKey] = useState(
+    product.turnstile_site_key || ''
   );
   const [siteUrl, setSiteUrl] = useState(product.site_url || '');
   const [secrets, setSecrets] = useState({});
@@ -206,14 +206,17 @@ const ProductCard = ({ product, onChanged }) => {
           </Button>
         </Stack>
 
-        {/* --- reCAPTCHA (per client domain) -------------------------------- */}
+        {/* --- Cloudflare Turnstile (per client domain) ---------------------- */}
         <Typography variant="subtitle2" gutterBottom>
-          reCAPTCHA
+          Cloudflare Turnstile
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-          Each client domain runs its own reCAPTCHA v3 property — set that
-          property&apos;s site key here (the secret key goes into Secrets below).
-          Leave empty to fall back to the deploy env keys.
+          Each client domain runs its own Turnstile widget (create it as an
+          Invisible widget in the Cloudflare dashboard) — set that widget&apos;s
+          site key here (the secret key goes into Secrets below). Leave empty to
+          fall back to the deploy env keys. Verification is advisory: if
+          Turnstile is blocked or unreachable for a player, the check is
+          skipped and the other anti-spam layers still apply.
         </Typography>
         <Stack
           direction="row"
@@ -225,16 +228,16 @@ const ProductCard = ({ product, onChanged }) => {
         >
           <TextField
             size="small"
-            label="reCAPTCHA site key"
-            value={recaptchaSiteKey}
-            onChange={(e) => setRecaptchaSiteKey(e.target.value)}
+            label="Turnstile site key"
+            value={turnstileSiteKey}
+            onChange={(e) => setTurnstileSiteKey(e.target.value)}
             sx={{ minWidth: 220, flex: '1 1 320px' }}
             slotProps={{
               input: {
                 sx: mono,
                 endAdornment: (
                   <InputAdornment position="end">
-                    <SetBadge set={Boolean(product.recaptcha_site_key)} />
+                    <SetBadge set={Boolean(product.turnstile_site_key)} />
                   </InputAdornment>
                 ),
               },
@@ -243,7 +246,7 @@ const ProductCard = ({ product, onChanged }) => {
           <Button
             size="small"
             variant="outlined"
-            onClick={() => saveProduct({ recaptcha_site_key: recaptchaSiteKey })}
+            onClick={() => saveProduct({ turnstile_site_key: turnstileSiteKey })}
             sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
           >
             Save site key

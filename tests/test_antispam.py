@@ -162,8 +162,8 @@ def test_rate_limit_prunes_stale_ip_buckets(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_recaptcha_skips_without_secret(monkeypatch):
-    monkeypatch.setattr(config, "RECAPTCHA_SECRET", None)
-    res = await antispam.verify_recaptcha(token=None)
+async def test_turnstile_skips_without_secret(monkeypatch):
+    monkeypatch.setattr(config, "TURNSTILE_SECRET", None)
+    res = await antispam.verify_turnstile(token=None)
     assert res["ok"] is True
     assert res["skipped"] is True
