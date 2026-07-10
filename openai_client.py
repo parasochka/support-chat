@@ -20,6 +20,7 @@ import asyncio
 import logging
 import random
 import time
+import weakref
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -152,12 +153,14 @@ class _KeyClient:
         self.name = name
         self.api_key = api_key
         # Token usage of DISCARDED truncated first attempts, keyed by id() of the
-        # retry response they were replaced with. _result() pops the entry and
-        # folds it into the returned counts, so the tokens the first call burned
-        # (the whole budget, billed by OpenAI) are not silently dropped from cost
+        # retry response they were replaced with (plus a weakref so a recycled
+        # id() — CPython reuses addresses after GC — can never attribute a stale
+        # entry to an unrelated response). _result() pops the entry and folds it
+        # into the returned counts, so the tokens the first call burned (the
+        # whole budget, billed by OpenAI) are not silently dropped from cost
         # accounting. Entries whose response never reaches _result (a cancelled
         # race loser) are cleared by the size guard below.
-        self._pending_extra_usage: dict[int, tuple[int, int, int]] = {}
+        self._pending_extra_usage: dict[int, tuple[Any, tuple[int, int, int]]] = {}
         # Concurrency + client timeout are bound at construction; a change to
         # them is picked up via openai_client.reset() (called on settings write).
         m = settings.model()
@@ -231,8 +234,12 @@ class _KeyClient:
                     self._pending_extra_usage.pop(
                         next(iter(self._pending_extra_usage)), None
                     )
+                try:
+                    ref = weakref.ref(resp)
+                except TypeError:  # object not weakref-able: keep it alive
+                    ref = (lambda obj: (lambda: obj))(resp)
                 self._pending_extra_usage[id(resp)] = (
-                    first_in, first_out, first_cached
+                    ref, (first_in, first_out, first_cached)
                 )
         return resp
 
@@ -507,8 +514,11 @@ class OpenAIClient:
         # _KeyClient.call) so cost accounting covers BOTH billed calls.
         extra = getattr(kc, "_pending_extra_usage", None)
         if extra:
-            first = extra.pop(id(resp), None)
-            if first:
+            entry = extra.pop(id(resp), None)
+            # Only trust the entry when the weakref still points at THIS
+            # response object — a recycled id() must not inflate another turn.
+            if entry and entry[0]() is resp:
+                first = entry[1]
                 tokens_in += first[0]
                 tokens_out += first[1]
                 cached_in += first[2]

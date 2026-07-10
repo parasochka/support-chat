@@ -146,7 +146,8 @@ const PromptVariables = () => {
         <Link href="#/retention?tab=variables">
           Telegram · Retention → Prompt variables
         </Link>{' '}
-        — they inherit these support values unless overridden there.
+        — a separate prompt: empty retention fields fall back to the built-in
+        retention defaults, never to these support values.
       </Typography>
 
       <Card sx={{ mb: 2 }}>

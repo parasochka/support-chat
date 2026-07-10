@@ -236,11 +236,6 @@ CREATE TABLE IF NOT EXISTS admin_events (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS rate_limit_hits (
-  ip          TEXT NOT NULL,
-  ts          TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
 -- Named admin/manager users (email + password pair). These are the accounts
 -- admins create from the Users tab; every admin login goes through this table
 -- (there is no password-only owner login). role drives authorization: admin may
@@ -621,8 +616,17 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_memberships_unique "
         "ON admin_memberships (email, scope_type, COALESCE(partner_id, 0), "
         "COALESCE(product_id, 0))",
+        # Dead table cleanup: rate_limit_hits was never read or pruned (its
+        # writer was removed) — drop it on already-deployed databases too.
+        "DROP TABLE IF EXISTS rate_limit_hits",
         "CREATE INDEX IF NOT EXISTS idx_chat_sessions_product "
         "ON chat_sessions(product_id, created_at)",
+        # The Telegram conversations list sorts by updated_at — without this
+        # partial index Postgres fetches + sorts ALL of the product's Telegram
+        # sessions on every page load.
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_tg_updated "
+        "ON chat_sessions(product_id, updated_at DESC) "
+        "WHERE consumer = 'telegram'",
         "CREATE INDEX IF NOT EXISTS idx_ai_logs_product "
         "ON ai_interaction_logs(product_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_admin_events_product "
@@ -902,9 +906,12 @@ async def upsert_topic(product_id: int, slug: str, title: dict[str, str],
 
 
 async def get_topic_by_slug(product_id: int, slug: str) -> Optional[dict[str, Any]]:
+    # AND active: a deactivated topic must not be selectable (a stale widget or
+    # handcrafted slug could otherwise load its soft-cleared KB), mirroring the
+    # list_topics filter.
     row = await _pool.fetchrow(
         "SELECT id, product_id, slug, title, display_order, active "
-        "FROM kb_topics WHERE product_id = $1 AND slug = $2",
+        "FROM kb_topics WHERE product_id = $1 AND slug = $2 AND active",
         product_id, slug,
     )
     return _row_to_topic(row) if row else None
@@ -1433,10 +1440,6 @@ async def log_admin_event_sampled(session_id: Optional[str], type_: str,
         return
     hits.append(now)
     await log_admin_event(session_id, type_, payload)
-
-
-async def record_rate_hit(ip: str) -> None:
-    await _pool.execute("INSERT INTO rate_limit_hits (ip) VALUES ($1)", ip)
 
 
 async def ping() -> bool:
@@ -2741,6 +2744,14 @@ async def _purge_retention_player(conn, product_id: Optional[int],
         "DELETE FROM retention_pings WHERE retention_user_id = ANY($1::bigint[])",
         ids,
     )
+    # The agent's decision ledger references the player with a NULLABLE FK —
+    # detach (the audit rows themselves stay: they are product-level history,
+    # and deleting them would rewrite today's budget / cooldown state).
+    await conn.execute(
+        "UPDATE retention_v2_decisions SET retention_user_id = NULL "
+        "WHERE retention_user_id = ANY($1::bigint[])",
+        ids,
+    )
     await conn.execute(
         "DELETE FROM retention_users WHERE id = ANY($1::bigint[])", ids
     )
@@ -2798,6 +2809,11 @@ async def delete_session(session_id: str) -> bool:
     return True
 
 
+# Per-topic session cap for the Unresolved queue payload (the group count
+# stays the full number; only the listed rows are bounded).
+_UNRESOLVED_PER_TOPIC = 100
+
+
 async def unresolved_by_topic(dt_from: Any, dt_to: Any,
                               product_ids: Optional[list[int]] = None
                               ) -> list[dict[str, Any]]:
@@ -2805,7 +2821,13 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any,
 
     The admin page is an operational queue for conversations that still need KB
     or human attention, so it includes both escalated sessions and abandoned open
-    chats with at least one user turn. Resolved sessions are excluded.
+    chats with at least one user turn. Resolved sessions are excluded — including
+    a soft-escalated chat the player later finished (escalated=TRUE stays set,
+    but status='resolved' means nobody needs to triage it).
+
+    Each topic group returns at most `_UNRESOLVED_PER_TOPIC` newest sessions
+    (the group's `count` is still the FULL count) so a busy deployment with a
+    wide date range can't materialize thousands of rows in one JSON payload.
     """
     args: list[Any] = [dt_from, dt_to]
     scope, scope_cte = _scope_clauses(product_ids, args)
@@ -2818,22 +2840,29 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any,
         "  JOIN chat_sessions cs ON cs.id = l.session_id "
         f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
         "  GROUP BY l.session_id"
+        "), unresolved AS ("
+        "  SELECT COALESCE(t.slug, 'unknown') AS topic, "
+        "    COALESCE(t.title, '{}'::jsonb) AS title, "
+        "    s.id AS session_id, s.lang, s.status, s.escalated, s.message_count, "
+        "    s.created_at, s.updated_at, "
+        "    COALESCE(costs.cost_usd_total, 0) AS cost_usd_total, "
+        "    ROW_NUMBER() OVER (PARTITION BY COALESCE(t.slug, 'unknown') "
+        "                       ORDER BY s.created_at DESC) AS rn, "
+        "    COUNT(*) OVER (PARTITION BY COALESCE(t.slug, 'unknown')) AS full_count "
+        "  FROM chat_sessions s LEFT JOIN kb_topics t ON t.id = s.topic_id "
+        "  LEFT JOIN costs ON costs.session_id = s.id "
+        "  WHERE s.message_count > 0 "
+        "    AND s.consumer <> 'telegram' "
+        "    AND s.status <> 'resolved' "
+        "    AND (s.escalated OR s.status = 'open') "
+        f"    AND s.created_at >= $1 AND s.created_at < $2{scope} "
         ") "
-        "SELECT COALESCE(t.slug, 'unknown') AS topic, "
-        "  COALESCE(t.title, '{}'::jsonb) AS title, "
-        "  s.id AS session_id, s.lang, s.status, s.escalated, s.message_count, "
-        "  s.created_at, s.updated_at, "
-        "  COALESCE(costs.cost_usd_total, 0) AS cost_usd_total, "
+        "SELECT u.*, "
         "  (SELECT m.content FROM chat_messages m "
-        "    WHERE m.session_id = s.id AND m.role = 'user' "
+        "    WHERE m.session_id = u.session_id AND m.role = 'user' "
         "    ORDER BY m.id ASC LIMIT 1) AS first_message "
-        "FROM chat_sessions s LEFT JOIN kb_topics t ON t.id = s.topic_id "
-        "LEFT JOIN costs ON costs.session_id = s.id "
-        "WHERE s.message_count > 0 "
-        "  AND s.consumer <> 'telegram' "
-        "  AND (s.escalated OR s.status = 'open') "
-        f"  AND s.created_at >= $1 AND s.created_at < $2{scope} "
-        "ORDER BY topic, s.created_at DESC",
+        f"FROM unresolved u WHERE u.rn <= {_UNRESOLVED_PER_TOPIC} "
+        "ORDER BY u.topic, u.created_at DESC",
         *args,
     )
     groups: dict[str, dict[str, Any]] = {}
@@ -2842,10 +2871,9 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any,
         g = groups.setdefault(topic, {
             "topic": topic,
             "title": _json_value(r["title"]) if r["title"] is not None else {},
-            "count": 0,
+            "count": int(r["full_count"]),
             "sessions": [],
         })
-        g["count"] += 1
         g["sessions"].append({
             "session_id": str(r["session_id"]),
             "lang": r["lang"],
@@ -2956,12 +2984,19 @@ async def upsert_retention_user(product_id: int, tg_user_id: int, *,
             vals.append(_as_text(profile.get(f)))
             cols.append(f)
             placeholders.append(f"${len(vals)}")
+        # ON CONFLICT: two concurrent /start redemptions (double-tap, Telegram
+        # redelivery) race the SELECT-then-INSERT — fall through to the UPDATE
+        # branch below instead of raising UniqueViolationError.
         row = await _pool.fetchrow(
             f"INSERT INTO retention_users ({', '.join(cols)}) "
-            f"VALUES ({', '.join(placeholders)}) RETURNING {_RU_COLS}",
+            f"VALUES ({', '.join(placeholders)}) "
+            "ON CONFLICT (product_id, tg_user_id) DO NOTHING "
+            f"RETURNING {_RU_COLS}",
             *vals,
         )
-        return _row_to_retention_user(row)
+        if row is not None:
+            return _row_to_retention_user(row)
+        existing = await get_retention_user(product_id, tg_user_id)
     sets = ["tg_username = COALESCE($3, tg_username)",
             "entry_type = $4",
             "profile_source = $5",
@@ -3082,10 +3117,14 @@ async def record_retention_ping(product_id: int, rid: int,
             )
             if status == "sent":
                 await conn.execute(
+                    # UTC day (not CURRENT_DATE = session tz): the Python-side
+                    # cap checks read the UTC clock, both must agree.
                     "UPDATE retention_users SET last_ping_at = now(), "
-                    "pings_sent_today = CASE WHEN pings_day = CURRENT_DATE "
+                    "pings_sent_today = CASE WHEN pings_day = "
+                    "  (now() at time zone 'utc')::date "
                     "  THEN pings_sent_today + 1 ELSE 1 END, "
-                    "pings_day = CURRENT_DATE, updated_at = now() "
+                    "pings_day = (now() at time zone 'utc')::date, "
+                    "updated_at = now() "
                     "WHERE id = $1", rid,
                 )
             else:
@@ -3196,18 +3235,29 @@ async def recent_retention_events_for_player(product_id: int, player_id: str,
     return [_row_to_retention_event(r) for r in rows]
 
 
+# NULL-safe numeric extraction from an event payload: partner-fed JSON may
+# carry non-numeric strings ("12.50 USD"); a raw ::numeric cast would then
+# raise on EVERY read of that player's window until the row ages out — a
+# silent decision blackout. Non-numeric values count as 0 instead.
+def _payload_num(field: str) -> str:
+    return (
+        f"CASE WHEN payload->>'{field}' ~ '^-?[0-9]+(\\.[0-9]+)?$' "
+        f"THEN (payload->>'{field}')::numeric ELSE 0 END"
+    )
+
+
 async def player_net_loss_24h(product_id: int, player_id: str) -> float:
     """Net real-money loss over the last 24h from bet_settled events
     (bets minus wins; bonus-money rounds excluded) — the EPIC-5 loss window.
     Negative = the player is up; clamped to 0 by the caller if needed."""
     val = await _pool.fetchval(
         "SELECT COALESCE(SUM( "
-        "  COALESCE((payload->>'amount')::numeric, 0) "
-        "  - COALESCE((payload->>'win_amount')::numeric, 0)), 0) "
+        f"  {_payload_num('amount')} - {_payload_num('win_amount')}), 0) "
         "FROM retention_events "
         "WHERE product_id = $1 AND player_id = $2 "
         "  AND event_name = 'bet_settled' "
-        "  AND COALESCE((payload->>'bonus_money')::boolean, FALSE) = FALSE "
+        "  AND COALESCE((payload->>'bonus_money') IN ('true', 't', '1'), FALSE) "
+        "      = FALSE "
         "  AND ts > now() - interval '24 hours'",
         product_id, player_id,
     )
@@ -3220,8 +3270,7 @@ async def last_loss_signal_at(product_id: int, player_id: str) -> Optional[str]:
         "SELECT MAX(ts) FROM retention_events "
         "WHERE product_id = $1 AND player_id = $2 "
         "  AND event_name = 'bet_settled' "
-        "  AND COALESCE((payload->>'win_amount')::numeric, 0) "
-        "      < COALESCE((payload->>'amount')::numeric, 0)",
+        f"  AND {_payload_num('win_amount')} < {_payload_num('amount')}",
         product_id, player_id,
     )
     return _iso(val) if val else None
@@ -3557,10 +3606,12 @@ async def record_retention_photo_view(rid: int, photo_id: int,
                 "updated_at = now() WHERE id = $1", photo_id,
             )
             await conn.execute(
+                # UTC day — must match the Python-side cap check's clock.
                 "UPDATE retention_users SET "
-                "  photos_sent_today = CASE WHEN photos_day = CURRENT_DATE "
-                "                           THEN photos_sent_today + 1 ELSE 1 END, "
-                "  photos_day = CURRENT_DATE, "
+                "  photos_sent_today = CASE WHEN photos_day = "
+                "    (now() at time zone 'utc')::date "
+                "    THEN photos_sent_today + 1 ELSE 1 END, "
+                "  photos_day = (now() at time zone 'utc')::date, "
                 "  msgs_since_photo = 0, updated_at = now() "
                 "WHERE id = $1", rid,
             )
@@ -3967,13 +4018,21 @@ async def create_retention_nonce(nonce: str, product_id: int,
     )
 
 
-async def redeem_retention_nonce(nonce: str) -> Optional[dict[str, Any]]:
-    """Atomically consume a valid, unused, unexpired nonce. Returns its data or None."""
+async def redeem_retention_nonce(nonce: str,
+                                 product_id: Optional[int] = None
+                                 ) -> Optional[dict[str, Any]]:
+    """Atomically consume a valid, unused, unexpired nonce. Returns its data or None.
+
+    ``product_id`` scopes the redemption to the bot the /start arrived on: a
+    nonce minted for brand B must never link brand B's player profile into
+    brand A's bot (a cross-tenant data leak).
+    """
     row = await _pool.fetchrow(
         "UPDATE retention_nonces SET used = TRUE "
         "WHERE nonce = $1 AND NOT used AND expires_at > now() "
+        "AND ($2::int IS NULL OR product_id = $2) "
         "RETURNING product_id, payload, escalation",
-        nonce,
+        nonce, product_id,
     )
     if row is None:
         return None
@@ -4033,9 +4092,11 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
                 "SELECT COUNT(*) FROM retention_photo_views "
                 f"WHERE {pid} AND viewed_at >= $1 AND viewed_at < $2", *args),
             _pool.fetchval(
+                # Only 'retention_handoff': a [[HANDOFF]] with a manager
+                # configured ALSO logs 'retention_manager_handoff' for the same
+                # hand-off, so counting both doubled the KPI.
                 "SELECT COUNT(*) FROM admin_events "
-                f"WHERE {pid} AND type IN "
-                "  ('retention_handoff', 'retention_manager_handoff') "
+                f"WHERE {pid} AND type = 'retention_handoff' "
                 "  AND created_at >= $1 AND created_at < $2", *args),
             _pool.fetchrow(
                 "SELECT COUNT(*) AS user_msgs, "
@@ -4129,8 +4190,8 @@ async def retention_funnel(product_ids: Optional[list[int]], dt_from: Any,
         "SELECT COUNT(*) FILTER (WHERE type = 'retention_deeplink_created') "
         "    AS deeplinks, "
         "  COUNT(*) FILTER (WHERE type = 'retention_start') AS starts, "
-        "  COUNT(*) FILTER (WHERE type IN ('retention_handoff', "
-        "    'retention_manager_handoff')) AS handoffs "
+        # Only 'retention_handoff' (the manager event duplicates it per hand-off).
+        "  COUNT(*) FILTER (WHERE type = 'retention_handoff') AS handoffs "
         f"FROM admin_events WHERE {pid} "
         "  AND created_at >= $1 AND created_at < $2", *args,
     )

@@ -142,7 +142,13 @@ def _prune_cooldowns(now: float, cutoff: float) -> None:
 
 
 def check_cooldown(session_id: str) -> None:
-    """Raise AntiSpamError(429) if messages arrive faster than the cooldown."""
+    """Raise AntiSpamError(429) if messages arrive faster than the cooldown.
+
+    Check only — the stamp is armed separately (arm_cooldown) AFTER the other
+    pre-model gates pass. Stamping here punished a rejected message (too long /
+    low-content / injection-blocked) by 429ing the player's immediate corrected
+    resend.
+    """
     now = time.monotonic()
     cooldown = settings.antispam()["cooldown_sec"]
     if len(_last_message_at) > _COOLDOWN_PRUNE_THRESHOLD:
@@ -151,7 +157,11 @@ def check_cooldown(session_id: str) -> None:
     if last is not None and now - last < cooldown:
         raise AntiSpamError(429, "cooldown",
                             "You're sending messages too quickly; please wait a moment.")
-    _last_message_at[session_id] = now
+
+
+def arm_cooldown(session_id: str) -> None:
+    """Stamp the cooldown clock for a message that passed every pre-model gate."""
+    _last_message_at[session_id] = time.monotonic()
 
 
 def clear_cooldown(session_id: str) -> None:

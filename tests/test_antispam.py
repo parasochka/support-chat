@@ -40,15 +40,26 @@ def test_cooldown_enforced(monkeypatch):
     monkeypatch.setattr(config, "MESSAGE_COOLDOWN_SEC", 5)
     sid = "sess-1"
     antispam.check_cooldown(sid)  # first ok
+    antispam.arm_cooldown(sid)    # armed only after the gates pass
     with pytest.raises(antispam.AntiSpamError) as exc:
         antispam.check_cooldown(sid)  # immediately again -> blocked
     assert exc.value.code == "cooldown"
+
+
+def test_cooldown_not_armed_by_rejected_message(monkeypatch):
+    """A message rejected by a later gate must not throttle its corrected
+    resend: check_cooldown no longer stamps — only arm_cooldown does."""
+    monkeypatch.setattr(config, "MESSAGE_COOLDOWN_SEC", 5)
+    sid = "sess-rejected"
+    antispam.check_cooldown(sid)  # gate check passes, message later rejected
+    antispam.check_cooldown(sid)  # resend passes: nothing was armed
 
 
 def test_cooldown_passes_after_window(monkeypatch):
     monkeypatch.setattr(config, "MESSAGE_COOLDOWN_SEC", 0)
     sid = "sess-2"
     antispam.check_cooldown(sid)
+    antispam.arm_cooldown(sid)
     time.sleep(0.001)
     antispam.check_cooldown(sid)  # no error with 0s cooldown
 
@@ -58,9 +69,11 @@ def test_clear_cooldown_lets_next_message_through(monkeypatch):
     throttled. clear_cooldown drops the mark so the immediate follow-up passes."""
     monkeypatch.setattr(config, "MESSAGE_COOLDOWN_SEC", 5)
     sid = "sess-switch"
-    antispam.check_cooldown(sid)  # routing turn records the stamp
+    antispam.check_cooldown(sid)
+    antispam.arm_cooldown(sid)    # routing turn records the stamp
     antispam.clear_cooldown(sid)  # server releases it for the automatic re-ask
     antispam.check_cooldown(sid)  # the re-ask is not blocked
+    antispam.arm_cooldown(sid)
     # And a normal repeat is still throttled afterwards.
     with pytest.raises(antispam.AntiSpamError):
         antispam.check_cooldown(sid)

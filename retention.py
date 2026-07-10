@@ -44,18 +44,21 @@ is_safe_outbound_url = player_sync.is_safe_outbound_url
 
 
 async def _send_ai_text(client: TelegramClient, chat_id: int, text: str, *,
-                        reply_markup: Optional[dict[str, Any]] = None) -> None:
+                        reply_markup: Optional[dict[str, Any]] = None) -> bool:
     """Send model-generated retention text with the light HTML markup rendered.
 
     The retention persona may use a touch of **bold**/*italic*; telegram_format
     converts that to balanced Telegram HTML. If Telegram rejects the HTML for any
     reason, fall back to the plain text so a delivery never silently fails.
+    Returns True when a message reached Telegram.
     """
     html = telegram_format.to_html(text)
     result = await client.send_message(
         chat_id, html, reply_markup=reply_markup, parse_mode="HTML")
     if result is None and html != text:
-        await client.send_message(chat_id, text, reply_markup=reply_markup)
+        result = await client.send_message(chat_id, text,
+                                           reply_markup=reply_markup)
+    return result is not None
 
 # Callback-data constants for the inline menu (short + stable).
 CB_CHECK_SUB = "rtn:checksub"
@@ -194,7 +197,9 @@ async def select_photo_candidates(product_id: int, ru: dict[str, Any],
     photos_day = ru.get("photos_day")
     # The stored counter only counts if it belongs to today; a stale day means 0.
     import datetime as _dt
-    today = _dt.date.today().isoformat()
+    # UTC on purpose: the DB counters roll over on the UTC day, so both sides
+    # must read the same clock or the cap stops enforcing around midnight.
+    today = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
     if photos_day and str(photos_day)[:10] != today:
         sent_today = 0
     if sent_today >= int(cfg["daily_photo_cap"]):
@@ -717,7 +722,10 @@ async def _handle_start(client: TelegramClient, product: dict[str, Any],
                         pu: ParsedUpdate) -> None:
     nonce = (pu.start_param or "").strip()
     lang = resolve_user_lang({}, pu.language_code)
-    data = await db.redeem_retention_nonce(nonce) if nonce else None
+    # Product-scoped: a nonce minted for another brand's bot must not redeem
+    # here (cross-tenant profile leak) — it falls into the no-nonce branch.
+    data = (await db.redeem_retention_nonce(nonce, product_id=product["id"])
+            if nonce else None)
     if data is None:
         # No usable nonce. Telegram frequently drops the deeplink payload when
         # the player taps the native START button on an EXISTING chat (a known
@@ -898,23 +906,27 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
 async def _send_photo(client: TelegramClient, product: dict[str, Any],
                       ru: dict[str, Any], chat_id: int, photo_id: int,
                       caption: str, session_id: Optional[str] = None,
-                      reply_markup: Optional[dict[str, Any]] = None) -> bool:
+                      reply_markup: Optional[dict[str, Any]] = None
+                      ) -> Optional[str]:
     """Send a media-library photo, using the cached file_id or uploading once.
 
-    Returns True when the photo itself was delivered (the ping worker keys its
-    ledger on it); a caption-only fallback returns False. `session_id` links the
-    delivery to the chat session so the admin transcript can show it inline.
-    `reply_markup` (a validated CTA button) rides on whatever message actually
-    goes out — the photo or the caption-only fallback.
+    Returns what actually reached the player: "photo" (the photo itself),
+    "text" (the caption-only fallback — the photo row was inactive or the
+    media file missing, but a message WAS delivered), or None (nothing went
+    out). The distinction matters: a delivered text fallback must still be
+    persisted/recorded as sent, or the player receives a message that exists
+    in no transcript. `session_id` links the delivery to the chat session so
+    the admin transcript can show it inline. `reply_markup` (a validated CTA
+    button) rides on whatever message actually goes out.
     """
     # Render the (model-generated) caption's light markup as Telegram HTML.
     caption_html = telegram_format.to_html(caption) if caption else None
     photo = await db.get_retention_photo(photo_id)
     if not photo or not photo.get("active"):
-        if caption:
-            await _send_ai_text(client, chat_id, caption,
-                                reply_markup=reply_markup)
-        return False
+        if caption and await _send_ai_text(client, chat_id, caption,
+                                           reply_markup=reply_markup):
+            return "text"
+        return None
     file_id = photo.get("telegram_file_id")
     result = None
     if file_id:
@@ -927,10 +939,10 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
         # concurrent chat turn.
         content = await asyncio.to_thread(_read_media, photo.get("storage_ref"))
         if content is None:
-            if caption:
-                await _send_ai_text(client, chat_id, caption,
-                                    reply_markup=reply_markup)
-            return False
+            if caption and await _send_ai_text(client, chat_id, caption,
+                                               reply_markup=reply_markup):
+                return "text"
+            return None
         result = await client.send_photo_bytes(
             chat_id, content, photo.get("storage_ref") or "photo.jpg",
             caption=caption_html, parse_mode="HTML",
@@ -941,8 +953,8 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
     if result is not None:
         await db.record_retention_photo_view(int(ru["id"]), photo_id,
                                              product["id"], session_id)
-        return True
-    return False
+        return "photo"
+    return None
 
 
 def _read_media(storage_ref: Optional[str]) -> Optional[bytes]:

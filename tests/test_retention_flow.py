@@ -60,7 +60,7 @@ async def test_start_without_valid_nonce(monkeypatch):
     tg = FakeTelegram()
     _patch_common(monkeypatch, tg)
 
-    async def _redeem(nonce):
+    async def _redeem(nonce, product_id=None):
         return None
     monkeypatch.setattr(retention.db, "redeem_retention_nonce", _redeem)
 
@@ -83,7 +83,7 @@ async def test_start_known_player_without_payload_reopens_menu(monkeypatch):
     tg = FakeTelegram()
     _patch_common(monkeypatch, tg)
 
-    async def _redeem(nonce):
+    async def _redeem(nonce, product_id=None):
         return None  # no/expired/used nonce (payload didn't come through)
     monkeypatch.setattr(retention.db, "redeem_retention_nonce", _redeem)
 
@@ -113,7 +113,7 @@ async def test_start_valid_nonce_shows_menu(monkeypatch):
     tg = FakeTelegram()
     _patch_common(monkeypatch, tg)
 
-    async def _redeem(nonce):
+    async def _redeem(nonce, product_id=None):
         return {"product_id": 1, "payload": {"id": "p9", "full_name": "Andrey",
                 "vip_level": "Gold"}, "escalation": True}
     monkeypatch.setattr(retention.db, "redeem_retention_nonce", _redeem)
@@ -153,7 +153,7 @@ async def test_start_adopts_deeplink_language(monkeypatch):
     tg = FakeTelegram()
     _patch_common(monkeypatch, tg)
 
-    async def _redeem(nonce):
+    async def _redeem(nonce, product_id=None):
         return {"product_id": 1, "payload": {"id": "p9", "full_name": "Андрей",
                 "lang": "ru"}, "escalation": False}
     monkeypatch.setattr(retention.db, "redeem_retention_nonce", _redeem)

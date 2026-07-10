@@ -16,7 +16,23 @@ const ScopeSelect = () => {
   useEffect(() => {
     if (!getToken()) return;
     httpClient(`${API_URL}/admin/structure`)
-      .then(({ json }) => setStructure(json))
+      .then(({ json }) => {
+        // A persisted scope pointing at a product/partner that no longer
+        // exists (deleted, or this account lost access) would wedge every
+        // RequireProduct page on 403/404 toasts — reset to All and reload.
+        const pid = getProductId();
+        const paid = getPartnerId();
+        const partners = json.partners || [];
+        const productOk =
+          !pid || partners.some((pa) => (pa.products || []).some((pr) => pr.id === pid));
+        const partnerOk = !paid || partners.some((pa) => pa.id === paid);
+        if (!productOk || !partnerOk) {
+          setScope({});
+          window.location.reload();
+          return;
+        }
+        setStructure(json);
+      })
       .catch(() => setStructure(null));
   }, []);
 

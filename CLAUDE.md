@@ -536,6 +536,9 @@ secrets in env.
 **hard-blocks with 400 by default**, settings-gated via `injection_hard_block`) → message-cap
 fast path (forces an escalation response with no model call) → **pre-model keyword-escalation
 gate in `chat_service`** (soft hand-off, no model call — see "Escalation") → build/call/persist.
+The cooldown gate only CHECKS; the stamp is armed (`antispam.arm_cooldown`) after every
+reject-gate passes, so a rejected message (too long / low-content / injection-blocked) never
+throttles the player's immediate corrected resend.
 Rate-limit and cooldown use **in-memory dicts** — fine for Phase 1 but they do not span multiple
 instances. Turnstile is verified at session create and skips gracefully (logged) when no secret
 is set, when the client sent NO token (the Turnstile script is blocked in some regions —
@@ -1031,7 +1034,9 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   **`retention` settings group** (`settings.retention()`, in `SETTING_KEYS` — per-product tunable).
 - **Entry = deeplink + one-time nonce** (`retention_nonces`): the site posts a handshake to
   `POST /api/retention/deeplink` → `{nonce, deep_link}`; `/start <nonce>` redeems it (single-use,
-  TTL-bounded), fixes the **`tg_user_id ↔ player_id` link** + a `_CONTEXT_FIELDS` profile snapshot
+  TTL-bounded, **product-scoped** — a nonce minted for brand B's bot never redeems on brand A's,
+  so a cross-tenant profile leak is impossible), fixes the **`tg_user_id ↔ player_id` link** + a
+  `_CONTEXT_FIELDS` profile snapshot
   in `retention_users`, and sets `entry_type` (`retention` | `escalation`). **The nonce also
   carries the conversation LANGUAGE**: `retention.create_deeplink(..., lang=)` stores a supported
   code in the nonce payload (the widget escalation passes the turn's answer language automatically;
@@ -1060,7 +1065,10 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
 - **Profile freshness degrades softly** — all three levels ship: snapshot + re-handshake;
   **lazy pull** (`retention.maybe_pull_profile`, gated by `profile_pull_ttl_sec`) — before a turn,
   if the snapshot is stale and the product has a `player_api_url` + encrypted key, GET the fresh
-  profile and update the snapshot (best-effort: a failure leaves the snapshot untouched); and
+  profile and update the snapshot (best-effort: a failure leaves the snapshot untouched; the
+  outbound connection is **DNS-pinned** — `player_sync.resolve_pinned_outbound` vets the
+  resolution once and connects to that literal IP with the original Host/SNI, so a low-TTL
+  rebinding domain can't pass the SSRF guard and then reconnect to an internal address); and
   **push webhook** `POST /partner/{product_id}/player-update` (authorized with the product's
   handshake secret as the shared partner secret). Partial updates only. A product with no Player
   API just lives on the snapshot — the schema degrades, never breaks. Both pull and push now

@@ -492,9 +492,15 @@ class TranslationsWrite(BaseModel):
 @router.get("/translations")
 async def get_translations(product_id: Optional[int] = None,
                            admin=Depends(require_admin)) -> JSONResponse:
-    await _resolve_admin_product(admin, product_id, write=False)
+    pid = await _resolve_admin_product(admin, product_id, write=False)
     codes = language.supported_codes()
     names = language.all_language_names()
+    # overrides = the raw PRODUCT-layer value — the exact layer the PUT below
+    # writes back. Returning the merged global+product view here made the SPA's
+    # save bake every global-layer override into the product's own layer, after
+    # which later global copy edits never reached this product again.
+    product_layer = (await db.get_product_settings(pid)).get("translations")
+    product_layer = product_layer if isinstance(product_layer, dict) else {}
     return JSONResponse(content={
         "keys": [{"key": key, "scope": scope, "description": desc}
                  for key, scope, desc in translations_mod.KEYS],
@@ -503,7 +509,7 @@ async def get_translations(product_id: Optional[int] = None,
         # override falls back to (the SPA stores only values that differ).
         "resolved": translations_mod.resolved(codes),
         "defaults": translations_mod.defaults_for(codes),
-        "overrides": settings_mod.translations(),
+        "overrides": product_layer,
     })
 
 
@@ -526,7 +532,8 @@ async def put_translations(body: TranslationsWrite,
                              {"languages": sorted(validated)})
     return JSONResponse(content={
         "resolved": translations_mod.resolved(language.supported_codes()),
-        "overrides": settings_mod.translations(),
+        # The product-layer value just written (same layer the GET reports).
+        "overrides": validated,
     })
 
 
@@ -743,7 +750,28 @@ async def _require_scope_admin(admin: dict, scope: str,
         await admin_auth.require_product_write(admin, product_id)
 
 
-async def _can_manage_user(admin: dict, target_memberships: list[dict]) -> bool:
+def _product_role_from_map(admin: dict, product_id: Optional[int],
+                           product_partners: dict[int, Optional[int]]
+                           ) -> Optional[str]:
+    """role_for_product without the per-call DB lookup, fed by a prefetched
+    product_id -> partner_id map (the list endpoints would otherwise do one
+    query per membership per listed user)."""
+    if product_id not in product_partners:
+        return None
+    partner_id = product_partners[product_id]
+    roles = {m["role"] for m in admin.get("memberships", [])
+             if (m.get("scope_type") == "product" and m.get("product_id") == product_id)
+             or (m.get("scope_type") == "partner"
+                 and m.get("partner_id") == partner_id)}
+    g = admin_auth.global_role(admin)
+    if g:
+        roles.add(g)
+    return admin_auth._best(roles)
+
+
+async def _can_manage_user(admin: dict, target_memberships: list[dict],
+                           product_partners: Optional[dict[int, Optional[int]]] = None
+                           ) -> bool:
     """True when every scope the target holds is inside the caller's admin reach.
 
     An account with NO memberships is manageable only globally (otherwise any
@@ -759,6 +787,10 @@ async def _can_manage_user(admin: dict, target_memberships: list[dict]) -> bool:
         if m["scope_type"] == "partner":
             if admin_auth.role_for_partner(admin, m["partner_id"]) not in WRITE_ROLES:
                 return False
+        elif product_partners is not None:
+            if _product_role_from_map(admin, m["product_id"],
+                                      product_partners) not in WRITE_ROLES:
+                return False
         elif (await admin_auth.role_for_product(admin, m["product_id"])) not in WRITE_ROLES:
             return False
     return True
@@ -767,15 +799,21 @@ async def _can_manage_user(admin: dict, target_memberships: list[dict]) -> bool:
 @router.get("/users")
 async def list_users(admin=Depends(require_admin_write)) -> JSONResponse:
     """Accounts within the caller's reach, each with its memberships attached."""
+    _require_human_admin(admin)
     users = await db.list_admin_users()
     all_memberships = await db.list_all_memberships()
+    # One query for the product -> partner map instead of one get_product per
+    # product membership per listed user.
+    product_partners = {p["id"]: p.get("partner_id")
+                        for p in await db.list_products()}
     by_email: dict[str, list] = {}
     for m in all_memberships:
         by_email.setdefault(m["email"], []).append(m)
     out = []
     for u in users:
         ms = by_email.get(u["email"], [])
-        if u["email"] == admin.get("email") or await _can_manage_user(admin, ms):
+        if u["email"] == admin.get("email") or \
+                await _can_manage_user(admin, ms, product_partners):
             out.append({**u, "memberships": ms})
     return JSONResponse(content={"users": out})
 
@@ -872,8 +910,6 @@ async def update_user(email: str, body: UserUpdate,
             raise HTTPException(status_code=400, detail="You cannot remove your own admin role.")
         if body.active is False:
             raise HTTPException(status_code=400, detail="You cannot deactivate your own account.")
-    user = await db.update_admin_user(target, role=role, active=body.active,
-                                      password_hash=pw_hash)
     if role is not None:
         # Legacy shape: a flat role update targets the GLOBAL membership. Writing
         # a global membership is a global-scope change, so it ALWAYS requires
@@ -882,7 +918,12 @@ async def update_user(email: str, body: UserUpdate,
         # it clears require_admin_write — could PUT its own account with
         # role="admin" and self-grant a global membership, escalating to full hub
         # control. The self-branch must never bypass the scope check.)
+        # The check runs BEFORE any DB write: a failed authorization must not
+        # leave the password/active/role changes already committed.
         admin_auth.require_global_write(admin)
+    user = await db.update_admin_user(target, role=role, active=body.active,
+                                      password_hash=pw_hash)
+    if role is not None:
         await db.add_membership(target, "global", None, None, role)
     await db.log_admin_event(None, "admin_user_updated",
                              {"email": target, "by": admin.get("email")})

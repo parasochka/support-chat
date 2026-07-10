@@ -13,6 +13,7 @@ webhook registration. The `retention` settings GROUP is edited through the gener
 """
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import os
@@ -186,20 +187,33 @@ async def _partner_auth(product_id: int,
                         ) -> tuple[Optional[dict[str, Any]],
                                    Optional[JSONResponse]]:
     """Shared partner-secret Bearer check for the /partner/* webhooks
-    (player-update and the canonical event feed). Returns (product, error)."""
+    (player-update and the canonical event feed). Returns (product, error).
+
+    All pre-auth failure modes collapse into ONE opaque 401: product ids are
+    sequential integers, so distinguishable "no such product" / "no secret
+    configured" / "bad secret" responses let an unauthenticated caller walk
+    the id space and map which tenants exist and which have partner
+    integrations. The true reason still lands in the server log.
+    """
     product = await db.get_product(product_id)
-    if product is None:
-        return None, _err(404, "not_found", "Product not found.")
-    secret = await db.get_product_handshake_secret(product_id)
-    if not secret:
-        return None, _err(403, "no_partner_secret",
-                          "No partner secret configured for this product.")
+    secret = (await db.get_product_handshake_secret(product_id)
+              if product is not None else None)
+    token = None
     try:
         token = auth.extract_bearer(authorization)
-    except auth.TokenError as exc:
-        return None, _err(401, "unauthorized", str(exc))
-    if not hmac.compare_digest(token, secret):
-        return None, _err(401, "unauthorized", "Bad partner secret.")
+    except auth.TokenError:
+        pass
+    if (product is None or not secret or token is None
+            or not hmac.compare_digest(token, secret)):
+        if product is None:
+            reason = "unknown_product"
+        elif not secret:
+            reason = "no_partner_secret"
+        else:
+            reason = "bad_or_missing_token"
+        log.warning("partner_auth_failed product_id=%s reason=%s",
+                    product_id, reason)
+        return None, _err(401, "unauthorized", "Unauthorized.")
     return product, None
 
 
@@ -666,8 +680,16 @@ async def create_photo(product_id: int = Form(...),
     for up, ext in zip(uploads, exts):
         storage_ref = f"{product_id}_{uuid.uuid4().hex}{ext}"
         content = await up.read()
-        with open(os.path.join(config.RETENTION_MEDIA_DIR, storage_ref), "wb") as fh:
-            fh.write(content)
+
+        # Off-thread: a multi-MB synchronous write onto the network Volume on
+        # the event loop stalls every concurrent chat turn on the instance.
+        def _write(path: str = os.path.join(config.RETENTION_MEDIA_DIR,
+                                            storage_ref),
+                   data: bytes = content) -> None:
+            with open(path, "wb") as fh:
+                fh.write(data)
+
+        await asyncio.to_thread(_write)
         photo = await db.create_retention_photo(
             product_id, storage_ref=storage_ref, description=description,
             tags=tag_list, level_min=level_min, stage=stage,
@@ -754,9 +776,15 @@ async def _generate_photo_meta(client: Any, photo: dict[str, Any],
         return {"id": photo["id"], "ok": False, "error": "file missing on disk"}
     ext = os.path.splitext(path)[1].lower()
     mime = _PHOTO_META_CONTENT_TYPES.get(ext, "image/jpeg")
-    with open(path, "rb") as fh:
-        data_url = (f"data:{mime};base64,"
+
+    # Off-thread: the multi-MB read + base64 encode would otherwise run on the
+    # event loop, five times back-to-back per generation wave.
+    def _read_data_url() -> str:
+        with open(path, "rb") as fh:
+            return (f"data:{mime};base64,"
                     + base64.b64encode(fh.read()).decode("ascii"))
+
+    data_url = await asyncio.to_thread(_read_data_url)
     messages = prompts.build_photo_meta_messages(data_url, vip_tiers, max_stage,
                                                  library_counts=library_counts)
     try:
@@ -1143,7 +1171,9 @@ async def v2_run_now(product_id: int,
     product = await db.get_product(product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found.")
-    stats = await retention_v2.run_product_events(product)
+    # Locked variant: shares the worker's advisory lock so the button and the
+    # sweep never evaluate the same player's send-frequency guards in parallel.
+    stats = await retention_v2.run_product_events_locked(product)
     await db.log_admin_event(None, "retention_v2_run_manual",
                              {"stats": stats, "by": admin.get("email")},
                              product_id=product_id)

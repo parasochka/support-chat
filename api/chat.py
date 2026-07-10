@@ -471,6 +471,10 @@ async def send_message(req: Request, body: MessageSend,
                         "Your message looks like an attempt to manipulate the "
                         "assistant. Please ask a product-support question.")
 
+    # All reject-gates passed: this message is going to be answered — arm the
+    # cooldown clock now (a rejected message must not throttle its own fix-up).
+    antispam.arm_cooldown(body.session_id)
+
     # 5. message cap reached -> force escalation response (no model call)
     if session.get("message_count", 0) >= settings.general()["max_messages_per_session"]:
         log.info(

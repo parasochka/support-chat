@@ -219,7 +219,9 @@ const AppMenu = () => {
       <CollapsibleSection id="system" label="System">
         <Menu.Item to="/structure" primaryText="Structure" leftIcon={<AccountTreeIcon />} />
         <Menu.Item to="/settings" primaryText="Settings" leftIcon={<SettingsIcon />} />
-        <Menu.ResourceItem name="users" />
+        {/* User management is admin-only server-side (403 for managers) —
+            hide the entry instead of showing a dead link. */}
+        {permissions === 'admin' && <Menu.ResourceItem name="users" />}
         {permissions === 'admin' && (
           <Menu.Item to="/api-keys" primaryText="API keys" leftIcon={<VpnKeyIcon />} />
         )}
