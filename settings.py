@@ -411,6 +411,10 @@ def retention() -> dict[str, Any]:
         # Dry-run logs full decisions to the ledger without sending.
         "v2_enabled": db_v.get("v2_enabled", config.RETENTION_V2_ENABLED),
         "v2_dry_run": db_v.get("v2_dry_run", config.RETENTION_V2_DRY_RUN),
+        # Show the fired trigger as a chrome line in every proactive message
+        # (testing aid; turn off for production players).
+        "v2_show_trigger": db_v.get("v2_show_trigger",
+                                    config.RETENTION_V2_SHOW_TRIGGER),
         "v2_daily_budget_usd": db_v.get("v2_daily_budget_usd",
                                         config.RETENTION_V2_DAILY_BUDGET_USD),
         "v2_loss_comfort_hours": db_v.get("v2_loss_comfort_hours",
@@ -568,6 +572,7 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "worker_interval_sec", 5, 3_600)
         _require_bool(value, "v2_enabled")
         _require_bool(value, "v2_dry_run")
+        _require_bool(value, "v2_show_trigger")
         _require_float(value, "v2_daily_budget_usd", 0.0, 10_000.0)  # 0 = no budget
         _require_int(value, "v2_loss_comfort_hours", 0, 720)
         _require_float(value, "v2_loss_high_usd", 0.0, 1_000_000.0)

@@ -199,6 +199,11 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   tokens_out  INT,
   cached_in   INT,
   cost_usd    NUMERIC(12,6),
+  -- Proactive (agent-initiated) assistant turns only: the trigger + occasion
+  -- that made the bot write first ("deposit_confirmed: the player just made a
+  -- deposit"). Rides into the prompt history so the persona later KNOWS why it
+  -- wrote, and into the admin transcript. NULL on every ordinary turn.
+  ping_context TEXT,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -680,6 +685,11 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         # sessions; web sessions leave it NULL.
         "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
         "tg_user_id BIGINT",
+        # Proactive-turn context: which trigger/occasion made the retention
+        # agent write first. NULL on ordinary turns; feeds the prompt history
+        # and the admin transcript (see persist_ping_turn / get_history).
+        "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS "
+        "ping_context TEXT",
         # --- Ping matrix (proactive retention) -------------------------------
         # Casino-side activity signals + proactive-ping state on the player row.
         "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
@@ -1331,8 +1341,9 @@ async def get_history(session_id: str, limit: int = 50,
     (resume/admin views).
     """
     rows = await _pool.fetch(
-        "SELECT role, content, lang, created_at FROM ("
-        "  SELECT role, content, lang, created_at, id FROM chat_messages "
+        "SELECT role, content, lang, ping_context, created_at FROM ("
+        "  SELECT role, content, lang, ping_context, created_at, id "
+        "  FROM chat_messages "
         "  WHERE session_id = $1 AND id > $2 ORDER BY id DESC LIMIT $3"
         ") sub ORDER BY id ASC",
         session_id, after_id, limit,
@@ -2676,7 +2687,7 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
         return None
     msgs = await _pool.fetch(
         "SELECT role, content, lang, model, key_used, tokens_in, tokens_out, "
-        "cached_in, cost_usd, created_at FROM chat_messages "
+        "cached_in, cost_usd, ping_context, created_at FROM chat_messages "
         "WHERE session_id = $1 ORDER BY id ASC",
         session_id,
     )
@@ -3665,11 +3676,15 @@ async def retention_v2_cost_today(product_id: int) -> float:
 
 async def persist_ping_turn(session_id: str, assistant_text: str,
                             ai_meta: Optional[dict[str, Any]] = None,
-                            product_id: Optional[int] = None) -> int:
+                            product_id: Optional[int] = None,
+                            ping_context: Optional[str] = None) -> int:
     """Persist a PROACTIVE assistant message (a ping has no user turn).
 
     Same atomic contract as persist_turn — assistant message + AI log +
     message_count bump in one transaction — minus the user row.
+    `ping_context` records the trigger/occasion that made the agent write
+    ("deposit_confirmed: the player just made a deposit") so the prompt
+    history and the admin transcript can explain the message later.
     """
     ai_meta = ai_meta or {}
     async with _acquire() as conn:
@@ -3677,12 +3692,13 @@ async def persist_ping_turn(session_id: str, assistant_text: str,
             await conn.execute(
                 "INSERT INTO chat_messages "
                 "(session_id, role, content, lang, model, key_used, tokens_in, "
-                " tokens_out, cached_in, cost_usd) "
-                "VALUES ($1, 'assistant', $2, $3, $4, $5, $6, $7, $8, $9)",
+                " tokens_out, cached_in, cost_usd, ping_context) "
+                "VALUES ($1, 'assistant', $2, $3, $4, $5, $6, $7, $8, $9, $10)",
                 session_id, assistant_text, ai_meta.get("lang"),
                 ai_meta.get("model"), ai_meta.get("key_used"),
                 ai_meta.get("tokens_in"), ai_meta.get("tokens_out"),
                 ai_meta.get("cached_in"), ai_meta.get("cost_usd"),
+                ping_context,
             )
             if ai_meta.get("model"):
                 await conn.execute(

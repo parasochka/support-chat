@@ -1251,7 +1251,23 @@ drainers pick up the same event.
   with `occasion=`/`comfort=`: the `_RETENTION_V2_TOUCH_TASK` event-reaction
   wording + `_RETENTION_COMFORT_BLOCK`; delivery = `rtn_ping_header`, HTML +
   plain fallback, 403 ⇒ unreachable — and `db.record_retention_ping` bumps the
-  per-player counters the guards read). Every retention Layer 3 (dialogue
+  per-player counters the guards read). The touch task demands the message
+  NAME the occasion in natural words (never a vague congratulation, still
+  never amounts); `retention_v2.occasion_for` folds whitelisted non-money
+  payload details into it (`level_up`→level, `class_up`→class, bonus type,
+  `deposit_failed` reason — `_OCCASION_DETAIL_KEYS`). **The trigger travels
+  with the turn**: (1) with `retention.v2_show_trigger` on (ships ON — a
+  testing aid, off for production players) the sent message carries an italic
+  `rtn_ping_trigger` chrome line («⚡ Trigger: deposit_confirmed») under the
+  ping header (photo sends prepend it to the caption); (2) the trigger +
+  occasion are ALWAYS persisted on the message row
+  (`chat_messages.ping_context`, via `db.persist_ping_turn`), so the prompt
+  history renders the proactive turn with an inline "[you sent this
+  PROACTIVELY - trigger: …]" note (`prompts._retention_history_content`, also
+  in the returning-player continuity block) — the persona later KNOWS why it
+  wrote and can answer «это ты о чем?» instead of deflecting — and the admin
+  transcripts (Conversations + Retention) show a "⚡ proactive: …" marker on
+  the turn. Every retention Layer 3 (dialogue
   turns and agent touches) carries a **CURRENT TIME block**
   (`prompts._current_time_directive`, fed with
   `retention.quiet_hours_utc_offset` — the audience clock the quiet hours

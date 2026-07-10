@@ -170,6 +170,7 @@ const MessageThread = () => {
                 {item.role} · {new Date(item.created_at).toLocaleString()}
                 {item.model ? ` · ${item.model}` : ''}
                 {item.cost_usd ? ` · $${item.cost_usd.toFixed(5)}` : ''}
+                {item.ping_context ? ` · ⚡ proactive: ${item.ping_context}` : ''}
               </Typography>
               <Typography sx={{ whiteSpace: 'pre-wrap' }}>{item.content}</Typography>
             </CardContent>

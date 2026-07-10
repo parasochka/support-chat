@@ -97,11 +97,6 @@ _OCCASIONS: dict[str, str] = {
                    "a warm, personal 'thinking of you' with zero pressure",
 }
 
-# Payload keys safe to surface to the persona alongside a bonus occasion.
-# Deliberately NO amounts (the money-hygiene rule stands even for real data).
-_BONUS_PAYLOAD_KEYS = ("bonus_name", "name", "title", "type", "expiry_at",
-                       "expires_at")
-
 # Guard reasons that are TRANSIENT (a bad moment, not a bad idea): a synthetic
 # ladder event is DEFERRED to the next allowed window instead of consumed.
 # Everything else (rg_hold, opt-out, unsubscribed, blocked bot) is terminal.
@@ -114,6 +109,45 @@ _TRANSIENT_GUARD_REASONS = frozenset({
 # touches the min-gap requirement stretches by this factor (reset on any
 # inbound player message). The threshold knob is v2_backoff_after_ignored.
 _BACKOFF_GAP_MULT = 4
+
+# Safe, non-money payload details folded into the occasion line so the persona
+# can react to the CONCRETE thing that happened ("new level: 7"), not a vague
+# congratulation. Amounts are deliberately absent — the prompt bans naming them.
+# Bonus events get a richer whitelist (name + type + expiry — a bonus is only
+# mentionable by its real facts).
+_OCCASION_DETAIL_KEYS: dict[str, tuple[str, ...]] = {
+    "level_up": ("level",),
+    "class_up": ("class",),
+    "bonus_granted": ("bonus_name", "name", "title", "type", "bonus_id"),
+    "bonus_completed": ("bonus_name", "name", "title", "type", "bonus_id"),
+    "bonus_expired": ("bonus_name", "name", "title", "type", "bonus_id"),
+    "deposit_failed": ("reason",),
+}
+
+# Bonus events also surface the expiry alongside the name-ish detail.
+_OCCASION_EXPIRY_KEYS = ("expiry_at", "expires_at")
+
+
+def occasion_for(evt: dict[str, Any]) -> str:
+    """The plain-English occasion line for the persona prompt: the per-event
+    wording plus whitelisted, non-money payload details."""
+    name = evt.get("event_name") or ""
+    occasion = _OCCASIONS.get(name, "a notable moment")
+    payload = evt.get("payload") or {}
+    details = []
+    for key in _OCCASION_DETAIL_KEYS.get(name, ()):
+        value = payload.get(key)
+        if value not in (None, ""):
+            details.append(f"{key}: {str(value)[:80]}")
+            break  # one name-ish detail is enough; the keys are fallbacks
+    if name.startswith("bonus_"):
+        expiry = next((payload[k] for k in _OCCASION_EXPIRY_KEYS
+                       if payload.get(k)), None)
+        if expiry:
+            details.append(f"expires {str(expiry)[:40]}")
+    if details:
+        occasion = f"{occasion} ({'; '.join(details)})"
+    return occasion
 
 # One reaction per event type per window — a partner retrying webhooks or a
 # player making five deposits in an evening gets ONE warm note, not five.
@@ -571,30 +605,6 @@ def _defer_due_at(reasons: list[str], ru: dict[str, Any],
     return min(due, now + _dt.timedelta(days=7))
 
 
-def _occasion_for(evt: dict[str, Any]) -> str:
-    """The plain-English occasion line, enriched (for bonus events) with the
-    safe payload facts — the bonus NAME and expiry, never amounts."""
-    name = evt.get("event_name") or ""
-    base = _OCCASIONS.get(name, "a notable moment")
-    if name.startswith("bonus_"):
-        payload = evt.get("payload") or {}
-        facts = []
-        title = next((str(payload[k]).strip() for k in
-                      ("bonus_name", "name", "title") if payload.get(k)), "")
-        if title:
-            facts.append(f"the bonus is called \"{title[:80]}\"")
-        expiry = next((str(payload[k]).strip() for k in
-                       ("expiry_at", "expires_at") if payload.get(k)), "")
-        if expiry:
-            facts.append(f"it expires at {expiry[:40]}")
-        btype = str(payload.get("type") or "").strip()
-        if btype:
-            facts.append(f"type: {btype[:40]}")
-        if facts:
-            return f"{base} ({'; '.join(facts)})"
-    return base
-
-
 # ---------------------------------------------------------------------------
 # The agent decision call (cheap, session-less, strict JSON)
 # ---------------------------------------------------------------------------
@@ -905,11 +915,8 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
         step = int((evt.get("payload") or {}).get("step") or 0)
         reason = (f"inactivity ladder step D{step}" if step
                   else "long-idle VIP player")
-    elif name == "touch_follow_up":
-        occasion = _OCCASIONS["touch_follow_up"]
-        idle_days, reason = 0, ""
     else:
-        occasion = _occasion_for(evt)
+        occasion = occasion_for(evt)
         idle_days, reason = 0, ""
     draft = await chat_service.generate_retention_ping(
         session, idle_days=idle_days, reason=reason,
@@ -925,6 +932,22 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
         return False, 0.0, "model_error"
     gen_cost = float(draft.ai_meta.get("cost_usd") or 0)
 
+    # The trigger + occasion travel with the turn: persisted on the message row
+    # (so the prompt history and the admin transcript can explain WHY the bot
+    # wrote) and — with `v2_show_trigger` on — shown as a chrome line in the
+    # sent message itself.
+    event_name = str(evt.get("event_name") or "")
+    # Inactivity/VIP touches carry no `occasion` (they use the idle-days ping
+    # wording) — their `reason` line is the context instead.
+    context_desc = occasion or reason or "proactive touch"
+    ping_context = (f"{event_name}: {context_desc}" if event_name
+                    else context_desc)
+    trigger_line = ""
+    if cfg.get("v2_show_trigger"):
+        trigger_line = retention._rtn_text(
+            "rtn_ping_trigger", draft.lang
+        ).replace("{trigger}", event_name or "event").strip()
+
     markup = None
     if draft.link_url and not comfort:
         markup = inline_keyboard([[{"text": draft.link_label or draft.link_url,
@@ -936,6 +959,8 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
     if draft.photo_id is not None and not comfort:
         caption = draft.text or retention._rtn_text("rtn_photo_caption",
                                                     draft.lang)
+        if trigger_line:
+            caption = f"{trigger_line}\n\n{caption}"
         delivered = await retention._send_photo(
             client, product, ru, chat_id, draft.photo_id, caption,
             session_id=session["id"], reply_markup=markup)
@@ -945,9 +970,13 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
         header = retention._rtn_text("rtn_ping_header", draft.lang).strip()
         text_html = telegram_format.to_html(draft.text)
         text_plain = draft.text
-        if header:
-            text_html = f"<i>{html.escape(header)}</i>\n\n{text_html}"
-            text_plain = f"{header}\n\n{draft.text}"
+        chrome = [ln for ln in (header, trigger_line) if ln]
+        if chrome:
+            chrome_html = "\n".join(f"<i>{html.escape(ln)}</i>"
+                                    for ln in chrome)
+            chrome_plain = "\n".join(chrome)
+            text_html = f"{chrome_html}\n\n{text_html}"
+            text_plain = f"{chrome_plain}\n\n{draft.text}"
         result, err_code, err_desc = await client.send_message_verbose(
             chat_id, text_html, parse_mode="HTML", reply_markup=markup)
         if result is None and text_html != text_plain and err_code != 403:
@@ -963,7 +992,8 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
 
     if delivered:
         await db.persist_ping_turn(session["id"], draft.text or "[photo]",
-                                   ai_meta=draft.ai_meta, product_id=pid)
+                                   ai_meta=draft.ai_meta, product_id=pid,
+                                   ping_context=ping_context)
         # Shared anti-annoyance state: the SAME ledger/counters the v1 matrix
         # uses, so caps and min-gap hold across regimes.
         await db.record_retention_ping(

@@ -1587,6 +1587,9 @@ def _previous_context_directive(prev_history: list[dict[str, Any]]) -> Optional[
         text = " ".join(str(m["content"]).split())
         if len(text) > _PREV_CONTEXT_CHAR_CAP:
             text = text[:_PREV_CONTEXT_CHAR_CAP - 1] + "…"
+        ping_ctx = (m.get("ping_context") or "").strip()
+        if ping_ctx and m["role"] == "assistant":
+            who = f"you (proactive message, trigger: {ping_ctx})"
         lines.append(f"{who}: {text}")
     lines.append(
         "Greet them back warmly as someone you already know (a short welcome-back, "
@@ -1712,6 +1715,25 @@ def build_retention_dynamic_prompt(
     return "\n".join(parts)
 
 
+def _retention_history_content(m: dict[str, Any]) -> str:
+    """One prior turn's content as the retention model sees it in history.
+
+    A PROACTIVE (agent-initiated) assistant message carries its trigger inline
+    — without it the persona has no idea WHY it wrote first, so a follow-up
+    like "what do you mean?" gets an unrelated deflection instead of a warm
+    explanation of the occasion (the live bug this fixes)."""
+    content = str(m.get("content") or "")
+    ctx = str(m.get("ping_context") or "").strip()
+    if ctx and m.get("role") == "assistant":
+        return (
+            f"[You sent this message PROACTIVELY, on your own initiative - "
+            f"trigger: {ctx}. If the player asks what you meant, explain the "
+            f"occasion warmly in your own words; never mention triggers, "
+            f"systems or this note.]\n{content}"
+        )
+    return content
+
+
 def build_retention_messages(
     session: dict[str, Any],
     kb_block: Optional[str],
@@ -1743,7 +1765,8 @@ def build_retention_messages(
     if history_window > 0:
         convo = convo[-history_window * 2:]
     for m in convo:
-        messages.append({"role": m["role"], "content": m["content"]})
+        messages.append({"role": m["role"],
+                         "content": _retention_history_content(m)})
     first_turn = not convo
     messages.append({
         "role": "user",
@@ -1807,6 +1830,10 @@ _RETENTION_V2_TOUCH_TASK = (
     "{comfort_block}"
     "{offers_block}"
     "Write ONE short, warm, personal message (1-2 sentences) reacting to it:\n"
+    "- Make it unmistakably clear WHAT you are reacting to: name the occasion "
+    "in natural, human words (the deposit, the new level, the payout that "
+    "arrived, the bonus) so the player never has to ask what you mean. Never "
+    "be cryptic or congratulate 'in general'.\n"
     "- Stay fully in character; never mention this task or that you were asked "
     "to write.\n"
     "- Use the player's first name at most once. Reference your earlier "
@@ -1952,7 +1979,8 @@ def build_retention_ping_messages(
     if history_window > 0:
         convo = convo[-history_window * 2:]
     for m in convo:
-        messages.append({"role": m["role"], "content": m["content"]})
+        messages.append({"role": m["role"],
+                         "content": _retention_history_content(m)})
     messages.append({
         "role": "user",
         "content": build_retention_ping_prompt(
