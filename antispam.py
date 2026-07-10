@@ -1,4 +1,4 @@
-"""Layered anti-spam: reCaptcha, rate-limit, cooldown, caps, injection scan.
+"""Layered anti-spam: Turnstile, rate-limit, cooldown, caps, injection scan.
 
 All thresholds come from config (§3 env). The IP sliding-window and per-session
 cooldown use in-memory dicts — fine for Phase 1, but they do NOT span multiple
@@ -38,28 +38,38 @@ class AntiSpamError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# 1. reCaptcha v3 (verified at session create)
+# 1. Cloudflare Turnstile (verified at session create; ADVISORY, fail-open)
 # ---------------------------------------------------------------------------
-async def verify_recaptcha(token: Optional[str], remote_ip: Optional[str] = None,
+async def verify_turnstile(token: Optional[str], remote_ip: Optional[str] = None,
                            secret: Optional[str] = None) -> dict[str, object]:
-    """Return {'ok': bool, 'skipped': bool, 'score': float|None, 'reason': str}.
+    """Return {'ok': bool, 'skipped': bool, 'reason': str}.
 
-    `secret` is the PRODUCT's own reCAPTCHA secret when it has one (each client
-    domain runs its own reCAPTCHA property); the deploy env RECAPTCHA_SECRET is
+    `secret` is the PRODUCT's own Turnstile secret when it has one (each client
+    domain runs its own Turnstile widget); the deploy env TURNSTILE_SECRET is
     only the fallback. Skips gracefully (ok=True, skipped=True) when neither is
     set (dev), so the caller can log that verification was skipped.
+
+    Turnstile is deliberately ADVISORY (fail-open): the challenges.cloudflare.com
+    script can be blocked in some regions/networks, and a player must never lose
+    the chat over that. A MISSING token (the client-side widget didn't load or
+    timed out) and a verifier outage both SKIP the check — the rate limit,
+    cooldown, low-content and injection layers still gate every request. Only an
+    explicit "invalid token" verdict from Cloudflare blocks (a definitive bot
+    signal, not a loading problem).
     """
-    effective_secret = secret or config.RECAPTCHA_SECRET
+    effective_secret = secret or config.TURNSTILE_SECRET
     if not effective_secret:
-        return {"ok": True, "skipped": True, "score": None, "reason": "no_secret_dev_mode"}
+        return {"ok": True, "skipped": True, "reason": "no_secret_dev_mode"}
 
     if not token:
-        return {"ok": False, "skipped": False, "score": None, "reason": "missing_token"}
+        # The client couldn't obtain a token (Turnstile blocked / slow / failed).
+        # Fail-open by design — see the docstring.
+        return {"ok": True, "skipped": True, "reason": "no_token_client_side"}
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
-                "https://www.google.com/recaptcha/api/siteverify",
+                "https://challenges.cloudflare.com/turnstile/v0/siteverify",
                 data={
                     "secret": effective_secret,
                     "response": token,
@@ -68,18 +78,15 @@ async def verify_recaptcha(token: Optional[str], remote_ip: Optional[str] = None
             )
         data = resp.json()
     except Exception as exc:  # noqa: BLE001
-        # Fail-open on verifier outage would be unsafe; fail-closed but explain.
-        return {"ok": False, "skipped": False, "score": None,
+        # Verifier outage/unreachable: fail-open (advisory check), but explain.
+        return {"ok": True, "skipped": True,
                 "reason": f"verify_error:{exc.__class__.__name__}"}
 
-    score = data.get("score")
-    success = bool(data.get("success"))
-    if not success:
-        return {"ok": False, "skipped": False, "score": score, "reason": "recaptcha_failed"}
-    min_score = settings.antispam()["recaptcha_min_score"]
-    if score is not None and score < min_score:
-        return {"ok": False, "skipped": False, "score": score, "reason": "low_score"}
-    return {"ok": True, "skipped": False, "score": score, "reason": "ok"}
+    if not bool(data.get("success")):
+        codes = data.get("error-codes") or []
+        return {"ok": False, "skipped": False,
+                "reason": "turnstile_failed:" + ",".join(str(c) for c in codes)}
+    return {"ok": True, "skipped": False, "reason": "ok"}
 
 
 # ---------------------------------------------------------------------------

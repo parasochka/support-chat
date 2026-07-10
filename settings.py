@@ -135,8 +135,6 @@ def antispam() -> dict[str, Any]:
         "window_sec": db_v.get("window_sec", config.RATE_LIMIT_WINDOW_SEC),
         "cooldown_sec": db_v.get("cooldown_sec", config.MESSAGE_COOLDOWN_SEC),
         "max_input_chars": db_v.get("max_input_chars", config.MAX_INPUT_CHARS),
-        "recaptcha_min_score": db_v.get("recaptcha_min_score",
-                                        config.RECAPTCHA_MIN_SCORE),
         "injection_hard_block": db_v.get("injection_hard_block",
                                          config.INJECTION_HARD_BLOCK),
         "low_content_block": db_v.get("low_content_block",
@@ -481,7 +479,6 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "window_sec", 1, 86_400)
         _require_int(value, "cooldown_sec", 0, 3_600)
         _require_int(value, "max_input_chars", 1, 100_000)
-        _require_float(value, "recaptcha_min_score", 0.0, 1.0)
         _require_bool(value, "injection_hard_block")
         _require_bool(value, "low_content_block")
         _require_int(value, "min_meaningful_chars", 1, 100)

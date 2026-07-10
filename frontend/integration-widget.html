@@ -58,7 +58,7 @@
   <a href="#embed">Сниппет встраивания</a>
   <a href="#mount">Программный монтаж</a>
   <a href="#behavior">Что виджет делает сам</a>
-  <a href="#recaptcha">reCaptcha v3</a>
+  <a href="#turnstile">Cloudflare Turnstile</a>
   <a href="#checklist">Чек-лист подключения</a>
 </nav>
 
@@ -114,21 +114,28 @@ mount({
 <div class="note">Классы виджета имеют префикс <code>npchat-</code> и не конфликтуют со стилями
 хост-страницы; скрипт — vanilla ES-модуль без зависимостей и без билд-шага.</div>
 
-<h2 id="recaptcha">4. reCaptcha v3 — своя пара ключей на продукт/домен</h2>
-<div class="note">Публичный <b>site key</b> задаётся на продукте в админке (Structure) — виджет
-подхватывает его сам через <code>GET /api/chat/i18n</code>, менять сниппет встраивания не нужно.
-<b>Секрет</b> reCaptcha хранится шифрованно и записывается write-only через
+<h2 id="turnstile">4. Cloudflare Turnstile — своя пара ключей на продукт/домен</h2>
+<div class="note">Антибот-проверка — <b>Cloudflare Turnstile в невидимом режиме</b>: в дашборде
+Cloudflare создайте Turnstile-виджет с типом <b>Invisible</b> (игрок никогда не видит челлендж) и
+добавьте в него домен казино. Публичный <b>site key</b> задаётся на продукте в админке (Structure) —
+виджет подхватывает его сам через <code>GET /api/chat/i18n</code>, менять сниппет встраивания не
+нужно. <b>Секрет</b> Turnstile хранится шифрованно и записывается write-only через
 <code>PUT /admin/products/{id}/secrets</code> (наружу — только флаг «задан»). Деплой-переменные
-<code>RECAPTCHA_SITE_KEY</code>/<code>RECAPTCHA_SECRET</code> остаются лишь фолбэком для продуктов
-без своей пары. Зарегистрируйте в Google reCaptcha домен каждого казино и внесите пару ключей на его
-продукт.</div>
+<code>TURNSTILE_SITE_KEY</code>/<code>TURNSTILE_SECRET</code> остаются лишь фолбэком для продуктов
+без своей пары.</div>
+<div class="warnbox">Проверка — <b>advisory (fail-open)</b>: если скрипт
+<code>challenges.cloudflare.com</code> у игрока заблокирован или не отвечает (такое бывает в
+отдельных регионах/сетях), виджет просто не отправляет токен, а сервис пропускает проверку и
+полагается на остальные слои антиспама (rate limit, cooldown, low-content, injection). Игрок
+никогда не теряет чат из-за недоступности Cloudflare; блокируется сессия только когда Cloudflare
+явно ответил «токен невалиден».</div>
 
 <h2 id="checklist">5. Чек-лист подключения</h2>
 <ul>
   <li>Создать продукт в админке (Structure) и скопировать embed-сниппет с его widget key.</li>
   <li>Добавить домен сайта в <code>CORS_ALLOW_ORIGINS</code> сервиса.</li>
-  <li>Зарегистрировать домен в Google reCaptcha v3 и внести site key + секрет на продукт
-      (или положиться на деплой-фолбэк).</li>
+  <li>Создать в Cloudflare Turnstile-виджет типа <b>Invisible</b> для домена казино и внести
+      site key + секрет на продукт (или положиться на деплой-фолбэк).</li>
   <li>Настроить подписанный handshake на бэкенде CMS, чтобы Ника знала имя/статус игрока —
       <a href="/integration-data" style="color:var(--accent)">страница данных игрока</a>.</li>
   <li>Заполнить KB, промпт-переменные и переводы продукта в админке — чат готов.</li>

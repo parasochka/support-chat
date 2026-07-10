@@ -63,7 +63,7 @@
   <tr><th>Страница</th><th>Для чего</th></tr>
   <tr><td><a href="/integration-widget" style="color:var(--accent)"><code>/integration-widget</code></a></td>
       <td><b>Только виджет</b>: сниппет встраивания на сайт (CMS), widget key, программный монтаж,
-          reCaptcha, CORS, чек-лист подключения.</td></tr>
+          Cloudflare Turnstile, CORS, чек-лист подключения.</td></tr>
   <tr><td><a href="/integration-data" style="color:var(--accent)"><code>/integration-data</code></a></td>
       <td><b>Передача и синхронизация данных игрока</b>: whitelist полей, подписанный handshake
           (+ примеры кода), ленивый pull из Player API, push-webhook из CRM, сигналы активности,
@@ -96,7 +96,7 @@
       (Structure), передаётся виджетом при создании сессии. Ключ не секрет (лежит в HTML страницы),
       но неугадываем и его можно ротировать.</li>
   <li>Секреты продукта (OpenAI-ключи, handshake-секрет, токен Telegram-бота, ключ Player API,
-      секрет reCaptcha) хранятся в БД <b>в зашифрованном виде</b>
+      секрет Turnstile) хранятся в БД <b>в зашифрованном виде</b>
       (мастер-ключ — только в окружении деплоя) и через API никогда не возвращаются — только флаги
       «задан/не задан». Если у продукта нет своих ключей, используется глобальный ключ деплоя.</li>
 </ul>
@@ -119,8 +119,8 @@
   <tr><td><code>WIDGET_HANDSHAKE_SECRET</code></td>
       <td>Деплой-фолбэк секрета handshake (у продукта приоритет — его собственный секрет).</td></tr>
   <tr><td><code>CORS_ALLOW_ORIGINS</code></td><td>Домены сайтов, где встраивается виджет.</td></tr>
-  <tr><td><code>RECAPTCHA_SITE_KEY</code>/<code>RECAPTCHA_SECRET</code> (фолбэк-пара — у продукта
-      приоритетна его собственная, см. <a href="/integration-widget#recaptcha"
+  <tr><td><code>TURNSTILE_SITE_KEY</code>/<code>TURNSTILE_SECRET</code> (фолбэк-пара Cloudflare
+      Turnstile — у продукта приоритетна его собственная, см. <a href="/integration-widget#turnstile"
       style="color:var(--accent)">страницу виджета</a>), <code>TRUSTED_PROXY_*</code>,
       <code>CONTACT_FORM_URL</code>…</td>
       <td>Прочее — см. README сервиса (полная таблица).</td></tr>

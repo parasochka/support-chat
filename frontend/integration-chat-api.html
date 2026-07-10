@@ -63,9 +63,11 @@
 обязан воспроизвести клиентскую логику виджета, см. <a href="#custom-ui" style="color:var(--accent)">раздел 2</a>.</p>
 
 <div class="endpoint"><span class="tag post">POST</span><code>/api/chat/session</code></div>
-<p>Создать сессию. Тело: <code>{ widget_key?, locale?, signed_context?, consumer?, recaptcha_token? }</code>.
+<p>Создать сессию. Тело: <code>{ widget_key?, locale?, signed_context?, consumer?, turnstile_token? }</code>.
 Ответ: <code>{ session_id, token, topics[], lang, languages[] }</code>.
-Ошибки: <code>403 bad_widget_key</code>, <code>401 bad_handshake</code>, <code>403 recaptcha_failed</code>, <code>429</code>.</p>
+Ошибки: <code>403 bad_widget_key</code>, <code>401 bad_handshake</code>, <code>403 turnstile_failed</code>, <code>429</code>.
+<code>turnstile_token</code> опционален: если клиент не смог получить токен (Cloudflare заблокирован/не
+отвечает), сессия всё равно создаётся — проверка advisory, см. раздел 2.6.</p>
 
 <div class="endpoint"><span class="tag get">GET</span><code>/api/chat/topics?widget_key=&amp;lang=</code></div>
 <p>Каталог тем продукта без сессии (для мгновенной первой отрисовки). Кэшируется 60 сек.</p>
@@ -120,8 +122,11 @@
   <li><b>Строки интерфейса</b>: держите запечённую копию базовых строк для мгновенной первой
       отрисовки и накатывайте поверх ответ <code>GET /i18n</code> — так правки копирайта из админки
       доезжают до вашего UI без редеплоя фронта.</li>
-  <li><b>Скрипт reCaptcha подгружайте заранее</b> (при монтировании), а не в момент создания сессии —
-      это самая медленная сторонняя загрузка на пути «тап по теме → чат готов».</li>
+  <li><b>Скрипт Turnstile подгружайте заранее</b> (при монтировании), а не в момент создания сессии —
+      это самая медленная сторонняя загрузка на пути «тап по теме → чат готов». Каждый шаг
+      (загрузка скрипта, получение токена) оборачивайте в таймаут с деградацией в
+      <code>null</code>-токен: заблокированный <code>challenges.cloudflare.com</code> не должен
+      заклинить создание сессии.</li>
 </ul>
 
 <h3>2.2. Жизненный цикл сессии — экономия и корректность</h3>
@@ -130,12 +135,12 @@
       при открытии панели: каждый «открыл-закрыл» посетитель иначе жжёт per-IP лимит на
       <code>POST /session</code> и плодит пустые сессии в статистике.</li>
   <li><b>Тап по теме — оптимистичный.</b> Покажите экран диалога сразу (он не требует сети), а
-      медленную цепочку — reCaptcha-токен → <code>POST /session</code> → <code>POST /topic</code> —
+      медленную цепочку — Turnstile-токен → <code>POST /session</code> → <code>POST /topic</code> —
       запустите в фоне и сохраните её promise. Первая отправка сообщения просто ждёт этот promise
       (обычно он уже завершён, пока игрок печатает). Если цепочка упала — верните игрока к списку
       тем с локализованной ошибкой. Неудавшийся <code>POST /topic</code> не фатален (чат работает
       и без темы), неудавшийся <code>POST /session</code> — фатален.</li>
-  <li><b>Не кэшируйте отклонённый promise создания сессии</b>: временный сбой (сеть, 429, reCaptcha)
+  <li><b>Не кэшируйте отклонённый promise создания сессии</b>: временный сбой (сеть, 429, Turnstile)
       не должен намертво заклинить все последующие попытки — сбросьте promise при ошибке, чтобы
       следующий тап повторил создание заново.</li>
   <li><b>Защита от двойного тапа</b> по кнопке темы: выставляйте флаг синхронно до любого await,
@@ -231,11 +236,16 @@
       и его собственный ввод, и его сообщения в истории.</li>
   <li><b>Widget key — не секрет</b> (он в HTML), но <b>bearer-токен сессии</b> — секрет одного
       разговора: только в память, только в заголовок <code>Authorization</code>.</li>
-  <li><b>reCaptcha v3</b>: токен нужен при создании сессии, если у продукта задан свой секрет
-      reCaptcha (Structure → Product secrets) или на сервисе задан деплой-фолбэк
-      <code>RECAPTCHA_SECRET</code>; без обоих сервис пропускает проверку (dev). Site key берите из
-      <code>GET /api/chat/i18n</code> (поле <code>recaptcha_site_key</code>) — как это делает виджет.
-      Домен вашего сайта должен быть в <code>CORS_ALLOW_ORIGINS</code>.</li>
+  <li><b>Cloudflare Turnstile (невидимый режим)</b>: при создании сессии передавайте
+      <code>turnstile_token</code>, если у продукта задан свой секрет Turnstile
+      (Structure → Product secrets) или на сервисе задан деплой-фолбэк
+      <code>TURNSTILE_SECRET</code>; без обоих сервис пропускает проверку (dev). Site key берите из
+      <code>GET /api/chat/i18n</code> (поле <code>turnstile_site_key</code>) — как это делает виджет;
+      Turnstile-виджет в Cloudflare создаётся с типом <b>Invisible</b>, токен получают программно
+      (<code>turnstile.render</code> в скрытый контейнер + callback). Проверка <b>advisory
+      (fail-open)</b>: не получили токен — отправляйте сессию без него, сервис пропустит проверку и
+      применит остальные слои антиспама; блокирует только явный вердикт Cloudflare «токен
+      невалиден». Домен вашего сайта должен быть в <code>CORS_ALLOW_ORIGINS</code>.</li>
 </ul>
 
 <h3>2.7. Мобильные нюансы</h3>

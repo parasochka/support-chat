@@ -364,13 +364,6 @@
 
 .npchat-error { color: #b91c1c; padding: 8px 0; }
 
-/* Hide the floating reCAPTCHA v3 badge. */
-.grecaptcha-badge {
-  visibility: hidden !important;
-  opacity: 0 !important;
-  pointer-events: none !important;
-}
-
 /* ---------------------------------------------------------------------------
    Mobile / small viewports — the open panel becomes a full-screen sheet.
    On a phone the desktop fixed-size card (340×500) plus its max-*/resize math

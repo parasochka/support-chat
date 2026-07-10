@@ -44,25 +44,31 @@ in mind for every change:
   product, so single-product deployments keep working). Unknown/inactive key → 403.
   The session row stores `product_id`; every later turn re-enters that scope.
 - **Per-product secrets**: OpenAI keys (1–2, same two-key failover), the
-  handshake secret and the **reCAPTCHA secret** live on the product row,
+  handshake secret and the **Turnstile secret** live on the product row,
   **encrypted at rest** via
   `secretbox.py` (stdlib HMAC-CTR keystream + encrypt-then-MAC; master key =
   `SECRETS_MASTER_KEY` env, falling back to `SESSION_JWT_SECRET` with a startup
   warning). They are write-only through the API (`PUT /admin/products/{id}/secrets`
   → only `has_*` flags come back); `db.get_product_openai_keys` /
-  `get_product_handshake_secret` / `get_product_recaptcha_secret` are the only
+  `get_product_handshake_secret` / `get_product_turnstile_secret` are the only
   decrypting readers. A product without
   its own keys falls back to the deploy env keys
   (`openai_client.client_for_product`, cached per product + key fingerprint).
-- **Per-product reCAPTCHA**: each product (domain) runs its own reCAPTCHA v3
-  property — the PUBLIC `recaptcha_site_key` on the product row (edited in
-  Structure; `PUT /admin/products/{id}` body field) is served to the widget via
-  `GET /api/chat/i18n` and adopted automatically (`widget.js fetchI18n` — no
-  embed change; a host page may still pin its own via `mount()`), and the
-  secret is a normal encrypted product secret. `create_session` resolves the
-  product FIRST and verifies against the product secret
-  (`antispam.verify_recaptcha(secret=...)`); the deploy env
-  `RECAPTCHA_SITE_KEY`/`RECAPTCHA_SECRET` pair is only the fallback.
+- **Per-product Cloudflare Turnstile**: each product (domain) runs its own
+  Turnstile widget (created as **Invisible** in the Cloudflare dashboard — no
+  challenge UI ever shows) — the PUBLIC `turnstile_site_key` on the product row
+  (edited in Structure; `PUT /admin/products/{id}` body field) is served to the
+  widget via `GET /api/chat/i18n` and adopted automatically (`widget.js
+  fetchI18n` — no embed change; a host page may still pin its own via
+  `mount()`), and the secret is a normal encrypted product secret.
+  `create_session` resolves the product FIRST and verifies against the product
+  secret (`antispam.verify_turnstile(secret=...)`); the deploy env
+  `TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET` pair is only the fallback. The check
+  is **ADVISORY (fail-open)**: a missing client token (the Turnstile script is
+  blocked in some regions) and a verifier outage SKIP it (logged, sampled) —
+  only an explicit "invalid token" verdict from Cloudflare 403s. The other
+  anti-spam layers still gate every request, so a player never loses the chat
+  over a blocked Cloudflare.
 - **Machine admin credentials** (`admin_api_keys`): service API keys for an
   external master admin panel — Bearer `sak_…` tokens on the same `/admin/*`
   surface. Only the SHA-256 hash + a 4-char hint are stored; the plaintext is
@@ -90,7 +96,7 @@ in mind for every change:
   for partner/CMS dev teams, split by task. `GET /integration` is the HUB
   (overview, architecture/multi-tenancy, deploy env vars, docs index); its
   per-topic siblings are `GET /integration-widget` (embedding the ready-made
-  widget: snippet, widget key, reCaptcha, CORS), `GET /integration-data` (player
+  widget: snippet, widget key, Turnstile, CORS), `GET /integration-data` (player
   data transfer & sync — the ONE home for the whitelist fields, signed-handshake
   format + signing samples, the lazy-pull Player API contract, the push webhook
   and the activity timestamps; other pages link here instead of duplicating the
@@ -543,10 +549,12 @@ secrets in env.
 fast path (forces an escalation response with no model call) → **pre-model keyword-escalation
 gate in `chat_service`** (soft hand-off, no model call — see "Escalation") → build/call/persist.
 Rate-limit and cooldown use **in-memory dicts** — fine for Phase 1 but they do not span multiple
-instances. reCaptcha is verified at session create and skips gracefully (logged) when
-`RECAPTCHA_SECRET` is unset. **High-volume block events are SAMPLED**
+instances. Turnstile is verified at session create and skips gracefully (logged) when no secret
+is set, when the client sent NO token (the Turnstile script is blocked in some regions —
+fail-open by design), or on a verifier outage; only an explicit "invalid token" verdict from
+Cloudflare 403s. **High-volume block events are SAMPLED**
 (`db.log_admin_event_sampled`: `rate_limited`, `injection_blocked`, `low_content_blocked`,
-`recaptcha_skipped`, `model_error` — max 20 per type per 5 min, in-memory): each rejected request
+`turnstile_skipped`, `model_error` — max 20 per type per 5 min, in-memory): each rejected request
 used to insert an `admin_events` row, so a hammering attacker grew the table without bound even
 while being 429'd. Security-critical singular events (escalation, failover, login failures) stay
 unsampled. The **request-body cap** middleware (main.py) also rejects chunked bodies
@@ -563,18 +571,21 @@ attacker on the public internet has a public peer IP and is never trusted. This 
 `TRUSTED_PROXY_COUNT`): a compromised admin must not be able to disable spoofing protection.
 
 **Sessions are created lazily by the widget — and the topic tap paints the chat INSTANTLY.**
-`POST /session` (reCaptcha + token + DB row) fires only when the player actually picks a topic
+`POST /session` (Turnstile + token + DB row) fires only when the player actually picks a topic
 (`onTopic`), NOT on panel open — the old open-time warm-up minted a DB session (and burned the
 per-IP `session:` budget) for every visitor who opened and closed the widget without engaging.
 The topic picker still paints instantly from the session-free cached `GET /topics`. The tap
 itself is **optimistic**: `onTopic` shows the conversation view + the canned greeting bubble
-immediately (both are client-side) and runs the slow setup — reCaptcha token + `POST /session` +
+immediately (both are client-side) and runs the slow setup — Turnstile token + `POST /session` +
 `POST /topic` — in the background (`state.setupPromise`); the player's first `sendMessage` awaits
 that promise, so the send transparently waits for the token instead of failing (it used to await
 the whole session create BEFORE showing the chat, freezing the picker for seconds after the tap).
-A failed setup returns the player to the picker with the localized start error. The reCaptcha
-script itself is pre-loaded at widget mount (`loadRecaptcha` in `buildUI`) — it's a third-party
-fetch and was the slowest piece of the tap-time setup.
+A failed setup returns the player to the picker with the localized start error. The Turnstile
+script itself is pre-loaded at widget mount (`loadTurnstile` in `buildUI` / `fetchI18n`) — it's a
+third-party fetch and was the slowest piece of the tap-time setup. Every Turnstile step (script
+load, invisible render, token callback) races a timeout and degrades to a **null token**; the
+backend then skips the check (advisory), so a blocked `challenges.cloudflare.com` can never wedge
+or kill session creation.
 
 The **low-content guard** (`antispam.check_low_content`) stops messages with nothing to
 answer — a lone character, symbol/emoji-only spam, or one character mashed over and over
@@ -1261,7 +1272,7 @@ Map of what lives where:
   language only enters with a correct code + name, and `settings.validate_setting` rejects any
   supported/`names` code not in that catalogue. `GET /admin/meta` exposes `languages`
   (selectable catalogue), `supported`, `default_language`, and `iso_catalog` for the picker),
-  `antispam` (rate limit/window/cooldown/input cap **plus** `recaptcha_min_score`,
+  `antispam` (rate limit/window/cooldown/input cap **plus**
   `injection_hard_block`, and the low-content guard `low_content_block` /
   `min_meaningful_chars`), `model` (OpenAI tuning — see the failover section), and `general`
   (technical operational knobs with no other home: `session_ttl_hours`, `admin_token_ttl_min`
@@ -1277,7 +1288,7 @@ Map of what lives where:
   lives in `prompts.py` (the single source of truth), not `app_settings`; only the
   prompt-variable VALUES are stored. The goal is that every non-secret *operational*
   knob lives in the admin panel and only true secrets (API keys, JWT secrets, `DATABASE_URL`,
-  handshake/reCaptcha secrets) — plus the network-perimeter deploy
+  handshake/Turnstile secrets) — plus the network-perimeter deploy
   vars (`CORS_ALLOW_ORIGINS`, `TRUSTED_PROXY_COUNT`) — stay in Railway env. There is no seed:
   an empty `app_settings` resolves through env → default, and the owner's first write to a
   group persists that override in the DB.

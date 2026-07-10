@@ -1,5 +1,5 @@
 """GET /api/chat/topics: the session-free catalogue that lets the widget paint
-the category buttons instantly (no reCaptcha, no token, no DB write) while the
+the category buttons instantly (no Turnstile, no token, no DB write) while the
 session create runs in the background. Multi-tenancy: the endpoint resolves the
 product from the widget key (default product when absent) and scopes the list.
 """

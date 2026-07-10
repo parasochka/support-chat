@@ -631,15 +631,21 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         # reply-rate metric probe by (product, tg_user).
         "CREATE INDEX IF NOT EXISTS idx_chat_sessions_product_tg "
         "ON chat_sessions(product_id, tg_user_id) WHERE tg_user_id IS NOT NULL",
-        # --- Per-product reCAPTCHA -------------------------------------------
-        # Each product (domain) runs its own reCAPTCHA site: the site key is
-        # public config served to the widget; the secret is encrypted at rest
-        # like every product secret. NULL = fall back to the deploy env pair
-        # (RECAPTCHA_SITE_KEY/RECAPTCHA_SECRET) — default product behaviour.
+        # --- Per-product Cloudflare Turnstile --------------------------------
+        # Each product (domain) runs its own Turnstile widget (INVISIBLE mode):
+        # the site key is public config served to the chat widget; the secret is
+        # encrypted at rest like every product secret. NULL = fall back to the
+        # deploy env pair (TURNSTILE_SITE_KEY/TURNSTILE_SECRET) — default
+        # product behaviour.
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
-        "recaptcha_site_key TEXT",
+        "turnstile_site_key TEXT",
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
-        "recaptcha_secret_enc TEXT",
+        "turnstile_secret_enc TEXT",
+        # The reCAPTCHA -> Turnstile migration: the old Google keys are useless
+        # with Cloudflare (nothing to carry over), so the legacy columns are
+        # simply dropped on deployments that still have them.
+        "ALTER TABLE products DROP COLUMN IF EXISTS recaptcha_site_key",
+        "ALTER TABLE products DROP COLUMN IF EXISTS recaptcha_secret_enc",
         # --- Photo view ↔ chat session link ----------------------------------
         # Which chat session a photo was sent in, so the admin transcript can
         # show the delivered image inline (the retention Conversations view).
@@ -1345,7 +1351,7 @@ async def log_admin_event(session_id: Optional[str], type_: str,
 
 
 # High-volume event types (rate-limit blocks, injection blocks, low-content
-# nudges, dev recaptcha skips) fire once per REJECTED request, so an attacker
+# nudges, turnstile skips) fire once per REJECTED request, so an attacker
 # hammering a 429'd endpoint would otherwise grow admin_events without bound —
 # the rate limiter rejects the request but never stopped the logging. The
 # sampled writer keeps a small in-memory budget per event type and silently
@@ -1497,10 +1503,10 @@ def _row_to_product(row: asyncpg.Record) -> dict[str, Any]:
         "site_url": row["site_url"],
         "has_player_api_key": row["player_api_key_enc"] is not None,
         "retention_enabled": row["retention_enabled"],
-        # Per-product reCAPTCHA: the site key is public widget config; the
+        # Per-product Turnstile: the site key is public widget config; the
         # secret (encrypted) surfaces as a presence flag only.
-        "recaptcha_site_key": row["recaptcha_site_key"],
-        "has_recaptcha_secret": row["recaptcha_secret_enc"] is not None,
+        "turnstile_site_key": row["turnstile_site_key"],
+        "has_turnstile_secret": row["turnstile_secret_enc"] is not None,
         "created_at": _iso(row["created_at"]),
         "updated_at": _iso(row["updated_at"]),
     }
@@ -1512,7 +1518,7 @@ _PRODUCT_COLS = ("id, partner_id, slug, name, widget_key, active, "
                  "telegram_bot_username, telegram_webhook_secret, "
                  "telegram_channel_id, telegram_channel_url, player_api_url, "
                  "site_url, player_api_key_enc, retention_enabled, "
-                 "recaptcha_site_key, recaptcha_secret_enc, "
+                 "turnstile_site_key, turnstile_secret_enc, "
                  "created_at, updated_at")
 
 
@@ -1678,7 +1684,7 @@ async def set_product_secrets(product_id: int, *,
                               handshake_secret: Any = UNSET,
                               telegram_bot_token: Any = UNSET,
                               player_api_key: Any = UNSET,
-                              recaptcha_secret: Any = UNSET) -> bool:
+                              turnstile_secret: Any = UNSET) -> bool:
     """Write per-product secrets (encrypted at rest). Empty string clears one.
 
     Values are encrypted with secretbox before they touch the table; the
@@ -1695,7 +1701,7 @@ async def set_product_secrets(product_id: int, *,
                      ("handshake_secret_enc", handshake_secret),
                      ("telegram_bot_token_enc", telegram_bot_token),
                      ("player_api_key_enc", player_api_key),
-                     ("recaptcha_secret_enc", recaptcha_secret)):
+                     ("turnstile_secret_enc", turnstile_secret)):
         if val is UNSET:
             continue
         args.append(secretbox.encrypt(val.strip()) if isinstance(val, str)
@@ -1848,13 +1854,13 @@ async def get_product_handshake_secret(product_id: int) -> Optional[str]:
         return None
 
 
-async def get_product_recaptcha_secret(product_id: int) -> Optional[str]:
-    """Decrypted per-product reCAPTCHA secret, or None (env fallback applies)."""
+async def get_product_turnstile_secret(product_id: int) -> Optional[str]:
+    """Decrypted per-product Turnstile secret, or None (env fallback applies)."""
     import logging
 
     import secretbox
     enc = await _pool.fetchval(
-        "SELECT recaptcha_secret_enc FROM products WHERE id = $1", product_id
+        "SELECT turnstile_secret_enc FROM products WHERE id = $1", product_id
     )
     if not enc:
         return None
@@ -1862,18 +1868,18 @@ async def get_product_recaptcha_secret(product_id: int) -> Optional[str]:
         return secretbox.decrypt(enc)
     except secretbox.SecretBoxError:
         logging.getLogger(__name__).warning(
-            "product_secret_undecryptable product_id=%s kind=recaptcha",
+            "product_secret_undecryptable product_id=%s kind=turnstile",
             product_id,
         )
         return None
 
 
-async def set_product_recaptcha_site_key(product_id: int,
+async def set_product_turnstile_site_key(product_id: int,
                                          site_key: Optional[str]
                                          ) -> Optional[dict[str, Any]]:
-    """Set the NON-secret reCAPTCHA site key (public widget config)."""
+    """Set the NON-secret Turnstile site key (public widget config)."""
     row = await _pool.fetchrow(
-        f"UPDATE products SET recaptcha_site_key = $2, updated_at = now() "
+        f"UPDATE products SET turnstile_site_key = $2, updated_at = now() "
         f"WHERE id = $1 RETURNING {_PRODUCT_COLS}",
         product_id, (site_key or "").strip() or None,
     )
