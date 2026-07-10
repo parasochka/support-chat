@@ -1314,6 +1314,15 @@ const PingsTab = ({ productId }) => {
     loadLedger();
   }, [loadLedger]);
 
+  // The regime switch: when Retention v2 runs this product, this v1 matrix
+  // stands down — say so loudly instead of letting rules look broken.
+  const [v2Enabled, setV2Enabled] = useState(false);
+  useEffect(() => {
+    httpClient(`${API_URL}/admin/retention/v2/status?product_id=${productId}`)
+      .then(({ json }) => setV2Enabled(Boolean(json.v2_enabled)))
+      .catch(() => {});
+  }, [productId]);
+
   const openEditor = (rule) =>
     setEditing(
       rule
@@ -1404,6 +1413,15 @@ const PingsTab = ({ productId }) => {
 
   return (
     <Box>
+      {v2Enabled && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          Retention v2 (agent) is ENABLED for this product — this v1 ping
+          matrix is standing down: the rules below do not fire (they stay
+          saved and editable). Disable v2 in Settings → Retention bot →
+          «Retention v2» to resume them, or manage the agent on the{' '}
+          <Link href="#/retention-v2">Retention v2</Link> page.
+        </Alert>
+      )}
       <Alert severity="info" sx={{ mb: 2 }}>
         The ping matrix re-engages quiet players: each rule picks WHO (a
         trigger + inactivity window, optionally narrowed to VIP tiers) and WHAT

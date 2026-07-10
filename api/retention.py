@@ -1080,19 +1080,35 @@ class SimulateEventReq(BaseModel):
 @admin_router.get("/v2/status")
 async def v2_status(product_id: int,
                     admin=Depends(require_admin)) -> JSONResponse:
-    """The v2 tab header: switches + today's spend vs budget + queue depth."""
+    """The v2 tab header: switches + today's spend vs budget + queue depth,
+    the worker's deploy config (is the scheduler running at all, how often),
+    a DB-derived liveness snapshot (last event / last processed / last
+    decision + today's decision mix), and the event taxonomy split
+    (decision-worthy / photo-eligible / state-food) so the tab's
+    How-it-works guide always matches the code."""
+    import retention_v2
     await admin_auth.require_product_read(admin, product_id)
     tenancy.set_current_product(product_id)
     cfg = settings_mod.retention()
     queued = await db.unprocessed_retention_events(product_id, limit=1000)
     cost_today = await db.retention_v2_cost_today(product_id)
+    activity = await db.retention_v2_activity(product_id)
     return JSONResponse(content={
         "v2_enabled": bool(cfg.get("v2_enabled")),
         "v2_dry_run": bool(cfg.get("v2_dry_run")),
         "daily_budget_usd": float(cfg.get("v2_daily_budget_usd") or 0),
         "cost_today_usd": cost_today,
         "queued_events": len(queued),
+        # Worker wiring (deploy-level): whether the background sweeps run at
+        # all in this deployment and how often they wake up.
+        "scheduler_enabled": bool(config.RETENTION_SCHEDULER_ENABLED),
+        "sweep_interval_sec": int(config.RETENTION_PING_INTERVAL_SEC),
+        "activity": activity,
         "canonical_events": sorted(player_sync.CANONICAL_EVENTS),
+        "decision_events": sorted(retention_v2.DECISION_EVENTS),
+        "photo_events": sorted(retention_v2._PHOTO_EVENTS),
+        "same_event_cooldown_hours": int(
+            cfg.get("v2_same_event_cooldown_hours") or 0),
     })
 
 
@@ -1113,6 +1129,75 @@ async def v2_decisions(product_id: int, page: int = 1, page_size: int = 50,
     await admin_auth.require_product_read(admin, product_id)
     return JSONResponse(content=await db.list_retention_v2_decisions(
         product_id, page=max(page, 1), page_size=max(1, min(page_size, 200))))
+
+
+@admin_router.get("/v2/logs")
+async def v2_logs(product_id: int, page: int = 1, page_size: int = 50,
+                  admin=Depends(require_admin)) -> JSONResponse:
+    """The v2 system log: the durable `retention_v2_*` admin events
+    (decisions, simulator injections, manual runs, deletes) — the admin-
+    readable mirror of the Railway `retention_v2_*` log lines."""
+    await admin_auth.require_product_read(admin, product_id)
+    return JSONResponse(content=await db.list_retention_v2_logs(
+        product_id, page=max(page, 1), page_size=max(1, min(page_size, 200))))
+
+
+@admin_router.delete("/v2/events/{event_pk}")
+async def v2_delete_event(product_id: int, event_pk: int,
+                          admin=Depends(require_admin_write)) -> JSONResponse:
+    """Delete one canonical event (test cleanup — e.g. a duplicated simulator
+    injection). Ledger rows that referenced it stay, minus the link."""
+    await admin_auth.require_product_write(admin, product_id)
+    if not await db.delete_retention_event(product_id, event_pk):
+        raise HTTPException(status_code=404, detail="Event not found.")
+    await db.log_admin_event(None, "retention_v2_event_deleted",
+                             {"event_pk": event_pk, "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"ok": True})
+
+
+@admin_router.delete("/v2/events")
+async def v2_clear_events(product_id: int,
+                          admin=Depends(require_admin_write)) -> JSONResponse:
+    """Wipe this product's whole canonical-event log (test cleanup). NB: the
+    log also feeds the state resolver (loss window, recent activity), so this
+    resets that derived state too."""
+    await admin_auth.require_product_write(admin, product_id)
+    deleted = await db.clear_retention_events(product_id)
+    await db.log_admin_event(None, "retention_v2_events_cleared",
+                             {"deleted": deleted, "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"ok": True, "deleted": deleted})
+
+
+@admin_router.delete("/v2/decisions/{decision_pk}")
+async def v2_delete_decision(product_id: int, decision_pk: int,
+                             admin=Depends(require_admin_write)) -> JSONResponse:
+    """Delete one decision-ledger row (test cleanup). Deleting a row also
+    'refunds' its cost from today's budget and re-arms the same-event
+    cooldown for that event type."""
+    await admin_auth.require_product_write(admin, product_id)
+    if not await db.delete_retention_v2_decision(product_id, decision_pk):
+        raise HTTPException(status_code=404, detail="Decision not found.")
+    await db.log_admin_event(None, "retention_v2_decision_deleted",
+                             {"decision_pk": decision_pk,
+                              "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"ok": True})
+
+
+@admin_router.delete("/v2/decisions")
+async def v2_clear_decisions(product_id: int,
+                             admin=Depends(require_admin_write)
+                             ) -> JSONResponse:
+    """Wipe this product's whole decision ledger (test cleanup). Today's
+    budget counter and all same-event cooldowns reset with it."""
+    await admin_auth.require_product_write(admin, product_id)
+    deleted = await db.clear_retention_v2_decisions(product_id)
+    await db.log_admin_event(None, "retention_v2_decisions_cleared",
+                             {"deleted": deleted, "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"ok": True, "deleted": deleted})
 
 
 @admin_router.post("/v2/simulate-event")

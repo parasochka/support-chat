@@ -474,6 +474,12 @@ RETENTION_V2_LOSS_COMFORT_HOURS: int = _env_int(
 # 24h net-loss threshold (USD) that classifies risk_state=critical and starts
 # the comfort window (the EPIC-5 "loss high" tier).
 RETENTION_V2_LOSS_HIGH_USD: float = _env_float("RETENTION_V2_LOSS_HIGH_USD", 100.0)
+# One reaction per event TYPE per player per window: a partner retrying
+# webhooks or five deposits in an evening get ONE warm note. 0 = off — handy
+# while testing the pipeline (re-inject the same event and get a fresh
+# decision instead of a same_event_cooldown block).
+RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS: int = _env_int(
+    "RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS", 20)
 
 # Serve /docs, /redoc and /openapi.json (they describe the WHOLE API surface,
 # /admin included) — off by default; enable only on dev/stage deployments.

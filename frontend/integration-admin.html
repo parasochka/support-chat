@@ -260,6 +260,17 @@ bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию
           остальные гарантии действуют).</td></tr>
   <tr><td><span class="tag get">GET</span><code>/admin/retention/users</code> · <code>/admin/retention/sessions</code></td>
       <td>Игроки бота / Telegram-чаты (транскрипт — через общий <code>GET /admin/session/{id}</code>).</td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag post">POST</span><span class="tag del">DEL</span><code>/admin/retention/v2/*</code></td>
+      <td>Retention v2 (агентный событийный режим): <code>GET …/status</code> (переключатели,
+          статус воркера и активность, очередь, бюджет дня, таксономия событий),
+          <code>GET …/events</code> / <code>…/decisions</code> / <code>…/logs</code> (журнал
+          канонических событий, леджер решений агента, системный лог),
+          <code>POST …/simulate-event</code> (инъекция тестового события),
+          <code>POST …/run</code> (прогнать очередь немедленно),
+          <code>DELETE …/events[/{id}]</code> · <code>DELETE …/decisions[/{id}]</code>
+          (очистка тестовых данных — по строке или целиком). Сами события казино партнёр
+          шлёт в <code>POST /partner/{product_id}/event</code> — см.
+          <a href="/integration-data" style="color:var(--accent)">страницу передачи данных</a>.</td></tr>
 </table>
 
 <h2 id="curl">6. Примеры curl</h2>

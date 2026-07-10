@@ -193,6 +193,7 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `RETENTION_V2_DAILY_BUDGET_USD` | no | `5.0` | Default for `retention.v2_daily_budget_usd` — the per-product daily AI budget for v2 decisions+sends; reached ⇒ the loop goes quiet until tomorrow (0 = no budget). |
 | `RETENTION_V2_LOSS_COMFORT_HOURS` | no | `24` | Default for `retention.v2_loss_comfort_hours` — after a big-loss signal: empathetic tone only, no play CTA, no photos, no links for this many hours. |
 | `RETENTION_V2_LOSS_HIGH_USD` | no | `100.0` | Default for `retention.v2_loss_high_usd` — 24h net loss that marks the player critical and starts the comfort window. |
+| `RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS` | no | `20` | Default for `retention.v2_same_event_cooldown_hours` — one v2 reaction per event TYPE per player per window (a webhook retry or five deposits get one note). `0` = off, handy while testing the pipeline with repeated simulator events. |
 | `EXPOSE_API_DOCS` | no | — | Set to `1` to publish `/docs`, `/redoc` and `/openapi.json` (they describe the whole surface, `/admin` included, so they are **disabled by default**). Dev/stage only. |
 
 The retention bot's per-product config (bot token, channel, player-API key) lives on the

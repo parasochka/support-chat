@@ -1231,7 +1231,9 @@ advisory lock.
   deterministic **guards** (`guard_check`: the SHARED v1 anti-annoyance state —
   daily cap / min gap / quiet hours / `/stop` / unreachable / subscription —
   plus the per-product **daily AI budget** (`v2_daily_budget_usd`, read from
-  the decision ledger), a 20h same-event cooldown, and the **loss comfort
+  the decision ledger), the **same-event cooldown** (one reaction per event
+  TYPE per player per window — the hot `v2_same_event_cooldown_hours` knob,
+  default 20h, **0 = off**: the repeat-testing mode), and the **loss comfort
   window** (`v2_loss_comfort_hours` after a loss signal or `v2_loss_high_usd`
   net loss in 24h: photo removed from the permitted actions, a hard comfort
   constraint injected)) → **agent decision** (one cheap strict-JSON call,
@@ -1255,13 +1257,39 @@ advisory lock.
   calls). The daily budget reads this ledger.
 - **Admin**: the sidebar **Retention v2 (agent)** page
   (`admin/src/pages/RetentionV2.jsx`, RequireProduct-gated) — status header
-  (enabled/dry-run/budget/queue), the **event simulator** (inject any canonical
-  event as `source='simulator'` — exercise the whole pipeline before the
-  partner integration exists), «Process queue now», the event log and the
-  decision ledger. API: `/admin/retention/v2/status|events|decisions|
-  simulate-event|run` (product-scoped via the admin_auth choke points). The v2
-  knobs are normal `retention`-group settings (Settings → Retention bot →
-  «Retention v2» section). Tests: `tests/test_retention_v2.py`.
+  (enabled/dry-run/budget/queue **plus the worker-liveness row**: the deploy
+  scheduler switch + sweep interval and a DB-derived activity snapshot — last
+  event / last processed / last decision / today's decision mix — via
+  `db.retention_v2_activity`, correct across instances because it reads the
+  durable tables, not an in-process heartbeat), the **event simulator**
+  (inject any canonical event as `source='simulator'` — exercise the whole
+  pipeline before the partner integration exists; **per-event sample
+  payloads**, several variants each (`PAYLOAD_SAMPLES` in the page),
+  auto-filled on event change with field names mirroring what the pipeline
+  actually reads, plus a chip saying whether the picked event wakes the agent
+  or is state food), «Process queue now», the event log and the decision
+  ledger — both **deletable** for live-testing cleanup (row delete + «Clear
+  all»): deleting an event nulls the ledger's `event_pk` links first (NB the
+  event log feeds the state resolver, so deletes rewrite the loss window);
+  deleting a decision "refunds" its cost from today's budget and re-arms the
+  same-event cooldown (both read the ledger); every delete logs a
+  `retention_v2_*` admin event. Two more tabs: **System log**
+  (`GET /admin/retention/v2/logs` → `db.list_retention_v2_logs`: the durable
+  `retention_v2_*` admin events, the admin-readable mirror of the Railway
+  lines — the pipeline emits one structured line per decision
+  (`retention_v2_decision`), per guard block (`retention_v2_guard_blocked`)
+  and per failed send (`retention_v2_send_failed`)), and **How it works &
+  testing** (the operator's guide: the pipeline, what flips on the v1↔v2
+  switch, where persona/tone/KB/header/photos/language come from, which
+  events wake the agent — fed live from `/v2/status`'s `decision_events` /
+  `photo_events` split so the guide always matches the code —, the
+  guard-reason → settings-knob table, a step-by-step testing checklist and
+  the cost model). The v1 **Pings tab shows a standing-down banner** when v2
+  is enabled for the product (rules stay saved, they just don't fire). API:
+  `/admin/retention/v2/status|events|decisions|logs|simulate-event|run` +
+  the four DELETE routes (product-scoped via the admin_auth choke points).
+  The v2 knobs are normal `retention`-group settings (Settings → Retention
+  bot → «Retention v2» section). Tests: `tests/test_retention_v2.py`.
 
 ## Invariants (these break silently — do not violate)
 
