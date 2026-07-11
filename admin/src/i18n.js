@@ -681,6 +681,215 @@ const RU = {
     'Просмотрите результаты в «**Диалогах**» (переписка, стоимость каждого хода, маркеры переключений) и на «**Дашборде**» (сессии, доля эскалаций, стоимость). Неверные или расплывчатые ответы почти всегда означают пробел в БЗ — правьте текст БЗ, а не промпт.',
   'Each answer is one model call; its token cost is stored per turn and summed per session, topic and language on the **Dashboard**. The prompt is built so its expensive fixed part is cached by the provider — editing prompt variables or a KB text resets that cache briefly, which is normal.':
     'Каждый ответ — один вызов модели; его стоимость в токенах записывается на каждый ход и суммируется по сессиям, темам и языкам на «**Дашборде**». Промпт устроен так, что его дорогая фиксированная часть кэшируется провайдером — правка переменных промпта или текста БЗ ненадолго сбрасывает этот кэш, это нормально.',
+
+  // ----- proactive agent page: status header -----
+  'last processed': 'обработано',
+  'last decision': 'последнее решение',
+  'no decisions': 'решений нет',
+  'delivered': 'доставлено',
+  'Switches and knobs live in Settings → Retention bot («Proactive agent» + «Send-frequency guards»). The worker interval is a live setting too — 5s means near-realtime reactions. Dry-run ships ON: the agent decides and logs to the ledger below without sending — review its decisions, then turn dry-run off. New here? Read the «How it works & testing» tab.':
+    'Переключатели и настройки живут в Настройки → Ретеншен-бот («Проактивный агент» + «Ограничители частоты»). Интервал воркера — тоже «горячая» настройка: 5с — реакции почти в реальном времени. Dry-run включён по умолчанию: агент принимает решения и пишет их в журнал ниже, но ничего не отправляет — проверьте решения и выключите dry-run. Впервые здесь? Прочитайте вкладку «Как это работает и тестирование».',
+
+  // ----- proactive agent page: simulator -----
+  'Event simulator — inject a canonical event as if the casino sent it':
+    'Симулятор событий — отправьте каноническое событие, как будто его прислало казино',
+  'Payload is not valid JSON': 'Данные — не валидный JSON',
+  'Event injected': 'Событие отправлено',
+  'Simulation failed': 'Симуляция не удалась',
+  'auto = the player’s most recently active link': 'auto = последняя активная привязка игрока',
+  'auto (by player id)': 'авто (по ID игрока)',
+  'the casino player_id': 'player_id в казино',
+  'Sample payloads:': 'Примеры данных:',
+  'state food — wakes the agent only when the 24h net loss crosses the high-loss threshold':
+    'данные о состоянии — будит агента, только когда чистый проигрыш за 24ч превышает порог крупного проигрыша',
+  'wakes the agent (a decision will be ledgered)': 'будит агента (решение попадёт в журнал)',
+  'state food only (no decision, feeds player state)': 'только данные о состоянии (без решения, обновляет состояние игрока)',
+
+  // ----- proactive agent page: simulator sample payload labels -----
+  'regular deposit': 'обычный депозит',
+  'first deposit': 'первый депозит',
+  'big + profile refresh': 'крупный + обновление профиля',
+  'card deposit started': 'начат депозит картой',
+  'card declined': 'карта отклонена',
+  '3-D Secure failed': 'ошибка 3-D Secure',
+  'payout received': 'выплата получена',
+  'big win payout': 'выплата крупного выигрыша',
+  'losing bet': 'проигрышная ставка',
+  'winning bet': 'выигрышная ставка',
+  'big loss (crosses threshold)': 'крупный проигрыш (превышает порог)',
+  'bonus-money round (excluded)': 'раунд на бонусные деньги (не учитывается)',
+  'mobile login': 'вход с мобильного',
+  'desktop login': 'вход с компьютера',
+  'session over': 'сессия завершена',
+  'deposit match granted': 'начислен бонус на депозит',
+  'free spins granted': 'начислены фриспины',
+  'bonus activated': 'бонус активирован',
+  'wagering done, payout': 'вейджер отыгран, выплата',
+  'free spins expired unused': 'фриспины сгорели неиспользованными',
+  'match bonus expired': 'бонус на депозит истёк',
+  'verification started': 'верификация начата',
+  'verification passed': 'верификация пройдена',
+  'document unreadable': 'документ нечитаем',
+  'mission XP': 'XP за миссию',
+  'new level': 'новый уровень',
+  'level + fresh VIP tier': 'уровень + новый VIP-уровень',
+  'new loyalty class': 'новый класс лояльности',
+  'class downgraded': 'класс понижен',
+  'pack opened': 'пак открыт',
+  'pack completed': 'пак завершён',
+  'daily check-in': 'ежедневный чек-ин',
+  'mission done': 'миссия выполнена',
+  'empty': 'пусто',
+
+  // ----- proactive agent page: events / decisions / logs tables -----
+  'Clear all': 'Очистить всё',
+  'The event log is also the state resolver’s memory (loss window, recent activity) — deleting rows rewrites that derived state. Meant for wiping simulator/test rows.':
+    'Журнал событий — это ещё и память резолвера состояния (окно проигрыша, недавняя активность): удаление строк переписывает это производное состояние. Предназначено для очистки тестовых строк из симулятора.',
+  'Delete ALL of this product\'s events (decisions stay, minus the event link).':
+    'Удалить ВСЕ события этого продукта (решения остаются, но без ссылки на событие).',
+  'When (casino time)': 'Когда (время казино)',
+  'Player': 'Игрок',
+  'Source': 'Источник',
+  'Payload': 'Данные',
+  'Processed': 'Обработано',
+  'queued': 'в очереди',
+  'Delete this event': 'Удалить это событие',
+  'No events yet. The casino posts them to `POST /partner/{product_id}/event`, or inject one with the simulator above.':
+    'Событий пока нет. Казино отправляет их на `POST /partner/{product_id}/event`, либо отправьте событие через симулятор выше.',
+  'Deleting a decision “refunds” its cost from today’s budget and re-arms the same-event cooldown for that event type — so a wiped test decision can be re-run immediately.':
+    'Удаление решения «возвращает» его стоимость в дневной бюджет и сбрасывает кулдаун одинаковых событий для этого типа — стёртое тестовое решение можно повторить сразу.',
+  'Delete ALL of this product\'s decisions (resets today\'s budget counter and all same-event cooldowns).':
+    'Удалить ВСЕ решения этого продукта (сбрасывает счётчик дневного бюджета и все кулдауны одинаковых событий).',
+  'When': 'Когда',
+  'Decision': 'Решение',
+  'Tone': 'Тон',
+  'Why / brief': 'Почему / бриф',
+  'Guards': 'Ограничители',
+  'Delivered': 'Доставлено',
+  'Cost': 'Стоимость',
+  'brief:': 'бриф:',
+  'comfort window': 'окно поддержки',
+  'clear': 'без блокировок',
+  'Delete this decision': 'Удалить это решение',
+  'No decisions yet — inject an event and press «Process queue now».':
+    'Решений пока нет — отправьте событие и нажмите «Обработать очередь».',
+  'Every agent action leaves a durable trace here: decisions, simulator injections, manual queue runs, deletes. The same facts stream to the deploy (Railway) logs as `retention_v2_*` lines — decisions, guard blocks and failed sends included — so this view and the deploy logs always tell one story.':
+    'Каждое действие агента оставляет здесь постоянный след: решения, события из симулятора, ручные запуски очереди, удаления. Те же факты идут в логи деплоя (Railway) строками `retention_v2_*` — включая решения, блокировки ограничителей и неудачные отправки, — так что этот экран и логи деплоя всегда рассказывают одну историю.',
+  'Type': 'Тип',
+  'Details': 'Детали',
+  'No log entries yet — they appear as soon as the pipeline processes an event (or you inject one).':
+    'Записей пока нет — они появятся, как только пайплайн обработает событие (или вы отправите его сами).',
+
+  // ----- proactive agent page: guide, section 1 -----
+  'An event-driven agent that reacts to what just happened at the casino. A canonical event (deposit, big loss, level-up, …) arrives, a cheap AI call decides whether Nika should say something, and if yes the normal retention persona writes the message. Very often the correct decision is **silence** — that is by design, and silence is logged too.':
+    'Событийный агент, реагирующий на то, что только что произошло в казино. Приходит каноническое событие (депозит, крупный проигрыш, новый уровень, …), дешёвый AI-вызов решает, стоит ли Нике что-то сказать, и если да — сообщение пишет обычный ретеншен-персонаж. Очень часто правильное решение — **молчание**: так и задумано, и молчание тоже попадает в журнал.',
+  'The pipeline for every event, in order:': 'Пайплайн для каждого события, по порядку:',
+  '**Event arrives** — from the casino’s webhook `POST /partner/{product_id}/event` or from the simulator on this page. Events are idempotent by `event_id`: a retried webhook is counted, not stored twice.':
+    '**Событие приходит** — из вебхука казино `POST /partner/{product_id}/event` или из симулятора на этой странице. События идемпотентны по `event_id`: повторный вебхук учитывается, но не сохраняется дважды.',
+  '**State resolver (deterministic)** — computes the player snapshot the agent will see: user status (registered/active/at-risk/dormant), risk state, lifecycle stage, and the 24h net-loss window summed from `bet_settled` payloads.':
+    '**Резолвер состояния (детерминированный)** — считает снимок игрока, который увидит агент: статус (registered/active/at-risk/dormant), риск-состояние, этап жизненного цикла и окно чистого проигрыша за 24ч, суммируемое из данных `bet_settled`.',
+  '**Guards (deterministic)** — decide whether contact is allowed at all and which actions are permitted (message / photo / silence). The model can never override a guard. See the table below.':
+    '**Ограничители (детерминированные)** — решают, разрешён ли контакт вообще и какие действия допустимы (сообщение / фото / молчание). Модель не может обойти ограничитель. См. таблицу ниже.',
+  '**Agent decision** — one cheap strict-JSON model call. Input: the state snapshot, the event, the player’s recent events, the tail of their Telegram conversation, and the guard constraints. Output: `action` (silence/message/photo), `tone` (warm/celebrate/comfort/neutral), and a short `intent` brief. Anything malformed degrades to silence.':
+    '**Решение агента** — один дешёвый вызов модели со строгим JSON. Вход: снимок состояния, событие, недавние события игрока, хвост его Telegram-диалога и ограничения от ограничителей. Выход: `action` (silence/message/photo), `tone` (warm/celebrate/comfort/neutral) и короткий бриф `intent`. Всё некорректное деградирует в молчание.',
+  '**Message generation** — the SAME persona stack that answers Telegram chats writes the text from the agent’s brief. Nothing here is agent-specific: persona, tone of voice, KB, language all come from the regular retention configuration (next section).':
+    '**Генерация сообщения** — текст по брифу агента пишет ТОТ ЖЕ стек персонажа, что отвечает в Telegram-чатах. Здесь нет ничего специфичного для агента: персонаж, тон, база знаний и язык берутся из обычной конфигурации ретеншена (следующий раздел).',
+  '**Ledger** — ONE row per decision, whatever the outcome (sent, silence, blocked, dry-run), with the state snapshot, guard verdict, the agent’s reasoning and the summed cost. “Why did/didn’t the bot write?” is always answerable from the Decisions tab.':
+    '**Журнал решений** — ОДНА строка на решение при любом исходе (отправлено, молчание, заблокировано, dry-run): снимок состояния, вердикт ограничителей, рассуждение агента и суммарная стоимость. На вопрос «почему бот написал / не написал?» всегда отвечает вкладка «Решения».',
+
+  // ----- proactive agent page: guide, section 2 -----
+  '**Agent enabled** (Settings → Retention bot → «Proactive agent») is the per-product switch. Off = the agent never writes first; queued events wait unprocessed and the ledger stays readable. The dialogue bot (replies to players who write), escalation hand-offs and the photo machinery inside dialogue are never affected.':
+    '**«Агент включён»** (Настройки → Ретеншен-бот → «Проактивный агент») — переключатель на продукт. Выкл = агент никогда не пишет первым; события ждут в очереди необработанными, журнал остаётся доступным для чтения. Диалоговый бот (ответы пишущим игрокам), эскалации и механика фото внутри диалога не затрагиваются.',
+  '**Dry-run** keeps the agent deciding and logging without sending — the safe review mode.':
+    '**Dry-run** — агент принимает решения и пишет их в журнал, но не отправляет: безопасный режим проверки.',
+  '**Worker interval** (same Settings section) is how often the background worker drains the event queue — it applies live on the next tick, and 5 seconds gives near-realtime reactions.':
+    '**Интервал воркера** (тот же раздел Настроек) — как часто фоновый воркер разбирает очередь событий; применяется сразу со следующего тика, 5 секунд дают реакции почти в реальном времени.',
+  '**Deploy-level master switch**: `RETENTION_SCHEDULER_ENABLED` (Railway env) starts the background worker at all; with it off only «Process queue now» moves the queue. The worker chip in the header shows this.':
+    '**Главный переключатель уровня деплоя**: `RETENTION_SCHEDULER_ENABLED` (env Railway) вообще запускает фоновый воркер; когда он выключен, очередь двигает только «Обработать очередь». Чип воркера в шапке это показывает.',
+
+  // ----- proactive agent page: guide, section 3 -----
+  '**Persona & tone of voice** — Retention → Prompt variables (persona name, role, brand, products, `retention_tone_of_voice`). The agent only writes a short brief; the persona prompt writes the actual words. The full assembled prompt is visible in Retention → Prompt preview.':
+    '**Персонаж и тон** — Ретеншен → Переменные промпта (имя персонажа, роль, бренд, продукты, `retention_tone_of_voice`). Агент пишет только короткий бриф; сами слова пишет промпт персонажа. Полный собранный промпт виден в Ретеншен → Просмотр промпта.',
+  '**Facts the bot may use** — the Retention KB document (Retention → KB), same as in dialogue.':
+    '**Факты, которыми может пользоваться бот** — документ базы знаний ретеншена (Ретеншен → База знаний), как и в диалоге.',
+  '**The message header** — every proactive message goes out under the italic “✨ A little note from {persona}” line: the `rtn_ping_header` key in Translations (per language).':
+    '**Заголовок сообщения** — каждое проактивное сообщение уходит под курсивной строкой «✨ A little note from {persona}»: ключ `rtn_ping_header` в «Переводах» (по языкам).',
+  '**The inline button** — when the model attaches a `[[LINK:url]]` matching the occasion, the validated Site map page (Support chat → Site map) rides under the message as one button. Comfort mode strips it.':
+    '**Кнопка под сообщением** — когда модель прикладывает `[[LINK:url]]`, подходящий к поводу, проверенная страница из Карты сайта (Чат поддержки → Карта сайта) едет под сообщением одной кнопкой. Режим поддержки после проигрыша её убирает.',
+  '**Photos** — the Media library (Retention → Media), same stage × VIP gating and daily caps as in dialogue. Only positive occasions may carry a photo:':
+    '**Фото** — библиотека «Медиа» (Ретеншен → Медиа), те же ограничения Stage × VIP и дневные лимиты, что и в диалоге. Фото допускается только по позитивным поводам:',
+  '**Language** — the player’s sticky conversation language (the same one their Telegram chat drifted to).':
+    '**Язык** — «липкий» язык диалога игрока (тот, на который перешёл его Telegram-чат).',
+
+  // ----- proactive agent page: guide, section 4 -----
+  '**Decision-worthy** (the agent is consulted, a ledger row appears):':
+    '**Требуют решения** (агент подключается, появляется строка в журнале):',
+  '**Special:** `bet_settled` wakes the agent only when the player’s 24h net loss crosses the high-loss threshold (Settings → «High-loss threshold»); below it the event silently feeds the loss window.':
+    '**Особый случай:** `bet_settled` будит агента, только когда чистый проигрыш игрока за 24ч превышает порог крупного проигрыша (Настройки → «Порог крупного проигрыша»); ниже порога событие молча пополняет окно проигрыша.',
+  '**State food only** (no decision — they update activity timestamps, the loss window and the profile snapshot):':
+    '**Только данные о состоянии** (без решения — обновляют временные метки активности, окно проигрыша и снимок профиля):',
+  'Every stored event also refreshes the player\'s activity timestamps: `deposit_confirmed → last_deposit_at`, `session_started/ended → last_login_at`, `bet_settled → last_played_at` — the state resolver (idle days, days since deposit) reads them.':
+    'Каждое сохранённое событие также обновляет временные метки активности игрока: `deposit_confirmed → last_deposit_at`, `session_started/ended → last_login_at`, `bet_settled → last_played_at` — их читает резолвер состояния (дни без активности, дни с последнего депозита).',
+
+  // ----- proactive agent page: guide, section 5 (guards) -----
+  'Deterministic rails the model can never override. They are the knobs that decide the send frequency — all editable live in Settings → Retention bot → «Send-frequency guards». Current values for this product are shown in the table. Each blocked decision lists its reasons in the Guards column of the ledger:':
+    'Детерминированные рамки, которые модель не может обойти. Именно они определяют частоту отправки — все правятся на лету в Настройки → Ретеншен-бот → «Ограничители частоты». Текущие значения для этого продукта показаны в таблице. Каждое заблокированное решение перечисляет причины в колонке «Ограничители» журнала:',
+  'Guard reason': 'Причина блокировки',
+  'Current value': 'Текущее значение',
+  'What it means / which setting drives it': 'Что это значит / какая настройка этим управляет',
+  'The player has not passed the channel-subscription gate.': 'Игрок не прошёл проверку подписки на канал.',
+  'The player sent /stop (they can /resume).': 'Игрок отправил /stop (может вернуться через /resume).',
+  'Telegram returned 403 — the player blocked the bot.': 'Telegram вернул 403 — игрок заблокировал бота.',
+  '«Max proactive messages per player per day» — the hard daily ceiling.':
+    '«Макс. проактивных сообщений игроку в день» — жёсткий дневной потолок.',
+  '«Min gap between messages (hours)» — spacing between any two proactive messages to one player (0 = off). Lower it to react to several events per day.':
+    '«Мин. интервал между сообщениями (часы)» — промежуток между любыми двумя проактивными сообщениями одному игроку (0 = выкл). Уменьшите, чтобы реагировать на несколько событий в день.',
+  '«Same-event cooldown (hours)» — one reaction per event type per player per window. Set 0 while testing to re-run the same event.':
+    '«Кулдаун одинаковых событий (часы)» — одна реакция на тип события на игрока за окно. Поставьте 0 на время тестирования, чтобы повторять одно и то же событие.',
+  '«Quiet hours start/end/UTC offset» — no proactive contact at night.':
+    '«Начало/конец тихих часов, смещение UTC» — никаких проактивных сообщений ночью.',
+  '«Daily AI budget (USD)» — today’s ledger cost hit the budget.':
+    '«Дневной AI-бюджет (USD)» — стоимость решений за сегодня достигла бюджета.',
+  '«Loss comfort window» + «High-loss threshold» — after a big loss: empathetic tone only, no photo, no link, no play talk.':
+    '«Окно поддержки после проигрыша» + «Порог крупного проигрыша» — после крупного проигрыша: только эмпатичный тон, без фото, без ссылок, без разговоров об игре.',
+  '/ day': '/ день',
+  'h': 'ч',
+  'no budget': 'без бюджета',
+
+  // ----- proactive agent page: guide, section 6 (testing) -----
+  'Select the product in the header switcher, then in Settings → Retention bot → «Proactive agent» turn **Agent enabled** ON and leave **dry-run** ON (safe: nothing is sent).':
+    'Выберите продукт в переключателе в шапке, затем в Настройки → Ретеншен-бот → «Проактивный агент» включите **«Агент включён»** и оставьте **dry-run** включённым (безопасно: ничего не отправляется).',
+  'Link a test player to the Telegram bot: open the bot through a deeplink (easiest: escalate in the support-chat widget, or `POST /api/retention/deeplink` with a test `user_context`), press /start and subscribe to the channel. The `player_id` from that handshake is the id you feed the simulator.':
+    'Привяжите тестового игрока к Telegram-боту: откройте бота по deeplink (проще всего — эскалация в виджете чата поддержки, либо `POST /api/retention/deeplink` с тестовым `user_context`), нажмите /start и подпишитесь на канал. `player_id` из этого хендшейка — тот id, который вы вводите в симулятор.',
+  'In the simulator pick an event (e.g. `deposit_confirmed`), enter that player id, pick a sample payload, «Inject event». If several Telegram accounts are linked to the same test player, pick the exact recipient in «Telegram recipient» — on «auto» the message goes to the player’s most recently active link (the Decisions tab shows the actual @username either way).':
+    'В симуляторе выберите событие (напр. `deposit_confirmed`), введите этот id игрока, выберите пример данных, «Отправить событие». Если к одному тестовому игроку привязано несколько Telegram-аккаунтов, укажите точного получателя в «Получатель в Telegram» — на «авто» сообщение уйдёт на последнюю активную привязку игрока (вкладка «Решения» в любом случае показывает фактический @username).',
+  'Press «Process queue now» and open the Decisions tab: you should see the action, tone, the agent’s brief and reasoning, the guard verdict and the cost. Try a losing-day scenario: inject a few `bet_settled` «big loss» samples and watch the comfort constraints appear.':
+    'Нажмите «Обработать очередь» и откройте вкладку «Решения»: вы увидите действие, тон, бриф и рассуждение агента, вердикт ограничителей и стоимость. Попробуйте сценарий проигрышного дня: отправьте несколько примеров `bet_settled` «крупный проигрыш» и посмотрите, как появляются ограничения режима поддержки.',
+  'Blocked? The Guards column names the reason and the table above names the setting. For repeated testing: set «Same-event cooldown» to 0, raise the daily cap, widen quiet hours — or simply delete the previous decision row (that re-arms the cooldown and refunds the budget).':
+    'Заблокировано? Колонка «Ограничители» называет причину, а таблица выше — настройку. Для повторных тестов: поставьте «Кулдаун одинаковых событий» в 0, поднимите дневной лимит, расширьте тихие часы — или просто удалите предыдущую строку решения (это сбрасывает кулдаун и возвращает бюджет).',
+  'When the decisions look right, turn **dry-run OFF** and re-inject: the message reaches the player in Telegram — italic header + persona text (+ button/photo when chosen). It is also persisted into the player’s Retention → Conversations transcript.':
+    'Когда решения выглядят правильно, выключите **dry-run** и отправьте событие снова: сообщение дойдёт до игрока в Telegram — курсивный заголовок + текст персонажа (+ кнопка/фото, если выбраны). Оно также сохраняется в переписку игрока в Ретеншен → Диалоги.',
+  'Clean up after yourself: delete test rows one by one or «Clear all» on both tabs. Costs already logged to Analytics stay (they were real OpenAI calls).':
+    'Приберитесь за собой: удалите тестовые строки по одной или «Очистить всё» на обеих вкладках. Затраты, уже записанные в Аналитику, остаются (это были реальные вызовы OpenAI).',
+
+  // ----- proactive agent page: guide, section 7 (costs) -----
+  'Every decision is one cheap model call; a sent message adds one generation call. Both land in `ai_interaction_logs` and in the Telegram cost split on Retention → Analytics. The daily budget (Settings) is a hard stop: when the day’s summed ledger cost reaches it, the agent stays quiet until tomorrow.':
+    'Каждое решение — один дешёвый вызов модели; отправленное сообщение добавляет один вызов генерации. Оба попадают в `ai_interaction_logs` и в разбивку Telegram-затрат в Ретеншен → Аналитика. Дневной бюджет (Настройки) — жёсткий стоп: когда суммарная стоимость решений за день его достигает, агент молчит до завтра.',
+
+  // ----- proactive agent page: shell / notifications -----
+  'Status load failed': 'Не удалось загрузить статус',
+  'events': 'событий',
+  'decisions': 'решений',
+  'sent': 'отправлено',
+  'Run failed': 'Не удалось выполнить',
+  'Deleted': 'Удалено',
+  'Delete failed': 'Не удалось удалить',
+  'The agent is OFF for this product — no proactive messages are sent (the dialogue bot still answers players who write). Enable it in Settings → Retention bot → «Proactive agent» (dry-run stays on until you turn it off, so enabling is safe).':
+    'Агент ВЫКЛЮЧЕН для этого продукта — проактивные сообщения не отправляются (диалоговый бот по-прежнему отвечает пишущим игрокам). Включите его в Настройки → Ретеншен-бот → «Проактивный агент» (dry-run остаётся включённым, пока вы его не выключите, так что включать безопасно).',
+  'Delete ALL events for this product? The loss window and recent-activity state derived from them resets too.':
+    'Удалить ВСЕ события этого продукта? Окно проигрыша и производное состояние недавней активности тоже сбросятся.',
+  'Delete ALL decisions for this product? Today\'s budget counter and all same-event cooldowns reset.':
+    'Удалить ВСЕ решения этого продукта? Счётчик дневного бюджета и все кулдауны одинаковых событий сбросятся.',
 };
 
 const current = getAdminLang();
