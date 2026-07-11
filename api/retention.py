@@ -999,6 +999,137 @@ class SimulateEventReq(BaseModel):
     tg_user_id: Optional[int] = None
 
 
+# ---------------------------------------------------------------------------
+# Idle re-engagement rules (the agent's inactivity ladder) — admin CRUD +
+# a bounded manual test run. Rules live in retention_rules (retention_idle.py
+# is the worker-side sweep).
+# ---------------------------------------------------------------------------
+_RULE_TRIGGERS = ("bot_inactivity", "casino_inactivity", "no_deposit")
+_RULE_ACTIONS = ("message", "photo")
+
+
+class RuleWrite(BaseModel):
+    name: Optional[str] = None
+    enabled: Optional[bool] = None
+    trigger_kind: Optional[str] = None
+    inactivity_days: Optional[int] = Field(default=None, ge=1, le=365)
+    action: Optional[str] = None
+    intent: Optional[str] = None
+    vip_tiers: Optional[list[str]] = None
+    cooldown_days: Optional[int] = Field(default=None, ge=0, le=365)
+    priority: Optional[int] = Field(default=None, ge=-1000, le=1000)
+
+    def clean_fields(self) -> dict[str, Any]:
+        fields = {k: v for k, v in self.model_dump().items() if v is not None}
+        if "trigger_kind" in fields and fields["trigger_kind"] not in _RULE_TRIGGERS:
+            raise HTTPException(status_code=400,
+                                detail=f"trigger_kind must be one of "
+                                       f"{', '.join(_RULE_TRIGGERS)}.")
+        if "action" in fields and fields["action"] not in _RULE_ACTIONS:
+            raise HTTPException(status_code=400,
+                                detail=f"action must be one of "
+                                       f"{', '.join(_RULE_ACTIONS)}.")
+        if "vip_tiers" in fields:
+            fields["vip_tiers"] = [str(t).strip().lower()
+                                   for t in fields["vip_tiers"] if str(t).strip()]
+        if "intent" in fields:
+            fields["intent"] = fields["intent"].strip()
+            try:
+                # Model-facing prompt material — English by invariant §7.
+                settings_mod.ensure_english(fields["intent"], "intent")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+        return fields
+
+
+@admin_router.get("/idle/rules")
+async def list_idle_rules(product_id: int,
+                          admin=Depends(require_admin)) -> JSONResponse:
+    await admin_auth.require_product_read(admin, product_id)
+    return JSONResponse(content={
+        "items": await db.list_retention_rules(product_id),
+        "triggers": list(_RULE_TRIGGERS),
+        "actions": list(_RULE_ACTIONS)})
+
+
+@admin_router.post("/idle/rules")
+async def create_idle_rule(product_id: int, body: RuleWrite,
+                           admin=Depends(require_admin_write)) -> JSONResponse:
+    await admin_auth.require_product_write(admin, product_id)
+    fields = body.clean_fields()
+    if not (fields.get("name") or "").strip():
+        raise HTTPException(status_code=400, detail="Rule name is required.")
+    fields["name"] = fields["name"].strip()
+    rule = await db.create_retention_rule(product_id, fields,
+                                          updated_by=admin.get("email"))
+    await db.log_admin_event(None, "retention_rule_created",
+                             {"id": rule["id"], "name": rule["name"],
+                              "by": admin.get("email")}, product_id=product_id)
+    return JSONResponse(content={"rule": rule})
+
+
+@admin_router.put("/idle/rules/{rule_id}")
+async def update_idle_rule(rule_id: int, product_id: int, body: RuleWrite,
+                           admin=Depends(require_admin_write)) -> JSONResponse:
+    await admin_auth.require_product_write(admin, product_id)
+    fields = body.clean_fields()
+    if not fields:
+        raise HTTPException(status_code=400, detail="Nothing to update.")
+    rule = await db.update_retention_rule(rule_id, product_id, fields,
+                                          updated_by=admin.get("email"))
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    return JSONResponse(content={"rule": rule})
+
+
+@admin_router.delete("/idle/rules/{rule_id}")
+async def delete_idle_rule(rule_id: int, product_id: int,
+                           admin=Depends(require_admin_write)) -> JSONResponse:
+    await admin_auth.require_product_write(admin, product_id)
+    ok = await db.delete_retention_rule(rule_id, product_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Rule not found.")
+    await db.log_admin_event(None, "retention_rule_deleted",
+                             {"id": rule_id, "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"ok": True})
+
+
+@admin_router.get("/idle/ledger")
+async def list_idle_ledger(product_id: int, page: int = 1, page_size: int = 50,
+                           admin=Depends(require_admin)) -> JSONResponse:
+    """The proactive-send ledger: who was nudged, by which rule, at what cost."""
+    await admin_auth.require_product_read(admin, product_id)
+    return JSONResponse(content=await db.list_retention_pings(
+        product_id, page=max(page, 1), page_size=max(1, min(page_size, 200))))
+
+
+@admin_router.post("/idle/run")
+async def run_idle_pings_now(product_id: int,
+                             admin=Depends(require_admin_write)) -> JSONResponse:
+    """Run one bounded idle sweep for this product immediately (test/QA button).
+
+    Quiet hours and the in-process pacing are ignored (the operator is
+    explicitly asking); every other guard — per-player caps, gaps, rule
+    cooldowns, opt-outs, dry-run — still applies.
+    """
+    import retention_idle
+    await admin_auth.require_product_write(admin, product_id)
+    product = await db.get_product(product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    if not product.get("retention_enabled"):
+        raise HTTPException(status_code=409,
+                            detail="Retention is not enabled for this product.")
+    tenancy.set_current_product(product_id)
+    stats = await retention_idle.run_product_idle_pings(
+        product, settings_mod.retention(), force=True)
+    await db.log_admin_event(None, "retention_ping_run_manual",
+                             {"stats": stats, "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"stats": stats})
+
+
 @admin_router.get("/v2/status")
 async def v2_status(product_id: int,
                     admin=Depends(require_admin)) -> JSONResponse:
@@ -1027,8 +1158,14 @@ async def v2_status(product_id: int,
         "sweep_interval_sec": retention_v2.worker_interval_sec(),
         "activity": activity,
         "canonical_events": sorted(player_sync.CANONICAL_EVENTS),
-        "decision_events": sorted(retention_v2.DECISION_EVENTS),
+        # The EFFECTIVE decision set (admin-tunable per product) + the built-in
+        # default, so the Events tab can render toggles with a reset baseline.
+        "decision_events": sorted(retention_v2.effective_decision_events(cfg)),
+        "decision_events_default": sorted(retention_v2.DECISION_EVENTS),
         "photo_events": sorted(retention_v2._PHOTO_EVENTS),
+        "idle_pings_enabled": bool(cfg.get("idle_pings_enabled")),
+        "send_delay_min_sec": int(cfg.get("v2_send_delay_min_sec") or 0),
+        "send_delay_max_sec": int(cfg.get("v2_send_delay_max_sec") or 0),
         "same_event_cooldown_hours": int(
             cfg.get("v2_same_event_cooldown_hours") or 0),
         # The effective per-player send-frequency guards, so the admin page

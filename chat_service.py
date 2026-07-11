@@ -9,6 +9,7 @@ import asyncio
 from dataclasses import dataclass
 import logging
 import time
+import zlib
 from typing import Any, Optional
 
 import antispam
@@ -535,20 +536,45 @@ class RetentionReply:
     link_label: Optional[str] = None  # the site-map page title for the button
 
 
-def play_nudge_due(message_count: int) -> bool:
-    """True when THIS reply is the N-th assistant turn that carries the periodic
-    play invitation (`retention.play_reminder_every_msgs`; 0 = off).
+def _nudge_jitter(session_id: str, cycle: int, span: int) -> int:
+    """Deterministic per-cycle jitter in [-span, +span] (stateless: the same
+    session + cycle always lands on the same offset, so the schedule never
+    double-fires between turns)."""
+    if span <= 0:
+        return 0
+    seed = zlib.crc32(f"{session_id}:{cycle}".encode("utf-8"))
+    return seed % (2 * span + 1) - span
+
+
+def play_nudge_due(message_count: int, session_id: str = "") -> bool:
+    """True when THIS reply carries the periodic play invitation
+    (`retention.play_reminder_every_msgs`; 0 = off).
 
     `message_count` is the session's persisted turn counter BEFORE this reply
     (one bump per persisted turn), so the upcoming reply is turn N+1. The very
     first reply never nudges — the engagement directive forbids a casino pitch
     in the opening turns.
+
+    The cadence DRIFTS ±2 around the knob (one nudge after 3 replies, the next
+    after 7, then 5 …): a strictly periodic every-5th-message invitation is a
+    pattern a player can clock. The schedule is cumulative (next = previous +
+    N ± 2, jitter keyed on session_id + cycle), so gaps stay within N±2 and the
+    decision is reproducible across turns with no stored state.
     """
     every = int(settings.retention()["play_reminder_every_msgs"])
     if every <= 0:
         return False
     upcoming = int(message_count or 0) + 1
-    return upcoming > 1 and upcoming % every == 0
+    if upcoming <= 1:
+        return False
+    span = min(2, max(every - 1, 0))
+    turn = 0
+    cycle = 1
+    while True:
+        turn += every + _nudge_jitter(session_id, cycle, span)
+        if turn >= upcoming:
+            return turn == upcoming
+        cycle += 1
 
 
 def resolve_site_link(url: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -624,7 +650,7 @@ async def handle_retention_message(
             previous_history = await db.get_history(prev_sid, limit=carry)
     # Periodic play reminder: every N-th reply carries the Layer-3 nudge task
     # (a light in-context invitation to play + a one-tap site-map button).
-    nudge = play_nudge_due(session.get("message_count", 0))
+    nudge = play_nudge_due(session.get("message_count", 0), str(session_id))
     messages = prompts.build_retention_messages(
         session=session,
         kb_block=kb_block,
@@ -714,6 +740,7 @@ async def handle_retention_message(
         assistant_text=clean_text or ("[photo]" if photo_id else ""),
         assistant_lang=answer_lang,
         product_id=product_id,
+        link_url=link_url,
         ai_meta={
             "model": result.model, "key_used": result.key_used,
             "tokens_in": result.tokens_in, "tokens_out": result.tokens_out,

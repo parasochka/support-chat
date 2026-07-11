@@ -109,11 +109,30 @@ const InfoAdornment = ({ help }) => (
 // ---------------------------------------------------------------------------
 // One typed field
 // ---------------------------------------------------------------------------
-const Field = ({ field, value, onChange, form }) => {
+const Field = ({ field, value, onChange, form, locked = false }) => {
   const { type } = field;
   const label = t(field.label);
   const help = t(field.help);
   const longHelp = (help || '').length > LONG_HELP;
+
+  // A deploy-wide (global-only) field with a product selected: the backend
+  // strips it from product-layer saves, so show it read-only with a pointer
+  // to the scope where it CAN be edited.
+  if (locked) {
+    return (
+      <Grid size={{ xs: 12, sm: 6 }}>
+        <TextField
+          label={`${label} — ${t('global')}`}
+          value={type === 'bool' ? (value ? t('on') : t('off')) : String(value ?? '')}
+          helperText={t('Deploy-wide setting: switch the header to “All products” to edit it.')}
+          fullWidth
+          size="small"
+          disabled
+          slotProps={{ input: { endAdornment: <InfoAdornment help={help} /> } }}
+        />
+      </Grid>
+    );
+  }
 
   // Explicitness-stage thresholds shown as one labelled column per stage
   // (Stage 1 is always the free baseline), instead of an opaque textarea list.
@@ -308,7 +327,7 @@ const Field = ({ field, value, onChange, form }) => {
 // module-filtered slice; the form still carries the FULL resolved group, so
 // the save round-trips unseen fields unchanged.
 // ---------------------------------------------------------------------------
-const GroupEditor = ({ group, fields, resolved, onSaved, scopeLabel }) => {
+const GroupEditor = ({ group, fields, resolved, onSaved, scopeLabel, productScoped }) => {
   const notify = useNotify();
   const [form, setForm] = useState(() => ({ ...(resolved || {}) }));
   const [saving, setSaving] = useState(false);
@@ -358,7 +377,13 @@ const GroupEditor = ({ group, fields, resolved, onSaved, scopeLabel }) => {
                     </Typography>
                   </Grid>
                 )}
-                <Field field={f} value={form[f.name]} form={form} onChange={(v) => setField(f.name, v)} />
+                <Field
+                  field={f}
+                  value={form[f.name]}
+                  form={form}
+                  locked={Boolean(f.globalOnly && productScoped)}
+                  onChange={(v) => setField(f.name, v)}
+                />
               </Fragment>
             );
           })}
@@ -692,6 +717,7 @@ const Settings = () => {
             resolved={settings.resolved?.[g]}
             onSaved={load}
             scopeLabel={scopeLabel}
+            productScoped={Boolean(productId)}
           />
         )
       )}

@@ -46,6 +46,7 @@ import retention
 import settings
 import telegram_format
 import tenancy
+import translations
 from telegram_transport import TelegramClient, inline_keyboard
 
 log = logging.getLogger(__name__)
@@ -135,12 +136,17 @@ def worker_interval_sec() -> int:
     tick without a redeploy. Clamped to 5s..1h — a sweep is a couple of cheap
     SELECTs when the queues are empty, so a short cadence is fine.
     """
-    tenancy.set_current_product(None)  # the loop is global — never read a
-    # per-product override left on the ContextVar by the previous sweep
+    # The loop is global: read the GLOBAL layer, never a per-product override
+    # (settings.GLOBAL_ONLY_FIELDS also keeps the product layer out of this
+    # key). Save/restore the ContextVar — this helper is also called from admin
+    # requests (the /v2/status header), whose product scope must survive.
+    token = tenancy.set_current_product(None)
     try:
         v = int(settings.retention().get("worker_interval_sec") or 0)
     except Exception:  # noqa: BLE001 - a bad stored value must not kill the loop
         v = 0
+    finally:
+        tenancy.reset_current_product(token)
     return min(max(v or config.RETENTION_WORKER_INTERVAL_SEC, 5), 3600)
 
 
@@ -194,25 +200,33 @@ async def run_product_events_locked(product: dict[str, Any], *,
     processed concurrently (button + worker) both read the per-player guard
     counters before either write — both passed the min-gap/daily-cap guards and
     both sent. Blocking lock (not try-lock): the button should run right after
-    the worker finishes, not silently no-op."""
+    the worker finishes, not silently no-op. The manual run also bypasses the
+    humanizing send delay — the operator pressing the button wants answers now."""
     pool = db.pool()
     async with pool.acquire() as conn:
         await conn.execute("SELECT pg_advisory_lock($1)", _ADVISORY_LOCK_KEY)
         try:
-            return await run_product_events(product, limit=limit)
+            return await run_product_events(product, limit=limit,
+                                            ignore_send_delay=True)
         finally:
             await conn.execute("SELECT pg_advisory_unlock($1)",
                                _ADVISORY_LOCK_KEY)
 
 
 async def run_product_events(product: dict[str, Any], *,
-                             limit: Optional[int] = None) -> dict[str, Any]:
+                             limit: Optional[int] = None,
+                             ignore_send_delay: bool = False) -> dict[str, Any]:
     """Drain one product's unprocessed events through the decision pipeline.
 
     Events are CLAIMED atomically (db.claim_retention_events): the worker
     sweep, the admin «Process queue now» button and any second service
     instance can all run concurrently — each event still reaches the pipeline
     exactly once, so one deposit can never produce two thank-you messages.
+
+    The worker honours the humanizing SEND DELAY (an event becomes claimable a
+    per-event random `v2_send_delay_min_sec`..`v2_send_delay_max_sec` after it
+    arrived — an instant reaction to a deposit reads as surveillance, not
+    warmth); `ignore_send_delay` is the admin «Process queue now» override.
     """
     pid = int(product["id"])
     tenancy.set_current_product(pid)
@@ -220,9 +234,11 @@ async def run_product_events(product: dict[str, Any], *,
     if not cfg.get("v2_enabled"):
         return {"skipped": "agent_disabled"}
     batch = int(limit or cfg["ping_batch_size"])
-    events = await db.claim_retention_events(pid, limit=batch)
-    if not events:
-        return {"events": 0, "decided": 0, "sent": 0}
+    delay_min = 0 if ignore_send_delay else int(cfg.get("v2_send_delay_min_sec") or 0)
+    delay_max = 0 if ignore_send_delay else int(cfg.get("v2_send_delay_max_sec") or 0)
+    events = await db.claim_retention_events(
+        pid, limit=batch, delay_min_sec=delay_min,
+        delay_max_sec=max(delay_max, delay_min))
     decided = sent = 0
     for evt in events:
         try:
@@ -234,7 +250,20 @@ async def run_product_events(product: dict[str, Any], *,
         except Exception:  # noqa: BLE001 - one bad event must not wedge the queue
             log.exception("retention_v2_event_failed product=%s event=%s",
                           pid, evt.get("id"))
-    return {"events": len(events), "decided": decided, "sent": sent}
+    stats = {"events": len(events), "decided": decided, "sent": sent}
+    # The agent's INACTIVITY trigger: a quiet player produces no events, so the
+    # idle rules ladder (retention_idle) runs from the same sweep — same lock,
+    # same guards, same dry-run. Self-paced (once per ~10 min per product), so
+    # a seconds-scale worker interval doesn't hammer it.
+    try:
+        import retention_idle  # late: retention_idle imports this module
+        idle = await retention_idle.run_product_idle_pings(product, cfg)
+        if idle.get("sent") or idle.get("failed"):
+            stats["idle_sent"] = idle.get("sent", 0)
+            stats["idle_failed"] = idle.get("failed", 0)
+    except Exception:  # noqa: BLE001 - the idle sweep must not wedge the events
+        log.exception("retention_idle_sweep_failed product=%s", pid)
+    return stats
 
 
 # ---------------------------------------------------------------------------
@@ -478,10 +507,23 @@ async def _history_tail(ru: dict[str, Any]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # The pipeline for one event
 # ---------------------------------------------------------------------------
+def effective_decision_events(cfg: dict[str, Any]) -> frozenset[str]:
+    """The event names allowed to wake the agent for this product.
+
+    Admin-tunable (`retention.v2_decision_events`, the agent's Events tab);
+    absent/None resolves to the built-in DECISION_EVENTS. bet_settled is never
+    in the set — it stays special-cased on the loss threshold below.
+    """
+    v = cfg.get("v2_decision_events")
+    if v is None:
+        return DECISION_EVENTS
+    return frozenset(str(x) for x in v)
+
+
 def _is_decision_worthy(evt: dict[str, Any], state: dict[str, Any],
                         cfg: dict[str, Any]) -> bool:
     name = evt.get("event_name") or ""
-    if name in DECISION_EVENTS:
+    if name in effective_decision_events(cfg):
         return True
     if name == "bet_settled":
         loss_high = float(cfg.get("v2_loss_high_usd") or 0)
@@ -516,7 +558,7 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
 
     # Cheap pre-filters that need no model: unknown recipient / log-only event.
     if ru is None:
-        if evt.get("event_name") in DECISION_EVENTS:
+        if evt.get("event_name") in effective_decision_events(cfg):
             await db.insert_retention_v2_decision(
                 pid, retention_user_id=None, player_id=player_id,
                 trigger_kind="event", event_pk=evt["id"],
@@ -589,6 +631,67 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
 # ---------------------------------------------------------------------------
 # Sending (the persona writes; mechanics mirror the v1 ping send)
 # ---------------------------------------------------------------------------
+# Chrome detail per event for the header occasion phrase — unlike the
+# model-facing occasion line, the CHROME may name the amount (the player just
+# saw the exact number in their cashier; the phrase confirming "which deposit"
+# is what makes the note read as personal, not cryptic).
+def _trigger_detail(evt: dict[str, Any]) -> str:
+    name = str(evt.get("event_name") or "")
+    p = evt.get("payload") or {}
+    if name in ("deposit_confirmed", "withdrawal_settled"):
+        amount = p.get("amount")
+        if amount in (None, ""):
+            return ""
+        currency = str(p.get("currency") or "").strip()
+        return f"{amount} {currency}".strip()
+    if name == "level_up":
+        return str(p.get("level") or "").strip()
+    if name == "class_up":
+        return str(p.get("class") or "").strip()
+    if name in ("bonus_completed", "bonus_expired"):
+        return str(p.get("type") or "").strip()
+    return ""
+
+
+def _trigger_phrase(evt: dict[str, Any], lang: str) -> str:
+    """The localized human occasion phrase for the header line, or ''.
+
+    Resolved from the translations registry (rtn_trig_<event>, admin-editable
+    per language); the optional {detail} placeholder carries the safe payload
+    detail (amount / level / class / bonus type)."""
+    name = str(evt.get("event_name") or "")
+    key = f"rtn_trig_{name}"
+    if not any(k == key for k, _scope, _d in translations.KEYS):
+        return ""
+    tpl = retention._rtn_text(key, lang)
+    detail = _trigger_detail(evt)
+    text = tpl.replace("{detail}", f" {detail}" if detail else "")
+    # An empty detail may leave a dangling space before punctuation.
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"\s+([!?.,])", r"\1", text)
+    return text.strip()
+
+
+def _proactive_header(lang: str, evt: dict[str, Any], *,
+                      comfort: bool = False) -> str:
+    """One header line: '✨ Привет, это Ника! Спасибо за депозит 10 USD'.
+
+    The occasion phrase rides ON THE SAME line as the persona header (a second
+    chrome line read as a system stamp). A comfort touch (the player just lost
+    money) carries no occasion phrase — congratulation chrome would be tone-deaf.
+    """
+    header = retention._rtn_text("rtn_ping_header", lang).strip()
+    phrase = "" if comfort else _trigger_phrase(evt, lang)
+    if not phrase:
+        return header
+    if not header:
+        return phrase
+    if header[-1] not in "!?.…":
+        header += "!"
+    return f"{header} {phrase}"
+
+
+
 async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
                       evt: dict[str, Any], decision: dict[str, Any], *,
                       comfort: bool, cfg: dict[str, Any]
@@ -623,15 +726,12 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
 
     # The trigger + occasion travel with the turn: persisted on the message row
     # (so the prompt history and the admin transcript can explain WHY the bot
-    # wrote) and — with `v2_show_trigger` on — shown as a chrome line in the
-    # sent message itself.
+    # wrote) and shown to the player as a human occasion phrase merged into the
+    # header line ("✨ Привет, это Ника! Спасибо за депозит 10 USD") — never the
+    # raw event name.
     event_name = str(evt.get("event_name") or "")
     ping_context = f"{event_name}: {occasion}" if event_name else occasion
-    trigger_line = ""
-    if cfg.get("v2_show_trigger"):
-        trigger_line = retention._rtn_text(
-            "rtn_ping_trigger", draft.lang
-        ).replace("{trigger}", event_name or "event").strip()
+    header_line = _proactive_header(draft.lang, evt, comfort=comfort)
 
     markup = None
     if draft.link_url and not comfort:
@@ -645,10 +745,9 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
     delivered = False
     detail: Optional[str] = None
     if draft.photo_id is not None and not comfort:
-        caption = draft.text or retention._rtn_text("rtn_photo_caption",
-                                                    draft.lang)
-        if trigger_line:
-            caption = f"{trigger_line}\n\n{caption}"
+        caption = draft.text or retention.fallback_photo_caption(draft.lang)
+        if header_line:
+            caption = f"{header_line}\n\n{caption}"
         # Tri-state: "photo" | "text" (caption-only fallback DELIVERED — the
         # player got a message, so it must be persisted/recorded as sent) |
         # None (nothing reached the player).
@@ -661,16 +760,11 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
         elif photo_status == "text":
             detail = "photo_fallback_text"
     else:
-        header = retention._rtn_text("rtn_ping_header", draft.lang).strip()
         text_html = telegram_format.to_html(draft.text)
         text_plain = draft.text
-        chrome = [ln for ln in (header, trigger_line) if ln]
-        if chrome:
-            chrome_html = "\n".join(f"<i>{html.escape(ln)}</i>"
-                                    for ln in chrome)
-            chrome_plain = "\n".join(chrome)
-            text_html = f"{chrome_html}\n\n{text_html}"
-            text_plain = f"{chrome_plain}\n\n{draft.text}"
+        if header_line:
+            text_html = f"<i>{html.escape(header_line)}</i>\n\n{text_html}"
+            text_plain = f"{header_line}\n\n{draft.text}"
         result, err_code, err_desc = await client.send_message_verbose(
             chat_id, text_html, parse_mode="HTML", reply_markup=markup,
             disable_notification=silent)
@@ -689,7 +783,8 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
     if delivered:
         await db.persist_ping_turn(session["id"], draft.text or "[photo]",
                                    ai_meta=draft.ai_meta, product_id=pid,
-                                   ping_context=ping_context)
+                                   ping_context=ping_context,
+                                   link_url=draft.link_url if markup else None)
         # Shared anti-annoyance state: the SAME ledger/counters the v1 matrix
         # uses, so caps and min-gap hold across regimes.
         sent_detail = f"v2:{evt.get('event_name')}"

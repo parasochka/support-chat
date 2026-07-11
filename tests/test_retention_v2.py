@@ -31,9 +31,10 @@ def _cfg(**over):
         "ping_daily_cap": 1, "ping_min_gap_hours": 48,
         "quiet_hours_start": 22, "quiet_hours_end": 9,
         "quiet_hours_utc_offset": 0, "ping_batch_size": 30,
-        "v2_enabled": True, "v2_dry_run": True, "v2_show_trigger": True,
+        "v2_enabled": True, "v2_dry_run": True,
         "v2_daily_budget_usd": 5.0, "v2_loss_comfort_hours": 24,
         "v2_loss_high_usd": 100.0, "v2_same_event_cooldown_hours": 20,
+        "v2_send_delay_min_sec": 300, "v2_send_delay_max_sec": 900,
     }
     base.update(over)
     return base
@@ -565,9 +566,9 @@ def _patch_send_env(monkeypatch, sent, persisted):
             return {"message_id": 1}, None, None
 
     async def _persist(session_id, text, ai_meta=None, product_id=None,
-                       ping_context=None):
+                       ping_context=None, link_url=None):
         persisted.update(session_id=session_id, text=text,
-                         ping_context=ping_context)
+                         ping_context=ping_context, link_url=link_url)
         return 1
 
     async def _record(*a, **kw):
@@ -582,7 +583,7 @@ def _patch_send_env(monkeypatch, sent, persisted):
     monkeypatch.setattr(db, "record_retention_ping", _record)
 
 
-async def test_send_touch_shows_trigger_and_persists_context(monkeypatch):
+async def test_send_touch_header_carries_occasion_phrase(monkeypatch):
     sent, persisted = {}, {}
     _patch_send_env(monkeypatch, sent, persisted)
     decision = {"action": "message", "tone": "warm", "intent": "hi",
@@ -591,9 +592,10 @@ async def test_send_touch_shows_trigger_and_persists_context(monkeypatch):
     ok, cost, detail = await retention_v2._send_touch(
         {"id": 1}, _ru(), _evt(), decision, comfort=False, cfg=_cfg())
     assert ok is True and detail is None
-    # The fired trigger is a visible chrome line in the sent message
-    # (the `v2_show_trigger` knob, on by default)…
-    assert "deposit_confirmed" in sent["text"]
+    # The occasion rides in the HEADER line as a human phrase (rtn_trig_*,
+    # with the safe payload detail) — never the raw event name.
+    assert "deposit_confirmed" not in sent["text"]
+    assert "Спасибо за депозит 50" in sent["text"]  # ru copy + amount detail
     assert "Поздравляю с пополнением!" in sent["text"]
     # …and the trigger + occasion are persisted with the turn, so the prompt
     # history (and the admin transcript) can explain later WHY the bot wrote.
@@ -601,18 +603,44 @@ async def test_send_touch_shows_trigger_and_persists_context(monkeypatch):
     assert "deposit" in persisted["ping_context"]
 
 
-async def test_send_touch_trigger_line_can_be_disabled(monkeypatch):
+async def test_send_touch_comfort_has_no_occasion_phrase(monkeypatch):
+    # A comfort touch (the player just lost money) must not carry a
+    # congratulation-style occasion phrase — the persona header only.
     sent, persisted = {}, {}
     _patch_send_env(monkeypatch, sent, persisted)
-    decision = {"action": "message", "tone": "warm", "intent": "hi",
+    decision = {"action": "message", "tone": "comfort", "intent": "hi",
                 "reason": "r"}
     ok, *_ = await retention_v2._send_touch(
-        {"id": 1}, _ru(), _evt(), decision, comfort=False,
-        cfg=_cfg(v2_show_trigger=False))
+        {"id": 1}, _ru(), _evt(event_name="bet_settled", payload={}),
+        decision, comfort=True, cfg=_cfg())
     assert ok is True
-    assert "deposit_confirmed" not in sent["text"]
+    assert "bet_settled" not in sent["text"]
+    assert "Спасибо" not in sent["text"]
     # The persisted context stays regardless — it feeds the prompt history.
-    assert persisted["ping_context"].startswith("deposit_confirmed:")
+    assert persisted["ping_context"].startswith("bet_settled:")
+
+
+def test_trigger_phrase_details_and_punctuation():
+    # Amount + currency fold into the phrase (chrome may name the amount)…
+    p = retention_v2._trigger_phrase(
+        _evt(payload={"amount": 50, "currency": "USD"}), "en")
+    assert p == "Thank you for the deposit 50 USD!"
+    # …and an empty detail leaves no dangling space before punctuation.
+    p = retention_v2._trigger_phrase(_evt(payload={}), "en")
+    assert p == "Thank you for the deposit!"
+    # Unregistered events carry no phrase (header only).
+    assert retention_v2._trigger_phrase(
+        _evt(event_name="session_started"), "en") == ""
+
+
+def test_proactive_header_merges_on_one_line():
+    header = retention_v2._proactive_header("ru", _evt(payload={"amount": 10}))
+    assert "\n" not in header
+    assert header.startswith("✨")
+    assert "Спасибо за депозит 10" in header
+    # Comfort: header only, no occasion phrase.
+    comfort = retention_v2._proactive_header("ru", _evt(), comfort=True)
+    assert "Спасибо" not in comfort and "\n" not in comfort
 
 
 # ---------------------------------------------------------------------------
@@ -632,15 +660,20 @@ async def test_sweep_claims_events_atomically(monkeypatch):
     deposit thank-you bug)."""
     claimed = []
 
-    async def _claim(pid, limit):
-        claimed.append((pid, limit))
+    async def _claim(pid, limit, delay_min_sec=0, delay_max_sec=0):
+        claimed.append((pid, limit, delay_min_sec, delay_max_sec))
         return []
     monkeypatch.setattr(settings, "retention", lambda: _cfg(v2_enabled=True))
     monkeypatch.setattr(tenancy, "set_current_product", lambda pid: None)
     monkeypatch.setattr(db, "claim_retention_events", _claim)
     stats = await retention_v2.run_product_events({"id": 1})
     assert stats == {"events": 0, "decided": 0, "sent": 0}
-    assert claimed == [(1, 30)]  # ping_batch_size from _cfg
+    # ping_batch_size + the humanizing send delay from _cfg (5–15 min).
+    assert claimed == [(1, 30, 300, 900)]
+    # The admin «Process queue now» path bypasses the delay.
+    claimed.clear()
+    await retention_v2.run_product_events({"id": 1}, ignore_send_delay=True)
+    assert claimed == [(1, 30, 0, 0)]
 
 
 def test_worker_interval_is_hot_and_clamped(monkeypatch):
@@ -659,17 +692,17 @@ def test_worker_interval_is_hot_and_clamped(monkeypatch):
 # Settings knobs
 # ---------------------------------------------------------------------------
 def test_retention_v2_settings_validation():
-    ok = {"v2_enabled": True, "v2_dry_run": False, "v2_show_trigger": False,
+    ok = {"v2_enabled": True, "v2_dry_run": False,
           "v2_daily_budget_usd": 2.5, "v2_loss_comfort_hours": 12,
           "v2_loss_high_usd": 200.0, "v2_same_event_cooldown_hours": 0,
-          "worker_interval_sec": 5}
+          "worker_interval_sec": 5, "idle_pings_enabled": True,
+          "v2_send_delay_min_sec": 300, "v2_send_delay_max_sec": 900,
+          "v2_decision_events": ["deposit_confirmed", "level_up"]}
     assert settings.validate_setting("retention", ok) == ok
     with pytest.raises(ValueError):
         settings.validate_setting("retention", {"worker_interval_sec": 2})
     with pytest.raises(ValueError):
         settings.validate_setting("retention", {"v2_enabled": "yes"})
-    with pytest.raises(ValueError):
-        settings.validate_setting("retention", {"v2_show_trigger": "yes"})
     with pytest.raises(ValueError):
         settings.validate_setting("retention", {"v2_daily_budget_usd": -1})
     with pytest.raises(ValueError):
@@ -677,17 +710,47 @@ def test_retention_v2_settings_validation():
     with pytest.raises(ValueError):
         settings.validate_setting("retention",
                                   {"v2_same_event_cooldown_hours": -1})
+    # Send delay: max must not undercut min; both bounded.
+    with pytest.raises(ValueError):
+        settings.validate_setting("retention", {"v2_send_delay_min_sec": 600,
+                                                "v2_send_delay_max_sec": 300})
+    # Decision events: only canonical names, bet_settled stays special-cased.
+    with pytest.raises(ValueError):
+        settings.validate_setting("retention",
+                                  {"v2_decision_events": ["made_up_event"]})
+    with pytest.raises(ValueError):
+        settings.validate_setting("retention",
+                                  {"v2_decision_events": ["bet_settled"]})
 
 
 def test_retention_settings_resolve_v2_defaults():
     cfg = settings.retention()
     assert cfg["v2_enabled"] is True        # the agent is the one regime
     assert cfg["v2_dry_run"] is True        # shadow mode by default
-    assert cfg["v2_show_trigger"] is True   # trigger chrome line on by default
+    assert "v2_show_trigger" not in cfg     # replaced by rtn_trig_* phrases
     assert cfg["v2_daily_budget_usd"] > 0
     assert cfg["v2_same_event_cooldown_hours"] == 20
     assert cfg["worker_interval_sec"] == 5  # near-realtime by default
+    assert cfg["idle_pings_enabled"] is True
+    assert cfg["v2_send_delay_min_sec"] == 300   # humanizing send delay 5–15m
+    assert cfg["v2_send_delay_max_sec"] == 900
+    assert cfg["v2_decision_events"] is None     # built-in set by default
     assert "pings_enabled" not in cfg       # the v1 ping matrix is gone
+
+
+def test_effective_decision_events_override():
+    assert retention_v2.effective_decision_events({}) \
+        == retention_v2.DECISION_EVENTS
+    eff = retention_v2.effective_decision_events(
+        {"v2_decision_events": ["deposit_confirmed"]})
+    assert eff == frozenset({"deposit_confirmed"})
+    # An event toggled OFF no longer wakes the agent…
+    assert not retention_v2._is_decision_worthy(
+        _evt(event_name="level_up"), {}, {"v2_decision_events": []})
+    # …while the bet_settled loss special case survives any toggle set.
+    assert retention_v2._is_decision_worthy(
+        _evt(event_name="bet_settled"), {"net_loss_24h_usd": 500},
+        {"v2_decision_events": [], "v2_loss_high_usd": 100.0})
 
 
 # ---------------------------------------------------------------------------

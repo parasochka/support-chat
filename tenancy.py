@@ -38,6 +38,16 @@ def set_current_product(product_id: Optional[int]):
     return _current_product_id.set(product_id)
 
 
+def reset_current_product(token) -> None:
+    """Restore the scope a set_current_product() call replaced.
+
+    Handlers never need this (each request runs in its own context); it exists
+    for sync helpers that must PEEK at the global layer mid-request (e.g. the
+    worker-cadence read) without clobbering the caller's product scope.
+    """
+    _current_product_id.reset(token)
+
+
 def current_product_id() -> Optional[int]:
     return _current_product_id.get()
 

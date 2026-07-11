@@ -12,8 +12,10 @@ webhook handler, which resolved it from the bot's webhook routing token.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 import logging
+import random
 import re
 import secrets
 import time
@@ -43,6 +45,57 @@ log = logging.getLogger(__name__)
 is_safe_outbound_url = player_sync.is_safe_outbound_url
 
 
+@contextlib.asynccontextmanager
+async def _typing(client: TelegramClient, chat_id: int):
+    """Keep the native Telegram "typing…" indicator alive while the body runs.
+
+    Telegram clears a chat action after ~5s (or on the next message), so the
+    task re-sends it on a timer — the player sees a live "печатает…" instead
+    of dead silence while the model thinks. Purely cosmetic: any failure is
+    swallowed and the reply still goes out.
+    """
+    async def _loop() -> None:
+        while True:
+            await client.send_chat_action(chat_id)
+            await asyncio.sleep(4.5)
+
+    task = asyncio.create_task(_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+
+# A model reply may arrive as several short chat messages separated by a BLANK
+# line (the persona is told: usually one, sometimes two, rarely three) — real
+# people in Telegram send bursts, not paragraphs. Bounds keep a misbehaving
+# reply from turning into spam.
+_MAX_REPLY_PARTS = 3
+
+
+def _split_reply_parts(text: str) -> list[str]:
+    """Split a model reply into its blank-line-separated chat messages.
+
+    At most _MAX_REPLY_PARTS parts; a long tail collapses into the last part
+    so nothing is ever dropped. A reply with no blank lines stays whole.
+    """
+    chunks = [p.strip() for p in re.split(r"\n\s*\n", text or "") if p.strip()]
+    if len(chunks) <= 1:
+        return chunks
+    if len(chunks) > _MAX_REPLY_PARTS:
+        chunks = chunks[:_MAX_REPLY_PARTS - 1] + [
+            "\n\n".join(chunks[_MAX_REPLY_PARTS - 1:])]
+    return chunks
+
+
+def _typing_pause_sec(next_part: str) -> float:
+    """A human-ish pause before the NEXT burst message, sized to its length."""
+    base = 0.8 + min(len(next_part) * 0.035, 2.6)
+    return base + random.uniform(0.0, 0.6)
+
+
 async def _send_ai_text(client: TelegramClient, chat_id: int, text: str, *,
                         reply_markup: Optional[dict[str, Any]] = None,
                         silent: bool = False) -> bool:
@@ -51,17 +104,34 @@ async def _send_ai_text(client: TelegramClient, chat_id: int, text: str, *,
     The retention persona may use a touch of **bold**/*italic*; telegram_format
     converts that to balanced Telegram HTML. If Telegram rejects the HTML for any
     reason, fall back to the plain text so a delivery never silently fails.
-    Returns True when a message reached Telegram.
+
+    A reply carrying blank lines is delivered as SEPARATE consecutive messages
+    (the persona's natural chat burst), with a typing indicator + a short pause
+    between them; an inline button (`reply_markup`) always rides on the LAST
+    part. Returns True when at least one message reached Telegram.
     """
-    html = telegram_format.to_html(text)
-    result = await client.send_message(
-        chat_id, html, reply_markup=reply_markup, parse_mode="HTML",
-        disable_notification=silent)
-    if result is None and html != text:
-        result = await client.send_message(chat_id, text,
-                                           reply_markup=reply_markup,
-                                           disable_notification=silent)
-    return result is not None
+    parts = _split_reply_parts(text) or [text]
+    delivered_any = False
+    for i, part in enumerate(parts):
+        last = i == len(parts) - 1
+        if i > 0:
+            with contextlib.suppress(Exception):
+                await client.send_chat_action(chat_id)
+            await asyncio.sleep(_typing_pause_sec(part))
+        part_html = telegram_format.to_html(part)
+        result = await client.send_message(
+            chat_id, part_html, reply_markup=reply_markup if last else None,
+            parse_mode="HTML", disable_notification=silent)
+        if result is None and part_html != part:
+            result = await client.send_message(
+                chat_id, part, reply_markup=reply_markup if last else None,
+                disable_notification=silent)
+        delivered_any = delivered_any or result is not None
+        if result is None and not delivered_any:
+            # The first part never made it — bail instead of sending a tail
+            # without its head.
+            return False
+    return delivered_any
 
 # Callback-data constants for the inline menu (short + stable).
 CB_CHECK_SUB = "rtn:checksub"
@@ -457,6 +527,18 @@ def _persona_name() -> str:
 def _rtn_text(key: str, lang: str) -> str:
     """A retention copy string with the {persona} placeholder substituted."""
     return translations.text(key, lang).replace("{persona}", _persona_name())
+
+
+def fallback_photo_caption(lang: str) -> str:
+    """A random localized fallback caption for a photo the model sent bare.
+
+    Three registry variants — the SAME stock line stamped on every captionless
+    photo is exactly the repeated-caption bot tell the photo directive bans, so
+    the fallback rotates too.
+    """
+    key = random.choice(("rtn_photo_caption", "rtn_photo_caption_2",
+                         "rtn_photo_caption_3"))
+    return _rtn_text(key, lang)
 
 
 def _subscribe_markup(product: dict[str, Any], lang: str) -> dict[str, Any]:
@@ -889,11 +971,14 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
                     product["id"], ru.get("id"))
         appearance = None
 
-    reply = await chat_service.handle_retention_message(
-        session, text, candidates, appearance=appearance,
-        # The player's real closeness/VIP progress (Layer-3 PROGRESSION block)
-        # so Nika can explain how photos unlock accurately, not by guessing.
-        progression=progression_context(ru))
+    # Native "typing…" indicator while the model thinks — a reasoning turn can
+    # take many seconds and dead silence before a sudden paragraph is a bot tell.
+    async with _typing(client, pu.chat_id):
+        reply = await chat_service.handle_retention_message(
+            session, text, candidates, appearance=appearance,
+            # The player's real closeness/VIP progress (Layer-3 PROGRESSION
+            # block) so Nika can explain how photos unlock accurately.
+            progression=progression_context(ru))
 
     # Keep the retention_users row's sticky language in step with the answer
     # drift (chat_service persists it on the session; the ru copy drives the
@@ -930,7 +1015,7 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
     if reply.photo_id is not None:
         # Never send a bare image: fall back to a short localized caption when
         # the model returned a photo with no text.
-        caption = reply.reply or _rtn_text("rtn_photo_caption", reply.lang)
+        caption = reply.reply or fallback_photo_caption(reply.lang)
         await _send_photo(client, product, ru, pu.chat_id, reply.photo_id,
                           caption, session_id=session["id"],
                           reply_markup=markup)

@@ -236,6 +236,17 @@ class TelegramClient:
         # The API returns sizes ascending; the last is the largest.
         return photos[-1].get("file_id")
 
+    async def send_chat_action(self, chat_id: int, action: str = "typing"
+                               ) -> None:
+        """Show a native "typing…" indicator in the player's chat.
+
+        Telegram clears the action automatically after ~5 seconds or as soon
+        as a message arrives, so a long model turn re-sends it on a timer
+        (see retention._typing). Fire-and-forget: an error only skips the
+        indicator, never the reply."""
+        await self._call("sendChatAction", {"chat_id": chat_id,
+                                            "action": action})
+
     async def answer_callback(self, callback_id: str, text: Optional[str] = None
                               ) -> None:
         payload: dict[str, Any] = {"callback_query_id": callback_id}

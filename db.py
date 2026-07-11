@@ -204,6 +204,10 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   -- deposit"). Rides into the prompt history so the persona later KNOWS why it
   -- wrote, and into the admin transcript. NULL on every ordinary turn.
   ping_context TEXT,
+  -- The validated site-map CTA button attached to an assistant message
+  -- ([[LINK:url]], retention). Buttons are chrome, not text — recorded here so
+  -- the prompt history can show WHICH page was already linked (link rotation).
+  link_url    TEXT,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -397,10 +401,12 @@ CREATE TABLE IF NOT EXISTS retention_nonces (
   expires_at  TIMESTAMPTZ NOT NULL
 );
 
--- LEGACY (retention v1 ping matrix, removed) --------------------------
--- The rules table stays only as the FK target of historical
--- retention_pings.rule_id rows on already-deployed databases; no code
--- reads or writes it anymore.
+-- Idle re-engagement rules (the agent's inactivity ladder) -------------
+-- "Player quiet N days -> Nika writes first", edited in the admin
+-- Retention -> Idle pings tab and swept by retention_idle.py from the
+-- agent worker loop (shared guards/ledger). Table originally shipped with
+-- the v1 ping matrix; the schema is unchanged, so historical rows and
+-- retention_pings.rule_id references keep working.
 CREATE TABLE IF NOT EXISTS retention_rules (
   id               BIGSERIAL PRIMARY KEY,
   product_id       INT NOT NULL REFERENCES products(id),
@@ -571,6 +577,12 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         # continuity tail (returning-player greeting). NULL everywhere else.
         "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS "
         "prev_session_id UUID REFERENCES chat_sessions(id)",
+        # The validated site-map CTA button attached to an assistant message
+        # ([[LINK:url]]). Buttons are chrome, not text, so without this column
+        # the model can't see WHICH page it already linked — and keeps
+        # attaching the same one on every play nudge (the rotation bug).
+        "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS "
+        "link_url TEXT",
         # Removed feature: system-prompt versioning + A/B. The prompt is now
         # sourced solely from prompts.py (the file is the single source of truth),
         # so drop the table and the per-session attribution column. Idempotent —
@@ -1309,8 +1321,8 @@ async def get_history(session_id: str, limit: int = 50,
     (resume/admin views).
     """
     rows = await _pool.fetch(
-        "SELECT role, content, lang, ping_context, created_at FROM ("
-        "  SELECT role, content, lang, ping_context, created_at, id "
+        "SELECT role, content, lang, ping_context, link_url, created_at FROM ("
+        "  SELECT role, content, lang, ping_context, link_url, created_at, id "
         "  FROM chat_messages "
         "  WHERE session_id = $1 AND id > $2 ORDER BY id DESC LIMIT $3"
         ") sub ORDER BY id ASC",
@@ -1330,6 +1342,7 @@ async def persist_turn(
     assistant_lang: Optional[str],
     ai_meta: Optional[dict[str, Any]] = None,
     product_id: Optional[int] = None,
+    link_url: Optional[str] = None,
 ) -> int:
     """Insert user + assistant rows, bump counters, write the AI log — atomically.
 
@@ -1339,7 +1352,9 @@ async def persist_turn(
     (for example the message-cap hand-off) still persist the visible chat turn
     but intentionally skip `ai_interaction_logs` because no API call happened.
     `product_id` (the session's product) is denormalized onto the AI log row so
-    per-product cost dashboards aggregate without a join.
+    per-product cost dashboards aggregate without a join. `link_url` records
+    the validated CTA button attached to the assistant message (retention),
+    so the prompt history can show which page was already linked.
     """
     ai_meta = ai_meta or {}
     async with _acquire() as conn:
@@ -1352,12 +1367,13 @@ async def persist_turn(
             await conn.execute(
                 "INSERT INTO chat_messages "
                 "(session_id, role, content, lang, model, key_used, tokens_in, "
-                " tokens_out, cached_in, cost_usd) "
-                "VALUES ($1, 'assistant', $2, $3, $4, $5, $6, $7, $8, $9)",
+                " tokens_out, cached_in, cost_usd, link_url) "
+                "VALUES ($1, 'assistant', $2, $3, $4, $5, $6, $7, $8, $9, $10)",
                 session_id, assistant_text, assistant_lang,
                 ai_meta.get("model"), ai_meta.get("key_used"),
                 ai_meta.get("tokens_in"), ai_meta.get("tokens_out"),
                 ai_meta.get("cached_in"), ai_meta.get("cost_usd"),
+                link_url,
             )
             if ai_meta:
                 await conn.execute(
@@ -1705,6 +1721,10 @@ async def create_product(partner_id: int, slug: str, name: str
     await seed_kb_variables(product_id=row["id"])
     await seed_starter_kb(row["id"])
     await seed_starter_retention_kb(row["id"])
+    # The default 7/14/30 idle re-engagement ladder (retention_idle.py) — only
+    # when the product has no rules, so a re-run can never duplicate.
+    import retention_idle  # local import (retention_idle → db) to avoid a cycle
+    await retention_idle.seed_starter_idle_rules(row["id"])
     await set_product_setting(row["id"], "prompt_variables",
                               starter_kb.starter_prompt_variables(name),
                               updated_by="starter-seed")
@@ -3094,6 +3114,169 @@ async def set_retention_unreachable(rid: int, unreachable: bool = True) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Idle re-engagement rules (the agent's inactivity ladder) — the admin-managed
+# "player quiet N days -> Nika writes first" rules in retention_rules. Removed
+# with the v1 ping matrix, restored as PART of the agent regime: the same
+# worker sweeps them, the same guards/ledgers bound them.
+# ---------------------------------------------------------------------------
+_RULE_COLS = ("id, product_id, name, enabled, trigger_kind, inactivity_days, "
+              "action, intent, vip_tiers, cooldown_days, priority, updated_by, "
+              "created_at, updated_at")
+
+
+def _row_to_rule(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    d["id"] = int(d["id"])
+    tiers = d.get("vip_tiers")
+    if isinstance(tiers, str):
+        try:
+            d["vip_tiers"] = json.loads(tiers)
+        except ValueError:
+            d["vip_tiers"] = []
+    for ts in ("created_at", "updated_at"):
+        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
+            d[ts] = d[ts].isoformat()
+    return d
+
+
+async def list_retention_rules(product_id: int,
+                               only_enabled: bool = False) -> list[dict[str, Any]]:
+    q = (f"SELECT {_RULE_COLS} FROM retention_rules WHERE product_id = $1 "
+         + ("AND enabled " if only_enabled else "")
+         + "ORDER BY priority DESC, id")
+    rows = await _pool.fetch(q, product_id)
+    return [_row_to_rule(r) for r in rows]
+
+
+async def create_retention_rule(product_id: int, fields: dict[str, Any],
+                                updated_by: Optional[str] = None) -> dict[str, Any]:
+    row = await _pool.fetchrow(
+        "INSERT INTO retention_rules (product_id, name, enabled, trigger_kind, "
+        " inactivity_days, action, intent, vip_tiers, cooldown_days, priority, "
+        " updated_by) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
+        f"RETURNING {_RULE_COLS}",
+        product_id, fields["name"], bool(fields.get("enabled", True)),
+        fields.get("trigger_kind", "bot_inactivity"),
+        int(fields.get("inactivity_days", 7)),
+        fields.get("action", "message"), fields.get("intent", ""),
+        json.dumps(fields.get("vip_tiers") or []),
+        int(fields.get("cooldown_days", 14)), int(fields.get("priority", 0)),
+        updated_by,
+    )
+    return _row_to_rule(row)
+
+
+async def update_retention_rule(rule_id: int, product_id: int,
+                                fields: dict[str, Any],
+                                updated_by: Optional[str] = None
+                                ) -> Optional[dict[str, Any]]:
+    """Partial update; only supplied fields change. Scoped by product_id."""
+    sets = ["updated_at = now()", "updated_by = $3"]
+    args: list[Any] = [rule_id, product_id, updated_by]
+    scalar = {"name": str, "trigger_kind": str, "action": str, "intent": str}
+    for f, cast in scalar.items():
+        if f in fields:
+            args.append(cast(fields[f]))
+            sets.append(f"{f} = ${len(args)}")
+    for f in ("inactivity_days", "cooldown_days", "priority"):
+        if f in fields:
+            args.append(int(fields[f]))
+            sets.append(f"{f} = ${len(args)}")
+    if "enabled" in fields:
+        args.append(bool(fields["enabled"]))
+        sets.append(f"enabled = ${len(args)}")
+    if "vip_tiers" in fields:
+        args.append(json.dumps(fields.get("vip_tiers") or []))
+        sets.append(f"vip_tiers = ${len(args)}")
+    row = await _pool.fetchrow(
+        f"UPDATE retention_rules SET {', '.join(sets)} "
+        f"WHERE id = $1 AND product_id = $2 RETURNING {_RULE_COLS}",
+        *args,
+    )
+    return _row_to_rule(row) if row else None
+
+
+async def delete_retention_rule(rule_id: int, product_id: int) -> bool:
+    # The ledger keeps history: detach its rows instead of failing on the FK.
+    async with _acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE retention_pings SET rule_id = NULL WHERE rule_id = $1",
+                rule_id)
+            result = await conn.execute(
+                "DELETE FROM retention_rules WHERE id = $1 AND product_id = $2",
+                rule_id, product_id)
+    return result.endswith("1")
+
+
+async def eligible_ping_users(product_id: int, *, min_gap_hours: int,
+                              daily_cap: int, limit: int = 50
+                              ) -> list[dict[str, Any]]:
+    """Players the idle sweep may consider this run: subscribed, not opted out,
+    not unreachable, past the global inter-ping gap and under the daily ping
+    cap. Most-idle first. Per-rule thresholds/cooldowns are evaluated by the
+    caller.
+    """
+    rows = await _pool.fetch(
+        f"SELECT {_RU_COLS} FROM retention_users "
+        "WHERE product_id = $1 AND subscribed AND NOT pings_muted "
+        "  AND NOT unreachable "
+        "  AND (last_ping_at IS NULL "
+        "       OR last_ping_at < now() - make_interval(hours => $2)) "
+        "  AND (pings_day IS DISTINCT FROM CURRENT_DATE "
+        "       OR pings_sent_today < $3) "
+        "ORDER BY last_active_at ASC LIMIT $4",
+        product_id, int(min_gap_hours), int(daily_cap), int(limit),
+    )
+    return [_row_to_retention_user(r) for r in rows]
+
+
+async def list_retention_pings(product_id: int, page: int = 1,
+                               page_size: int = 50) -> dict[str, Any]:
+    """The ping ledger for the admin (joined with player + rule names)."""
+    offset = max(page - 1, 0) * page_size
+    total = await _pool.fetchval(
+        "SELECT COUNT(*) FROM retention_pings WHERE product_id = $1", product_id)
+    rows = await _pool.fetch(
+        "SELECT p.id, p.retention_user_id, p.rule_id, p.action, p.status, "
+        "       p.detail, p.cost_usd, p.created_at, "
+        "       u.tg_username, u.full_name, u.player_id, r.name AS rule_name "
+        "FROM retention_pings p "
+        "JOIN retention_users u ON u.id = p.retention_user_id "
+        "LEFT JOIN retention_rules r ON r.id = p.rule_id "
+        "WHERE p.product_id = $1 "
+        "ORDER BY p.id DESC LIMIT $2 OFFSET $3",
+        product_id, page_size, offset,
+    )
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        d["retention_user_id"] = int(d["retention_user_id"])
+        if d.get("rule_id") is not None:
+            d["rule_id"] = int(d["rule_id"])
+        if d.get("cost_usd") is not None:
+            d["cost_usd"] = float(d["cost_usd"])
+        if hasattr(d.get("created_at"), "isoformat"):
+            d["created_at"] = d["created_at"].isoformat()
+        items.append(d)
+    return {"items": items, "total": int(total or 0)}
+
+
+async def ping_rule_recently_fired(rid: int, rule_id: int,
+                                   cooldown_days: int) -> bool:
+    """True when this rule already pinged this player within its cooldown."""
+    val = await _pool.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM retention_pings "
+        "WHERE retention_user_id = $1 AND rule_id = $2 AND status = 'sent' "
+        "AND created_at > now() - make_interval(days => $3))",
+        rid, rule_id, int(cooldown_days),
+    )
+    return bool(val)
+
+
+# ---------------------------------------------------------------------------
 # Proactive-send ledger + the shared per-player anti-annoyance counters
 # ---------------------------------------------------------------------------
 async def record_retention_ping(product_id: int, rid: int,
@@ -3171,7 +3354,9 @@ async def ingest_retention_event(product_id: int, *, event_id: str,
     return int(row["id"]) if row else None
 
 
-async def claim_retention_events(product_id: int, limit: int = 50
+async def claim_retention_events(product_id: int, limit: int = 50,
+                                 delay_min_sec: int = 0,
+                                 delay_max_sec: int = 0
                                  ) -> list[dict[str, Any]]:
     """Atomically CLAIM a batch of unprocessed events (oldest first).
 
@@ -3182,14 +3367,24 @@ async def claim_retention_events(product_id: int, limit: int = 50
     behind one deposit producing two thank-you notes). A claimed event that
     later fails mid-pipeline stays processed — identical to the previous
     mark-in-finally behaviour, just race-free.
+
+    `delay_min_sec`/`delay_max_sec` implement the humanizing SEND DELAY: an
+    event is not claimable until a per-event pseudo-random min..max seconds
+    have passed since it arrived (id-keyed, so the delay is stable across
+    sweeps and instances). Both 0 = claim immediately (the admin «Process
+    queue now» path).
     """
+    lo = max(int(delay_min_sec), 0)
+    span = max(int(delay_max_sec) - lo, 0) + 1  # modulo divisor, >= 1
     rows = await _pool.fetch(
         "UPDATE retention_events SET processed_at = now() "
         "WHERE id IN (SELECT id FROM retention_events "
         "             WHERE product_id = $1 AND processed_at IS NULL "
+        "               AND created_at <= now() "
+        "                   - make_interval(secs => $3 + (id % $4)) "
         "             ORDER BY id ASC LIMIT $2 FOR UPDATE SKIP LOCKED) "
         "RETURNING *",
-        product_id, int(limit),
+        product_id, int(limit), float(lo), int(span),
     )
     rows = sorted(rows, key=lambda r: r["id"])  # UPDATE..RETURNING has no ORDER
     return [_row_to_retention_event(r) for r in rows]
@@ -3511,7 +3706,8 @@ async def retention_v2_cost_today(product_id: int) -> float:
 async def persist_ping_turn(session_id: str, assistant_text: str,
                             ai_meta: Optional[dict[str, Any]] = None,
                             product_id: Optional[int] = None,
-                            ping_context: Optional[str] = None) -> int:
+                            ping_context: Optional[str] = None,
+                            link_url: Optional[str] = None) -> int:
     """Persist a PROACTIVE assistant message (a ping has no user turn).
 
     Same atomic contract as persist_turn — assistant message + AI log +
@@ -3526,13 +3722,14 @@ async def persist_ping_turn(session_id: str, assistant_text: str,
             await conn.execute(
                 "INSERT INTO chat_messages "
                 "(session_id, role, content, lang, model, key_used, tokens_in, "
-                " tokens_out, cached_in, cost_usd, ping_context) "
-                "VALUES ($1, 'assistant', $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                " tokens_out, cached_in, cost_usd, ping_context, link_url) "
+                "VALUES ($1, 'assistant', $2, $3, $4, $5, $6, $7, $8, $9, $10, "
+                " $11)",
                 session_id, assistant_text, ai_meta.get("lang"),
                 ai_meta.get("model"), ai_meta.get("key_used"),
                 ai_meta.get("tokens_in"), ai_meta.get("tokens_out"),
                 ai_meta.get("cached_in"), ai_meta.get("cost_usd"),
-                ping_context,
+                ping_context, link_url,
             )
             if ai_meta.get("model"):
                 await conn.execute(

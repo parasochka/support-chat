@@ -491,10 +491,24 @@ RETENTION_V2_LOSS_HIGH_USD: float = _env_float("RETENTION_V2_LOSS_HIGH_USD", 100
 # decision instead of a same_event_cooldown block).
 RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS: int = _env_int(
     "RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS", 20)
-# Show the fired trigger (event name) as a chrome line inside every proactive
-# message ("⚡ Trigger: deposit_confirmed") — invaluable while testing the
-# agent; turn off for production players who shouldn't see internals.
-RETENTION_V2_SHOW_TRIGGER: bool = _env_bool("RETENTION_V2_SHOW_TRIGGER", True)
+# Humanizing send delay: a proactive reaction goes out a RANDOM 5–15 minutes
+# (by default) after the event arrived, per event — an instant thank-you three
+# seconds after a deposit reads as "the system is watching my transactions",
+# not "she thought of me". The worker simply doesn't claim an event before its
+# per-event delay has elapsed; the admin «Process queue now» button bypasses
+# the delay (testing). min = max pins an exact delay; both 0 = instant.
+RETENTION_V2_SEND_DELAY_MIN_SEC: int = _env_int(
+    "RETENTION_V2_SEND_DELAY_MIN_SEC", 300)
+RETENTION_V2_SEND_DELAY_MAX_SEC: int = _env_int(
+    "RETENTION_V2_SEND_DELAY_MAX_SEC", 900)
+# The agent's INACTIVITY trigger: the admin-managed idle rules ladder
+# (retention_idle / the Idle pings tab). Off = the agent reacts to events only.
+RETENTION_IDLE_PINGS_ENABLED: bool = _env_bool(
+    "RETENTION_IDLE_PINGS_ENABLED", True)
+# (The old RETENTION_V2_SHOW_TRIGGER raw-trigger chrome line was removed: an
+# event reaction now ALWAYS carries a localized human occasion phrase merged
+# into the header line — see retention_v2._proactive_header + the rtn_trig_*
+# translations keys.)
 
 # Serve /docs, /redoc and /openapi.json (they describe the WHOLE API surface,
 # /admin included) — off by default; enable only on dev/stage deployments.

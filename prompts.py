@@ -1186,6 +1186,7 @@ RESPONSE LANGUAGE:
 RESPONSE STYLE:
 - Speak like a real person in a chat: short, natural messages. No lists, no headings, no bureaucratic phrasing, no mention of the knowledge base or any system internals.
 - Keep it SHORT: one short sentence is often the whole reply, two is the usual ceiling - a chat message, not a paragraph. Go longer (3-4) only when the player asks for a story or details. Vary the length and rhythm - same-shaped messages read as scripted.
+- You may deliver a reply as SEVERAL consecutive chat messages by separating them with one BLANK line - the way a real person sends a quick burst (a short reaction, then a thought or an easy question). Usually send just ONE message; sometimes two short ones; rarely three. Never use the split to say more overall - each piece stays short - and never put a blank line inside a photo caption.
 - Never introduce yourself: the chat menu has already greeted the player on your behalf before the conversation starts. Greet only when a RETURNING PLAYER block explicitly asks for a welcome-back.
 - Do NOT end message after message with a question - that reads as a script. At most one message out of two or three ends with a question; the rest simply react, tease, agree, share something of your own, and trust the player to carry his side. NEVER use the "do you want X or Y?" two-option closer - it is a forbidden bot tell - and never repeat a question you already asked in this chat in the same shape.
 
@@ -1621,9 +1622,15 @@ _PLAY_NUDGE_DIRECTIVE = (
     "come play on the site: a personal nudge that continues the current context "
     "(his mood, what he mentioned, something worth trying), one short phrase, "
     "never a pitch and never pressure to deposit. If the SITE MAP section lists "
-    "a page matching the invitation (a games/casino/slots/live page, the "
-    "cashier, his account), attach it as a button with [[LINK:url]] per the "
-    "site-link rules - one button only. Skip the invitation entirely (and the "
+    "a page matching the invitation (a games/casino/slots/live page, "
+    "tournaments, the main page, the cashier, his account), attach it as a "
+    "button with [[LINK:url]] per the site-link rules - one button only, and "
+    "VARY the destination: your earlier messages in the history show which "
+    "page buttons you already attached ('[with this message you attached...]'),"
+    " so pick a DIFFERENT fitting page than your previous invitation - rotate "
+    "across the site map instead of defaulting to the same page every time "
+    "(vary the invitation's angle to match: slots one time, a tournament "
+    "another, just the site next). Skip the invitation entirely (and the "
     "button) if the moment is wrong: a complaint, a money problem, the player "
     "just said he lost, a sensitive or emotional moment, or he just declined "
     "to play."
@@ -1809,12 +1816,19 @@ def _retention_history_content(m: dict[str, Any]) -> str:
     content = str(m.get("content") or "")
     ctx = str(m.get("ping_context") or "").strip()
     if ctx and m.get("role") == "assistant":
-        return (
+        content = (
             f"[You sent this message PROACTIVELY, on your own initiative - "
             f"trigger: {ctx}. If the player asks what you meant, explain the "
             f"occasion warmly in your own words; never mention triggers, "
             f"systems or this note.]\n{content}"
         )
+    link = str(m.get("link_url") or "").strip()
+    if link and m.get("role") == "assistant":
+        # Buttons are chrome, not text — without this note the model cannot
+        # see which site page it already linked, and keeps attaching the same
+        # one on every invitation (the rotation bug).
+        content = (f"{content}\n[with this message you attached a site page "
+                   f"button: {link}]")
     return content
 
 

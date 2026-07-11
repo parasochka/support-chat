@@ -6,8 +6,13 @@
  * appears here.
  *
  * Field shapes:
- *   { name, label, type, help, min?, max?, step?, options?, module? }
+ *   { name, label, type, help, min?, max?, step?, options?, module?, globalOnly? }
  *   type ∈ int | float | bool | string | select | intlist | strlist | intmap
+ *
+ * `globalOnly` marks a field read by deploy-wide machinery outside any product
+ * scope (the worker loop, middleware, admin tokens): it can only be edited at
+ * the All-products scope — with a product selected the input is locked and the
+ * backend strips the field from product-layer saves (settings.GLOBAL_ONLY_FIELDS).
  *
  * `module` routes a field to one of the three settings surfaces (the sidebar
  * has one per module): 'support' (Support chat → Chat settings), 'retention'
@@ -87,10 +92,10 @@ export const GROUP_FIELDS = {
   ],
   general: [
     { name: 'session_ttl_hours', label: 'Session TTL (hours)', type: 'int', min: 1, max: 8760, module: 'support', help: 'How long a chat session stays valid.' },
-    { name: 'admin_token_ttl_min', label: 'Admin token TTL (min)', type: 'int', min: 5, max: 10080, help: 'Admin inactivity window (5 min … 1 week). The session slides: daily use auto-renews it; an account untouched for this long is logged out. Default 1 week (10080).' },
+    { name: 'admin_token_ttl_min', label: 'Admin token TTL (min)', type: 'int', min: 5, max: 10080, globalOnly: true, help: 'Admin inactivity window (5 min … 1 week). The session slides: daily use auto-renews it; an account untouched for this long is logged out. Default 1 week (10080).' },
     { name: 'max_messages_per_session', label: 'Max messages / session', type: 'int', min: 1, max: 10000, module: 'support', help: 'Message cap before the session hands off to a human.' },
     { name: 'history_max_turns', label: 'History turns to model', type: 'int', min: 1, max: 200, module: 'support', help: 'Recent turns fed into the prompt history (full transcript is always stored).' },
-    { name: 'body_max_bytes', label: 'Max request body (bytes)', type: 'int', min: 1024, max: 104857600, help: 'Largest accepted request body (1 KiB … 100 MiB).' },
+    { name: 'body_max_bytes', label: 'Max request body (bytes)', type: 'int', min: 1024, max: 104857600, globalOnly: true, help: 'Largest accepted request body (1 KiB … 100 MiB).' },
   ],
   retention: [
     { name: 'daily_photo_cap', label: 'Daily photo cap', type: 'int', min: 0, max: 10000, help: 'Max photos sent to one player per day (hard, incl. requested).' },
@@ -101,15 +106,17 @@ export const GROUP_FIELDS = {
     { name: 'profile_pull_ttl_sec', label: 'Profile pull TTL (sec)', type: 'int', min: 0, max: 604800, help: 'How long a pulled player profile stays fresh before a re-pull.' },
     { name: 'session_idle_minutes', label: 'Session idle (min)', type: 'int', min: 0, max: 525600, help: 'Idle minutes before a Telegram chat closes; the next message starts a fresh chat (0 = never close).' },
     { name: 'carry_context_turns', label: 'Carry-over context turns', type: 'int', min: 0, max: 50, help: 'Trailing turns of the previous chat shown to the model when a returning player starts a fresh one (0 = off).' },
-    { name: 'play_reminder_every_msgs', label: 'Play reminder every N replies', type: 'int', min: 0, max: 1000, help: 'Every N-th of Nika’s Telegram replies weaves in a light in-context invitation to play, with a one-tap site button picked from the Site map by intent (0 = off).' },
+    { name: 'play_reminder_every_msgs', label: 'Play reminder every ~N replies', type: 'int', min: 0, max: 1000, help: 'Roughly every N-th of Nika’s Telegram replies weaves in a light in-context invitation to play, with a one-tap site button picked from the Site map (0 = off). The actual cadence drifts ±2 around N (…after 3, then 7, then 5…) so the pattern can’t be clocked.' },
     { name: 'silent_notifications', label: 'Silent notifications (proactive)', type: 'bool', section: 'delivery', help: 'Proactive messages arrive WITHOUT a sound/vibration on the player’s phone (Telegram silent delivery). Replies in a live dialogue always notify normally.' },
     { name: 'subscription_cache_ttl_sec', label: 'Subscription re-check cache (sec)', type: 'int', min: 0, max: 86400, section: 'delivery', help: 'How long a positive channel-subscription check is cached before asking Telegram again (0 = re-check on every message).' },
     { name: 'v2_enabled', label: 'Agent enabled', type: 'bool', section: 'agent', help: 'The proactive agent for this product: reacts to casino events (deposits, level-ups, losses) with a decision per event. Off = no proactive messages at all (the dialogue bot still answers).' },
     { name: 'v2_dry_run', label: 'Dry-run (shadow mode)', type: 'bool', section: 'agent', help: 'ON: the agent decides and logs to the Decisions ledger but sends nothing. Turn off only after reviewing decisions.' },
-    { name: 'v2_show_trigger', label: 'Show trigger in message', type: 'bool', section: 'agent', help: 'Adds an italic chrome line with the fired trigger ("⚡ Trigger: deposit_confirmed") to every proactive message. Great while testing; turn OFF for production players.' },
-    { name: 'worker_interval_sec', label: 'Worker interval (seconds)', type: 'int', min: 5, max: 3600, section: 'agent', help: 'How often the background worker drains the event queue. Applies live on the next tick (no redeploy). 5s = near-realtime reactions.' },
+    { name: 'worker_interval_sec', label: 'Worker interval (seconds)', type: 'int', min: 5, max: 3600, section: 'agent', globalOnly: true, help: 'How often the background worker drains the event queue — ONE loop serves every product, so this is a deploy-wide (global) setting. Applies live on the next tick (no redeploy).' },
     { name: 'ping_batch_size', label: 'Events per sweep', type: 'int', min: 1, max: 500, section: 'agent', help: 'Max events one worker sweep processes per product — bounds the burst on Telegram and OpenAI.' },
     { name: 'v2_daily_budget_usd', label: 'Daily AI budget (USD)', type: 'float', min: 0, max: 10000, section: 'agent', help: 'Hard stop: once the day’s decisions cost this much, the agent goes quiet until tomorrow. 0 = no budget.' },
+    { name: 'idle_pings_enabled', label: 'Idle re-engagement pings', type: 'bool', section: 'agent', help: 'The agent’s inactivity trigger: the Idle pings rules ladder («quiet N days → Nika writes first», Retention → Idle pings tab). Off = the agent reacts to casino events only; a quiet player is never written to.' },
+    { name: 'v2_send_delay_min_sec', label: 'Send delay, min (seconds)', type: 'int', min: 0, max: 21600, section: 'agent', help: 'A proactive reaction goes out a RANDOM delay after the event, never instantly — an instant thank-you after a deposit reads as surveillance. Default 300 (5 min); each event gets its own delay between min and max. «Process queue now» bypasses the delay.' },
+    { name: 'v2_send_delay_max_sec', label: 'Send delay, max (seconds)', type: 'int', min: 0, max: 21600, section: 'agent', help: 'Upper bound of the random per-event send delay. Default 900 (15 min) — so reactions land 5–15 minutes after the event, ~10 on average. Set min = max for an exact delay; both 0 = react immediately.' },
     { name: 'ping_daily_cap', label: 'Max proactive messages per player per day', type: 'int', min: 1, max: 24, section: 'guards', help: 'Hard per-player cap: the agent never sends more than this many proactive messages to one player in a day, however many events fire.' },
     { name: 'ping_min_gap_hours', label: 'Min gap between messages (hours)', type: 'int', min: 0, max: 720, section: 'guards', help: 'Minimum hours between two proactive messages to the same player (0 = off). Keep it short (1–2h) if you want the agent to react to several events per day.' },
     { name: 'v2_same_event_cooldown_hours', label: 'Same-event cooldown (hours)', type: 'int', min: 0, max: 720, section: 'guards', help: 'One reaction per event TYPE per player per window — five deposits in an evening get one warm note, not five. Set 0 to disable while testing, so a re-injected simulator event gets a fresh decision instead of a same_event_cooldown block.' },

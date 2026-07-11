@@ -20,6 +20,8 @@ import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
+import FormControlLabel from '@mui/material/FormControlLabel';
+import Switch from '@mui/material/Switch';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -819,6 +821,123 @@ const GuideTab = ({ status }) => {
   );
 };
 
+// ---------------------------------------------------------------------------
+// Triggers tab — which canonical events WAKE the agent (reach a decision) and
+// which stay "state food" (update the player state silently). The set is the
+// per-product `retention.v2_decision_events` setting; saving merges it into
+// the product's stored retention overrides so no other knob is touched.
+// ---------------------------------------------------------------------------
+const EVENT_HINTS = {
+  deposit_confirmed: 'A deposit landed — a warm thank-you moment.',
+  deposit_failed: 'A payment attempt failed — a reassuring note.',
+  withdrawal_settled: 'A payout arrived — congratulate.',
+  level_up: 'New loyalty level — celebrate.',
+  class_up: 'New loyalty class — celebrate.',
+  kyc_approved: 'Verification passed — a nice milestone.',
+  bonus_completed: 'Bonus wagered through — congratulate.',
+  bonus_expired: 'A bonus expired unused — a gentle heads-up.',
+};
+
+const TriggersTab = ({ status, canWrite, onSaved }) => {
+  const notify = useNotify();
+  const [selected, setSelected] = useState(null); // Set of enabled event names
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (status) setSelected(new Set(status.decision_events || []));
+  }, [status]);
+
+  if (!status || selected === null) return <Typography>{t('Loading…')}</Typography>;
+
+  const candidates = (status.canonical_events || []).filter(
+    (n) => n !== 'bet_settled'
+  );
+  const defaults = new Set(status.decision_events_default || []);
+
+  const toggle = (name, on) => {
+    const next = new Set(selected);
+    if (on) next.add(name);
+    else next.delete(name);
+    setSelected(next);
+  };
+
+  const save = async (value) => {
+    setSaving(true);
+    try {
+      // Merge into the product's STORED retention overrides — a group is
+      // saved whole, so the other knobs must round-trip unchanged.
+      const { json } = await httpClient(withProduct(`${API_URL}/admin/settings`));
+      const overrides = (json.overrides && json.overrides.retention) || {};
+      const body = { ...overrides };
+      if (value === null) delete body.v2_decision_events;
+      else body.v2_decision_events = value;
+      await httpClient(withProduct(`${API_URL}/admin/settings/retention`), {
+        method: 'PUT',
+        body: JSON.stringify({ value: body }),
+      });
+      notify(t('Triggers saved'), { type: 'success' });
+      onSaved?.();
+    } catch (e) {
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardContent>
+        <Alert severity="info" sx={{ mb: 2 }}>
+          {t(
+            'Events with the switch ON wake the agent: each one goes through the guards and gets a row in the Decisions ledger (message / photo / silence). Events with the switch OFF are "state food": they still update the player state (activity timestamps, loss window) but never reach a decision — that is why they do not appear in Decisions.'
+          )}
+        </Alert>
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {t(
+            'bet_settled is special and has no switch: it wakes the agent ONLY when the 24h net loss crosses the high-loss threshold (Settings → Retention bot → Send-frequency guards) — the comfort reaction.'
+          )}
+        </Alert>
+        <Stack spacing={0.5}>
+          {candidates.map((name) => (
+            <Stack key={name} direction="row" alignItems="center" spacing={1}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    size="small"
+                    checked={selected.has(name)}
+                    disabled={!canWrite}
+                    onChange={(e) => toggle(name, e.target.checked)}
+                  />
+                }
+                label={<code>{name}</code>}
+                sx={{ minWidth: 260, mr: 0 }}
+              />
+              <Typography variant="caption" color="text.secondary">
+                {t(EVENT_HINTS[name] || 'State food by default — switch on to react to it.')}
+                {defaults.has(name) ? '' : ` (${t('off by default')})`}
+              </Typography>
+            </Stack>
+          ))}
+        </Stack>
+        {canWrite && (
+          <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
+            <Button
+              variant="contained"
+              disabled={saving}
+              onClick={() => save([...selected].sort())}
+            >
+              {saving ? t('Saving…') : t('Save triggers')}
+            </Button>
+            <Button disabled={saving} onClick={() => save(null)}>
+              {t('Reset to defaults')}
+            </Button>
+          </Stack>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
 const RetentionAgentInner = () => {
   const notify = useNotify();
   const { permissions } = usePermissions();
@@ -910,9 +1029,13 @@ const RetentionAgentInner = () => {
       >
         <Tab value="events" label={`${t('Events')}${events ? ` (${events.total})` : ''}`} />
         <Tab value="decisions" label={`${t('Decisions')}${decisions ? ` (${decisions.total})` : ''}`} />
+        <Tab value="triggers" label={t('Triggers')} />
         <Tab value="logs" label={`${t('System log')}${logs ? ` (${logs.total})` : ''}`} />
         <Tab value="guide" label={t('How it works & testing')} />
       </Tabs>
+      {tab === 'triggers' && (
+        <TriggersTab status={status} canWrite={canWrite} onSaved={load} />
+      )}
       {tab === 'events' && (
         <EventsTab
           events={events}
