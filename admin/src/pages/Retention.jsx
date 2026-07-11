@@ -40,6 +40,7 @@ import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
 import SecretField from '../components/SecretField';
 import TextStats from '../components/TextStats';
+import rich from '../components/Rich';
 import { t } from '../i18n';
 
 // ---------------------------------------------------------------------------
@@ -49,94 +50,51 @@ import { t } from '../i18n';
 // ---------------------------------------------------------------------------
 const GUIDE_STEPS = [
   {
-    title: '1 · Create the bot',
-    body: (
-      <>
-        Open{' '}
-        <Link href="https://t.me/BotFather" target="_blank" rel="noopener">
-          @BotFather
-        </Link>{' '}
-        → <code>/newbot</code>, pick a name and a username, copy the <b>token</b>.
-        Optionally set the description, about text and avatar there too. Menu
-        commands are not needed — players enter only via a deeplink from the site.
-      </>
+    title: t('1 · Create the bot'),
+    body: rich(
+      t(
+        'Open [@BotFather](https://t.me/BotFather) → `/newbot`, pick a name and a username, copy the **token**. Optionally set the description, about text and avatar there too. Menu commands are not needed — players enter only via a deeplink from the site.'
+      )
     ),
   },
   {
-    title: '2 · Create the channel (subscription gate)',
-    body: (
-      <>
-        Create a Telegram <b>channel</b> and add the bot as a <b>channel
-        administrator</b> — without admin rights the subscription check
-        (<code>getChatMember</code>) fails and the gate never passes. Note the
-        channel id (<code>@name</code> for public, <code>-100…</code> for private)
-        and the channel URL (the gate&apos;s &quot;open channel&quot; button leads there).
-      </>
+    title: t('2 · Create the channel (subscription gate)'),
+    body: rich(
+      t(
+        'Create a Telegram **channel** and add the bot as a **channel administrator** — without admin rights the subscription check (`getChatMember`) fails and the gate never passes. Note the channel id (`@name` for public, `-100…` for private) and the channel URL (the gate\'s "open channel" button leads there).'
+      )
     ),
   },
   {
-    title: '3 · Deploy env (Railway)',
-    body: (
-      <>
-        Set on the service (not per product): <code>PUBLIC_BASE_URL</code> (public
-        address, used to build the webhook URL), <code>TELEGRAM_WEBHOOK_SECRET</code>{' '}
-        (random string, verified in the webhook header),{' '}
-        <code>RETENTION_MEDIA_DIR</code> (mount path of an attached <b>Volume</b>,
-        so photos survive redeploys) and <code>SECRETS_MASTER_KEY</code> (encrypts
-        product secrets). The full env table is in the repo&apos;s README.
-      </>
+    title: t('3 · Deploy env (Railway)'),
+    body: rich(
+      t(
+        'Set on the service (not per product): `PUBLIC_BASE_URL` (public address, used to build the webhook URL), `TELEGRAM_WEBHOOK_SECRET` (random string, verified in the webhook header), `RETENTION_MEDIA_DIR` (mount path of an attached **Volume**, so photos survive redeploys) and `SECRETS_MASTER_KEY` (encrypts product secrets). The full env table is in the repo\'s README.'
+      )
     ),
   },
   {
-    title: '4 · Connect this product',
-    body: (
-      <>
-        On the <Link href="#/retention?tab=config">Telegram config</Link> tab:
-        switch on <b>Retention bot enabled</b>, fill the bot username, channel id
-        and channel URL → <b>Save config</b>. In <b>Secrets</b> paste the bot token
-        (and the Player API key, if the casino exposes a profile endpoint) →{' '}
-        <b>Save secrets</b>. Then press <b>Register Telegram webhook</b> — it must
-        report the webhook URL back.
-      </>
+    title: t('4 · Connect this product'),
+    body: rich(
+      t(
+        'On the [Telegram config](#/retention?tab=config) tab: switch on **Retention bot enabled**, fill the bot username, channel id and channel URL → **Save config**. In **Secrets** paste the bot token (and the Player API key, if the casino exposes a profile endpoint) → **Save secrets**. Then press **Register Telegram webhook** — it must report the webhook URL back.'
+      )
     ),
   },
   {
-    title: '5 · Content and tuning',
-    body: (
-      <>
-        Review the <Link href="#/retention?tab=kb">Retention KB</Link> (one text
-        document — what Nika may offer and talk about; a generic English starter
-        is pre-filled, replace it with the brand&apos;s own), tune the Telegram
-        persona in <Link href="#/retention?tab=variables">Prompt variables</Link>{' '}
-        (name/role/tone — empty fields use the built-in retention defaults),
-        upload photos
-        in <Link href="#/retention?tab=photos">Media</Link> (bulk upload, then
-        select them and press <b>Generate metadata</b> to have the AI fill the
-        description, tags, <code>stage</code> = explicitness and{' '}
-        <code>level_min</code> = VIP tier) and add live{' '}
-        <Link href="#/retention?tab=managers">Managers</Link> (round-robin,
-        sticky). Thresholds (daily photo cap, stage progression, VIP tiers,
-        nonce TTL) are the <code>retention</code> group in{' '}
-        <Link href="#/settings">Settings</Link>; bot texts are the{' '}
-        <code>rtn_*</code> keys in <Link href="#/translations">Translations</Link>.
-      </>
+    title: t('5 · Content and tuning'),
+    body: rich(
+      t(
+        'Review the [Retention KB](#/retention?tab=kb) (one text document — what Nika may offer and talk about; a generic English starter is pre-filled, replace it with the brand\'s own), tune the Telegram persona in [Prompt variables](#/retention?tab=variables) (name/role/tone — empty fields use the built-in retention defaults), upload photos in [Media](#/retention?tab=photos) (bulk upload, then select them and press **Generate metadata** to have the AI fill the description, tags, `stage` = explicitness and `level_min` = VIP tier) and add live [Managers](#/retention?tab=managers) (round-robin, sticky). Thresholds (daily photo cap, stage progression, VIP tiers, nonce TTL) are the `retention` group in [Settings](#/settings); bot texts are the `rtn_*` keys in [Translations](#/translations).'
+      )
     ),
   },
   {
-    title: '6 · Entry points',
-    body: (
-      <>
-        Nothing extra to integrate for the main path: once the bot is enabled, the
-        support widget&apos;s <b>escalation button</b> automatically routes the player
-        into the bot (one-time deeplink, subscription gate on the way in, &quot;go to
-        a manager&quot; in the menu). Optionally the site can mint its own per-player
-        deeplink via <code>POST /api/retention/deeplink</code> — the full contract
-        (handshake signing, profile pull/push) is documented at{' '}
-        <Link href="/integration-telegram" target="_blank" rel="noopener">
-          /integration-telegram
-        </Link>
-        .
-      </>
+    title: t('6 · Entry points'),
+    body: rich(
+      t(
+        'Nothing extra to integrate for the main path: once the bot is enabled, the support widget\'s **escalation button** automatically routes the player into the bot (one-time deeplink, subscription gate on the way in, "go to a manager" in the menu). Optionally the site can mint its own per-player deeplink via `POST /api/retention/deeplink` — the full contract (handshake signing, profile pull/push) is documented at [/integration-telegram](/integration-telegram).'
+      )
     ),
   },
 ];
@@ -156,9 +114,9 @@ const GuideTab = () => (
       </Card>
     ))}
     <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-      Quick test: open the deeplink → pass the channel gate → chat with Nika → ask
-      for a photo → it arrives; write &quot;my account is blocked&quot; → she routes you
-      out instead of answering support questions herself.
+      {t(
+        'Quick test: open the deeplink → pass the channel gate → chat with Nika → ask for a photo → it arrives; write "my account is blocked" → she routes you out instead of answering support questions herself.'
+      )}
     </Typography>
   </Box>
 );
@@ -185,7 +143,7 @@ const ConfigTab = ({ productId }) => {
           retention_enabled: Boolean(p.retention_enabled),
         });
       })
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
   }, [productId, notify]);
 
   useEffect(() => {
@@ -201,7 +159,7 @@ const ConfigTab = ({ productId }) => {
       notify(t('Telegram config saved'), { type: 'success' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     }
   };
 
@@ -221,22 +179,28 @@ const ConfigTab = ({ productId }) => {
       setSecrets({});
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     }
   };
 
   const clearSecret = async (field, label) => {
-    if (!window.confirm(`Clear ${label}? It falls back to the deploy env value.`)) return;
+    if (
+      !window.confirm(
+        t('Clear {label}? It falls back to the deploy env value.').replace('{label}', label)
+      )
+    ) {
+      return;
+    }
     try {
       await httpClient(`${API_URL}/admin/products/${productId}/secrets`, {
         method: 'PUT',
         body: JSON.stringify({ [field]: '' }),
       });
-      notify(`${label} cleared`, { type: 'success' });
+      notify(t('{label} cleared').replace('{label}', label), { type: 'success' });
       setSecrets({ ...secrets, [field]: '' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Clear failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Clear failed'), { type: 'error' });
     }
   };
 
@@ -246,16 +210,16 @@ const ConfigTab = ({ productId }) => {
         `${API_URL}/admin/retention/webhook/${productId}`,
         { method: 'POST' }
       );
-      notify(`Webhook registered: ${json.webhook_url || 'ok'}`, { type: 'success' });
+      notify(`${t('Webhook registered:')} ${json.webhook_url || 'ok'}`, { type: 'success' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Webhook registration failed', {
+      notify(e.body?.detail || e.message || t('Webhook registration failed'), {
         type: 'error',
       });
     }
   };
 
-  if (!data) return <Box sx={{ p: 2 }}>Loading…</Box>;
+  if (!data) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
   const p = data.product || {};
 
   return (
@@ -293,25 +257,25 @@ const ConfigTab = ({ productId }) => {
         </Button>
         {data.webhook_url && (
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            Webhook URL: <code>{data.webhook_url}</code>
+            {t('Webhook URL:')} <code>{data.webhook_url}</code>
           </Typography>
         )}
         <Typography variant="h6" sx={{ mt: 2 }}>
           {t('Secrets')}
         </Typography>
         <SecretField
-          label="Telegram bot token"
+          label={t('Telegram bot token')}
           set={Boolean(p.has_telegram_bot_token)}
           value={secrets.telegram_bot_token}
           onChange={(e) => setSecrets({ ...secrets, telegram_bot_token: e.target.value })}
-          onClear={() => clearSecret('telegram_bot_token', 'Telegram bot token')}
+          onClear={() => clearSecret('telegram_bot_token', t('Telegram bot token'))}
         />
         <SecretField
-          label="Player API key"
+          label={t('Player API key')}
           set={Boolean(p.has_player_api_key)}
           value={secrets.player_api_key}
           onChange={(e) => setSecrets({ ...secrets, player_api_key: e.target.value })}
-          onClear={() => clearSecret('player_api_key', 'Player API key')}
+          onClear={() => clearSecret('player_api_key', t('Player API key'))}
         />
         <Button variant="contained" size="small" onClick={saveSecrets} sx={{ mt: 1 }}>
           {t('Save secrets')}
@@ -334,7 +298,7 @@ const KbTab = ({ productId }) => {
   useEffect(() => {
     httpClient(`${API_URL}/admin/retention/kb/text?product_id=${productId}`)
       .then(({ json }) => setText(json.text ?? ''))
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
   }, [productId, notify]);
 
   const save = async () => {
@@ -347,23 +311,23 @@ const KbTab = ({ productId }) => {
       setText(json.text ?? '');
       notify(t('Retention KB saved'), { type: 'success' });
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     } finally {
       setSaving(false);
     }
   };
 
-  if (text === null) return <Box sx={{ p: 2 }}>Loading…</Box>;
+  if (text === null) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
 
   return (
     <Card>
       <CardContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-          The whole retention knowledge base as one text (Layer 2 of the
-          retention prompt — what Nika may offer and talk about in Telegram).
-          Keep it in English: it is the most token-efficient language for the
-          model, and Nika answers in the player&apos;s language regardless.{' '}
-          <code>{'{placeholders}'}</code> are substituted from KB variables.
+          {rich(
+            t(
+              'The whole retention knowledge base as one text (Layer 2 of the retention prompt — what Nika may offer and talk about in Telegram). Keep it in English: it is the most token-efficient language for the model, and Nika answers in the player\'s language regardless. `{placeholders}` are substituted from KB variables.'
+            )
+          )}
         </Typography>
         <Alert severity="info" sx={{ mb: 1 }}>
           <b>{t('English only')}.</b>{' '}
@@ -380,7 +344,7 @@ const KbTab = ({ productId }) => {
           fullWidth
         />
         <Button variant="contained" onClick={save} disabled={saving} sx={{ mt: 1.5 }}>
-          Save
+          {t('Save')}
         </Button>
       </CardContent>
     </Card>
@@ -413,7 +377,7 @@ const VariablesTab = ({ productId }) => {
       `${API_URL}/admin/retention/prompt-variables?product_id=${productId}`
     )
       .then(({ json }) => apply(json.variables))
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
   }, [productId, notify, apply]);
 
   const save = async () => {
@@ -426,23 +390,22 @@ const VariablesTab = ({ productId }) => {
       apply(json.variables);
       notify(t('Retention prompt variables saved'), { type: 'success' });
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     } finally {
       setSaving(false);
     }
   };
 
-  if (vars === null) return <Box sx={{ p: 2 }}>Loading…</Box>;
+  if (vars === null) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
 
   return (
     <Box sx={{ maxWidth: 900 }}>
       <Alert severity="info" sx={{ mb: 2 }}>
-        These values uniquify the <b>Telegram retention persona</b> — a
-        <b> separate prompt</b>, fully independent from the{' '}
-        <Link href="#/prompt?tab=variables">support-chat prompt variables</Link>.
-        An empty field <b>uses the built-in retention default</b> (shown as the
-        placeholder); a support edit never leaks into the bot. Fill a field only
-        where you want the Telegram persona to differ from that default.
+        {rich(
+          t(
+            'These values uniquify the **Telegram retention persona** — a **separate prompt**, fully independent from the [support-chat prompt variables](#/prompt?tab=variables). An empty field **uses the built-in retention default** (shown as the placeholder); a support edit never leaks into the bot. Fill a field only where you want the Telegram persona to differ from that default.'
+          )
+        )}
       </Alert>
       <Card>
         <CardContent>
@@ -453,14 +416,14 @@ const VariablesTab = ({ productId }) => {
             )}
           </Alert>
           <TextStats
-            label="Total"
+            label={t('Total')}
             text={vars.map((v) => values[v.key] || v.default || '')}
           />
           {vars.map((v) => (
             <TextField
               key={v.key}
               label={v.key}
-              helperText={v.description + ' Empty = the built-in retention default.'}
+              helperText={`${v.description} ${t('Empty = the built-in retention default.')}`}
               value={values[v.key] ?? ''}
               onChange={(e) => setValues({ ...values, [v.key]: e.target.value })}
               placeholder={v.default}
@@ -509,29 +472,29 @@ const PromptTab = ({ productId }) => {
   useEffect(() => {
     httpClient(`${API_URL}/admin/retention/effective-prompt?product_id=${productId}`)
       .then(({ json }) => setPreview(json.effective_preview))
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
   }, [productId, notify]);
 
   return (
     <Box sx={{ maxWidth: 1000 }}>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        The complete retention prompt as the model receives it in the Telegram
-        chat (read-only; language: {preview?.example?.lang || '—'}). To change
-        the wording, edit <code>prompts.py</code> and redeploy; the brand values
-        are on the{' '}
-        <Link href="#/retention?tab=variables">Prompt variables</Link> tab.
+        {rich(
+          t(
+            'The complete retention prompt as the model receives it in the Telegram chat (read-only; language: {lang}). To change the wording, edit `prompts.py` and redeploy; the brand values are on the [Prompt variables](#/retention?tab=variables) tab.'
+          ).replace('{lang}', preview?.example?.lang || '—')
+        )}
       </Typography>
       <TextStats
-        label="Total"
+        label={t('Total')}
         text={[preview?.system, preview?.user]}
         sx={{ mb: 1.5 }}
       />
       <PreviewBlock
-        title="System message (retention Layer 1 core + Layer 2 retention KB)"
+        title={t('System message (retention Layer 1 core + Layer 2 retention KB)')}
         text={preview?.system}
       />
       <PreviewBlock
-        title="User message (Layer 3: profile, language, photo candidates, guardrails)"
+        title={t('User message (Layer 3: profile, language, photo candidates, guardrails)')}
         text={preview?.user}
       />
     </Box>
@@ -597,7 +560,7 @@ const PhotoPreview = ({ photoId }) => {
 // on the right. Used by the client-paginated grids/tables in this page so they
 // match the rest of the admin. `count` is the total row count, `page` is
 // 1-based, `perPage` the page size.
-const GridPagination = ({ count, page, perPage, onPage, unit = 'items' }) => {
+const GridPagination = ({ count, page, perPage, onPage, unit = t('items') }) => {
   const pageCount = Math.max(1, Math.ceil(count / perPage));
   const from = count === 0 ? 0 : (page - 1) * perPage + 1;
   const to = Math.min(page * perPage, count);
@@ -612,7 +575,7 @@ const GridPagination = ({ count, page, perPage, onPage, unit = 'items' }) => {
       sx={{ mt: 2, px: 1 }}
     >
       <Typography variant="body2" color="text.secondary">
-        {from}–{to} of {count} {unit}
+        {from}–{to} {t('of')} {count} {unit}
       </Typography>
       <MuiPagination
         color="primary"
@@ -655,7 +618,7 @@ const PhotosTab = ({ productId }) => {
   const load = useCallback(() => {
     httpClient(`${API_URL}/admin/retention/photos?product_id=${productId}`)
       .then(({ json }) => setItems(json.items || []))
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
   }, [productId, notify]);
 
   useEffect(() => {
@@ -696,12 +659,12 @@ const PhotosTab = ({ productId }) => {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        notify(body.detail || 'Upload failed', { type: 'error' });
+        notify(body.detail || t('Upload failed'), { type: 'error' });
         return;
       }
       const body = await res.json().catch(() => ({}));
       const uploaded = (body.photos || []).length || 1;
-      notify(`${uploaded} photo${uploaded === 1 ? '' : 's'} uploaded`, {
+      notify(t('{n} photo(s) uploaded').replace('{n}', uploaded), {
         type: 'success',
       });
       setFiles([]);
@@ -709,7 +672,7 @@ const PhotosTab = ({ productId }) => {
     } catch (e) {
       // Network failure: without this the rejection escapes the click handler
       // and the operator gets no feedback at all.
-      notify(e.message || 'Upload failed', { type: 'error' });
+      notify(e.message || t('Upload failed'), { type: 'error' });
     } finally {
       setUploading(false);
     }
@@ -723,12 +686,12 @@ const PhotosTab = ({ productId }) => {
       });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     }
   };
 
   const remove = async (id) => {
-    if (!window.confirm('Delete this photo?')) return;
+    if (!window.confirm(t('Delete this photo?'))) return;
     try {
       await httpClient(`${API_URL}/admin/retention/photos/${id}`, { method: 'DELETE' });
       setSelected((prev) => {
@@ -738,7 +701,7 @@ const PhotosTab = ({ productId }) => {
       });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Delete failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Delete failed'), { type: 'error' });
     }
   };
 
@@ -790,7 +753,9 @@ const PhotosTab = ({ productId }) => {
     if (!ids.length || generating) return;
     if (
       !window.confirm(
-        `Generate metadata for ${ids.length} photo(s)? The AI fills the description, tags, stage and VIP level; current values are overwritten.`
+        t(
+          'Generate metadata for {n} photo(s)? The AI fills the description, tags, stage and VIP level; current values are overwritten.'
+        ).replace('{n}', ids.length)
       )
     ) {
       return;
@@ -818,17 +783,19 @@ const PhotosTab = ({ productId }) => {
         });
       } catch (e) {
         failed += chunk.length;
-        errors.push(e.body?.detail || e.message || 'request failed');
+        errors.push(e.body?.detail || e.message || t('request failed'));
       }
     }
     try {
       if (failed) {
         notify(
-          `Metadata: ${ok} generated, ${failed} failed (${errors.slice(0, 3).join('; ')}${errors.length > 3 ? '…' : ''})`,
+          `${t('Metadata: {ok} generated, {failed} failed')
+            .replace('{ok}', ok)
+            .replace('{failed}', failed)} (${errors.slice(0, 3).join('; ')}${errors.length > 3 ? '…' : ''})`,
           { type: 'warning' }
         );
       } else {
-        notify(`Metadata generated for ${ok} photo${ok === 1 ? '' : 's'}`, {
+        notify(t('Metadata generated for {n} photo(s)').replace('{n}', ok), {
           type: 'success',
         });
       }
@@ -848,10 +815,11 @@ const PhotosTab = ({ productId }) => {
             {t('Upload photos')}
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-            Pick any number of files at once. The fields below apply to every
-            uploaded photo — leave them empty and use{' '}
-            <b>Generate metadata</b> afterwards to have the AI fill the
-            description, tags, explicitness stage and VIP level per photo.
+            {rich(
+              t(
+                'Pick any number of files at once. The fields below apply to every uploaded photo — leave them empty and use **Generate metadata** afterwards to have the AI fill the description, tags, explicitness stage and VIP level per photo.'
+              )
+            )}
           </Typography>
           <Grid container spacing={1.5} sx={{ mb: 1 }}>
             <Grid size={{ xs: 12 }}>
@@ -880,7 +848,7 @@ const PhotosTab = ({ productId }) => {
                 label={t('Level (min VIP tier)')}
                 value={upload.level_min}
                 onChange={(e) => setUpload({ ...upload, level_min: Number(e.target.value) })}
-                helperText="VIP tier to unlock"
+                helperText={t('VIP tier to unlock')}
                 fullWidth
               >
                 {levelChoices.map((o) => (
@@ -895,11 +863,11 @@ const PhotosTab = ({ productId }) => {
                 label={t('Stage (explicitness)')}
                 value={upload.stage}
                 onChange={(e) => setUpload({ ...upload, stage: Number(e.target.value) })}
-                helperText="1 = softest"
+                helperText={t('1 = softest')}
                 fullWidth
               >
                 {stageChoices.map((s) => (
-                  <MenuItem key={s} value={s}>{`Stage ${s}`}</MenuItem>
+                  <MenuItem key={s} value={s}>{`${t('Stage')} ${s}`}</MenuItem>
                 ))}
               </TextField>
             </Grid>
@@ -916,8 +884,8 @@ const PhotosTab = ({ productId }) => {
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
             <Button variant="outlined" component="label">
               {files.length
-                ? `${files.length} file${files.length === 1 ? '' : 's'} chosen`
-                : 'Choose files'}
+                ? t('{n} files chosen').replace('{n}', files.length)
+                : t('Choose files')}
               <input
                 hidden
                 type="file"
@@ -957,7 +925,7 @@ const PhotosTab = ({ productId }) => {
               onChange={(e) => setFilter({ stage: e.target.value })}
               sx={{ minWidth: 110 }}
             >
-              <MenuItem value="all">all</MenuItem>
+              <MenuItem value="all">{t('all')}</MenuItem>
               {stageOptions.map((s) => (
                 <MenuItem key={s} value={String(s)}>
                   {s}
@@ -972,7 +940,7 @@ const PhotosTab = ({ productId }) => {
               onChange={(e) => setFilter({ level: e.target.value })}
               sx={{ minWidth: 110 }}
             >
-              <MenuItem value="all">all</MenuItem>
+              <MenuItem value="all">{t('all')}</MenuItem>
               {levelOptions.map((l) => (
                 <MenuItem key={l} value={String(l)}>
                   {l}
@@ -987,12 +955,14 @@ const PhotosTab = ({ productId }) => {
               onChange={(e) => setFilter({ status: e.target.value })}
               sx={{ minWidth: 110 }}
             >
-              <MenuItem value="all">all</MenuItem>
-              <MenuItem value="active">active</MenuItem>
-              <MenuItem value="inactive">inactive</MenuItem>
+              <MenuItem value="all">{t('all')}</MenuItem>
+              <MenuItem value="active">{t('active')}</MenuItem>
+              <MenuItem value="inactive">{t('inactive')}</MenuItem>
             </TextField>
             <Typography variant="body2" color="text.secondary">
-              {visible.length} of {items.length} photos
+              {t('{shown} of {total} photos')
+                .replace('{shown}', visible.length)
+                .replace('{total}', items.length)}
             </Typography>
           </Stack>
           <Stack
@@ -1020,12 +990,13 @@ const PhotosTab = ({ productId }) => {
               disabled={!selected.size || generating}
             >
               {generating
-                ? `Generating… ${genProgress}`
+                ? `${t('Generating…')} ${genProgress}`
                 : `${t('Generate metadata')} (${selected.size})`}
             </Button>
             <Typography variant="caption" color="text.secondary">
-              AI (the product&apos;s own model + API key) fills the description,
-              tags, stage and minimum VIP level for every selected photo.
+              {t(
+                "AI (the product's own model + API key) fills the description, tags, stage and minimum VIP level for every selected photo."
+              )}
             </Typography>
           </Stack>
         </CardContent>
@@ -1033,7 +1004,7 @@ const PhotosTab = ({ productId }) => {
 
       {items.length === 0 && (
         <Typography variant="body2" color="text.secondary">
-          No photos yet — upload the first ones above.
+          {t('No photos yet — upload the first ones above.')}
         </Typography>
       )}
       <Grid container spacing={2} alignItems="stretch">
@@ -1072,8 +1043,8 @@ const PhotosTab = ({ productId }) => {
                   useFlexGap
                   sx={{ mt: 1 }}
                 >
-                  <Chip size="small" variant="outlined" label={`stage ${ph.stage}`} />
-                  <Chip size="small" variant="outlined" label={`level ${ph.level_min}+`} />
+                  <Chip size="small" variant="outlined" label={`${t('stage')} ${ph.stage}`} />
+                  <Chip size="small" variant="outlined" label={`${t('level')} ${ph.level_min}+`} />
                   {(ph.tags || []).slice(0, 4).map((t) => (
                     <Chip key={t} size="small" label={t} />
                   ))}
@@ -1084,7 +1055,7 @@ const PhotosTab = ({ productId }) => {
                 <Stack spacing={1.5} sx={{ mt: 1.5 }}>
                   <TextField
                     size="small"
-                    label="Description"
+                    label={t('Description')}
                     defaultValue={ph.description || ''}
                     onBlur={(e) =>
                       e.target.value !== (ph.description || '') &&
@@ -1112,7 +1083,7 @@ const PhotosTab = ({ productId }) => {
                     <TextField
                       select
                       size="small"
-                      label="Level (min VIP)"
+                      label={t('Level (min VIP)')}
                       value={ph.level_min}
                       onChange={(e) =>
                         Number(e.target.value) !== ph.level_min &&
@@ -1139,10 +1110,10 @@ const PhotosTab = ({ productId }) => {
                       fullWidth
                     >
                       {stageChoices.map((s) => (
-                        <MenuItem key={s} value={s}>{`Stage ${s}`}</MenuItem>
+                        <MenuItem key={s} value={s}>{`${t('Stage')} ${s}`}</MenuItem>
                       ))}
                       {!stageChoices.includes(ph.stage) && (
-                        <MenuItem value={ph.stage}>{`Stage ${ph.stage}`}</MenuItem>
+                        <MenuItem value={ph.stage}>{`${t('Stage')} ${ph.stage}`}</MenuItem>
                       )}
                     </TextField>
                   </Stack>
@@ -1162,11 +1133,11 @@ const PhotosTab = ({ productId }) => {
                           onChange={(e) => patch(ph.id, { active: e.target.checked })}
                         />
                       }
-                      label="Active"
+                      label={t('Active')}
                     />
-                    {ph.telegram_file_id && <Chip size="small" label="cached in TG" />}
+                    {ph.telegram_file_id && <Chip size="small" label={t('cached in TG')} />}
                     <Button size="small" color="error" onClick={() => remove(ph.id)}>
-                      Delete
+                      {t('Delete')}
                     </Button>
                   </Stack>
                 </Stack>
@@ -1181,7 +1152,7 @@ const PhotosTab = ({ productId }) => {
           page={safePage}
           perPage={PHOTOS_PER_PAGE}
           onPage={setPage}
-          unit="photos"
+          unit={t('photos')}
         />
       )}
     </Box>
@@ -1199,7 +1170,7 @@ const ManagersTab = ({ productId }) => {
   const load = useCallback(() => {
     httpClient(`${API_URL}/admin/retention/managers?product_id=${productId}`)
       .then(({ json }) => setItems(json.items || []))
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
   }, [productId, notify]);
 
   useEffect(() => {
@@ -1215,7 +1186,7 @@ const ManagersTab = ({ productId }) => {
       setForm({ display_name: '', username: '' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Create failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Create failed'), { type: 'error' });
     }
   };
 
@@ -1227,7 +1198,7 @@ const ManagersTab = ({ productId }) => {
       });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     }
   };
 
@@ -1237,7 +1208,7 @@ const ManagersTab = ({ productId }) => {
       await httpClient(`${API_URL}/admin/retention/managers/${id}`, { method: 'DELETE' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Delete failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Delete failed'), { type: 'error' });
     }
   };
 
@@ -1254,9 +1225,9 @@ const ManagersTab = ({ productId }) => {
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell>Name</TableCell>
-              <TableCell>Username</TableCell>
-              <TableCell>Active</TableCell>
+              <TableCell>{t('Name')}</TableCell>
+              <TableCell>{t('Username')}</TableCell>
+              <TableCell>{t('Active')}</TableCell>
               <TableCell />
             </TableRow>
           </TableHead>
@@ -1270,7 +1241,7 @@ const ManagersTab = ({ productId }) => {
                 </TableCell>
                 <TableCell>
                   <Button size="small" color="error" onClick={() => remove(m.id)}>
-                    Delete
+                    {t('Delete')}
                   </Button>
                 </TableCell>
               </TableRow>
@@ -1304,7 +1275,7 @@ const ConversationsTab = ({ productId }) => {
       `${API_URL}/admin/retention/sessions?product_id=${productId}&page=${page}&page_size=${pageSize}`
     )
       .then(({ json }) => setData(json))
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
   }, [productId, page, notify]);
 
   useEffect(() => {
@@ -1314,7 +1285,7 @@ const ConversationsTab = ({ productId }) => {
   const openTranscript = (id) => {
     httpClient(`${API_URL}/admin/session/${id}`)
       .then(({ json }) => setDetail(json))
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
   };
 
   const toggleSelect = (id) =>
@@ -1338,8 +1309,12 @@ const ConversationsTab = ({ productId }) => {
     if (
       !window.confirm(
         many
-          ? `Delete ${ids.length} Telegram chats? This permanently removes their messages and logs AND purges each linked player (identity, seen photos, pings) from analytics.`
-          : 'Delete this Telegram chat? This permanently removes its messages and logs AND purges the linked player (identity, seen photos, pings) from analytics.'
+          ? t(
+              'Delete {n} Telegram chats? This permanently removes their messages and logs AND purges each linked player (identity, seen photos, pings) from analytics.'
+            ).replace('{n}', ids.length)
+          : t(
+              'Delete this Telegram chat? This permanently removes its messages and logs AND purges the linked player (identity, seen photos, pings) from analytics.'
+            )
       )
     ) {
       return;
@@ -1351,14 +1326,14 @@ const ConversationsTab = ({ productId }) => {
         )
       );
       notify(
-        many ? `${ids.length} chats deleted` : 'Chat deleted',
+        many ? t('{n} chats deleted').replace('{n}', ids.length) : t('Chat deleted'),
         { type: 'success' }
       );
       setSelected(new Set());
       setDetail(null);
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Delete failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Delete failed'), { type: 'error' });
     }
   };
 
@@ -1368,11 +1343,9 @@ const ConversationsTab = ({ productId }) => {
   return (
     <Box>
       <Alert severity="info" sx={{ mb: 2 }}>
-        Telegram chats with Nika, kept apart from the support-widget
-        conversations. An idle chat closes automatically (the “Session idle
-        (min)” knob in Settings → Retention bot); when the player returns, a new
-        chat starts and Nika is shown the tail of the previous one for
-        continuity. Click a row for the transcript.
+        {t(
+          'Telegram chats with Nika, kept apart from the support-widget conversations. An idle chat closes automatically (the “Session idle (min)” knob in Settings → Retention bot); when the player returns, a new chat starts and Nika is shown the tail of the previous one for continuity. Click a row for the transcript.'
+        )}
       </Alert>
       {isAdmin && (
         <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
@@ -1383,7 +1356,7 @@ const ConversationsTab = ({ productId }) => {
             disabled={!selected.size}
             onClick={() => deleteIds([...selected])}
           >
-            Delete selected ({selected.size})
+            {t('Delete selected')} ({selected.size})
           </Button>
         </Stack>
       )}
@@ -1401,14 +1374,14 @@ const ConversationsTab = ({ productId }) => {
                   />
                 </TableCell>
               )}
-              <TableCell>Player</TableCell>
-              <TableCell>TG user</TableCell>
-              <TableCell>Lang</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell align="right">Msgs</TableCell>
-              <TableCell align="right">Cost $</TableCell>
-              <TableCell>Started</TableCell>
-              <TableCell>Last activity</TableCell>
+              <TableCell>{t('Player')}</TableCell>
+              <TableCell>{t('TG user')}</TableCell>
+              <TableCell>{t('Lang')}</TableCell>
+              <TableCell>{t('Status')}</TableCell>
+              <TableCell align="right">{t('Msgs')}</TableCell>
+              <TableCell align="right">{t('Cost $')}</TableCell>
+              <TableCell>{t('Started')}</TableCell>
+              <TableCell>{t('Last activity')}</TableCell>
               {isAdmin && <TableCell />}
             </TableRow>
           </TableHead>
@@ -1455,7 +1428,7 @@ const ConversationsTab = ({ productId }) => {
                       color="error"
                       onClick={() => deleteIds([s.id])}
                     >
-                      Delete
+                      {t('Delete')}
                     </Button>
                   </TableCell>
                 )}
@@ -1465,7 +1438,7 @@ const ConversationsTab = ({ productId }) => {
               <TableRow>
                 <TableCell colSpan={cols}>
                   <Typography color="text.secondary" sx={{ py: 2 }}>
-                    No Telegram chats yet.
+                    {t('No Telegram chats yet.')}
                   </Typography>
                 </TableCell>
               </TableRow>
@@ -1476,19 +1449,19 @@ const ConversationsTab = ({ productId }) => {
       {pages > 1 && (
         <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }}>
           <Button size="small" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-            Prev
+            {t('Prev')}
           </Button>
           <Typography variant="body2">
-            {page} / {pages} · {data.total} chats
+            {page} / {pages} · {data.total} {t('chats')}
           </Typography>
           <Button size="small" disabled={page >= pages} onClick={() => setPage(page + 1)}>
-            Next
+            {t('Next')}
           </Button>
         </Stack>
       )}
       <Dialog open={!!detail} onClose={() => setDetail(null)} maxWidth="md" fullWidth fullScreen={isMobile}>
         <DialogTitle>
-          Telegram chat · {detail?.session?.id}
+          {t('Telegram chat')} · {detail?.session?.id}
           {detail?.session?.status ? ` · ${detail.session.status}` : ''}
         </DialogTitle>
         <DialogContent dividers>
@@ -1505,7 +1478,7 @@ const ConversationsTab = ({ productId }) => {
                     sx={{ maxWidth: '80%', alignSelf: 'flex-end', width: { xs: 180, sm: 240 } }}
                   >
                     <Typography variant="caption" color="text.secondary">
-                      photo · {new Date(item.created_at).toLocaleString()}
+                      {t('photo')} · {new Date(item.created_at).toLocaleString()}
                     </Typography>
                     <PhotoPreview photoId={item.photo_id} />
                     {item.description && (
@@ -1528,7 +1501,7 @@ const ConversationsTab = ({ productId }) => {
                       <Typography variant="caption" color="text.secondary">
                         {item.role} · {new Date(item.created_at).toLocaleString()}
                         {item.cost_usd ? ` · $${item.cost_usd.toFixed(5)}` : ''}
-                        {item.ping_context ? ` · ⚡ proactive: ${item.ping_context}` : ''}
+                        {item.ping_context ? ` · ⚡ ${t('proactive:')} ${item.ping_context}` : ''}
                       </Typography>
                       <Typography sx={{ whiteSpace: 'pre-wrap' }}>{item.content}</Typography>
                     </CardContent>
@@ -1536,15 +1509,15 @@ const ConversationsTab = ({ productId }) => {
                 )
               )}
             {(detail?.messages || []).length === 0 && (
-              <Typography color="text.secondary">No messages.</Typography>
+              <Typography color="text.secondary">{t('No messages.')}</Typography>
             )}
           </Stack>
         </DialogContent>
         <DialogActions>
           <Typography variant="caption" color="text.secondary" sx={{ mr: 'auto', ml: 1 }}>
-            Total cost: ${detail?.cost_usd_total ?? 0}
+            {t('Total cost:')} ${detail?.cost_usd_total ?? 0}
           </Typography>
-          <Button onClick={() => setDetail(null)}>Close</Button>
+          <Button onClick={() => setDetail(null)}>{t('Close')}</Button>
         </DialogActions>
       </Dialog>
     </Box>
@@ -1585,20 +1558,20 @@ const KpiCard = ({ label, value, hint }) => (
 );
 
 const TIMESERIES_SERIES = [
-  { key: 'messages', label: 'Messages' },
-  { key: 'active_users', label: 'Active players' },
-  { key: 'photos', label: 'Photos' },
-  { key: 'pings', label: 'Pings' },
+  { key: 'messages', label: t('Messages') },
+  { key: 'active_users', label: t('Active players') },
+  { key: 'photos', label: t('Photos') },
+  { key: 'pings', label: t('Pings') },
 ];
 
 const FUNNEL_STEPS = [
-  ['deeplinks_created', 'Deeplinks minted'],
-  ['starts', '/start redemptions'],
-  ['new_users', 'New linked players'],
-  ['subscribed', 'Subscribed to channel'],
-  ['engaged', 'Engaged (wrote a message)'],
-  ['photo_receivers', 'Received a photo'],
-  ['handoffs', 'Handed off'],
+  ['deeplinks_created', t('Deeplinks minted')],
+  ['starts', t('/start redemptions')],
+  ['new_users', t('New linked players')],
+  ['subscribed', t('Subscribed to channel')],
+  ['engaged', t('Engaged (wrote a message)')],
+  ['photo_receivers', t('Received a photo')],
+  ['handoffs', t('Handed off')],
 ];
 
 const AnalyticsTab = ({ productId }) => {
@@ -1613,7 +1586,7 @@ const AnalyticsTab = ({ productId }) => {
     const qs = `product_id=${productId}&from=${range.from}&to=${range.to}`;
     httpClient(`${API_URL}/admin/retention/overview?${qs}`)
       .then(({ json }) => setOverview(json))
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
     httpClient(`${API_URL}/admin/retention/funnel?${qs}`)
       .then(({ json }) => setFunnel(json))
       .catch(() => setFunnel(null));
@@ -1632,8 +1605,8 @@ const AnalyticsTab = ({ productId }) => {
   const inRange = overview?.range;
   const replyRate =
     inRange?.ping_reply_rate != null
-      ? `${(inRange.ping_reply_rate * 100).toFixed(1)}% reply rate`
-      : 'no pings in range';
+      ? t('{pct}% reply rate').replace('{pct}', (inRange.ping_reply_rate * 100).toFixed(1))
+      : t('no pings in range');
 
   return (
     <Box>
@@ -1709,7 +1682,7 @@ const AnalyticsTab = ({ productId }) => {
           <Card sx={{ height: '100%' }}>
             <CardContent>
               <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-                Entry funnel
+                {t('Entry funnel')}
               </Typography>
               <FunnelBars
                 steps={FUNNEL_STEPS.map(([key, label]) => ({
@@ -1724,16 +1697,16 @@ const AnalyticsTab = ({ productId }) => {
           <Card sx={{ height: '100%' }}>
             <CardContent>
               <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-                Stage distribution
+                {t('Stage distribution')}
               </Typography>
               <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-                Players per unlocked photo stage (lifetime).
+                {t('Players per unlocked photo stage (lifetime).')}
               </Typography>
               <MiniBarChart
                 data={overview?.stage_distribution || []}
                 xKey="stage"
                 yKey="users"
-                label="Players"
+                label={t('Players')}
               />
             </CardContent>
           </Card>
@@ -1747,15 +1720,15 @@ const AnalyticsTab = ({ productId }) => {
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell>Player</TableCell>
-              <TableCell>TG user</TableCell>
-              <TableCell>Entry</TableCell>
-              <TableCell>VIP</TableCell>
-              <TableCell align="right">Stage</TableCell>
-              <TableCell align="right">Msgs</TableCell>
-              <TableCell align="right">Photos</TableCell>
-              <TableCell>Manager</TableCell>
-              <TableCell>Last active</TableCell>
+              <TableCell>{t('Player')}</TableCell>
+              <TableCell>{t('TG user')}</TableCell>
+              <TableCell>{t('Entry')}</TableCell>
+              <TableCell>{t('VIP')}</TableCell>
+              <TableCell align="right">{t('Stage')}</TableCell>
+              <TableCell align="right">{t('Msgs')}</TableCell>
+              <TableCell align="right">{t('Photos')}</TableCell>
+              <TableCell>{t('Manager')}</TableCell>
+              <TableCell>{t('Last active')}</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -1832,7 +1805,7 @@ const Retention = () => {
   // operator can't edit the default product by accident (same gate as KB /
   // Prompt / Translations).
   if (!productId) {
-    return <RequireProduct title="Retention · Telegram" />;
+    return <RequireProduct title={t('Retention · Telegram')} />;
   }
 
   const Component = COMPONENTS[tab];
@@ -1840,7 +1813,7 @@ const Retention = () => {
 
   return (
     <Box sx={{ p: 2, maxWidth: 1100 }}>
-      <Title title="Retention · Telegram" />
+      <Title title={t('Retention · Telegram')} />
       {subtabs && (
         <Tabs
           value={tab}

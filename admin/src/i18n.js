@@ -890,6 +890,133 @@ const RU = {
     'Удалить ВСЕ события этого продукта? Окно проигрыша и производное состояние недавней активности тоже сбросятся.',
   'Delete ALL decisions for this product? Today\'s budget counter and all same-event cooldowns reset.':
     'Удалить ВСЕ решения этого продукта? Счётчик дневного бюджета и все кулдауны одинаковых событий сбросятся.',
+
+  // ----- retention: setup guide -----
+  '1 · Create the bot': '1 · Создайте бота',
+  'Open [@BotFather](https://t.me/BotFather) → `/newbot`, pick a name and a username, copy the **token**. Optionally set the description, about text and avatar there too. Menu commands are not needed — players enter only via a deeplink from the site.':
+    'Откройте [@BotFather](https://t.me/BotFather) → `/newbot`, задайте имя и username, скопируйте **токен**. Там же при желании настройте описание, текст «о боте» и аватар. Команды меню не нужны — игроки попадают в бота только по deeplink с сайта.',
+  '2 · Create the channel (subscription gate)': '2 · Создайте канал (проверка подписки)',
+  'Create a Telegram **channel** and add the bot as a **channel administrator** — without admin rights the subscription check (`getChatMember`) fails and the gate never passes. Note the channel id (`@name` for public, `-100…` for private) and the channel URL (the gate\'s "open channel" button leads there).':
+    'Создайте Telegram-**канал** и добавьте бота **администратором канала** — без прав администратора проверка подписки (`getChatMember`) не работает, и гейт никогда не пройдёт. Запишите id канала (`@name` для публичного, `-100…` для приватного) и URL канала (туда ведёт кнопка «открыть канал» на проверке подписки).',
+  '3 · Deploy env (Railway)': '3 · Переменные окружения деплоя (Railway)',
+  'Set on the service (not per product): `PUBLIC_BASE_URL` (public address, used to build the webhook URL), `TELEGRAM_WEBHOOK_SECRET` (random string, verified in the webhook header), `RETENTION_MEDIA_DIR` (mount path of an attached **Volume**, so photos survive redeploys) and `SECRETS_MASTER_KEY` (encrypts product secrets). The full env table is in the repo\'s README.':
+    'Задайте на сервисе (не на продукте): `PUBLIC_BASE_URL` (публичный адрес, из него строится URL вебхука), `TELEGRAM_WEBHOOK_SECRET` (случайная строка, проверяется в заголовке вебхука), `RETENTION_MEDIA_DIR` (путь монтирования подключённого **Volume**, чтобы фото переживали редеплой) и `SECRETS_MASTER_KEY` (шифрует секреты продуктов). Полная таблица переменных — в README репозитория.',
+  '4 · Connect this product': '4 · Подключите этот продукт',
+  'On the [Telegram config](#/retention?tab=config) tab: switch on **Retention bot enabled**, fill the bot username, channel id and channel URL → **Save config**. In **Secrets** paste the bot token (and the Player API key, if the casino exposes a profile endpoint) → **Save secrets**. Then press **Register Telegram webhook** — it must report the webhook URL back.':
+    'На вкладке [Настройка Telegram](#/retention?tab=config): включите **Ретеншен-бот включён**, заполните username бота, id канала и URL канала → **Сохранить настройки**. В блоке **Секреты** вставьте токен бота (и ключ Player API, если казино отдаёт эндпоинт профиля) → **Сохранить секреты**. Затем нажмите **Зарегистрировать вебхук Telegram** — в ответ должен вернуться URL вебхука.',
+  '5 · Content and tuning': '5 · Контент и настройка',
+  'Review the [Retention KB](#/retention?tab=kb) (one text document — what Nika may offer and talk about; a generic English starter is pre-filled, replace it with the brand\'s own), tune the Telegram persona in [Prompt variables](#/retention?tab=variables) (name/role/tone — empty fields use the built-in retention defaults), upload photos in [Media](#/retention?tab=photos) (bulk upload, then select them and press **Generate metadata** to have the AI fill the description, tags, `stage` = explicitness and `level_min` = VIP tier) and add live [Managers](#/retention?tab=managers) (round-robin, sticky). Thresholds (daily photo cap, stage progression, VIP tiers, nonce TTL) are the `retention` group in [Settings](#/settings); bot texts are the `rtn_*` keys in [Translations](#/translations).':
+    'Проверьте [Базу знаний бота](#/retention?tab=kb) (один текстовый документ — что Ника может предлагать и о чём говорить; общий английский стартовый текст уже заполнен, замените его контентом бренда), настройте Telegram-персону в [Переменных промпта](#/retention?tab=variables) (имя/роль/тон — пустые поля используют встроенные значения ретеншена), загрузите фото в [Медиа](#/retention?tab=photos) (массовая загрузка, затем выделите их и нажмите **Сгенерировать метаданные** — AI заполнит описание, теги, `stage` = откровенность и `level_min` = VIP-уровень) и добавьте живых [Менеджеров](#/retention?tab=managers) (round-robin, закрепляются за игроком). Пороги (дневной лимит фото, прогрессия стадий, VIP-уровни, TTL нонса) — группа `retention` в [Настройках](#/settings); тексты бота — ключи `rtn_*` в [Переводах](#/translations).',
+  '6 · Entry points': '6 · Точки входа',
+  'Nothing extra to integrate for the main path: once the bot is enabled, the support widget\'s **escalation button** automatically routes the player into the bot (one-time deeplink, subscription gate on the way in, "go to a manager" in the menu). Optionally the site can mint its own per-player deeplink via `POST /api/retention/deeplink` — the full contract (handshake signing, profile pull/push) is documented at [/integration-telegram](/integration-telegram).':
+    'Для основного пути ничего дополнительно интегрировать не нужно: как только бот включён, **кнопка эскалации** виджета поддержки автоматически ведёт игрока в бота (одноразовый deeplink, проверка подписки на входе, «перейти к менеджеру» в меню). Дополнительно сайт может выпускать собственный deeplink на игрока через `POST /api/retention/deeplink` — полный контракт (подпись handshake, pull/push профиля) описан на [/integration-telegram](/integration-telegram).',
+  'Quick test: open the deeplink → pass the channel gate → chat with Nika → ask for a photo → it arrives; write "my account is blocked" → she routes you out instead of answering support questions herself.':
+    'Быстрый тест: откройте deeplink → пройдите проверку подписки на канал → пообщайтесь с Никой → попросите фото → оно приходит; напишите «мой аккаунт заблокирован» → она перенаправит вас к поддержке, а не станет сама отвечать на вопросы поддержки.',
+
+  // ----- retention: telegram config -----
+  'Webhook URL:': 'URL вебхука:',
+  'Telegram bot token': 'Токен Telegram-бота',
+  'Player API key': 'Ключ Player API',
+  'Clear {label}? It falls back to the deploy env value.': 'Очистить {label}? Значение вернётся к переменной окружения деплоя.',
+  '{label} cleared': '{label} — очищено',
+  'Webhook registered:': 'Вебхук зарегистрирован:',
+  'Webhook registration failed': 'Не удалось зарегистрировать вебхук',
+  'Clear failed': 'Не удалось очистить',
+  'Create failed': 'Не удалось создать',
+  'Upload failed': 'Не удалось загрузить файлы',
+
+  // ----- retention: KB / prompt variables / prompt preview -----
+  'The whole retention knowledge base as one text (Layer 2 of the retention prompt — what Nika may offer and talk about in Telegram). Keep it in English: it is the most token-efficient language for the model, and Nika answers in the player\'s language regardless. `{placeholders}` are substituted from KB variables.':
+    'Вся база знаний ретеншена одним текстом (слой 2 промпта ретеншена — что Ника может предлагать и о чём говорить в Telegram). Держите её на английском: это самый экономный по токенам язык для модели, а Ника в любом случае отвечает на языке игрока. `{placeholders}` подставляются из переменных БЗ.',
+  'These values uniquify the **Telegram retention persona** — a **separate prompt**, fully independent from the [support-chat prompt variables](#/prompt?tab=variables). An empty field **uses the built-in retention default** (shown as the placeholder); a support edit never leaks into the bot. Fill a field only where you want the Telegram persona to differ from that default.':
+    'Эти значения уникализируют **Telegram-ретеншен-персону** — это **отдельный промпт**, полностью независимый от [переменных промпта чата поддержки](#/prompt?tab=variables). Пустое поле **использует встроенное значение ретеншена** (показано как плейсхолдер); правка в чате поддержки никогда не попадает в бота. Заполняйте поле только там, где Telegram-персона должна отличаться от этого значения.',
+  'Empty = the built-in retention default.': 'Пусто = встроенное значение ретеншена.',
+  'Total': 'Итого',
+  'The complete retention prompt as the model receives it in the Telegram chat (read-only; language: {lang}). To change the wording, edit `prompts.py` and redeploy; the brand values are on the [Prompt variables](#/retention?tab=variables) tab.':
+    'Полный промпт ретеншена в том виде, в каком его получает модель в Telegram-чате (только чтение; язык: {lang}). Чтобы изменить формулировки, отредактируйте `prompts.py` и передеплойте; брендовые значения — на вкладке [Переменные промпта](#/retention?tab=variables).',
+  'System message (retention Layer 1 core + Layer 2 retention KB)':
+    'Системное сообщение (слой 1 — ядро ретеншена + слой 2 — база знаний ретеншена)',
+  'User message (Layer 3: profile, language, photo candidates, guardrails)':
+    'Сообщение пользователя (слой 3: профиль, язык, фото-кандидаты, ограничители)',
+
+  // ----- retention: media / photos -----
+  'Pick any number of files at once. The fields below apply to every uploaded photo — leave them empty and use **Generate metadata** afterwards to have the AI fill the description, tags, explicitness stage and VIP level per photo.':
+    'Выберите сразу любое количество файлов. Поля ниже применяются к каждому загруженному фото — оставьте их пустыми и после загрузки нажмите **Сгенерировать метаданные**, чтобы AI заполнил описание, теги, стадию откровенности и VIP-уровень для каждого фото.',
+  'VIP tier to unlock': 'VIP-уровень для доступа',
+  '1 = softest': '1 = самое мягкое',
+  'Choose files': 'Выбрать файлы',
+  '{n} files chosen': 'Выбрано файлов: {n}',
+  '{n} photo(s) uploaded': 'Загружено фото: {n}',
+  'all': 'все',
+  'active': 'активные',
+  'inactive': 'неактивные',
+  '{shown} of {total} photos': '{shown} из {total} фото',
+  'Generating…': 'Генерация…',
+  'Generate metadata for {n} photo(s)? The AI fills the description, tags, stage and VIP level; current values are overwritten.':
+    'Сгенерировать метаданные для фото ({n} шт.)? AI заполнит описание, теги, стадию и VIP-уровень; текущие значения будут перезаписаны.',
+  'Metadata: {ok} generated, {failed} failed': 'Метаданные: {ok} сгенерировано, {failed} с ошибкой',
+  'Metadata generated for {n} photo(s)': 'Метаданные сгенерированы для {n} фото',
+  'request failed': 'запрос не выполнен',
+  "AI (the product's own model + API key) fills the description, tags, stage and minimum VIP level for every selected photo.":
+    'AI (собственная модель и API-ключ продукта) заполняет описание, теги, стадию и минимальный VIP-уровень для каждого выбранного фото.',
+  'No photos yet — upload the first ones above.': 'Фото пока нет — загрузите первые выше.',
+  'stage': 'стадия',
+  'level': 'уровень',
+  'Description': 'Описание',
+  'Level (min VIP)': 'Level (мин. VIP)',
+  'Delete': 'Удалить',
+  'cached in TG': 'кэшировано в TG',
+  'Delete this photo?': 'Удалить это фото?',
+  'of': 'из',
+  'items': 'записей',
+  'photos': 'фото',
+
+  // ----- retention: managers -----
+  'Username': 'Username',
+
+  // ----- retention: conversations -----
+  'Telegram chats with Nika, kept apart from the support-widget conversations. An idle chat closes automatically (the “Session idle (min)” knob in Settings → Retention bot); when the player returns, a new chat starts and Nika is shown the tail of the previous one for continuity. Click a row for the transcript.':
+    'Telegram-чаты с Никой, отдельно от диалогов виджета поддержки. Неактивный чат закрывается автоматически (настройка «Неактивность чата (мин)» в Настройки → Ретеншен-бот); когда игрок возвращается, начинается новый чат, и Ника видит хвост предыдущего для непрерывности. Клик по строке открывает переписку.',
+  'Delete selected': 'Удалить выбранные',
+  'TG user': 'TG-пользователь',
+  'Started': 'Начат',
+  'Last activity': 'Последняя активность',
+  'Delete {n} Telegram chats? This permanently removes their messages and logs AND purges each linked player (identity, seen photos, pings) from analytics.':
+    'Удалить Telegram-чаты ({n} шт.)? Это безвозвратно удалит их сообщения и логи И вычистит каждого привязанного игрока (идентичность, просмотренные фото, пинги) из аналитики.',
+  'Delete this Telegram chat? This permanently removes its messages and logs AND purges the linked player (identity, seen photos, pings) from analytics.':
+    'Удалить этот Telegram-чат? Это безвозвратно удалит его сообщения и логи И вычистит привязанного игрока (идентичность, просмотренные фото, пинги) из аналитики.',
+  '{n} chats deleted': 'Чатов удалено: {n}',
+  'Chat deleted': 'Чат удалён',
+  'No Telegram chats yet.': 'Telegram-чатов пока нет.',
+  'Prev': 'Назад',
+  'Next': 'Вперёд',
+  'chats': 'чатов',
+  'Telegram chat': 'Telegram-чат',
+  'photo': 'фото',
+  'proactive:': 'проактивно:',
+  'Total cost:': 'Общая стоимость:',
+  'Close': 'Закрыть',
+
+  // ----- retention: analytics -----
+  '{pct}% reply rate': '{pct}% ответов на пинги',
+  'no pings in range': 'нет пингов за период',
+  'Entry funnel': 'Воронка входа',
+  'Stage distribution': 'Распределение по стадиям',
+  'Players per unlocked photo stage (lifetime).': 'Игроков на каждой разблокированной фото-стадии (за всё время).',
+  'Players': 'Игроки',
+  'Photos': 'Фото',
+  'Pings': 'Пинги',
+  'Deeplinks minted': 'Создано deeplink-ссылок',
+  '/start redemptions': 'Активации /start',
+  'New linked players': 'Новые привязанные игроки',
+  'Subscribed to channel': 'Подписались на канал',
+  'Engaged (wrote a message)': 'Вовлечены (написали сообщение)',
+  'Received a photo': 'Получили фото',
+  'Handed off': 'Переданы менеджеру',
+  'Entry': 'Вход',
+  'VIP': 'VIP',
+  'Manager': 'Менеджер',
+  'Last active': 'Последняя активность',
 };
 
 const current = getAdminLang();
