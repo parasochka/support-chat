@@ -863,10 +863,15 @@ localizes to the player's language. Lives in Layer 3 only, so `SYSTEM_CORE` stay
 ### RETENTION BOT — Telegram second facade (`retention.py`, `telegram_transport.py`)
 A **second front-end over the same AI core**: from the site a player deep-links into a
 Telegram bot where **Nika runs retention only** (warm, flirtatious engagement + photos under
-the player's profile). She does **not** handle support — any support/complaint/account-block/
-deposit-withdrawal/responsible-gaming/ask-for-a-human topic is routed **out** via the hand-off
-CHOICE message (personal manager in Telegram and/or the site's support chat — see the
-`[[HANDOFF]]` bullet below). This section IS the spec (the
+the player's profile). She does **not** handle support — any support PROBLEM (complaint,
+account block, stuck/failed deposit-withdrawal, responsible gaming, ask-for-a-human) is routed
+**out** via the hand-off CHOICE message (personal manager in Telegram and/or the site's support
+chat — see the `[[HANDOFF]]` bullet below). A simple **navigation** question ("how do I
+deposit?", "where do I play X?") is NOT a hand-off: she answers it herself and attaches the
+matching SITE MAP page as a `[[LINK:url]]` button — the problem-vs-directions split is stated
+in the retention core, the SITE LINK BUTTON directive AND the Layer-3 `_RETENTION_GUARDRAILS`
+(the guardrail rides last, so a blanket "money → HANDOFF" there used to override the
+navigation exception — the "как задепать → саппорт" bug). This section IS the spec (the
 old `RETENTION_BOT_SPEC.md`/`RETENTION_SETUP.md` files were removed); the operator's setup
 checklist lives in the admin — the **Retention · Telegram → Setup guide** tab.
 
