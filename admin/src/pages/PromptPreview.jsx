@@ -7,6 +7,8 @@ import Typography from '@mui/material/Typography';
 import { API_URL, httpClient } from '../httpClient';
 import { withProduct } from '../productScope';
 import TextStats from '../components/TextStats';
+import rich from '../components/Rich';
+import { t } from '../i18n';
 
 const Block = ({ title, text }) => (
   <Card sx={{ mb: 2 }}>
@@ -45,27 +47,30 @@ const PromptPreview = () => {
   useEffect(() => {
     httpClient(withProduct(`${API_URL}/admin/effective-prompt`))
       .then(({ json }) => setPreview(json.effective_preview))
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
   }, [notify]);
 
   return (
     <Box sx={{ maxWidth: 1000 }}>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        The complete prompt as the model receives it (read-only; example topic:{' '}
-        {preview?.example?.topic || '—'}, language: {preview?.example?.lang || '—'}).
-        To change the wording, edit <code>prompts.py</code> and redeploy; the
-        brand values are on the Prompt variables page.
+        {t('The complete prompt as the model receives it (read-only; example topic:')}{' '}
+        {preview?.example?.topic || '—'}, {t('language:')} {preview?.example?.lang || '—'}).{' '}
+        {rich(
+          t(
+            'To change the wording, edit `prompts.py` and redeploy; the brand values are on the Prompt variables page.'
+          )
+        )}
       </Typography>
       <TextStats
-        label="Total"
+        label={t('Total')}
         text={[preview?.system, preview?.user]}
         sx={{ mb: 1.5 }}
       />
       <Block
-        title="System message (Layer 1 core + directives + Layer 2 KB)"
+        title={t('System message (Layer 1 core + directives + Layer 2 KB)')}
         text={preview?.system}
       />
-      <Block title="User message (Layer 3 dynamic directives)" text={preview?.user} />
+      <Block title={t('User message (Layer 3 dynamic directives)')} text={preview?.user} />
     </Box>
   );
 };

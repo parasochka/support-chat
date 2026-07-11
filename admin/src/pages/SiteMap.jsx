@@ -37,7 +37,7 @@ const SiteMapEditor = () => {
         const pages = json.pages || [];
         setRows(pages.length ? pages.map((p) => ({ ...emptyRow(), ...p })) : [emptyRow()]);
       })
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }))
+      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }))
       .finally(() => setLoaded(true));
   }, [notify]);
 
@@ -65,7 +65,7 @@ const SiteMapEditor = () => {
       setRows(pages.length ? pages.map((p) => ({ ...emptyRow(), ...p })) : [emptyRow()]);
       notify(t('Site map saved'), { type: 'success' });
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     } finally {
       setSaving(false);
     }
@@ -73,7 +73,7 @@ const SiteMapEditor = () => {
 
   return (
     <Box sx={{ p: 2, maxWidth: 900 }}>
-      <Title title="Site map" />
+      <Title title={t('Site map')} />
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         {t(
           "Official pages of this product's website. They are added to the system prompt of BOTH the support chat and the Telegram retention bot, and to their links policy, so the assistant links players to real pages instead of inventing URLs. One entry per page — the URL is required and must start with http:// or https://."
@@ -98,7 +98,7 @@ const SiteMapEditor = () => {
                   disabled={readOnly}
                   size="small"
                   sx={{ flex: { xs: '1 1 auto', md: '0 0 200px' } }}
-                  placeholder="Cashier"
+                  placeholder={t('Cashier')}
                 />
                 <TextField
                   label="URL"
@@ -116,7 +116,7 @@ const SiteMapEditor = () => {
                   disabled={readOnly}
                   size="small"
                   sx={{ flex: 1, minWidth: 220 }}
-                  placeholder="where players top up their balance"
+                  placeholder={t('where players top up their balance')}
                 />
                 <IconButton
                   aria-label="remove page"
@@ -148,7 +148,7 @@ const SiteMapEditor = () => {
 };
 
 const SiteMap = () => (
-  <RequireProduct title="Site map">
+  <RequireProduct title={t('Site map')}>
     <SiteMapEditor />
   </RequireProduct>
 );

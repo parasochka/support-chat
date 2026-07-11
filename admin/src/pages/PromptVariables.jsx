@@ -6,13 +6,13 @@ import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
 import FormControlLabel from '@mui/material/FormControlLabel';
-import Link from '@mui/material/Link';
 import Switch from '@mui/material/Switch';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import { API_URL, httpClient } from '../httpClient';
 import { withProduct } from '../productScope';
 import TextStats from '../components/TextStats';
+import rich from '../components/Rich';
 import { t } from '../i18n';
 
 const PROFILE_FIELDS = [
@@ -63,7 +63,7 @@ const PromptVariables = () => {
         });
         setValues(v);
       })
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
 
     httpClient(withProduct(`${API_URL}/admin/settings`))
       .then(({ json }) => {
@@ -89,9 +89,9 @@ const PromptVariables = () => {
         method: 'PUT',
         body: JSON.stringify({ value: values }),
       });
-      notify('Prompt variables saved', { type: 'success' });
+      notify(t('Prompt variables saved'), { type: 'success' });
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     } finally {
       setSavingVars(false);
     }
@@ -115,9 +115,9 @@ const PromptVariables = () => {
           },
         }),
       });
-      notify('Escalation keywords saved', { type: 'success' });
+      notify(t('Escalation keywords saved'), { type: 'success' });
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     } finally {
       setSavingKw(false);
     }
@@ -130,9 +130,9 @@ const PromptVariables = () => {
         method: 'PUT',
         body: JSON.stringify({ value: profile }),
       });
-      notify('Test profile saved', { type: 'success' });
+      notify(t('Test profile saved'), { type: 'success' });
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     } finally {
       setSavingProfile(false);
     }
@@ -141,21 +141,17 @@ const PromptVariables = () => {
   return (
     <Box sx={{ maxWidth: 900 }}>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Brand values substituted into the shared prompt template. Empty values
-        fall back to the built-in defaults. The prompt wording itself is edited
-        in <code>prompts.py</code> (see the read-only Prompt preview page). The
-        Telegram retention persona has its own variables in{' '}
-        <Link href="#/retention?tab=variables">
-          Telegram · Retention → Prompt variables
-        </Link>{' '}
-        — a separate prompt: empty retention fields fall back to the built-in
-        retention defaults, never to these support values.
+        {rich(
+          t(
+            'Brand values substituted into the shared prompt template. Empty values fall back to the built-in defaults. The prompt wording itself is edited in `prompts.py` (see the read-only Prompt preview page). The Telegram retention persona has its own variables in [Telegram · Retention → Prompt variables](#/retention?tab=variables) — a separate prompt: empty retention fields fall back to the built-in retention defaults, never to these support values.'
+          )
+        )}
       </Typography>
 
       <Card sx={{ mb: 2 }}>
         <CardContent>
           <Typography variant="h6" gutterBottom>
-            Prompt variables
+            {t('Prompt variables')}
           </Typography>
           <Alert severity="info" sx={{ mb: 1 }}>
             <b>{t('English only')}.</b>{' '}
@@ -166,7 +162,7 @@ const PromptVariables = () => {
           {/* Combined volume of the values as they will render into the prompt
               (an empty field contributes its default). */}
           <TextStats
-            label="Total"
+            label={t('Total')}
             text={vars.map((v) => values[v.key] || v.default || '')}
           />
           {vars.map((v) => (
@@ -183,7 +179,7 @@ const PromptVariables = () => {
             />
           ))}
           <Button variant="contained" onClick={saveVars} disabled={savingVars} sx={{ mt: 1 }}>
-            {savingVars ? 'Saving…' : 'Save variables'}
+            {savingVars ? t('Saving…') : t('Save variables')}
           </Button>
         </CardContent>
       </Card>
@@ -192,14 +188,15 @@ const PromptVariables = () => {
         <Card sx={{ mb: 2 }}>
           <CardContent>
             <Typography variant="h6" gutterBottom>
-              Escalation keyword lists
+              {t('Escalation keyword lists')}
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              One entry per line; multilingual stems scan the player's raw
-              message before the model call (soft hand-off, no tokens burned).
+              {t(
+                "One entry per line; multilingual stems scan the player's raw message before the model call (soft hand-off, no tokens burned)."
+              )}
             </Typography>
             <TextField
-              label="High-risk keywords (fraud / legal)"
+              label={t('High-risk keywords (fraud / legal)')}
               value={highRisk}
               onChange={(e) => setHighRisk(e.target.value)}
               fullWidth
@@ -208,7 +205,7 @@ const PromptVariables = () => {
               margin="normal"
             />
             <TextField
-              label="Human-request keywords"
+              label={t('Human-request keywords')}
               value={humanReq}
               onChange={(e) => setHumanReq(e.target.value)}
               fullWidth
@@ -217,7 +214,7 @@ const PromptVariables = () => {
               margin="normal"
             />
             <Button variant="contained" onClick={saveKeywords} disabled={savingKw}>
-              {savingKw ? 'Saving…' : 'Save keywords'}
+              {savingKw ? t('Saving…') : t('Save keywords')}
             </Button>
           </CardContent>
         </Card>
@@ -227,19 +224,15 @@ const PromptVariables = () => {
         <Card>
           <CardContent>
             <Typography variant="h6" gutterBottom>
-              Test player profile
+              {t('Test player profile')}
             </Typography>
             {!profileActive && (
               <Alert severity="info" sx={{ mb: 1 }}>
-                A handshake secret is configured — the host site supplies the
-                player context, so this test profile is ignored at session
-                create. To use this profile instead, clear the product's{' '}
-                <Link href="#/structure">
-                  Widget handshake secret in Structure
-                </Link>{' '}
-                (use its Clear button). A deploy-wide{' '}
-                <code>WIDGET_HANDSHAKE_SECRET</code> env value can only be
-                removed in Railway.
+                {rich(
+                  t(
+                    "A handshake secret is configured — the host site supplies the player context, so this test profile is ignored at session create. To use this profile instead, clear the product's [Widget handshake secret in Structure](#/structure) (use its Clear button). A deploy-wide `WIDGET_HANDSHAKE_SECRET` env value can only be removed in Railway."
+                  )
+                )}
               </Alert>
             )}
             <FormControlLabel
@@ -249,7 +242,7 @@ const PromptVariables = () => {
                   onChange={(e) => setProfile({ ...profile, enabled: e.target.checked })}
                 />
               }
-              label="Enabled (used when no handshake secret is set)"
+              label={t('Enabled (used when no handshake secret is set)')}
             />
             {PROFILE_FIELDS.map((f) => (
               <TextField
@@ -267,7 +260,7 @@ const PromptVariables = () => {
               disabled={savingProfile}
               sx={{ mt: 1 }}
             >
-              {savingProfile ? 'Saving…' : 'Save test profile'}
+              {savingProfile ? t('Saving…') : t('Save test profile')}
             </Button>
           </CardContent>
         </Card>

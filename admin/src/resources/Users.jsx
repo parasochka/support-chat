@@ -67,7 +67,7 @@ export const UserList = () => {
       {isMobile ? (
         <MobileList
           primaryText={(r) => r.email}
-          secondaryText={(r) => `${r.role} · ${r.active ? 'active' : 'inactive'}`}
+          secondaryText={(r) => `${r.role} · ${r.active ? t('active') : t('inactive')}`}
           tertiaryText={(r) =>
             r.created_at ? new Date(r.created_at).toLocaleString() : ''
           }
@@ -75,10 +75,10 @@ export const UserList = () => {
         />
       ) : (
         <Datagrid rowClick="edit">
-          <TextField source="email" />
-          <TextField source="role" />
-          <BooleanField source="active" />
-          <DateField source="created_at" showTime />
+          <TextField source="email" label={t('Email')} />
+          <TextField source="role" label={t('Role')} />
+          <BooleanField source="active" label={t('Active')} />
+          <DateField source="created_at" label={t('Created')} showTime />
         </Datagrid>
       )}
     </List>
@@ -88,9 +88,9 @@ export const UserList = () => {
 export const UserEdit = () => (
   <Edit mutationMode="pessimistic" title={t('Edit admin user')}>
     <SimpleForm>
-      <TextInput source="email" disabled />
-      <SelectInput source="role" choices={ROLE_CHOICES} />
-      <BooleanInput source="active" />
+      <TextInput source="email" label={t('Email')} disabled />
+      <SelectInput source="role" label={t('Role')} choices={ROLE_CHOICES} />
+      <BooleanInput source="active" label={t('Active')} />
       <PasswordWithGenerate
         label={t('New password (leave empty to keep)')}
         helperText={t('Minimum 8 characters. Set directly — there is no email reset flow.')}
@@ -102,9 +102,9 @@ export const UserEdit = () => (
 export const UserCreate = () => (
   <Create redirect="list" title={t('New admin user')}>
     <SimpleForm>
-      <TextInput source="email" validate={[required(), email()]} />
-      <PasswordWithGenerate validate={required()} />
-      <SelectInput source="role" choices={ROLE_CHOICES} defaultValue="manager" />
+      <TextInput source="email" label={t('Email')} validate={[required(), email()]} />
+      <PasswordWithGenerate label={t('Password')} validate={required()} />
+      <SelectInput source="role" label={t('Role')} choices={ROLE_CHOICES} defaultValue="manager" />
     </SimpleForm>
   </Create>
 );

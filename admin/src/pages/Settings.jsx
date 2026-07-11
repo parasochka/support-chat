@@ -33,6 +33,7 @@ import { useMemo } from 'react';
 import { API_URL, httpClient } from '../httpClient';
 import { getProductId, getScopeName, withProduct } from '../productScope';
 import { t } from '../i18n';
+import rich from '../components/Rich';
 import {
   GROUP_HELP,
   GROUP_LABELS,
@@ -56,15 +57,39 @@ const TAB_LABELS = {
   'retention:antispam': 'Anti-spam',
 };
 
-// The plain-language "how it works" intro per module — the first thing a
+// The plain-language "how it works" block per module — an intro plus concrete
+// bullet points (with links to the deeper guide pages), the first thing a
 // non-technical manager sees on the page.
 const MODULE_HOWTO = {
-  support:
-    'The support widget answers players on the site from the per-topic Knowledge base. Before the model sees a message it passes the anti-spam gates below; the chat limits bound one session. Content (KB texts, prompt variables, translations) is edited in the Support chat section of the menu.',
-  retention:
-    'The Telegram bot re-engages players: it chats in persona, sends photos gated by Stage × VIP level, and the proactive agent reacts to casino events (deposits, level-ups, losses). The guards below are the dials for how often one player may be written to — the agent can never exceed them.',
-  core:
-    'These settings are shared by BOTH bots: which OpenAI model answers (and its budgets/timeouts), which languages the assistant supports, and technical request limits. Change with care — they apply to every product without its own override.',
+  support: {
+    intro:
+      'The support widget answers players on the site from the per-topic Knowledge base. Before the model sees a message it passes the anti-spam gates below; the chat limits bound one session. Content (KB texts, prompt variables, translations) is edited in the Support chat section of the menu.',
+    points: [
+      'Gate order for every message: rate limit → cooldown → length cap → low-content guard → injection scan. A message rejected by a gate never reaches the model — attacks and spam cost no tokens.',
+      '**Anti-spam** ships with sensible values; raise the rate limit only if real players actually hit it. The injection hard-block and low-content guard are safe to keep on.',
+      '**Chat limits** bound one session: how long it stays valid, how many messages before a forced hand-off to a human, and how many recent turns the model sees (the full transcript is always stored).',
+      'The whole support pipeline, the content map ("where do I fix this text?") and a step-by-step testing checklist live on the [How it works](#/support-guide) page.',
+    ],
+  },
+  retention: {
+    intro:
+      'The Telegram bot re-engages players: it chats in persona, sends photos gated by Stage × VIP level, and the proactive agent reacts to casino events (deposits, level-ups, losses). The guards below are the dials for how often one player may be written to — the agent can never exceed them.',
+    points: [
+      'Two regimes: the **dialogue bot** answers when the player writes; the **proactive agent** writes first in reaction to casino events. The «Send-frequency guards» section is the hard rail for the agent — daily cap, min gap, cooldowns, quiet hours, budget.',
+      'Photos unlock through two gates at once: chat progression (**Stage**) × the player’s VIP tier (**Level**) — the «Photo unlock progression» section below sets both ladders; the same numbers are stamped on each photo in Media.',
+      'The agent’s own switches (enabled, dry-run, worker interval, budget) are in the «Proactive agent» section. The full pipeline, guard reference with current values and a testing checklist are on the agent’s [How it works & testing](#/retention-agent?tab=guide) tab.',
+    ],
+  },
+  core: {
+    intro:
+      'These settings are shared by BOTH bots: which OpenAI model answers (and its budgets/timeouts), which languages the assistant supports, and technical request limits. Change with care — they apply to every product without its own override.',
+    points: [
+      '**AI model** — the model id plus its budgets and timeouts. «Max output tokens» INCLUDES the model’s hidden reasoning: keep it generous (≈2000), too low and answers can come back empty.',
+      '**Languages** — the supported set and the default. A newly added language starts on English copy and becomes translatable in Translations; answers always follow the player’s language.',
+      '**General** — technical lifetimes and caps (sessions, admin tokens, request bodies). These rarely need changing.',
+      'Every setting resolves per product: product override → global default → deploy env → built-in default. The banner above the form shows which layer you are editing right now.',
+    ],
+  },
 };
 
 // A label with an (i) tooltip carrying the long explanation — short label on
@@ -113,7 +138,7 @@ const Field = ({ field, value, onChange, form }) => {
               size="small"
               fullWidth
               disabled
-              helperText="free / baseline"
+              helperText={t('free / baseline')}
             />
           </Grid>
           {arr.map((n, i) => (
@@ -125,7 +150,7 @@ const Field = ({ field, value, onChange, form }) => {
                 onChange={(e) => setAt(i, e.target.value)}
                 size="small"
                 fullWidth
-                helperText="msgs"
+                helperText={t('msgs')}
                 slotProps={{ htmlInput: { min: 0 } }}
               />
             </Grid>
@@ -136,11 +161,11 @@ const Field = ({ field, value, onChange, form }) => {
             size="small"
             onClick={() => onChange([...arr, (arr[arr.length - 1] || 10) * 2])}
           >
-            + Add stage
+            {t('+ Add stage')}
           </Button>
           {arr.length > 0 && (
             <Button size="small" color="error" onClick={() => onChange(arr.slice(0, -1))}>
-              − Remove last
+              {t('− Remove last')}
             </Button>
           )}
         </Stack>
@@ -188,7 +213,7 @@ const Field = ({ field, value, onChange, form }) => {
         >
           {field.options.map((o) => (
             <MenuItem key={o} value={o}>
-              {o === '' ? '(model default)' : o}
+              {o === '' ? t('(model default)') : o}
             </MenuItem>
           ))}
         </TextField>
@@ -594,9 +619,16 @@ const Settings = () => {
           </Stack>
         </AccordionSummary>
         <AccordionDetails>
-          <Typography variant="body2" color="text.secondary">
-            {t(MODULE_HOWTO[module])}
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            {t(MODULE_HOWTO[module].intro)}
           </Typography>
+          <Box component="ul" sx={{ pl: 3, my: 0 }}>
+            {MODULE_HOWTO[module].points.map((p) => (
+              <Typography component="li" variant="body2" color="text.secondary" key={p} sx={{ mb: 0.5 }}>
+                {rich(t(p))}
+              </Typography>
+            ))}
+          </Box>
         </AccordionDetails>
       </Accordion>
 

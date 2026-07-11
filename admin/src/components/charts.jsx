@@ -17,6 +17,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { t } from '../i18n';
 
 // Fractional-dollar formatter for cost axes/tooltips (spend is cents, not units).
 const usd = (v) => (v == null ? '—' : `$${Number(v).toFixed(4)}`);
@@ -45,7 +46,7 @@ const fmtDay = (iso) => {
 const EmptyNote = () => (
   <Box sx={{ py: 4, textAlign: 'center' }}>
     <Typography variant="body2" color="text.secondary">
-      No data for the period.
+      {t('No data for the period.')}
     </Typography>
   </Box>
 );
@@ -201,11 +202,11 @@ export const TelegramCostCharts = ({ data, height = 200 }) => (
       <Card sx={{ height: '100%' }}>
         <CardContent>
           <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-            Telegram cost over time
+            {t('Telegram cost over time')}
           </Typography>
           <SeriesLineChart
             data={data}
-            series={[{ key: 'cost_usd', label: 'Cost (USD)' }]}
+            series={[{ key: 'cost_usd', label: t('Cost (USD)') }]}
             height={height}
             valueFormatter={usd}
           />
@@ -216,7 +217,7 @@ export const TelegramCostCharts = ({ data, height = 200 }) => (
       <Card sx={{ height: '100%' }}>
         <CardContent>
           <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-            Telegram cost by source
+            {t('Telegram cost by source')}
           </Typography>
           <Typography
             variant="caption"
@@ -224,13 +225,13 @@ export const TelegramCostCharts = ({ data, height = 200 }) => (
             display="block"
             sx={{ mb: 1 }}
           >
-            Engagement dialog vs on-demand photo-metadata generation.
+            {t('Engagement dialog vs on-demand photo-metadata generation.')}
           </Typography>
           <StackedBarChart
             data={data}
             series={[
-              { key: 'cost_dialog_usd', label: 'Dialog' },
-              { key: 'cost_photo_usd', label: 'Photo metadata' },
+              { key: 'cost_dialog_usd', label: t('Dialog') },
+              { key: 'cost_photo_usd', label: t('Photo metadata') },
             ]}
             height={height}
             valueFormatter={usd}
@@ -308,7 +309,7 @@ export const FunnelBars = ({ steps }) => {
             >
               <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0 }}>
                 {s.label}
-                {conv != null && ` · ${conv}% of previous`}
+                {conv != null && ` · ${conv}% ${t('of previous')}`}
               </Typography>
               <Typography variant="caption" sx={{ fontWeight: 600, flexShrink: 0 }}>
                 {s.value}

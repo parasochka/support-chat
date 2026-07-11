@@ -2,6 +2,7 @@ import Box from '@mui/material/Box';
 import Tooltip from '@mui/material/Tooltip';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
+import { t } from '../i18n';
 
 /**
  * Explicit "is this value configured?" indicator. Replaces the old ambiguous
@@ -9,7 +10,7 @@ import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
  * hollow circle when it is not, so the state reads at a glance and looks the
  * same everywhere it appears (secrets, Telegram config, …).
  */
-const SetBadge = ({ set, setLabel = 'Set', unsetLabel = 'Not set', sx }) => (
+const SetBadge = ({ set, setLabel = t('Set'), unsetLabel = t('Not set'), sx }) => (
   <Tooltip title={set ? setLabel : unsetLabel}>
     <Box
       component="span"

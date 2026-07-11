@@ -19,9 +19,9 @@ const Prompt = () => {
   const tab = params.get('tab') === 'variables' ? 'variables' : 'preview';
 
   return (
-    <RequireProduct title="Prompt">
+    <RequireProduct title={t('Prompt')}>
     <Box sx={{ p: 2 }}>
-      <Title title="Prompt" />
+      <Title title={t('Prompt')} />
       <Tabs
         value={tab}
         onChange={(e, v) => setParams({ tab: v }, { replace: true })}

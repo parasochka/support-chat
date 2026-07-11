@@ -58,7 +58,7 @@ const TopicForm = ({ isCreate = false }) => (
       {t('The prompt itself is English-only, so only this English title feeds the model.')}
     </Alert>
     <NumberInput source="order" label={t('Display order')} defaultValue={0} />
-    <BooleanInput source="active" defaultValue />
+    <BooleanInput source="active" label={t('Active')} defaultValue />
     <Alert severity="info" sx={{ mb: 0.5, alignSelf: 'stretch' }}>
       <b>{t('English only')}.</b>{' '}
       {t(
@@ -83,13 +83,13 @@ export const KbList = () => {
   return (
     <RequireProduct title={t('Knowledge base')}>
       <RouteTabs tabs={KB_TABS} />
-      <List perPage={25} exporter={false} title="Knowledge base">
+      <List perPage={25} exporter={false} title={t('Knowledge base')}>
         {isMobile ? (
           <MobileList
             primaryText={(r) => r.title?.en || r.slug}
             secondaryText={(r) => r.slug}
             tertiaryText={(r) =>
-              `order ${r.order ?? 0} · ${r.active ? 'active' : 'inactive'} · KB ${r.entry_count ?? 0}`
+              `${t('order')} ${r.order ?? 0} · ${r.active ? t('active') : t('inactive')} · ${t('KB')} ${r.entry_count ?? 0}`
             }
             onRowClick={(id) => redirect('edit', 'kb', id)}
           />
@@ -97,10 +97,10 @@ export const KbList = () => {
           <Datagrid rowClick="edit" bulkActionButtons={false}>
             <NumberField source="id" />
             <TextField source="slug" />
-            <TextField source="title.en" label="Title (en)" />
-            <NumberField source="order" label="Order" />
-            <BooleanField source="active" />
-            <NumberField source="entry_count" label="Has KB" />
+            <TextField source="title.en" label={t('Title (en)')} />
+            <NumberField source="order" label={t('Order')} />
+            <BooleanField source="active" label={t('Active')} />
+            <NumberField source="entry_count" label={t('Has KB')} />
           </Datagrid>
         )}
       </List>

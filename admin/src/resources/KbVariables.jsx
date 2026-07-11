@@ -36,11 +36,11 @@ export const KbVariableList = () => {
           />
         ) : (
           <Datagrid rowClick="edit" bulkActionButtons={false}>
-            <TextField source="key" />
-            <TextField source="value" />
-            <TextField source="description" />
-            <DateField source="updated_at" showTime />
-            <TextField source="updated_by" />
+            <TextField source="key" label={t('Key')} />
+            <TextField source="value" label={t('Value')} />
+            <TextField source="description" label={t('Description')} />
+            <DateField source="updated_at" label={t('Updated')} showTime />
+            <TextField source="updated_by" label={t('Updated by')} />
           </Datagrid>
         )}
       </List>
@@ -52,9 +52,9 @@ export const KbVariableEdit = () => (
   <RequireProduct title={t('Knowledge base · variables')}>
     <Edit mutationMode="pessimistic" title={t('Edit KB variable')}>
       <SimpleForm>
-        <TextInput source="key" disabled />
-        <TextInput source="description" fullWidth />
-        <TextInput source="value" fullWidth multiline />
+        <TextInput source="key" label={t('Key')} disabled />
+        <TextInput source="description" label={t('Description')} fullWidth />
+        <TextInput source="value" label={t('Value')} fullWidth multiline />
       </SimpleForm>
     </Edit>
   </RequireProduct>

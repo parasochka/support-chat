@@ -1560,11 +1560,21 @@ Map of what lives where:
   The split is presentation-only — schema fields carry a `module` tag
   (`settingsSchema.js` `GROUP_MODULE`/`fieldsForModule`) and a group is still
   SAVED whole (the form round-trips unseen fields unchanged). Each module page
-  opens with a plain-language "How it works" accordion; long field explanations
-  render as an (i) tooltip instead of a helper line. **The admin chrome is
+  opens with a plain-language "How it works" accordion (an intro + concrete
+  bullet points linking to the deeper guide pages); long field explanations
+  render as an (i) tooltip instead of a helper line. **Operator guides**: the
+  Support chat sidebar opens with a full "How it works" page
+  (`pages/SupportGuide.jsx`, route `/support-guide`) — the support twin of the
+  Proactive agent's "How it works & testing" tab: the message pipeline, the
+  content map ("where do I fix this text?"), topic routing, escalation, the
+  testing checklist and costs. **The admin chrome is
   bilingual (EN/RU)**: `src/i18n.js` is a gettext-style dictionary keyed by the
   English source strings, `t()` wraps render sites, and the AppBar carries an
-  EN/RU toggle (persisted in localStorage; switching reloads). Only the chrome is
+  EN/RU toggle (persisted in localStorage; switching reloads). Long guide/help
+  prose with inline markup stays ONE dictionary string via `components/Rich.jsx`
+  (`rich(t('…'))` renders a tiny subset: backtick code spans, `**bold**`,
+  `[label](url)` links) — EVERY user-visible admin string routes through `t()`,
+  including the guide pages, tables, confirms and toasts. Only the chrome is
   translated — the CONTENT stays English (see the English-only guard below).
   **Bundle is code-split**: pages load via `React.lazy` (per-page chunks) and
   vite `manualChunks` splits recharts/mui/react-admin/vendor, so the entry chunk
