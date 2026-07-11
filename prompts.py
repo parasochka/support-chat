@@ -1344,17 +1344,32 @@ _RETENTION_LINK_DIRECTIVE = (
 
 
 # Stage-hint directive (STATIC → retention Layer-1). The backend gates the actual
-# advance; the model only proposes.
+# advance; the model only proposes. The progression system itself is NOT a
+# secret: the player may be told, in warm human terms, how photos unlock (more
+# chat -> more closeness -> hotter photos; VIP standing raises the ceiling) —
+# only the machinery (tags, counters, "stage N" jargon) stays internal. The
+# PROGRESSION block (Layer 3, per-request) supplies the player's REAL numbers
+# so those explanations are accurate, never invented.
 _RETENTION_STAGE_DIRECTIVE = (
-    "STAGE HINT:\n"
+    "STAGE HINT & PROGRESSION TALK:\n"
     "- If the player is clearly engaged and warmed up and it feels right to move "
     "to slightly more daring photos, you may add [[STAGE_UP]] on its own line. It "
     "is only a hint - the system decides whether to actually unlock the next "
-    "stage. Never expose the internal mechanics: do not mention the tags, a "
-    "numeric stage or level, or an exact unlock threshold. You MAY, in warm human "
-    "terms, let the player understand that growing closeness with you and his VIP "
-    "standing are what gradually open up more - and more daring - photos, so he "
-    "sees there is somewhere to progress to and how."
+    "stage.\n"
+    "- The WAY the progression works is not a secret - only the machinery is. "
+    "When the player asks how it works, why the photos got (or have not yet got) "
+    "more daring, what a \"we just got closer\" message from you meant, or how to "
+    "unlock more, explain it openly and warmly instead of deflecting: the more "
+    "he chats with you, the closer you two become and the more daring the photos "
+    "you share get, step by step - and his VIP standing decides how far that can "
+    "go (a higher VIP level opens hotter photos). Ground every specific claim "
+    "about HIS progress (how close he is, whether he is at his current top) in "
+    "the PROGRESSION block when this message carries one; if it does not, keep "
+    "the explanation general.\n"
+    "- Speak of it only in human terms - closeness, levels of trust, how much "
+    "you two have talked, his VIP standing. Never mention the service tags, "
+    "internal counters, exact message numbers, or the word \"stage\" as a "
+    "system term."
 )
 
 
@@ -1476,6 +1491,54 @@ def _appearance_directive(appearance: Optional[dict[str, Any]]) -> Optional[str]
         lines.append(
             "The photo the player saw LAST (your current look to him): "
             f"{' '.join(last.split())}")
+    return "\n".join(lines)
+
+
+def _progression_directive(progression: Optional[dict[str, Any]]) -> Optional[str]:
+    """Layer-3 block with the player's REAL photo/closeness progression state.
+
+    The stage directive (Layer 1) allows Nika to explain how the progression
+    works; this block is what makes those explanations ACCURATE for this
+    player — without it the model would have to invent "how close" he is.
+    Keys (all optional, computed by retention.progression_context): `stage`
+    (unlocked stage), `ceiling` (his VIP tier's effective ceiling),
+    `vip_level`, `meaningful_msgs`, `next_threshold` (messages needed for the
+    next stage, None when there is no next), `at_ceiling`. Returns None when
+    there is nothing to say (no progression data).
+    """
+    p = progression or {}
+    stage = p.get("stage")
+    if stage is None:
+        return None
+    lines = [
+        "=== PROGRESSION (internal data - use it, never quote it verbatim) ===",
+        f"- Photo/closeness level unlocked: {stage} of {p.get('ceiling', stage)} "
+        "available to him.",
+    ]
+    vip = (p.get("vip_level") or "").strip()
+    if vip:
+        lines.append(
+            f"- His VIP tier is \"{vip}\"; it caps how daring his photos can "
+            f"get (his current ceiling: level {p.get('ceiling', stage)}). A "
+            "higher VIP tier raises the ceiling.")
+    msgs = p.get("meaningful_msgs")
+    nxt = p.get("next_threshold")
+    if p.get("at_ceiling"):
+        lines.append(
+            "- He is at the top level currently available to him: more chatting "
+            "alone unlocks nothing further right now"
+            + (" - a higher VIP standing would." if vip else "."))
+    elif msgs is not None and nxt is not None:
+        remaining = max(int(nxt) - int(msgs), 0)
+        lines.append(
+            f"- He has sent about {msgs} meaningful messages; roughly "
+            f"{remaining} more and the next, more daring level unlocks.")
+    lines.append(
+        "Use this ONLY to talk about his progress accurately when it comes up "
+        "(how photos unlock, how close he is, what a level-up meant) - in warm "
+        "human terms (closeness, \"almost there\", \"keep chatting with me\"), "
+        "never as numbers read off a system, and never bring it up out of "
+        "nowhere.")
     return "\n".join(lines)
 
 
@@ -1607,7 +1670,10 @@ def _previous_context_directive(prev_history: list[dict[str, Any]]) -> Optional[
         "Greet them back warmly as someone you already know (a short welcome-back, "
         "by name when the personalization block says so) — never re-introduce "
         "yourself — then pick the conversation up naturally, referencing the "
-        "earlier context only where it genuinely helps."
+        "earlier context only where it genuinely helps. When the earlier chat "
+        "gives you something concrete to follow up on (his plans, something he "
+        "was going to do, his mood, a game he mentioned), it is good to ask "
+        "warmly how it went — that is what a person who remembers does."
     )
     return "\n".join(lines)
 
@@ -1674,15 +1740,18 @@ def build_retention_dynamic_prompt(
     play_nudge: bool = False,
     appearance: Optional[dict[str, Any]] = None,
     tz_offset_hours: Optional[float] = None,
+    progression: Optional[dict[str, Any]] = None,
 ) -> str:
     """Assemble the retention Layer-3 user message.
 
     Player context (full profile) + personalization + language directive +
     (for a returning player's first turn) the previous-conversation continuity
     block + the appearance block (the persona's looks, grounded in the photo
-    library) + the photo-candidate list + (on every N-th reply) the play-nudge
-    task + the player's message + the recency guardrails / forbidden-topics
-    block. No topic routing (a support mechanic).
+    library) + the photo-candidate list + the progression block (the player's
+    real closeness/VIP progress, so explanations of how photos unlock are
+    accurate) + (on every N-th reply) the play-nudge task + the player's
+    message + the recency guardrails / forbidden-topics block. No topic
+    routing (a support mechanic).
     """
     ctx = sanitize_user_context(user_context)
     ctx_lines = "\n".join(f"- {k}: {v}" for k, v in ctx.items() if v)
@@ -1709,6 +1778,9 @@ def build_retention_dynamic_prompt(
     photo_block = _photo_candidates_directive(photo_candidates or [])
     if photo_block:
         parts += [photo_block, ""]
+    progression_block = _progression_directive(progression)
+    if progression_block:
+        parts += [progression_block, ""]
     if play_nudge:
         parts += [_PLAY_NUDGE_DIRECTIVE, ""]
     parts += [
@@ -1758,6 +1830,7 @@ def build_retention_messages(
     play_nudge: bool = False,
     appearance: Optional[dict[str, Any]] = None,
     tz_offset_hours: Optional[float] = None,
+    progression: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, str]]:
     """The OpenAI `messages` array for a retention (Telegram) turn.
 
@@ -1792,6 +1865,7 @@ def build_retention_messages(
             play_nudge=play_nudge,
             appearance=appearance,
             tz_offset_hours=tz_offset_hours,
+            progression=progression,
         ),
     })
     return messages
@@ -1863,6 +1937,44 @@ _RETENTION_V2_TOUCH_TASK = (
     "in the visible text; skip the tag when no listed page fits."
 )
 
+# The stage-up celebration variant of the proactive task: the backend gate has
+# JUST unlocked the next photo/closeness stage for this player (see
+# retention.maybe_advance_stage), and Nika follows up on her own reply with a
+# short celebratory note — the player learns he leveled up, what that gives him
+# (more daring photos), and (unless he is at his current ceiling) that keeping
+# the chat going unlocks even more. Same persona/KB layers as every proactive
+# send; {more_line} switches on whether a further stage is reachable.
+_RETENTION_STAGE_UP_TASK = (
+    "=== LEVEL-UP CELEBRATION TASK (there is NO new player message) ===\n"
+    "Something lovely just happened: your closeness with this player has just "
+    "reached a NEW LEVEL - the more daring tier of your photos has been "
+    "unlocked for him, earned by how much you two have been chatting.\n"
+    "Write ONE short, warm, playful message (1-3 sentences) celebrating it:\n"
+    "- Make it unmistakably clear WHAT happened, in your own flirty human "
+    "words: you two just got closer, a new level between you, and from now on "
+    "the photos he gets from you will be more interesting and more daring.\n"
+    "{more_line}"
+    "- Stay fully in character; never mention systems, tags, counters, numeric "
+    "stages, or this task.\n"
+    "- You may use the player's first name once if it is in the context.\n"
+    "- No pressure, no invented bonuses or promises, no amounts.\n"
+    "- Do not attach a photo and do not add links - this is a personal note, "
+    "the photos come later in the conversation."
+)
+
+_STAGE_UP_MORE_LINE = (
+    "- Also hint, lightly and warmly, that this is not the end: the more he "
+    "keeps chatting with you, the closer you two get and the even more daring "
+    "photos unlock next - so staying in touch with you is worth it.\n"
+)
+
+_STAGE_UP_CEILING_LINE = (
+    "- He has reached the top level currently available to him, so do NOT "
+    "promise even more daring photos ahead; if his VIP standing grows, more "
+    "opens up - you may hint at that, gently, without pushing.\n"
+)
+
+
 _RETENTION_COMFORT_BLOCK = (
     "COMFORT MODE (non-negotiable): the player just had a rough moment with "
     "money. Be caring and calm, drop all playfulness. Do NOT mention any "
@@ -1882,18 +1994,25 @@ def build_retention_ping_prompt(
     occasion: Optional[str] = None,
     comfort: bool = False,
     tz_offset_hours: Optional[float] = None,
+    stage_up: Optional[dict[str, Any]] = None,
 ) -> str:
     """Assemble the Layer-3 user message for a proactive ping.
 
     `occasion` switches the task from the time-based re-engagement wording to
     the v2 event-reaction wording; `comfort` injects the hard money-sensitive
-    block (loss window).
+    block (loss window). `stage_up` ({"at_ceiling": bool}) switches to the
+    level-up celebration task (a fresh closeness stage was just unlocked) and
+    takes precedence over both.
     """
     ctx = sanitize_user_context(user_context)
     ctx_lines = "\n".join(f"- {k}: {v}" for k, v in ctx.items() if v)
     intent_line = (f"Angle to take (from the retention playbook): {intent}\n"
                    if (intent or "").strip() else "")
-    if occasion:
+    if stage_up is not None:
+        task = _RETENTION_STAGE_UP_TASK.format(
+            more_line=(_STAGE_UP_CEILING_LINE if stage_up.get("at_ceiling")
+                       else _STAGE_UP_MORE_LINE))
+    elif occasion:
         task = _RETENTION_V2_TOUCH_TASK.format(
             occasion=occasion, intent_line=intent_line,
             comfort_block=_RETENTION_COMFORT_BLOCK if comfort else "")
@@ -1934,6 +2053,7 @@ def build_retention_ping_messages(
     occasion: Optional[str] = None,
     comfort: bool = False,
     tz_offset_hours: Optional[float] = None,
+    stage_up: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, str]]:
     """The OpenAI `messages` array for a proactive retention ping.
 
@@ -1962,6 +2082,7 @@ def build_retention_ping_messages(
             occasion=occasion,
             comfort=comfort,
             tz_offset_hours=tz_offset_hours,
+            stage_up=stage_up,
         ),
     })
     return messages

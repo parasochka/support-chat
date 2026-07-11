@@ -239,7 +239,7 @@ async def test_nika_turn_sends_photo(monkeypatch):
     monkeypatch.setattr(retention.db, "advance_retention_stage", _advance)
 
     # The model "sends" photo 55 with a caption.
-    async def _handle(session, text, candidates, appearance=None):
+    async def _handle(session, text, candidates, appearance=None, progression=None):
         assert candidates and candidates[0]["id"] == 55
         return chat_service.RetentionReply(
             reply="here you go", lang="en", message_count=1, photo_id=55)
@@ -281,7 +281,7 @@ async def test_nika_handoff_retention_entry_routes_to_support(monkeypatch):
         pass
     monkeypatch.setattr(retention.db, "log_admin_event", _log)
 
-    async def _handle(session, text, candidates, appearance=None):
+    async def _handle(session, text, candidates, appearance=None, progression=None):
         return chat_service.RetentionReply(
             reply="let me pass you along", lang="en", message_count=1, handoff=True)
     monkeypatch.setattr(chat_service, "handle_retention_message", _handle)
