@@ -371,6 +371,9 @@ def retention() -> dict[str, Any]:
         "stage_advance_min_hours": db_v.get(
             "stage_advance_min_hours", config.RETENTION_STAGE_ADVANCE_MIN_HOURS),
         "max_stage": db_v.get("max_stage", config.RETENTION_MAX_STAGE),
+        # Celebrate a real stage advance with a follow-up persona note.
+        "stage_up_notify": db_v.get("stage_up_notify",
+                                    config.RETENTION_STAGE_UP_NOTIFY),
         "max_stage_by_tier": db_v.get("max_stage_by_tier",
                                       dict(_DEFAULT_RETENTION["max_stage_by_tier"])),
         "vip_tiers": db_v.get("vip_tiers",
@@ -550,6 +553,7 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "candidate_list_size", 1, 50)
         _require_int(value, "stage_advance_min_hours", 0, 8_760)
         _require_int(value, "max_stage", 1, 20)
+        _require_bool(value, "stage_up_notify")
         _require_int(value, "nonce_ttl_sec", 10, 3_600)
         _require_int(value, "profile_pull_ttl_sec", 0, 604_800)  # <= 1 week
         _require_int(value, "session_idle_minutes", 0, 525_600)  # 0 = never close

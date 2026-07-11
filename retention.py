@@ -227,6 +227,33 @@ async def select_photo_candidates(product_id: int, ru: dict[str, Any],
     )
 
 
+def progression_context(ru: dict[str, Any]) -> dict[str, Any]:
+    """The player's REAL progression state for the Layer-3 PROGRESSION block.
+
+    Mirrors the maybe_advance_stage gate maths (same thresholds/ceilings), so
+    what Nika tells the player about his progress is exactly what the backend
+    will actually enforce. `at_ceiling` = no further stage is reachable by
+    chatting alone (tier/max ceiling hit, or no configured threshold).
+    """
+    cfg = settings.retention()
+    unlocked = int(ru.get("unlocked_stage") or 1)
+    ceiling = min(tier_stage_ceiling(ru.get("vip_level"), cfg),
+                  int(cfg["max_stage"]))
+    thresholds = cfg.get("stage_advance_msgs") or []
+    next_stage = unlocked + 1
+    idx = next_stage - 2
+    threshold = thresholds[idx] if 0 <= idx < len(thresholds) else None
+    at_ceiling = next_stage > ceiling or threshold is None
+    return {
+        "stage": unlocked,
+        "ceiling": max(ceiling, unlocked),
+        "vip_level": (str(ru.get("vip_level") or "").strip() or None),
+        "meaningful_msgs": int(ru.get("meaningful_msgs") or 0),
+        "next_threshold": None if at_ceiling else int(threshold),
+        "at_ceiling": at_ceiling,
+    }
+
+
 async def maybe_advance_stage(ru: dict[str, Any], stage_up_hint: bool) -> Optional[int]:
     """Apply the backend stage-advance gate. Returns the new stage or None.
 
@@ -862,8 +889,11 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
                     product["id"], ru.get("id"))
         appearance = None
 
-    reply = await chat_service.handle_retention_message(session, text, candidates,
-                                                        appearance=appearance)
+    reply = await chat_service.handle_retention_message(
+        session, text, candidates, appearance=appearance,
+        # The player's real closeness/VIP progress (Layer-3 PROGRESSION block)
+        # so Nika can explain how photos unlock accurately, not by guessing.
+        progression=progression_context(ru))
 
     # Keep the retention_users row's sticky language in step with the answer
     # drift (chat_service persists it on the session; the ru copy drives the
@@ -908,9 +938,61 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
         await _send_ai_text(client, pu.chat_id, reply.reply,
                             reply_markup=markup)
 
-    # Stage progression gate (model hint + backend gate).
+    # Stage progression gate (model hint + backend gate). A real advance is
+    # celebrated with a follow-up persona note (settings-gated) so the player
+    # KNOWS he leveled up and what keeps the progression going.
     if meaningful:
-        await maybe_advance_stage(ru, reply.stage_up_hint)
+        new_stage = await maybe_advance_stage(ru, reply.stage_up_hint)
+        if new_stage is not None and settings.retention()["stage_up_notify"]:
+            await _send_stage_up_note(client, product, ru, session,
+                                      pu.chat_id, reply.lang, new_stage)
+
+
+async def _send_stage_up_note(client: TelegramClient, product: dict[str, Any],
+                              ru: dict[str, Any], session: dict[str, Any],
+                              chat_id: int, lang: str, new_stage: int) -> None:
+    """Follow up a just-unlocked closeness stage with a celebratory note.
+
+    Sent right after the reply whose message earned the advance. Persisted like
+    every proactive message (db.persist_ping_turn + ping_context), so the
+    prompt history renders it with its trigger — the player asking "а что это
+    было?" gets a warm, accurate explanation instead of a deflection — and the
+    admin transcript shows the "⚡ proactive" marker. Best-effort: the stage
+    advance itself is already committed, so any failure here only skips the
+    note (never un-advances or drops the turn).
+    """
+    try:
+        cfg = settings.retention()
+        ceiling = min(tier_stage_ceiling(ru.get("vip_level"), cfg),
+                      int(cfg["max_stage"]))
+        thresholds = cfg.get("stage_advance_msgs") or []
+        # Is a FURTHER stage reachable by chatting (threshold configured and
+        # under the ceiling)? Governs the "keep chatting for more" hint.
+        next_idx = new_stage - 1  # threshold index for (new_stage + 1)
+        has_next = (new_stage + 1 <= ceiling
+                    and 0 <= next_idx < len(thresholds))
+        # Follow the language the conversation just ran in (the session dict's
+        # stored conv_lang may predate this turn's drift).
+        session = {**session, "conv_lang": lang}
+        draft = await chat_service.generate_retention_ping(
+            session, idle_days=0, reason="stage_up", intent="",
+            stage_up={"at_ceiling": not has_next})
+        if draft is None or not draft.text:
+            return
+        if not await _send_ai_text(client, chat_id, draft.text):
+            log.warning("retention_stage_up_send_failed ru=%s", ru.get("id"))
+            return
+        await db.persist_ping_turn(
+            session["id"], draft.text, ai_meta=draft.ai_meta,
+            product_id=product["id"],
+            ping_context=("stage_up: the player's closeness level just went "
+                          "up - more daring photos unlocked for him"))
+        await db.log_admin_event(
+            session["id"], "retention_stage_up",
+            {"tg_user_id": ru.get("tg_user_id"), "new_stage": new_stage},
+            product_id=product["id"])
+    except Exception:  # noqa: BLE001
+        log.exception("retention_stage_up_note_failed ru=%s", ru.get("id"))
 
 
 async def _send_photo(client: TelegramClient, product: dict[str, Any],

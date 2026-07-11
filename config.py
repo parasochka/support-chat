@@ -426,7 +426,10 @@ RETENTION_SESSION_IDLE_MINUTES: int = _env_int(
 # the model on the first turn of the fresh one, so Nika greets a returning
 # player with continuity instead of starting cold (0 = no carry-over).
 RETENTION_CARRY_CONTEXT_TURNS: int = _env_int(
-    "RETENTION_CARRY_CONTEXT_TURNS", 6)
+    "RETENTION_CARRY_CONTEXT_TURNS", 10)
+# Celebrate a just-unlocked photo/closeness stage with a follow-up persona
+# note ("we just got closer - more daring photos from now on; keep chatting").
+RETENTION_STAGE_UP_NOTIFY: bool = _env_bool("RETENTION_STAGE_UP_NOTIFY", True)
 # Every N-th assistant reply in a Telegram retention chat carries a light,
 # in-context invitation to come play on the site (with a one-tap site-map
 # button when a fitting page exists). 0 = the periodic nudge is off; the

@@ -909,11 +909,13 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `chat_sessions.prev_session_id` (guarded ALTER; an empty open session is simply reused, no
   churn). **Continuity:** on the first turn of the fresh session,
   `chat_service.handle_retention_message` pulls the tail of the previous chat
-  (`carry_context_turns` knob, default 6, 0 = off) and passes it to
+  (`carry_context_turns` knob, default 10, 0 = off) and passes it to
   `prompts.build_retention_messages(previous_history=…)`, which renders a Layer-3
   `RETURNING PLAYER — PREVIOUS CONVERSATION (context only)` block (messages truncated to ~240
   chars, rough "N hours/days ago" recency): greet back warmly like someone she knows, never
-  re-introduce, don't re-answer the old messages. It rides ONLY on the first turn (never as
+  re-introduce, don't re-answer the old messages — and when the old chat left a concrete thread
+  (his plans, his mood, a game), ask warmly how it went (the short-term memory the player
+  actually FEELS). It rides ONLY on the first turn (never as
   message history — it is a new chat); durable state (stage progression, seen photos, manager,
   language, profile) lives on `retention_users` and survives rollover by construction. Tests:
   `tests/test_retention_lifecycle.py`.
@@ -1047,6 +1049,23 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   the tier ceiling (`max_stage_by_tier`) **and** spacing (`stage_advance_min_hours`). VIP tier is
   mapped from the free-text `vip_level` via the ordered `vip_tiers` list. All knobs are in the
   **`retention` settings group** (`settings.retention()`, in `SETTING_KEYS` — per-product tunable).
+  **Progression is player-visible now, on two sides.** (1) A REAL advance is **celebrated**:
+  after `maybe_advance_stage` unlocks a stage, `retention._send_stage_up_note` (gated by the
+  `stage_up_notify` knob, default on) generates a persona follow-up via the ping stack
+  (`chat_service.generate_retention_ping(stage_up=…)` → `prompts._RETENTION_STAGE_UP_TASK`: "we
+  just got closer — more daring photos from now on", plus a keep-chatting hint unless the new
+  stage is the player's current ceiling), sends it right after the turn's reply and persists it
+  via `db.persist_ping_turn` with `ping_context="stage_up: …"` — so the prompt history renders it
+  with its trigger (the player asking «что это было?» gets a real answer) and the admin
+  transcript shows the ⚡ proactive marker; an `admin_events('retention_stage_up')` row is logged.
+  Best-effort: any failure only skips the note (the advance is already committed). (2) Nika can
+  **explain the system**: every dialogue turn's Layer 3 carries a `=== PROGRESSION ===` block
+  (`retention.progression_context` → `prompts._progression_directive`: unlocked stage, tier
+  ceiling, VIP level, meaningful-message count and the next threshold — the same maths the gate
+  enforces, so what she says matches what the backend does), and the static
+  `_RETENTION_STAGE_DIRECTIVE` now states the WAY progression works is not a secret (chat more →
+  closer → more daring photos; VIP raises the ceiling) — only the machinery (tags, counters,
+  "stage" as a system term) stays internal. Tests: `tests/test_stage_progression.py`.
 - **Entry = deeplink + one-time nonce** (`retention_nonces`): the site posts a handshake to
   `POST /api/retention/deeplink` → `{nonce, deep_link}`; `/start <nonce>` redeems it (single-use,
   TTL-bounded, **product-scoped** — a nonce minted for brand B's bot never redeems on brand A's,
