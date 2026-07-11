@@ -1038,7 +1038,20 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   photo can never gate outside what the delivery gate can serve (no stage 0/6, no tier past the
   ladder). The first send uploads the binary from the media dir (Railway Volume,
   `RETENTION_MEDIA_DIR`); Telegram returns a `file_id` cached on the row so later sends skip the
-  re-upload/egress. **Upload is bulk-friendly** (`POST /admin/retention/photos` takes any number
+  re-upload/egress. **Uploads are auto-normalized for Telegram** (`media_normalizer.py`): content
+  managers upload originals as they come (multi-MB JPEGs at 8000×4000), but Telegram re-compresses
+  every photo to ~2560px anyway, so a periodic sweep (hourly by default; own asyncio task from
+  `main.py` lifespan under the same `RETENTION_SCHEDULER_ENABLED` switch, own advisory lock)
+  re-encodes every .jpg/.png (and any oversized .webp) to WebP at
+  `retention.media_max_side_px` (default 2048) × `media_webp_quality` (82), re-points the row
+  (`db.set_retention_photo_storage_ref`) and **deletes the heavy original** — GIFs are left alone
+  (possibly animated), the cached `telegram_file_id` is KEPT (the already-uploaded copy stays
+  valid), and the row is re-pointed BEFORE the delete so a crash can orphan a file but never break
+  a photo. Knobs in the hot `retention` group (`media_normalize_enabled` per product;
+  `media_normalize_interval_sec` global-only — one loop serves every product); the Media tab's
+  «Normalize now» button (`POST /admin/retention/photos/normalize`) runs one product's sweep
+  immediately, bypassing the enabled switch. Requires `Pillow` (requirements.txt). Tests:
+  `tests/test_media_normalizer.py`. **Upload is bulk-friendly** (`POST /admin/retention/photos` takes any number
   of `files` in one request; the single `file` field stays for older consumers) and metadata is
   **AI-generated on demand**: `POST /admin/retention/photos/generate-metadata` (`{ids: […]}`,
   ≤20/request — the SPA chunks bigger selections) runs one vision call per photo through the

@@ -608,6 +608,7 @@ const PhotosTab = ({ productId }) => {
   const [selected, setSelected] = useState(() => new Set());
   const [generating, setGenerating] = useState(false);
   const [genProgress, setGenProgress] = useState('');
+  const [normalizing, setNormalizing] = useState(false);
   const [filters, setFilters] = useState({ q: '', stage: 'all', level: 'all', status: 'all' });
   const [page, setPage] = useState(1);
   // The product's real gate ranges — Stage 1..maxStage, Level 0..tiers-1 — so
@@ -807,6 +808,32 @@ const PhotosTab = ({ productId }) => {
     }
   };
 
+  // The hourly media normalizer, on demand for THIS product: heavy JPG/PNG
+  // uploads become Telegram-sized WebP, the originals are deleted.
+  const normalize = async () => {
+    if (normalizing) return;
+    setNormalizing(true);
+    try {
+      const { json } = await httpClient(
+        `${API_URL}/admin/retention/photos/normalize`,
+        { method: 'POST', body: JSON.stringify({ product_id: Number(productId) }) }
+      );
+      const s = json.stats || {};
+      notify(
+        t('Media normalized: {n} converted, {f} failed, {mb} MB freed')
+          .replace('{n}', s.normalized || 0)
+          .replace('{f}', s.failed || 0)
+          .replace('{mb}', ((s.bytes_saved || 0) / (1024 * 1024)).toFixed(1)),
+        { type: s.failed ? 'warning' : 'success' }
+      );
+      load();
+    } catch (e) {
+      notify(e.body?.detail || e.message || t('request failed'), { type: 'error' });
+    } finally {
+      setNormalizing(false);
+    }
+  };
+
   return (
     <Box>
       <Card sx={{ mb: 2 }}>
@@ -996,6 +1023,19 @@ const PhotosTab = ({ productId }) => {
             <Typography variant="caption" color="text.secondary">
               {t(
                 "AI (the product's own model + API key) fills the description, tags, stage and minimum VIP level for every selected photo."
+              )}
+            </Typography>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={normalize}
+              disabled={normalizing}
+            >
+              {normalizing ? t('Normalizing…') : t('Normalize media now')}
+            </Button>
+            <Typography variant="caption" color="text.secondary">
+              {t(
+                'Re-encodes heavy uploads (multi-MB JPG/PNG) to Telegram-sized WebP and deletes the originals. Runs automatically on a schedule — the button is the immediate run.'
               )}
             </Typography>
           </Stack>

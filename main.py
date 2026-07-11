@@ -100,9 +100,16 @@ async def lifespan(app: FastAPI):
     # and event pickup is an atomic claim (plus a Postgres advisory lock per
     # sweep), so multiple instances never double-send.
     agent_task = None
+    media_task = None
     if config.RETENTION_SCHEDULER_ENABLED:
+        import media_normalizer
         import retention_v2
         agent_task = asyncio.create_task(retention_v2.scheduler_loop())
+        # Media normalizer: the hourly sweep re-encoding uploaded retention
+        # photos to WebP at Telegram-appropriate dimensions (heavy originals
+        # deleted). Same deploy switch as the agent worker; per-product opt-out
+        # via the hot `retention.media_normalize_enabled` setting.
+        media_task = asyncio.create_task(media_normalizer.scheduler_loop())
     # Periodic settings-cache refresh: the in-process cache is reloaded on a
     # local admin write, but a write made by ANOTHER instance (or directly in
     # the DB) was invisible until restart — the "I changed a setting and
@@ -113,7 +120,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        for task in (agent_task, refresh_task):
+        for task in (agent_task, media_task, refresh_task):
             if task is None:
                 continue
             task.cancel()

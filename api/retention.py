@@ -904,6 +904,24 @@ async def update_photo(photo_id: int, body: PhotoWrite,
     return JSONResponse(content={"photo": updated})
 
 
+class NormalizePhotosReq(BaseModel):
+    product_id: int
+
+
+@admin_router.post("/photos/normalize")
+async def normalize_photos(body: NormalizePhotosReq,
+                           admin=Depends(require_admin_write)) -> JSONResponse:
+    """Run the media normalizer for one product NOW (the hourly sweep's admin
+    button): re-encode heavy JPG/PNG uploads to Telegram-sized WebP and delete
+    the originals. Bypasses the per-product enabled switch — pressing the
+    button IS the opt-in for this run."""
+    await admin_auth.require_product_write(admin, body.product_id)
+    import media_normalizer
+    stats = await media_normalizer.normalize_product_photos(
+        body.product_id, force=True)
+    return JSONResponse(content={"stats": stats})
+
+
 @admin_router.delete("/photos/{photo_id}")
 async def delete_photo(photo_id: int,
                        admin=Depends(require_admin_write)) -> JSONResponse:

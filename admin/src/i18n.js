@@ -1134,6 +1134,14 @@ const RU = {
   'admin may edit within the scope; manager is read-only.':
     'admin может редактировать в пределах области; manager — только чтение.',
 
+  // ----- Media normalizer -----
+  'Normalize media now': 'Нормализовать медиа сейчас',
+  'Normalizing…': 'Нормализация…',
+  'Media normalized: {n} converted, {f} failed, {mb} MB freed':
+    'Медиа нормализовано: {n} сконвертировано, {f} с ошибкой, освобождено {mb} МБ',
+  'Re-encodes heavy uploads (multi-MB JPG/PNG) to Telegram-sized WebP and deletes the originals. Runs automatically on a schedule — the button is the immediate run.':
+    'Пережимает тяжёлые загрузки (многомегабайтные JPG/PNG) в WebP под размеры Telegram и удаляет оригиналы. Запускается автоматически по расписанию — кнопка выполняет проход немедленно.',
+
   // ----- API keys page -----
   'Global (everything)': 'Глобально (всё)',
   'Partner (all its products)': 'Партнёр (все его продукты)',
