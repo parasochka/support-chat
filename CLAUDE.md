@@ -1038,7 +1038,20 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   photo can never gate outside what the delivery gate can serve (no stage 0/6, no tier past the
   ladder). The first send uploads the binary from the media dir (Railway Volume,
   `RETENTION_MEDIA_DIR`); Telegram returns a `file_id` cached on the row so later sends skip the
-  re-upload/egress. **Upload is bulk-friendly** (`POST /admin/retention/photos` takes any number
+  re-upload/egress. **Uploads are auto-normalized for Telegram** (`media_normalizer.py`): content
+  managers upload originals as they come (multi-MB JPEGs at 8000×4000), but Telegram re-compresses
+  every photo to ~2560px anyway, so a periodic sweep (hourly by default; own asyncio task from
+  `main.py` lifespan under the same `RETENTION_SCHEDULER_ENABLED` switch, own advisory lock)
+  re-encodes every .jpg/.png (and any oversized .webp) to WebP at
+  `retention.media_max_side_px` (default 2048) × `media_webp_quality` (82), re-points the row
+  (`db.set_retention_photo_storage_ref`) and **deletes the heavy original** — GIFs are left alone
+  (possibly animated), the cached `telegram_file_id` is KEPT (the already-uploaded copy stays
+  valid), and the row is re-pointed BEFORE the delete so a crash can orphan a file but never break
+  a photo. Knobs in the hot `retention` group (`media_normalize_enabled` per product;
+  `media_normalize_interval_sec` global-only — one loop serves every product); the Media tab's
+  «Normalize now» button (`POST /admin/retention/photos/normalize`) runs one product's sweep
+  immediately, bypassing the enabled switch. Requires `Pillow` (requirements.txt). Tests:
+  `tests/test_media_normalizer.py`. **Upload is bulk-friendly** (`POST /admin/retention/photos` takes any number
   of `files` in one request; the single `file` field stays for older consumers) and metadata is
   **AI-generated on demand**: `POST /admin/retention/photos/generate-metadata` (`{ids: […]}`,
   ≤20/request — the SPA chunks bigger selections) runs one vision call per photo through the
@@ -1159,7 +1172,8 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   long reasoning turn shows «печатает…» instead of dead silence; purely
   cosmetic, failures never drop the reply), and a model reply carrying BLANK
   lines is delivered as a **burst of separate messages**
-  (`retention._split_reply_parts` in `_send_ai_text`, max 3 parts, extra
+  (`retention._split_reply_parts` in `_send_ai_text`, capped by the hot
+  `retention.max_reply_parts` knob — default 3, 1 = never split —, extra
   chunks collapse into the last part; typing + a length-proportional pause
   between parts; an inline button always rides on the LAST part; photo
   captions are never split). The persona's RESPONSE STYLE core invites the
@@ -1370,7 +1384,8 @@ drainers pick up the same event.
   `casino_inactivity` / `no_deposit`, per-rule action message|photo, English
   `intent` hint (ensure_english-guarded), VIP-tier filter, per-player
   `cooldown_days`, priority). Swept from the SAME worker loop (called at the
-  end of `run_product_events`, self-paced ~10 min per product), bounded by the
+  end of `run_product_events`, self-paced per product by the hot
+  `retention.idle_sweep_interval_sec` knob — default 600s), bounded by the
   SAME machinery: `db.eligible_ping_users` prefilters (subscribed / not muted
   / not unreachable / `ping_min_gap_hours` / `ping_daily_cap`), quiet hours,
   the daily AI budget, and **`v2_dry_run`** (a matched rule logs a
@@ -1486,11 +1501,23 @@ Map of what lives where:
   the SPA can role-gate its UI (managers lose the Settings / Users tabs and all edit controls —
   cosmetic; the server is authoritative).
 - **User management** (`api/admin.py` `/admin/users*`, the **Users** tab, admins only):
-  minimal CRUD over `admin_users` (email + password + role `admin`/`manager`). No email delivery,
-  no reset flows — an admin sets passwords directly. A user can't demote/deactivate/delete
-  **itself** (self-lockout guard). With no owner recovery path, **keep at least two `admin`
-  accounts** so a forgotten password can't lock everyone out. The password hash never leaves
-  `db.py` (`_row_to_admin_user` drops it).
+  CRUD over `admin_users` (email + password) **plus the membership editor** — WHAT an account
+  may touch is its `admin_memberships` (role `admin`/`manager` × scope global/partner/product).
+  The SPA create form picks the initial role × scope (partner/product pickers fed by
+  `GET /admin/structure`; the create body carries `scope_type`/`partner_id`/`product_id` —
+  omitted, the backend defaults to a GLOBAL membership); the edit form hosts the
+  **Access (role × scope)** panel — the memberships table with grant/revoke over
+  `POST/DELETE /admin/users/{email}/memberships`. Granting the same scope again replaces its
+  role (`db.add_membership` upserts). The caller may grant/revoke only scopes it holds an
+  ADMIN role over (`_require_scope_admin`), may not change its OWN memberships, and manages
+  only accounts whose ENTIRE membership set lies inside its reach (`_can_manage_user`; an
+  account with NO memberships is manageable only globally). The SPA edit form deliberately has
+  **no flat role field**: the legacy `PUT /users/{email}` `role` writes a GLOBAL membership
+  and requires global write, so role changes go through the memberships panel. No email
+  delivery, no reset flows — an admin sets passwords directly. A user can't
+  demote/deactivate/delete **itself** (self-lockout guard). With no owner recovery path,
+  **keep at least two `admin` accounts** so a forgotten password can't lock everyone out. The
+  password hash never leaves `db.py` (`_row_to_admin_user` drops it).
 - **Settings** (`settings.py`, `app_settings` table): hot-reloaded runtime tuning with
   precedence `app_settings` (DB) → env → default. A sync in-process cache (populated at
   startup, reloaded on write, and **re-pulled every 60s** by `main._settings_refresh_loop`

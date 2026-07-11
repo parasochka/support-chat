@@ -54,7 +54,8 @@ SETTING_KEYS = ("escalation", "language", "antispam", "model", "general",
 # otherwise the Settings editor happily stores a value the runtime never reads
 # (the "I changed the worker interval and nothing happened" trap).
 GLOBAL_ONLY_FIELDS: dict[str, frozenset[str]] = {
-    "retention": frozenset({"worker_interval_sec"}),
+    "retention": frozenset({"worker_interval_sec",
+                            "media_normalize_interval_sec"}),
     "general": frozenset({"admin_token_ttl_min", "body_max_bytes"}),
 }
 
@@ -403,6 +404,11 @@ def retention() -> dict[str, Any]:
         "play_reminder_every_msgs": db_v.get(
             "play_reminder_every_msgs",
             config.RETENTION_PLAY_REMINDER_EVERY_MSGS),
+        # Max Telegram messages one model reply may be split into (blank-line
+        # burst delivery); extra chunks collapse into the last part. 1 = never
+        # split.
+        "max_reply_parts": db_v.get("max_reply_parts",
+                                    config.RETENTION_MAX_REPLY_PARTS),
         # Proactive-contact guard rails: the per-player anti-annoyance
         # protection the agent worker enforces on every send.
         "ping_daily_cap": db_v.get("ping_daily_cap",
@@ -455,6 +461,21 @@ def retention() -> dict[str, Any]:
         # Idle pings tab). Off = the agent reacts to events only.
         "idle_pings_enabled": db_v.get("idle_pings_enabled",
                                        config.RETENTION_IDLE_PINGS_ENABLED),
+        # How often the idle-rules ladder is evaluated per product (the worker
+        # calls the sweep every tick; this throttles the rule evaluation).
+        "idle_sweep_interval_sec": db_v.get(
+            "idle_sweep_interval_sec", config.RETENTION_IDLE_SWEEP_INTERVAL_SEC),
+        # Media normalizer: the periodic sweep re-encoding uploaded photos to
+        # WebP at Telegram-appropriate dimensions (heavy originals deleted).
+        "media_normalize_enabled": db_v.get(
+            "media_normalize_enabled", config.RETENTION_MEDIA_NORMALIZE_ENABLED),
+        "media_normalize_interval_sec": db_v.get(
+            "media_normalize_interval_sec",
+            config.RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC),
+        "media_max_side_px": db_v.get("media_max_side_px",
+                                      config.RETENTION_MEDIA_MAX_SIDE_PX),
+        "media_webp_quality": db_v.get("media_webp_quality",
+                                       config.RETENTION_MEDIA_WEBP_QUALITY),
         # Which canonical events may wake the agent (the Decisions pipeline);
         # everything else stays state food. None/absent = the built-in set
         # (retention_v2.DECISION_EVENTS); bet_settled is special-cased on the
@@ -586,6 +607,7 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "session_idle_minutes", 0, 525_600)  # 0 = never close
         _require_int(value, "carry_context_turns", 0, 50)
         _require_int(value, "play_reminder_every_msgs", 0, 1_000)  # 0 = off
+        _require_int(value, "max_reply_parts", 1, 5)  # 1 = never split
         _require_int(value, "ping_daily_cap", 1, 24)
         _require_int(value, "ping_min_gap_hours", 0, 720)   # <= 30 days; 0 = off
         _require_int(value, "quiet_hours_start", 0, 23)
@@ -607,6 +629,11 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
                 and value["v2_send_delay_max_sec"] < value["v2_send_delay_min_sec"]):
             raise ValueError("v2_send_delay_max_sec must be >= v2_send_delay_min_sec")
         _require_bool(value, "idle_pings_enabled")
+        _require_int(value, "idle_sweep_interval_sec", 60, 86_400)
+        _require_bool(value, "media_normalize_enabled")
+        _require_int(value, "media_normalize_interval_sec", 300, 86_400)
+        _require_int(value, "media_max_side_px", 512, 4_096)
+        _require_int(value, "media_webp_quality", 40, 100)
         if value.get("v2_decision_events") is not None:
             import player_sync  # lazy: avoid an import cycle at module load
             v = value["v2_decision_events"]

@@ -35,8 +35,8 @@ def test_render_lists_pages_deterministically():
     assert "https://nikabet.example/promo" in block
     assert "https://nikabet.example/help" in block
     # Title + purpose formatting; a title-less row still lists its URL + purpose.
-    assert "Cashier: https://nikabet.example/cashier — where players top up" in block
-    assert "- https://nikabet.example/help — help center" in block
+    assert "Cashier: https://nikabet.example/cashier - where players top up" in block
+    assert "- https://nikabet.example/help - help center" in block
     # Ordering follows the input list (byte-stable within a product scope).
     assert block.index("cashier") < block.index("promo") < block.index("help")
     # Deterministic: same input -> same output.

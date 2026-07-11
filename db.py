@@ -3821,6 +3821,20 @@ async def set_photo_file_id(photo_id: int, file_id: str) -> None:
     )
 
 
+async def set_retention_photo_storage_ref(photo_id: int,
+                                          storage_ref: str) -> None:
+    """Re-point a photo row at a new stored binary (the media normalizer).
+
+    telegram_file_id is deliberately KEPT: it references the copy already on
+    Telegram's servers, which stays valid — only future first-uploads read the
+    new file.
+    """
+    await _pool.execute(
+        "UPDATE retention_photos SET storage_ref = $2, updated_at = now() "
+        "WHERE id = $1", photo_id, storage_ref,
+    )
+
+
 def _row_to_photo(row: asyncpg.Record) -> dict[str, Any]:
     d = dict(row)
     if d.get("id") is not None:

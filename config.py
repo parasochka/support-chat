@@ -505,6 +505,26 @@ RETENTION_V2_SEND_DELAY_MAX_SEC: int = _env_int(
 # (retention_idle / the Idle pings tab). Off = the agent reacts to events only.
 RETENTION_IDLE_PINGS_ENABLED: bool = _env_bool(
     "RETENTION_IDLE_PINGS_ENABLED", True)
+# How often the idle-ping ladder is evaluated per product (the event worker
+# calls the sweep on every tick; this only throttles the rule evaluation).
+# Bounds idle-ping responsiveness — a rule fires on this granularity at best.
+RETENTION_IDLE_SWEEP_INTERVAL_SEC: int = _env_int(
+    "RETENTION_IDLE_SWEEP_INTERVAL_SEC", 600)
+# Max Telegram messages one model reply may be split into (blank-line burst
+# delivery, retention._split_reply_parts). Extra chunks collapse into the
+# last part; 1 = never split.
+RETENTION_MAX_REPLY_PARTS: int = _env_int("RETENTION_MAX_REPLY_PARTS", 3)
+# Media normalizer (media_normalizer.py): the periodic sweep that re-encodes
+# uploaded retention photos to WebP at Telegram-appropriate dimensions and
+# deletes the heavy originals. Defaults for the hot `retention` group knobs.
+RETENTION_MEDIA_NORMALIZE_ENABLED: bool = _env_bool(
+    "RETENTION_MEDIA_NORMALIZE_ENABLED", True)
+RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC: int = _env_int(
+    "RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC", 3600)
+RETENTION_MEDIA_MAX_SIDE_PX: int = _env_int(
+    "RETENTION_MEDIA_MAX_SIDE_PX", 2048)
+RETENTION_MEDIA_WEBP_QUALITY: int = _env_int(
+    "RETENTION_MEDIA_WEBP_QUALITY", 82)
 # (The old RETENTION_V2_SHOW_TRIGGER raw-trigger chrome line was removed: an
 # event reaction now ALWAYS carries a localized human occasion phrase merged
 # into the header line — see retention_v2._proactive_header + the rtn_trig_*

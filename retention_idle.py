@@ -40,7 +40,9 @@ log = logging.getLogger(__name__)
 
 # The idle ladder moves on a scale of DAYS, so sweeping it on the worker's
 # seconds-scale cadence is pure waste. In-process pacing: one idle sweep per
-# product at most this often (the event pipeline still runs every tick).
+# product at most every `retention.idle_sweep_interval_sec` (hot per-product
+# knob; the event pipeline still runs every tick). 600s is the fallback when
+# the knob is missing from an older stored override.
 _IDLE_SWEEP_INTERVAL_SEC = 600
 _last_sweep: dict[int, float] = {}
 
@@ -109,7 +111,9 @@ async def run_product_idle_pings(product: dict[str, Any],
     if not cfg.get("idle_pings_enabled"):
         return {"skipped": "idle_pings_disabled"}
     now = time.monotonic()
-    if not force and now - _last_sweep.get(pid, 0.0) < _IDLE_SWEEP_INTERVAL_SEC:
+    interval = int(cfg.get("idle_sweep_interval_sec")
+                   or _IDLE_SWEEP_INTERVAL_SEC)
+    if not force and now - _last_sweep.get(pid, 0.0) < interval:
         return {"skipped": "paced"}
     _last_sweep[pid] = now
     token = await db.get_product_telegram_token(pid)

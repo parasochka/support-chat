@@ -71,22 +71,28 @@ async def _typing(client: TelegramClient, chat_id: int):
 # A model reply may arrive as several short chat messages separated by a BLANK
 # line (the persona is told: usually one, sometimes two, rarely three) — real
 # people in Telegram send bursts, not paragraphs. Bounds keep a misbehaving
-# reply from turning into spam.
-_MAX_REPLY_PARTS = 3
+# reply from turning into spam. The cap is the hot `retention.max_reply_parts`
+# knob (per-product; 1 = never split).
+def _max_reply_parts() -> int:
+    try:
+        return max(1, int(settings.retention().get("max_reply_parts", 3)))
+    except Exception:
+        return 3
 
 
 def _split_reply_parts(text: str) -> list[str]:
     """Split a model reply into its blank-line-separated chat messages.
 
-    At most _MAX_REPLY_PARTS parts; a long tail collapses into the last part
-    so nothing is ever dropped. A reply with no blank lines stays whole.
+    At most `retention.max_reply_parts` parts; a long tail collapses into the
+    last part so nothing is ever dropped. A reply with no blank lines stays
+    whole.
     """
+    cap = _max_reply_parts()
     chunks = [p.strip() for p in re.split(r"\n\s*\n", text or "") if p.strip()]
     if len(chunks) <= 1:
         return chunks
-    if len(chunks) > _MAX_REPLY_PARTS:
-        chunks = chunks[:_MAX_REPLY_PARTS - 1] + [
-            "\n\n".join(chunks[_MAX_REPLY_PARTS - 1:])]
+    if len(chunks) > cap:
+        chunks = chunks[:cap - 1] + ["\n\n".join(chunks[cap - 1:])]
     return chunks
 
 

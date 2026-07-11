@@ -697,8 +697,15 @@ def test_retention_v2_settings_validation():
           "v2_loss_high_usd": 200.0, "v2_same_event_cooldown_hours": 0,
           "worker_interval_sec": 5, "idle_pings_enabled": True,
           "v2_send_delay_min_sec": 300, "v2_send_delay_max_sec": 900,
-          "v2_decision_events": ["deposit_confirmed", "level_up"]}
+          "v2_decision_events": ["deposit_confirmed", "level_up"],
+          "max_reply_parts": 2, "idle_sweep_interval_sec": 300}
     assert settings.validate_setting("retention", ok) == ok
+    with pytest.raises(ValueError):
+        settings.validate_setting("retention", {"max_reply_parts": 0})
+    with pytest.raises(ValueError):
+        settings.validate_setting("retention", {"max_reply_parts": 6})
+    with pytest.raises(ValueError):
+        settings.validate_setting("retention", {"idle_sweep_interval_sec": 10})
     with pytest.raises(ValueError):
         settings.validate_setting("retention", {"worker_interval_sec": 2})
     with pytest.raises(ValueError):
