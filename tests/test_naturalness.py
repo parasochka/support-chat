@@ -20,12 +20,22 @@ def test_split_reply_parts_shapes():
     assert retention._split_reply_parts("line one\nline two") == [
         "line one\nline two"]
     # Bounded: a runaway split collapses the tail into the last part so
-    # nothing is dropped and the burst can't spam.
+    # nothing is dropped and the burst can't spam. The cap is the hot
+    # `retention.max_reply_parts` knob (default 3).
     parts = retention._split_reply_parts("a\n\nb\n\nc\n\nd\n\ne")
-    assert len(parts) == retention._MAX_REPLY_PARTS == 3
+    assert len(parts) == retention._max_reply_parts() == 3
     assert parts[0] == "a" and "d" in parts[-1] and "e" in parts[-1]
     # Blank-ish input never crashes.
     assert retention._split_reply_parts("") == []
+
+
+def test_split_reply_parts_cap_is_tunable(monkeypatch):
+    # max_reply_parts=1 delivers everything as ONE message; 2 collapses the
+    # tail into the second part.
+    monkeypatch.setattr(settings, "retention", lambda: {"max_reply_parts": 1})
+    assert retention._split_reply_parts("a\n\nb\n\nc") == ["a\n\nb\n\nc"]
+    monkeypatch.setattr(settings, "retention", lambda: {"max_reply_parts": 2})
+    assert retention._split_reply_parts("a\n\nb\n\nc") == ["a", "b\n\nc"]
 
 
 def test_typing_pause_is_bounded():

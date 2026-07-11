@@ -97,6 +97,9 @@ export const GROUP_FIELDS = {
     { name: 'history_max_turns', label: 'History turns to model', type: 'int', min: 1, max: 200, module: 'support', help: 'Recent turns fed into the prompt history (full transcript is always stored).' },
     { name: 'body_max_bytes', label: 'Max request body (bytes)', type: 'int', min: 1024, max: 104857600, globalOnly: true, help: 'Largest accepted request body (1 KiB … 100 MiB).' },
   ],
+  // NB: `v2_decision_events` is deliberately ABSENT here — its one editor is
+  // the bespoke checkbox widget on the Proactive agent page (Triggers tab),
+  // which PUTs the same /admin/settings/retention group.
   retention: [
     { name: 'daily_photo_cap', label: 'Daily photo cap', type: 'int', min: 0, max: 10000, help: 'Max photos sent to one player per day (hard, incl. requested).' },
     { name: 'proactive_photo_cooldown_msgs', label: 'Proactive photo cooldown (msgs)', type: 'int', min: 1, max: 10000, help: 'Messages between UNPROMPTED photos (a direct ask bypasses it).' },
@@ -107,6 +110,7 @@ export const GROUP_FIELDS = {
     { name: 'session_idle_minutes', label: 'Session idle (min)', type: 'int', min: 0, max: 525600, help: 'Idle minutes before a Telegram chat closes; the next message starts a fresh chat (0 = never close).' },
     { name: 'carry_context_turns', label: 'Carry-over context turns', type: 'int', min: 0, max: 50, help: 'Trailing turns of the previous chat shown to the model when a returning player starts a fresh one (0 = off).' },
     { name: 'play_reminder_every_msgs', label: 'Play reminder every ~N replies', type: 'int', min: 0, max: 1000, help: 'Roughly every N-th of Nika’s Telegram replies weaves in a light in-context invitation to play, with a one-tap site button picked from the Site map (0 = off). The actual cadence drifts ±2 around N (…after 3, then 7, then 5…) so the pattern can’t be clocked.' },
+    { name: 'max_reply_parts', label: 'Max messages per reply (burst)', type: 'int', min: 1, max: 5, help: 'A reply with blank lines is delivered as a burst of separate Telegram messages (with a typing pause between them). This caps the burst; longer replies collapse into the last message. 1 = always one message.' },
     { name: 'silent_notifications', label: 'Silent notifications (proactive)', type: 'bool', section: 'delivery', help: 'Proactive messages arrive WITHOUT a sound/vibration on the player’s phone (Telegram silent delivery). Replies in a live dialogue always notify normally.' },
     { name: 'subscription_cache_ttl_sec', label: 'Subscription re-check cache (sec)', type: 'int', min: 0, max: 86400, section: 'delivery', help: 'How long a positive channel-subscription check is cached before asking Telegram again (0 = re-check on every message).' },
     { name: 'v2_enabled', label: 'Agent enabled', type: 'bool', section: 'agent', help: 'The proactive agent for this product: reacts to casino events (deposits, level-ups, losses) with a decision per event. Off = no proactive messages at all (the dialogue bot still answers).' },
@@ -115,6 +119,7 @@ export const GROUP_FIELDS = {
     { name: 'ping_batch_size', label: 'Events per sweep', type: 'int', min: 1, max: 500, section: 'agent', help: 'Max events one worker sweep processes per product — bounds the burst on Telegram and OpenAI.' },
     { name: 'v2_daily_budget_usd', label: 'Daily AI budget (USD)', type: 'float', min: 0, max: 10000, section: 'agent', help: 'Hard stop: once the day’s decisions cost this much, the agent goes quiet until tomorrow. 0 = no budget.' },
     { name: 'idle_pings_enabled', label: 'Idle re-engagement pings', type: 'bool', section: 'agent', help: 'The agent’s inactivity trigger: the Idle pings rules ladder («quiet N days → Nika writes first», Retention → Idle pings tab). Off = the agent reacts to casino events only; a quiet player is never written to.' },
+    { name: 'idle_sweep_interval_sec', label: 'Idle rules sweep interval (sec)', type: 'int', min: 60, max: 86400, section: 'agent', help: 'How often the idle-rules ladder is re-evaluated per product. The rules move on a scale of days, so the default (600 = 10 min) is plenty; «Run now» on the Idle pings tab bypasses it.' },
     { name: 'v2_send_delay_min_sec', label: 'Send delay, min (seconds)', type: 'int', min: 0, max: 21600, section: 'agent', help: 'A proactive reaction goes out a RANDOM delay after the event, never instantly — an instant thank-you after a deposit reads as surveillance. Default 300 (5 min); each event gets its own delay between min and max. «Process queue now» bypasses the delay.' },
     { name: 'v2_send_delay_max_sec', label: 'Send delay, max (seconds)', type: 'int', min: 0, max: 21600, section: 'agent', help: 'Upper bound of the random per-event send delay. Default 900 (15 min) — so reactions land 5–15 minutes after the event, ~10 on average. Set min = max for an exact delay; both 0 = react immediately.' },
     { name: 'ping_daily_cap', label: 'Max proactive messages per player per day', type: 'int', min: 1, max: 24, section: 'guards', help: 'Hard per-player cap: the agent never sends more than this many proactive messages to one player in a day, however many events fire.' },

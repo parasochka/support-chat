@@ -1115,6 +1115,25 @@ const RU = {
   'Photo metadata': 'Метаданные фото',
   'of previous': 'от предыдущего',
 
+  // ----- Users: memberships (role × scope) -----
+  'Access (role × scope)': 'Доступ (роль × область)',
+  'no access (no memberships)': 'нет доступа (нет членств)',
+  'What this account may see and edit. Each row is one role over one scope: the whole hub (global), one partner (all its products), or a single product. Granting the same scope again replaces its role.':
+    'Что этот аккаунт может видеть и редактировать. Каждая строка — одна роль над одной областью: весь хаб (глобально), один партнёр (все его продукты) или один продукт. Повторная выдача той же области заменяет её роль.',
+  'This account has no memberships — it can log in but sees no data. Grant it a scope below.':
+    'У этого аккаунта нет членств — он может войти, но не видит данных. Выдайте ему область ниже.',
+  'Access granted': 'Доступ выдан',
+  'Access revoked': 'Доступ отозван',
+  'Revoke access': 'Отозвать доступ',
+  'Revoke': 'Отозвать',
+  'Grant access': 'Выдать доступ',
+  'You may grant or revoke only scopes you hold an admin role over. You cannot change your own memberships.':
+    'Выдавать и отзывать можно только области, где у вас роль администратора. Свои собственные членства менять нельзя.',
+  'What the account may access: the whole hub, one partner (all its products), or a single product. More scopes can be added after creation on the edit page.':
+    'К чему у аккаунта будет доступ: весь хаб, один партнёр (все его продукты) или один продукт. Дополнительные области можно выдать после создания на странице редактирования.',
+  'admin may edit within the scope; manager is read-only.':
+    'admin может редактировать в пределах области; manager — только чтение.',
+
   // ----- API keys page -----
   'Global (everything)': 'Глобально (всё)',
   'Partner (all its products)': 'Партнёр (все его продукты)',

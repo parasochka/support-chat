@@ -207,6 +207,13 @@ const dataProvider = {
           email: params.data.email,
           password: params.data.password,
           role: params.data.role || 'manager',
+          // Initial membership scope. Omitted -> the backend defaults to a
+          // GLOBAL membership, so the pickers must always be sent through.
+          scope_type: params.data.scope_type || 'global',
+          partner_id:
+            params.data.scope_type === 'partner' ? Number(params.data.partner_id) : undefined,
+          product_id:
+            params.data.scope_type === 'product' ? Number(params.data.product_id) : undefined,
         }),
       });
       return { data: { ...json.user, id: json.user.email } };
@@ -253,7 +260,9 @@ const dataProvider = {
     if (resource === 'users') {
       const body = {};
       if (params.data.password) body.password = params.data.password;
-      if (params.data.role !== params.previousData.role) body.role = params.data.role;
+      // NB: no flat `role` here — role changes go through the memberships
+      // panel (the legacy PUT role field writes a GLOBAL membership and
+      // requires global write, which would silently escalate scoped users).
       if (params.data.active !== params.previousData.active) body.active = params.data.active;
       const { json } = await httpClient(
         `${API_URL}/admin/users/${encodeURIComponent(params.id)}`,
