@@ -21,6 +21,7 @@ import SmartToyIcon from '@mui/icons-material/SmartToy';
 import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
 import ForumIcon from '@mui/icons-material/Forum';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutlined';
 import VpnKeyIcon from '@mui/icons-material/VpnKey';
 import InsightsIcon from '@mui/icons-material/Insights';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
@@ -92,6 +93,7 @@ const RetentionAgent = lazyPage(() => import('./pages/RetentionAgent'));
 const Settings = lazyPage(() => import('./pages/Settings'));
 const SiteMap = lazyPage(() => import('./pages/SiteMap'));
 const Structure = lazyPage(() => import('./pages/Structure'));
+const SupportGuide = lazyPage(() => import('./pages/SupportGuide'));
 const Translations = lazyPage(() => import('./pages/Translations'));
 
 // One store instance for the app: a localStorage store whose reset() preserves
@@ -250,6 +252,14 @@ const AppMenu = () => {
       <Menu.DashboardItem primaryText={t('Dashboard')} />
 
       <CollapsibleSection id="support" label={t('Support chat')}>
+        {/* The operator's guide to the whole support module — the support twin
+            of the Proactive agent's "How it works & testing" tab. */}
+        <SubItem
+          to="/support-guide"
+          label={t('How it works')}
+          icon={<HelpOutlineIcon fontSize="small" />}
+          active={(location) => location.pathname === '/support-guide'}
+        />
         <Menu.ResourceItem name="sessions" />
         <Menu.ResourceItem name="unresolved" />
         <Menu.ResourceItem name="kb" />
@@ -352,7 +362,7 @@ const App = () => (
     />
     <Resource
       name="kb_variables"
-      options={{ label: 'KB variables' }}
+      options={{ label: t('KB variables') }}
       list={KbVariableList}
       edit={KbVariableEdit}
     />
@@ -376,6 +386,7 @@ const App = () => (
       <Route path="/site-map" element={<SiteMap />} />
       <Route path="/settings" element={<Settings />} />
       <Route path="/structure" element={<Structure />} />
+      <Route path="/support-guide" element={<SupportGuide />} />
       <Route path="/retention" element={<Retention />} />
       <Route path="/retention-agent" element={<RetentionAgent />} />
       {/* Legacy bookmark: the old Retention v2 path lands on the agent page. */}

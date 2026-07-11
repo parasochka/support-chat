@@ -554,6 +554,133 @@ const RU = {
   'English only': 'Только английский',
   'Model-facing content must be in English — the backend rejects other scripts. Player-facing copy belongs in Translations.':
     'Контент для модели должен быть на английском — бэкенд отклонит другие алфавиты. Тексты для игроков живут в «Переводах».',
+  'KB variables': 'Переменные БЗ',
+
+  // ----- settings editor bits -----
+  'free / baseline': 'бесплатно / база',
+  'msgs': 'сообщ.',
+  '+ Add stage': '+ Добавить стадию',
+  '− Remove last': '− Убрать последнюю',
+  '(model default)': '(значение модели)',
+
+  // ----- settings: how-it-works bullet points -----
+  'Gate order for every message: rate limit → cooldown → length cap → low-content guard → injection scan. A message rejected by a gate never reaches the model — attacks and spam cost no tokens.':
+    'Порядок фильтров для каждого сообщения: rate-лимит → кулдаун → лимит длины → защита от пустых сообщений → скан на инъекции. Отклонённое фильтром сообщение никогда не доходит до модели — атаки и спам не тратят токены.',
+  '**Anti-spam** ships with sensible values; raise the rate limit only if real players actually hit it. The injection hard-block and low-content guard are safe to keep on.':
+    '**Антиспам** поставляется с разумными значениями; повышайте rate-лимит, только если в него реально упираются живые игроки. Жёсткую блокировку инъекций и защиту от пустых сообщений можно спокойно держать включёнными.',
+  '**Chat limits** bound one session: how long it stays valid, how many messages before a forced hand-off to a human, and how many recent turns the model sees (the full transcript is always stored).':
+    '**Лимиты чата** ограничивают одну сессию: сколько она действует, сколько сообщений до принудительной передачи человеку и сколько последних ходов видит модель (полная переписка хранится всегда).',
+  'The whole support pipeline, the content map ("where do I fix this text?") and a step-by-step testing checklist live on the [How it works](#/support-guide) page.':
+    'Весь конвейер поддержки, карта контента («где исправить этот текст?») и пошаговый чек-лист тестирования — на странице [Как это работает](#/support-guide).',
+  'Two regimes: the **dialogue bot** answers when the player writes; the **proactive agent** writes first in reaction to casino events. The «Send-frequency guards» section is the hard rail for the agent — daily cap, min gap, cooldowns, quiet hours, budget.':
+    'Два режима: **диалоговый бот** отвечает, когда игрок пишет; **проактивный агент** пишет первым в ответ на события казино. Раздел «Ограничители частоты» — жёсткие рамки для агента: дневной лимит, мин. интервал, кулдауны, тихие часы, бюджет.',
+  'Photos unlock through two gates at once: chat progression (**Stage**) × the player’s VIP tier (**Level**) — the «Photo unlock progression» section below sets both ladders; the same numbers are stamped on each photo in Media.':
+    'Фото открываются через два условия сразу: прогресс общения (**Stage**) × VIP-уровень игрока (**Level**) — раздел «Прогрессия разблокировки фото» ниже задаёт обе лестницы; те же значения проставляются на каждом фото в «Медиа».',
+  'The agent’s own switches (enabled, dry-run, worker interval, budget) are in the «Proactive agent» section. The full pipeline, guard reference with current values and a testing checklist are on the agent’s [How it works & testing](#/retention-agent?tab=guide) tab.':
+    'Переключатели самого агента (включение, dry-run, интервал воркера, бюджет) — в разделе «Проактивный агент». Полный конвейер, справочник ограничителей с текущими значениями и чек-лист тестирования — на вкладке агента [Как это работает и тестирование](#/retention-agent?tab=guide).',
+  '**AI model** — the model id plus its budgets and timeouts. «Max output tokens» INCLUDES the model’s hidden reasoning: keep it generous (≈2000), too low and answers can come back empty.':
+    '**AI-модель** — ID модели плюс её бюджеты и таймауты. «Макс. токенов на ответ» ВКЛЮЧАЕТ скрытые рассуждения модели: держите с запасом (≈2000), при слишком низком значении ответы могут приходить пустыми.',
+  '**Languages** — the supported set and the default. A newly added language starts on English copy and becomes translatable in Translations; answers always follow the player’s language.':
+    '**Языки** — поддерживаемый набор и язык по умолчанию. Новый язык стартует с английскими текстами и переводится в «Переводах»; ответы всегда следуют за языком игрока.',
+  '**General** — technical lifetimes and caps (sessions, admin tokens, request bodies). These rarely need changing.':
+    '**Общие** — технические сроки жизни и лимиты (сессии, админ-токены, тела запросов). Их редко нужно менять.',
+  'Every setting resolves per product: product override → global default → deploy env → built-in default. The banner above the form shows which layer you are editing right now.':
+    'Каждая настройка резолвится по продукту: переопределение продукта → глобальное значение → env деплоя → встроенное значение. Баннер над формой показывает, какой слой вы сейчас редактируете.',
+
+  // ----- support guide page -----
+  'Support chat — how it works': 'Чат поддержки — как это работает',
+  'The operator’s guide to the on-site support chat: what happens to a player’s message, where every piece of content is edited, and how to test the whole flow before going live.':
+    'Руководство оператора по чату поддержки на сайте: что происходит с сообщением игрока, где редактируется каждый элемент контента и как протестировать весь поток перед запуском.',
+  'What the support chat is': 'Что такое чат поддержки',
+  'A chat widget on the casino site where the AI persona answers player questions strictly from this product’s **Knowledge base**. The player picks a topic, chats in their own language, and either gets the answer or is handed off to a human via the escalation card. The widget is embedded with one script tag — the snippet (with this product’s widget key) is in **Structure**.':
+    'Чат-виджет на сайте казино, где AI-персонаж отвечает на вопросы игроков строго по **Базе знаний** этого продукта. Игрок выбирает тему, общается на своём языке и либо получает ответ, либо передаётся человеку через карточку эскалации. Виджет встраивается одним script-тегом — код вставки (с ключом виджета продукта) находится в «**Структуре**».',
+  'The path of one message': 'Путь одного сообщения',
+  'Every player message goes through the same pipeline, in order:':
+    'Каждое сообщение игрока проходит один и тот же конвейер, по порядку:',
+  '**Anti-spam gates** — rate limit per IP, a cooldown between messages, a length cap, the low-content guard (one-character spam gets a nudge without a model call) and the prompt-injection scan. All tunable in **Chat settings**; a rejected message never reaches the model, so attacks don’t burn tokens.':
+    '**Антиспам-фильтры** — rate-лимит по IP, кулдаун между сообщениями, лимит длины, защита от пустых сообщений (односимвольный спам получает подсказку без вызова модели) и скан на prompt-инъекции. Всё настраивается в «**Настройках чата**»; отклонённое сообщение не доходит до модели, поэтому атаки не сжигают токены.',
+  '**Keyword escalation check** — if the message hits a high-risk stem (fraud, legal threats) or an explicit "call a human", the escalation card is shown immediately, before any model call. The lists are edited in **Prompt → Prompt variables**.':
+    '**Проверка стоп-слов** — если сообщение содержит высокорисковый триггер (мошенничество, юридические угрозы) или явную просьбу позвать человека, карточка эскалации показывается сразу, до вызова модели. Списки редактируются в «**Промпт → Переменные промпта**».',
+  '**Prompt assembly** — three layers: the fixed persona + rules (rendered with your prompt variables), the selected topic’s KB text, and the per-message data (player profile, conversation history, language). Only the selected topic’s KB is loaded — that’s why topic routing matters.':
+    '**Сборка промпта** — три слоя: фиксированный персонаж + правила (с вашими переменными промпта), текст БЗ выбранной темы и данные конкретного сообщения (профиль игрока, история диалога, язык). Загружается только БЗ выбранной темы — поэтому маршрутизация тем так важна.',
+  '**Model answer** — the AI answers in the player’s language and may attach service signals: a topic switch, follow-up suggestions, a "question resolved" flag, or an escalation. The signals are stripped from the text and become widget behaviour.':
+    '**Ответ модели** — AI отвечает на языке игрока и может приложить служебные сигналы: смену темы, подсказки-продолжения, флаг «вопрос решён» или эскалацию. Сигналы вырезаются из текста и превращаются в поведение виджета.',
+  '**Persistence** — the turn, its token cost and every state change are stored; you see them in **Conversations** (full transcripts with per-turn cost) and on the **Dashboard**.':
+    '**Сохранение** — ход диалога, его стоимость в токенах и каждая смена состояния записываются; вы видите их в «**Диалогах**» (полные переписки со стоимостью каждого хода) и на «**Дашборде**».',
+  'Where every piece of content is edited': 'Где редактируется каждый элемент контента',
+  'One home per thing — if a text or number is wrong in the chat, this table says where to fix it:':
+    'У каждой вещи один дом — если в чате неверный текст или число, эта таблица подскажет, где исправлять:',
+  'What': 'Что',
+  'Where to edit': 'Где редактировать',
+  'Notes': 'Примечания',
+  'Answers to player questions': 'Ответы на вопросы игроков',
+  'One KB text per topic. The assistant answers STRICTLY from it — facts missing here are the #1 reason for vague answers or escalations.':
+    'Один текст БЗ на тему. Ассистент отвечает СТРОГО по нему — отсутствующие здесь факты — причина №1 расплывчатых ответов и эскалаций.',
+  'Numbers, amounts, timeframes': 'Числа, суммы, сроки',
+  'Knowledge base → Variables': 'База знаний → Переменные',
+  'Reusable `{placeholder}` values substituted into every KB text — change a limit once, it updates everywhere.':
+    'Переиспользуемые значения `{placeholder}`, подставляемые в каждый текст БЗ, — измените лимит один раз, и он обновится везде.',
+  'Persona: name, brand, tone of voice': 'Персонаж: имя, бренд, тон общения',
+  'Prompt → Prompt variables': 'Промпт → Переменные промпта',
+  'The values that uniquify the shared prompt template for this brand. The wording around them is fixed in code.':
+    'Значения, которые уникализируют общий шаблон промпта под этот бренд. Формулировки вокруг них зафиксированы в коде.',
+  'Escalation trigger words': 'Слова-триггеры эскалации',
+  'Two keyword lists (high-risk + "call a human") checked BEFORE the model — a match hands off without burning tokens.':
+    'Два списка стоп-слов (высокорисковые + «позовите человека»), проверяемые ДО модели, — совпадение передаёт чат человеку, не тратя токены.',
+  'Everything the player reads in the widget': 'Всё, что игрок читает в виджете',
+  'Widget chrome, service replies, the escalation card and its per-language contact link (`contact_url`), topic names — per language.':
+    'Интерфейс виджета, служебные ответы, карточка эскалации и её контактная ссылка для каждого языка (`contact_url`), названия тем — по языкам.',
+  'Pages the assistant may link to': 'Страницы, на которые ассистент может ссылаться',
+  'The official site pages (shared with the Telegram bot). The assistant never invents URLs — it links only these.':
+    'Официальные страницы сайта (общие с Telegram-ботом). Ассистент никогда не придумывает URL — он ссылается только на эти.',
+  'Anti-spam and chat limits': 'Антиспам и лимиты чата',
+  'Rate limits, cooldowns, message caps, the injection and low-content guards.':
+    'Rate-лимиты, кулдауны, лимиты сообщений, защита от инъекций и пустых сообщений.',
+  'Model, languages, technical limits': 'Модель, языки, технические лимиты',
+  'System → Settings': 'Система → Настройки',
+  'Shared by both bots: the OpenAI model and its budgets, the supported languages, request limits.':
+    'Общее для обоих ботов: модель OpenAI и её бюджеты, поддерживаемые языки, лимиты запросов.',
+  'The prompt WORDING itself (the rules around your variables) is deliberately not editable here — it lives in the code as the one shared template, so every brand runs the same tested behaviour. What you can always do is READ it: **Prompt → Preview** shows the complete assembled prompt exactly as the model receives it.':
+    'Сами ФОРМУЛИРОВКИ промпта (правила вокруг ваших переменных) намеренно не редактируются здесь — они живут в коде как единый общий шаблон, поэтому каждый бренд работает на одном и том же проверенном поведении. Но их всегда можно ПРОЧИТАТЬ: «**Промпт → Просмотр**» показывает полный собранный промпт ровно таким, каким его получает модель.',
+  'Topics and automatic routing': 'Темы и автоматическая маршрутизация',
+  'The player picks a topic first; only that topic’s KB is loaded. The topic buttons and their per-language names come from **Knowledge base** + **Translations → Topic names**.':
+    'Игрок сначала выбирает тему; загружается только её БЗ. Кнопки тем и их названия по языкам берутся из «**Базы знаний**» + «**Переводы → Названия тем**».',
+  '**Wrong-topic questions route automatically**: when a question plainly belongs to another topic, the widget shows a "switching to …" notice, switches, and re-asks the question against the right KB — the player never sees an answer produced without the matching KB.':
+    '**Вопросы не по теме маршрутизируются автоматически**: когда вопрос явно относится к другой теме, виджет показывает уведомление «переключаюсь на…», переключается и заново задаёт вопрос уже с правильной БЗ — игрок никогда не видит ответ, сгенерированный без подходящей БЗ.',
+  '`other` is the general entry topic with its own KB. It routes players onward more often, but answers from its own KB exactly like the rest.':
+    '`other` — общая входная тема со своей собственной БЗ. Она чаще перенаправляет игроков дальше, но отвечает по своей БЗ точно так же, как остальные.',
+  'Escalation — how a chat reaches a human': 'Эскалация — как чат попадает к человеку',
+  '**Soft** (trigger words): the contact card is shown but the chat stays open — a false positive never kills a live conversation.':
+    '**Мягкая** (слова-триггеры): карточка контакта показывается, но чат остаётся открытым — ложное срабатывание никогда не убивает живой диалог.',
+  '**Hard** (the model gives up, the message cap, or the player taps the escalate button): the card is shown and the conversation ends.':
+    '**Жёсткая** (модель сдаётся, достигнут лимит сообщений или игрок нажал кнопку эскалации): карточка показывается, и диалог завершается.',
+  'The card’s button target is the per-language `contact_url` in **Translations**. When this product’s **Telegram retention bot** is enabled, the button instead deep-links the player straight into the bot (subscription gate on the way in, "go to a manager" in its menu).':
+    'Кнопка карточки ведёт на `contact_url` для языка игрока из «**Переводов**». Если у продукта включён **Telegram-ретеншен-бот**, кнопка вместо этого ведёт игрока по deeplink прямо в бота (с проверкой подписки на входе и пунктом «к менеджеру» в меню).',
+  'Escalated and abandoned chats queue up in **Escalations** for triage, grouped by topic.':
+    'Эскалированные и брошенные чаты собираются в «**Эскалациях**» для разбора, сгруппированные по темам.',
+  'Suggestions and finishing a chat': 'Подсказки и завершение чата',
+  'After an answer the assistant may offer up to two one-tap follow-up questions whose answers ARE in the KB — they pull the player toward the exact entry they need.':
+    'После ответа ассистент может предложить до двух вопросов-продолжений в один тап, ответы на которые ЕСТЬ в БЗ, — они подводят игрока к нужной записи.',
+  'A separate green option lets the player close the chat ("Issue solved."); when the assistant judges the question fully answered, the widget also shows a "finish chat" button. A finished chat is marked resolved and leaves the open-sessions metric.':
+    'Отдельная зелёная опция позволяет игроку закрыть чат («Проблема решена»); когда ассистент считает вопрос полностью отвеченным, виджет также показывает кнопку «завершить чат». Завершённый чат помечается решённым и уходит из метрики открытых сессий.',
+  'The widget opens in the browser’s language; the ANSWERS follow the player — switch language mid-chat and the assistant (and the widget chrome) switch too.':
+    'Виджет открывается на языке браузера; ОТВЕТЫ следуют за игроком — смените язык посреди чата, и ассистент (и интерфейс виджета) переключатся тоже.',
+  'The supported set and the default live in **System → Settings → Languages**. A newly added language starts on English copy and becomes fully translatable in **Translations**.':
+    'Набор поддерживаемых языков и язык по умолчанию — в «**Система → Настройки → Языки**». Новый язык стартует с английскими текстами и полностью переводится в «**Переводах**».',
+  'The KB stays in English on purpose (most token-efficient for the model) — the assistant still answers in the player’s language.':
+    'БЗ намеренно остаётся на английском (самый экономный по токенам язык для модели) — ассистент всё равно отвечает на языке игрока.',
+  'Select the product in the header switcher and check its content: topics + KB texts (**Knowledge base**), persona values (**Prompt → Prompt variables**), the contact link and widget copy (**Translations**).':
+    'Выберите продукт в переключателе шапки и проверьте его контент: темы + тексты БЗ («**База знаний**»), значения персонажа («**Промпт → Переменные промпта**»), контактную ссылку и тексты виджета («**Переводы**»).',
+  'Set the **Test player** profile (Prompt → Prompt variables) — on a test deploy without the site handshake it stands in for the real player, so you can check the by-name greeting and VIP personalization.':
+    'Задайте профиль **тестового игрока** (Промпт → Переменные промпта) — на тестовом деплое без хендшейка сайта он заменяет реального игрока, так что можно проверить приветствие по имени и VIP-персонализацию.',
+  'Open the test page (the service root `/`) or embed the snippet from **Structure** on a staging page, pick a topic and ask real questions from the KB — including ones phrased differently from how the KB is written.':
+    'Откройте тестовую страницу (корень сервиса `/`) или вставьте код из «**Структуры**» на staging-страницу, выберите тему и задавайте реальные вопросы из БЗ — в том числе сформулированные иначе, чем написано в БЗ.',
+  'Ask a question that belongs to ANOTHER topic and watch the automatic switch notice + the re-ask. Then trigger an escalation ("I want to talk to a human") and check the card — its button, language, and (with retention on) the bot deeplink.':
+    'Задайте вопрос из ДРУГОЙ темы и проследите за уведомлением об автоматическом переключении + повторным вопросом. Затем вызовите эскалацию («хочу поговорить с человеком») и проверьте карточку — её кнопку, язык и (при включённом ретеншене) deeplink в бота.',
+  'Review the results in **Conversations** (transcript, per-turn cost, switch markers) and the **Dashboard** (sessions, escalation rate, cost). Wrong or vague answers almost always mean a KB gap — fix the KB text, not the prompt.':
+    'Просмотрите результаты в «**Диалогах**» (переписка, стоимость каждого хода, маркеры переключений) и на «**Дашборде**» (сессии, доля эскалаций, стоимость). Неверные или расплывчатые ответы почти всегда означают пробел в БЗ — правьте текст БЗ, а не промпт.',
+  'Each answer is one model call; its token cost is stored per turn and summed per session, topic and language on the **Dashboard**. The prompt is built so its expensive fixed part is cached by the provider — editing prompt variables or a KB text resets that cache briefly, which is normal.':
+    'Каждый ответ — один вызов модели; его стоимость в токенах записывается на каждый ход и суммируется по сессиям, темам и языкам на «**Дашборде**». Промпт устроен так, что его дорогая фиксированная часть кэшируется провайдером — правка переменных промпта или текста БЗ ненадолго сбрасывает этот кэш, это нормально.',
 };
 
 const current = getAdminLang();
