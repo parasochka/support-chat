@@ -85,8 +85,8 @@ const ChartPanel = ({ title, series, color, format }) => {
             </Typography>
             {last != null && (
               <Stack direction="row" spacing={1}>
-                <Chip size="small" label={`latest ${format(last)}`} />
-                <Chip size="small" variant="outlined" label={`avg ${format(avg)}`} />
+                <Chip size="small" label={`${t('latest')} ${format(last)}`} />
+                <Chip size="small" variant="outlined" label={`${t('avg')} ${format(avg)}`} />
               </Stack>
             )}
           </Stack>
@@ -119,7 +119,7 @@ const BreakdownTable = ({ title, rows, nameLabel, nameOf }) => (
                 <TableRow>
                   <TableCell colSpan={4}>
                     <Typography variant="body2" color="text.secondary">
-                      No data for the period.
+                      {t('No data for the period.')}
                     </Typography>
                   </TableCell>
                 </TableRow>
@@ -183,7 +183,7 @@ const SupportBlock = () => {
         setTopics(t.json.topics || []);
         setLanguages(l.json.languages || []);
       })
-      .catch((e) => setError(e.message || 'load failed'));
+      .catch((e) => setError(e.message || t('Load failed')));
     CHARTS.forEach(([metric]) => {
       httpClient(`${API_URL}/admin/timeseries${qs}${amp}metric=${metric}&bucket=day`)
         .then(({ json }) =>
@@ -308,20 +308,20 @@ const SupportBlock = () => {
 
 // Daily retention activity on the dashboard: player messages vs pings sent.
 const RETENTION_SERIES = [
-  { key: 'messages', label: 'Messages' },
-  { key: 'pings', label: 'Pings' },
+  { key: 'messages', label: t('Messages') },
+  { key: 'pings', label: t('Pings') },
 ];
 
 // Entry funnel steps shown beside the activity chart (deeplink → hand-off);
 // mirrors the fuller funnel on Retention → Analytics.
 const RETENTION_FUNNEL_STEPS = [
-  ['deeplinks_created', 'Deeplinks minted'],
-  ['starts', '/start redemptions'],
-  ['new_users', 'New linked players'],
-  ['subscribed', 'Subscribed to channel'],
-  ['engaged', 'Engaged (wrote a message)'],
-  ['photo_receivers', 'Received a photo'],
-  ['handoffs', 'Handed off'],
+  ['deeplinks_created', t('Deeplinks minted')],
+  ['starts', t('/start redemptions')],
+  ['new_users', t('New linked players')],
+  ['subscribed', t('Subscribed to channel')],
+  ['engaged', t('Engaged (wrote a message)')],
+  ['photo_receivers', t('Received a photo')],
+  ['handoffs', t('Handed off')],
 ];
 
 /**
@@ -341,7 +341,7 @@ const RetentionBlock = () => {
     const qs = scope ? `?${scope}` : '';
     httpClient(`${API_URL}/admin/retention/overview${qs}`)
       .then(({ json }) => setOverview(json))
-      .catch((e) => setError(e.message || 'load failed'));
+      .catch((e) => setError(e.message || t('Load failed')));
     httpClient(`${API_URL}/admin/retention/timeseries${qs}`)
       .then(({ json }) => setSeries(json.series || []))
       .catch(() => setSeries([]));
@@ -362,21 +362,21 @@ const RetentionBlock = () => {
           label={t('Linked players')}
           value={num(base?.total)}
           hint={
-            base?.subscribed != null ? `${base.subscribed} subscribed` : 'lifetime'
+            base?.subscribed != null ? `${base.subscribed} ${t('subscribed')}` : t('lifetime')
           }
         />
         <Kpi label={t('Active (30d)')} value={num(inRange?.active_users)} hint={t('wrote in the bot')} />
         <Kpi
           label={t('Pings sent')}
           value={num(inRange?.pings_sent)}
-          hint={`reply rate ${pct(inRange?.ping_reply_rate)}`}
+          hint={`${t('reply rate')} ${pct(inRange?.ping_reply_rate)}`}
         />
         <Kpi label={t('Photos sent')} value={num(inRange?.photos_sent)} />
         <Kpi label={t('Hand-offs')} value={num(inRange?.handoffs)} hint={t('to manager / support')} />
         <Kpi
           label={t('Cost (USD)')}
           value={usd(inRange?.cost_usd)}
-          hint="TG turns + photo metadata"
+          hint={t('TG turns + photo metadata')}
         />
       </Grid>
       <Grid container spacing={2} sx={{ mt: 2 }} alignItems="stretch">
@@ -384,7 +384,7 @@ const RetentionBlock = () => {
           <Card sx={{ height: '100%' }}>
             <CardContent>
               <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-                Messages & pings over time
+                {t('Messages & pings over time')}
               </Typography>
               <SeriesLineChart data={series} series={RETENTION_SERIES} height={190} />
             </CardContent>
@@ -394,7 +394,7 @@ const RetentionBlock = () => {
           <Card sx={{ height: '100%' }}>
             <CardContent>
               <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-                Entry funnel
+                {t('Entry funnel')}
               </Typography>
               <FunnelBars
                 steps={RETENTION_FUNNEL_STEPS.map(([key, label]) => ({

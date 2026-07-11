@@ -2,6 +2,7 @@ import { useId, useMemo, useRef, useState } from 'react';
 import { useTheme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
+import { t } from '../i18n';
 
 /**
  * Dependency-free SVG line chart for the dashboard time series
@@ -44,7 +45,7 @@ const LineChart = ({ series, color, format = (v) => String(v) }) => {
     return (
       <Box sx={{ py: 4, textAlign: 'center' }}>
         <Typography variant="body2" color="text.secondary">
-          No data for the period.
+          {t('No data for the period.')}
         </Typography>
       </Box>
     );

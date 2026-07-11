@@ -6,6 +6,7 @@ import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 import { generateSecret } from '../lib/secrets';
 import SetBadge from './SetBadge';
+import { t } from '../i18n';
 
 /**
  * A write-only secret input with an explicit "configured?" state.
@@ -64,12 +65,12 @@ const SecretField = ({
                   <SetBadge set={set} />
                   {onGenerate && (
                     <Button size="small" onClick={generate} sx={{ whiteSpace: 'nowrap' }}>
-                      Generate
+                      {t('Generate')}
                     </Button>
                   )}
                   {onClear && set && (
                     <Button size="small" color="warning" onClick={onClear}>
-                      Clear
+                      {t('Clear')}
                     </Button>
                   )}
                 </Stack>

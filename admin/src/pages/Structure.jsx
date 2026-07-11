@@ -27,12 +27,12 @@ const embedSnippet = (widgetKey) =>
 // [field, label, has-flag, we-mint-it?] — generatable secrets are the ones this
 // service signs with (random keys), not externally-issued API credentials.
 const SECRET_FIELDS = [
-  ['openai_key_primary', 'OpenAI key (primary)', 'has_openai_key', false],
-  ['openai_key_fallback', 'OpenAI key (fallback)', 'has_openai_key_fallback', false],
-  ['handshake_secret', 'Widget handshake secret', 'has_handshake_secret', true],
-  ['turnstile_secret', 'Turnstile secret key', 'has_turnstile_secret', false],
-  ['telegram_bot_token', 'Telegram bot token', 'has_telegram_bot_token', false],
-  ['player_api_key', 'Player API key', 'has_player_api_key', false],
+  ['openai_key_primary', t('OpenAI key (primary)'), 'has_openai_key', false],
+  ['openai_key_fallback', t('OpenAI key (fallback)'), 'has_openai_key_fallback', false],
+  ['handshake_secret', t('Widget handshake secret'), 'has_handshake_secret', true],
+  ['turnstile_secret', t('Turnstile secret key'), 'has_turnstile_secret', false],
+  ['telegram_bot_token', t('Telegram bot token'), 'has_telegram_bot_token', false],
+  ['player_api_key', t('Player API key'), 'has_player_api_key', false],
 ];
 
 const mono = { fontFamily: 'monospace', fontSize: 13 };
@@ -52,24 +52,24 @@ const ProductCard = ({ product, onChanged }) => {
         method: 'PUT',
         body: JSON.stringify(fields),
       });
-      notify('Product saved', { type: 'success' });
+      notify(t('Product saved'), { type: 'success' });
       onChanged();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     }
   };
 
   const rotateKey = async () => {
-    if (!window.confirm('Rotate the widget key? Old embeds stop working immediately.'))
+    if (!window.confirm(t('Rotate the widget key? Old embeds stop working immediately.')))
       return;
     try {
       await httpClient(`${API_URL}/admin/products/${product.id}/widget-key`, {
         method: 'POST',
       });
-      notify('Widget key rotated', { type: 'success' });
+      notify(t('Widget key rotated'), { type: 'success' });
       onChanged();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Rotate failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Rotate failed'), { type: 'error' });
     }
   };
 
@@ -85,7 +85,7 @@ const ProductCard = ({ product, onChanged }) => {
       Object.entries(secrets).filter(([, v]) => v !== undefined && v !== '')
     );
     if (!Object.keys(fields).length) {
-      notify('Nothing to update', { type: 'info' });
+      notify(t('Nothing to update'), { type: 'info' });
       return;
     }
     try {
@@ -93,26 +93,26 @@ const ProductCard = ({ product, onChanged }) => {
         method: 'PUT',
         body: JSON.stringify(fields),
       });
-      notify('Secrets saved (write-only; never shown back)', { type: 'success' });
+      notify(t('Secrets saved (write-only; never shown back)'), { type: 'success' });
       setSecrets({});
       onChanged();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     }
   };
 
   const clearSecret = async (field, label) => {
-    if (!window.confirm(`Clear ${label}? It falls back to the deploy env value.`)) return;
+    if (!window.confirm(`${t('Clear')} ${label}? ${t('It falls back to the deploy env value.')}`)) return;
     try {
       await httpClient(`${API_URL}/admin/products/${product.id}/secrets`, {
         method: 'PUT',
         body: JSON.stringify({ [field]: '' }),
       });
-      notify(`${label} cleared`, { type: 'success' });
+      notify(`${label} — ${t('cleared')}`, { type: 'success' });
       setSecrets((s) => ({ ...s, [field]: '' }));
       onChanged();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Clear failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Clear failed'), { type: 'error' });
     }
   };
 
@@ -132,7 +132,7 @@ const ProductCard = ({ product, onChanged }) => {
             size="small"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            label={`Product · ${product.slug}`}
+            label={`${t('Product')} · ${product.slug}`}
             sx={{ minWidth: 220, flex: '1 1 260px' }}
           />
           <Button
@@ -141,7 +141,7 @@ const ProductCard = ({ product, onChanged }) => {
             onClick={() => saveProduct({ name })}
             sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
           >
-            Rename
+            {t('Rename')}
           </Button>
           <FormControlLabel
             sx={{ flexShrink: 0 }}
@@ -158,7 +158,7 @@ const ProductCard = ({ product, onChanged }) => {
 
         {/* --- widget key + embed snippet ---------------------------------- */}
         <Typography variant="subtitle2" gutterBottom>
-          Widget key & embed
+          {t('Widget key & embed')}
         </Typography>
         <TextField
           value={product.widget_key || ''}
@@ -174,7 +174,7 @@ const ProductCard = ({ product, onChanged }) => {
                 <InputAdornment position="end">
                   <IconButton
                     size="small"
-                    onClick={() => copy(product.widget_key, 'Widget key copied')}
+                    onClick={() => copy(product.widget_key, t('Widget key copied'))}
                     aria-label="Copy widget key"
                   >
                     <ContentCopyIcon fontSize="small" />
@@ -198,12 +198,12 @@ const ProductCard = ({ product, onChanged }) => {
             size="small"
             variant="outlined"
             startIcon={<ContentCopyIcon fontSize="small" />}
-            onClick={() => copy(embedSnippet(product.widget_key), 'Embed snippet copied')}
+            onClick={() => copy(embedSnippet(product.widget_key), t('Embed snippet copied'))}
           >
-            Copy embed snippet
+            {t('Copy embed snippet')}
           </Button>
           <Button size="small" color="warning" variant="outlined" onClick={rotateKey}>
-            Rotate key
+            {t('Rotate key')}
           </Button>
         </Stack>
 
@@ -212,12 +212,9 @@ const ProductCard = ({ product, onChanged }) => {
           Cloudflare Turnstile
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-          Each client domain runs its own Turnstile widget (create it as an
-          Invisible widget in the Cloudflare dashboard) — set that widget&apos;s
-          site key here (the secret key goes into Secrets below). Leave empty to
-          fall back to the deploy env keys. Verification is advisory: if
-          Turnstile is blocked or unreachable for a player, the check is
-          skipped and the other anti-spam layers still apply.
+          {t(
+            "Each client domain runs its own Turnstile widget (create it as an Invisible widget in the Cloudflare dashboard) — set that widget's site key here (the secret key goes into Secrets below). Leave empty to fall back to the deploy env keys. Verification is advisory: if Turnstile is blocked or unreachable for a player, the check is skipped and the other anti-spam layers still apply."
+          )}
         </Typography>
         <Stack
           direction="row"
@@ -250,7 +247,7 @@ const ProductCard = ({ product, onChanged }) => {
             onClick={() => saveProduct({ turnstile_site_key: turnstileSiteKey })}
             sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
           >
-            Save site key
+            {t('Save site key')}
           </Button>
         </Stack>
 
@@ -266,7 +263,7 @@ const ProductCard = ({ product, onChanged }) => {
             size="small"
             label={t('Site URL (home page)')}
             placeholder="https://example.com/"
-            helperText="Telegram hand-off 'support on the site' button lands here"
+            helperText={t("Telegram hand-off 'support on the site' button lands here")}
             value={siteUrl}
             onChange={(e) => setSiteUrl(e.target.value)}
             sx={{ minWidth: 220, flex: '1 1 320px' }}
@@ -287,18 +284,18 @@ const ProductCard = ({ product, onChanged }) => {
             onClick={() => saveProduct({ site_url: siteUrl })}
             sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
           >
-            Save site URL
+            {t('Save site URL')}
           </Button>
         </Stack>
 
         {/* --- secrets (write-only, open by default) ----------------------- */}
         <Typography variant="subtitle2" gutterBottom>
-          Secrets
+          {t('Secrets')}
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-          Write-only (encrypted at rest). A green check means a value is
-          configured. Leave a field untouched to keep it; use Clear to remove it
-          (fall back to env).
+          {t(
+            'Write-only (encrypted at rest). A green check means a value is configured. Leave a field untouched to keep it; use Clear to remove it (fall back to env).'
+          )}
         </Typography>
         <Grid container spacing={1}>
           {SECRET_FIELDS.map(([field, label, flag, minted]) => (
@@ -319,7 +316,7 @@ const ProductCard = ({ product, onChanged }) => {
           ))}
         </Grid>
         <Button variant="contained" size="small" onClick={saveSecrets} sx={{ mt: 1.5 }}>
-          Save secrets
+          {t('Save secrets')}
         </Button>
       </CardContent>
     </Card>
@@ -337,12 +334,12 @@ const NewProductForm = ({ partnerId, onChanged }) => {
         method: 'POST',
         body: JSON.stringify({ partner_id: partnerId, slug, name }),
       });
-      notify('Product created (seeded with the starter KB)', { type: 'success' });
+      notify(t('Product created (seeded with the starter KB)'), { type: 'success' });
       setSlug('');
       setName('');
       onChanged();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Create failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Create failed'), { type: 'error' });
     }
   };
 
@@ -376,7 +373,7 @@ const NewProductForm = ({ partnerId, onChanged }) => {
         disabled={!slug || !name}
         sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
       >
-        Add product
+        {t('Add product')}
       </Button>
     </Stack>
   );
@@ -392,10 +389,10 @@ const PartnerCard = ({ partner, onChanged }) => {
         method: 'PUT',
         body: JSON.stringify(fields),
       });
-      notify('Partner saved', { type: 'success' });
+      notify(t('Partner saved'), { type: 'success' });
       onChanged();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     }
   };
 
@@ -413,7 +410,7 @@ const PartnerCard = ({ partner, onChanged }) => {
             size="small"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            label={`Partner · ${partner.slug}`}
+            label={`${t('Partner')} · ${partner.slug}`}
             sx={{ minWidth: 220, flex: '1 1 260px' }}
           />
           <Button
@@ -422,7 +419,7 @@ const PartnerCard = ({ partner, onChanged }) => {
             onClick={() => savePartner({ name })}
             sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
           >
-            Rename
+            {t('Rename')}
           </Button>
           <FormControlLabel
             sx={{ flexShrink: 0 }}
@@ -459,7 +456,7 @@ const Structure = () => {
   const load = useCallback(() => {
     httpClient(`${API_URL}/admin/structure`)
       .then(({ json }) => setStructure(json))
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
   }, [notify]);
 
   useEffect(() => {
@@ -472,15 +469,15 @@ const Structure = () => {
         method: 'POST',
         body: JSON.stringify(newPartner),
       });
-      notify('Partner created', { type: 'success' });
+      notify(t('Partner created'), { type: 'success' });
       setNewPartner({ slug: '', name: '' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Create failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Create failed'), { type: 'error' });
     }
   };
 
-  if (!structure) return <Box sx={{ p: 2 }}>Loading…</Box>;
+  if (!structure) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
 
   return (
     <Box sx={{ p: 2, maxWidth: 1000 }}>
@@ -515,7 +512,7 @@ const Structure = () => {
             disabled={!newPartner.slug || !newPartner.name}
             sx={{ whiteSpace: 'nowrap', flexShrink: 0 }}
           >
-            Add partner
+            {t('Add partner')}
           </Button>
         </Stack>
       )}

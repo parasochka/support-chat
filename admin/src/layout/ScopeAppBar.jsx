@@ -87,7 +87,7 @@ const ScopeSelect = () => {
     } else if (v.startsWith('partner:')) {
       const id = Number(v.slice(8));
       const pa = (structure.partners || []).find((x) => x.id === id);
-      setScope({ partnerId: id, name: pa ? `${pa.name} — all products` : '' });
+      setScope({ partnerId: id, name: pa ? `${pa.name} — ${t('all products')}` : '' });
     } else {
       const id = Number(v.slice(8));
       let name = '';
@@ -103,14 +103,14 @@ const ScopeSelect = () => {
 
   const items = [
     <MenuItem key="all" value="all">
-      All products
+      {t('All products')}
     </MenuItem>,
   ];
   (structure.partners || []).forEach((pa) => {
     items.push(
       <ListSubheader key={`h${pa.id}`}>{pa.name}</ListSubheader>,
       <MenuItem key={`pa${pa.id}`} value={`partner:${pa.id}`}>
-        {pa.name} — all
+        {pa.name} — {t('all')}
       </MenuItem>
     );
     (pa.products || []).forEach((pr) => {

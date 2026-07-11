@@ -52,10 +52,10 @@ export const EscalationList = () => {
       >
         {isMobile ? (
           <MobileList
-            primaryText={(r) => `${r.topic || '—'} · ${r.status}${r.escalated ? ' · escalated' : ''}`}
+            primaryText={(r) => `${r.topic || '—'} · ${r.status}${r.escalated ? ` · ${t('escalated')}` : ''}`}
             secondaryText={(r) => r.first_message || ''}
             tertiaryText={(r) =>
-              `${r.message_count ?? 0} msgs · $${(r.cost_usd_total ?? 0).toFixed(4)} · ${
+              `${r.message_count ?? 0} ${t('msgs')} · $${(r.cost_usd_total ?? 0).toFixed(4)} · ${
                 r.created_at ? new Date(r.created_at).toLocaleString() : ''
               }`
             }
@@ -71,11 +71,11 @@ export const EscalationList = () => {
               return false;
             }}
           >
-            <TextField source="topic" />
+            <TextField source="topic" label={t('Topic')} />
             <TextField source="session_id" label={t('Session')} />
             <TextField source="lang" label={t('Lang')} />
-            <TextField source="status" />
-            <BooleanField source="escalated" />
+            <TextField source="status" label={t('Status')} />
+            <BooleanField source="escalated" label={t('Escalated')} />
             <NumberField source="message_count" label={t('Msgs')} />
             <NumberField
               source="cost_usd_total"
@@ -83,7 +83,7 @@ export const EscalationList = () => {
               options={{ maximumFractionDigits: 4 }}
             />
             <TextField source="first_message" label={t('First message')} sx={{ display: 'block', maxWidth: 320 }} />
-            <DateField source="created_at" showTime />
+            <DateField source="created_at" label={t('Created')} showTime />
             {isAdmin && (
               <DeleteButton mutationMode="pessimistic" redirect={false} />
             )}

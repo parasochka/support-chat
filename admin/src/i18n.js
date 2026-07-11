@@ -1017,6 +1017,149 @@ const RU = {
   'VIP': 'VIP',
   'Manager': 'Менеджер',
   'Last active': 'Последняя активность',
+
+  // ----- dashboard (charts / KPIs / retention block) -----
+  'latest': 'последнее',
+  'avg': 'среднее',
+  'No data for the period.': 'Нет данных за период.',
+  'subscribed': 'подписаны',
+  'lifetime': 'за всё время',
+  'reply rate': 'доля ответов',
+  'TG turns + photo metadata': 'TG-диалоги + метаданные фото',
+  'Messages & pings over time': 'Сообщения и пинги по дням',
+
+  // ----- charts (Telegram cost panels / funnel) -----
+  'Telegram cost over time': 'Стоимость Telegram по дням',
+  'Telegram cost by source': 'Стоимость Telegram по источникам',
+  'Engagement dialog vs on-demand photo-metadata generation.':
+    'Диалоги с игроками против генерации метаданных фото по запросу.',
+  'Dialog': 'Диалог',
+  'Photo metadata': 'Метаданные фото',
+  'of previous': 'от предыдущего',
+
+  // ----- API keys page -----
+  'Global (everything)': 'Глобально (всё)',
+  'Partner (all its products)': 'Партнёр (все его продукты)',
+  'Single product': 'Один продукт',
+  'Global': 'Глобально',
+  'Service API keys are credentials — only admin accounts may view or manage them.':
+    'Сервисные API-ключи — это учётные данные: просматривать их и управлять ими могут только администраторы.',
+  "Service keys for machine consumers of the admin API (partner back-offices, BI, CI). A key behaves like an admin account with exactly one role × scope and is sent as `Authorization: Bearer sak_…`. The token is shown once at creation — store it in the consumer's secret store.":
+    'Сервисные ключи для машинных потребителей админ-API (бэк-офисы партнёров, BI, CI). Ключ работает как админ-аккаунт ровно с одной парой роль × область и передаётся как `Authorization: Bearer sak_…`. Токен показывается один раз при создании — сохраните его в хранилище секретов потребителя.',
+  'Create key': 'Создать ключ',
+  'Create': 'Создать',
+  'Give a key the narrowest scope that works — a read-only manager key per product for pulls, an admin key only when the consumer must write.':
+    'Выдавайте ключу минимально достаточную область — manager-ключ (только чтение) на продукт для выгрузок, admin-ключ только когда потребитель должен писать.',
+  'Token': 'Токен',
+  'Last used': 'Последнее использование',
+  'never': 'никогда',
+  'Delete the key': 'Удалить ключ',
+  'Consumers using it stop working immediately.': 'Потребители, использующие его, сразу перестанут работать.',
+  'Key deleted': 'Ключ удалён',
+  'Token copied': 'Токен скопирован',
+  'No API keys yet — create the first one above.': 'API-ключей пока нет — создайте первый выше.',
+  'Key created — copy the token now': 'Ключ создан — скопируйте токен сейчас',
+  "This token is shown ONCE and cannot be recovered. Copy it into the consumer's secret store before closing; if it is lost, delete the key and mint a new one.":
+    'Этот токен показывается ОДИН раз, восстановить его нельзя. Скопируйте его в хранилище секретов потребителя до закрытия окна; если токен утерян — удалите ключ и создайте новый.',
+  'Copy token': 'Скопировать токен',
+  'Done': 'Готово',
+
+  // ----- login -----
+  'Email': 'Email',
+
+  // ----- prompt preview -----
+  'The complete prompt as the model receives it (read-only; example topic:':
+    'Полный промпт в том виде, в каком его получает модель (только чтение; пример темы:',
+  'language:': 'язык:',
+  'To change the wording, edit `prompts.py` and redeploy; the brand values are on the Prompt variables page.':
+    'Чтобы изменить формулировки, отредактируйте `prompts.py` и передеплойте; брендовые значения — на странице «Переменные промпта».',
+  'System message (Layer 1 core + directives + Layer 2 KB)':
+    'Системное сообщение (ядро слоя 1 + директивы + БЗ слоя 2)',
+  'User message (Layer 3 dynamic directives)': 'Сообщение пользователя (динамические директивы слоя 3)',
+
+  // ----- prompt variables -----
+  'Prompt variables saved': 'Переменные промпта сохранены',
+  'Escalation keywords saved': 'Ключевые слова эскалации сохранены',
+  'Test profile saved': 'Тестовый профиль сохранён',
+  'Brand values substituted into the shared prompt template. Empty values fall back to the built-in defaults. The prompt wording itself is edited in `prompts.py` (see the read-only Prompt preview page). The Telegram retention persona has its own variables in [Telegram · Retention → Prompt variables](#/retention?tab=variables) — a separate prompt: empty retention fields fall back to the built-in retention defaults, never to these support values.':
+    'Брендовые значения, подставляемые в общий шаблон промпта. Пустые значения возвращаются к встроенным. Сами формулировки промпта редактируются в `prompts.py` (см. страницу просмотра промпта, только чтение). У Telegram-персонажа ретеншена свои переменные в [Telegram · Ретеншен → Переменные промпта](#/retention?tab=variables) — это отдельный промпт: пустые поля ретеншена падают на встроенные значения ретеншена и никогда — на эти значения поддержки.',
+  'Escalation keyword lists': 'Списки ключевых слов эскалации',
+  "One entry per line; multilingual stems scan the player's raw message before the model call (soft hand-off, no tokens burned).":
+    'По одной записи на строку; многоязычные основы сканируют исходное сообщение игрока до вызова модели (мягкая передача, токены не тратятся).',
+  'High-risk keywords (fraud / legal)': 'Ключевые слова высокого риска (мошенничество / юридические)',
+  'Human-request keywords': 'Ключевые слова запроса живого оператора',
+  'Save keywords': 'Сохранить ключевые слова',
+  'Test player profile': 'Тестовый профиль игрока',
+  "A handshake secret is configured — the host site supplies the player context, so this test profile is ignored at session create. To use this profile instead, clear the product's [Widget handshake secret in Structure](#/structure) (use its Clear button). A deploy-wide `WIDGET_HANDSHAKE_SECRET` env value can only be removed in Railway.":
+    'Настроен handshake-секрет — контекст игрока передаёт сайт, поэтому при создании сессии этот тестовый профиль игнорируется. Чтобы использовать профиль, очистите [handshake-секрет виджета в «Структуре»](#/structure) (кнопка «Очистить»). Env-значение `WIDGET_HANDSHAKE_SECRET` уровня деплоя убирается только в Railway.',
+  'Enabled (used when no handshake secret is set)': 'Включён (используется, когда handshake-секрет не задан)',
+  'Save test profile': 'Сохранить тестовый профиль',
+
+  // ----- site map -----
+  'Cashier': 'Касса',
+  'where players top up their balance': 'где игроки пополняют баланс',
+
+  // ----- structure -----
+  'OpenAI key (primary)': 'Ключ OpenAI (основной)',
+  'OpenAI key (fallback)': 'Ключ OpenAI (резервный)',
+  'Widget handshake secret': 'Handshake-секрет виджета',
+  'Turnstile secret key': 'Секретный ключ Turnstile',
+  'Product saved': 'Продукт сохранён',
+  'Rotate the widget key? Old embeds stop working immediately.':
+    'Сменить ключ виджета? Старые вставки на сайтах сразу перестанут работать.',
+  'Widget key rotated': 'Ключ виджета сменён',
+  'Rotate failed': 'Не удалось сменить ключ',
+  'Nothing to update': 'Нечего обновлять',
+  'Secrets saved (write-only; never shown back)': 'Секреты сохранены (только запись; обратно не показываются)',
+  'Clear': 'Очистить',
+  'It falls back to the deploy env value.': 'Значение вернётся к env-переменной деплоя.',
+  'cleared': 'очищено',
+  'Rename': 'Переименовать',
+  'Widget key & embed': 'Ключ виджета и код вставки',
+  'Widget key copied': 'Ключ виджета скопирован',
+  'Embed snippet copied': 'Код для вставки скопирован',
+  'Copy embed snippet': 'Скопировать код вставки',
+  'Rotate key': 'Сменить ключ',
+  "Each client domain runs its own Turnstile widget (create it as an Invisible widget in the Cloudflare dashboard) — set that widget's site key here (the secret key goes into Secrets below). Leave empty to fall back to the deploy env keys. Verification is advisory: if Turnstile is blocked or unreachable for a player, the check is skipped and the other anti-spam layers still apply.":
+    'На каждом клиентском домене работает свой виджет Turnstile (создайте его в панели Cloudflare как Invisible) — укажите здесь site key этого виджета (секретный ключ вносится в «Секреты» ниже). Пустое поле — используются env-ключи деплоя. Проверка рекомендательная: если Turnstile у игрока заблокирован или недоступен, проверка пропускается, а остальные уровни антиспама продолжают работать.',
+  'Save site key': 'Сохранить site key',
+  "Telegram hand-off 'support on the site' button lands here":
+    'Сюда ведёт кнопка «поддержка на сайте» при передаче из Telegram',
+  'Save site URL': 'Сохранить URL сайта',
+  'Write-only (encrypted at rest). A green check means a value is configured. Leave a field untouched to keep it; use Clear to remove it (fall back to env).':
+    'Только запись (хранятся в зашифрованном виде). Зелёная галочка — значение задано. Не трогайте поле, чтобы оставить его как есть; «Очистить» удаляет значение (возврат к env).',
+  'Product created (seeded with the starter KB)': 'Продукт создан (заполнен стартовой базой знаний)',
+  'Add product': 'Добавить продукт',
+  'Partner saved': 'Партнёр сохранён',
+  'Partner created': 'Партнёр создан',
+  'Add partner': 'Добавить партнёра',
+
+  // ----- conversations / escalations -----
+  'escalated': 'эскалирована',
+  'switched': 'переключение',
+  'proactive': 'проактивно',
+
+  // ----- knowledge base -----
+  'order': 'порядок',
+  'KB': 'БЗ',
+  'Title (en)': 'Название (en)',
+  'Order': 'Порядок',
+  'Has KB': 'Есть БЗ',
+
+  // ----- KB variables -----
+  'Key': 'Ключ',
+  'Value': 'Значение',
+  'Updated': 'Обновлено',
+  'Updated by': 'Кем обновлено',
+
+  // ----- components -----
+  'Set': 'Задано',
+  'Not set': 'Не задано',
+  '1M input tokens': '1 млн входных токенов',
+
+  // ----- scope switcher -----
+  'All products': 'Все продукты',
+  'all products': 'все продукты',
 };
 
 const current = getAdminLang();

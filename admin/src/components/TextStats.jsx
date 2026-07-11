@@ -74,7 +74,7 @@ const TextStats = ({ text, label, sx }) => {
       </Typography>
       {cost != null && (
         <Tooltip
-          title={`${mp.model}: $${price}/1M input tokens (${t('uncached input')})`}
+          title={`${mp.model}: $${price}/${t('1M input tokens')} (${t('uncached input')})`}
         >
           <Typography variant="caption" color="text.secondary" sx={{ cursor: 'help' }}>
             ≈{fmtUsd(cost)} {t('per prompt')} · {mp.model}

@@ -58,7 +58,7 @@ const useFilters = () => {
       label={t('Language')}
       choices={langs.map((l) => ({ id: l.code, name: `${l.name} (${l.code})` }))}
     />,
-    <SelectInput key="status" source="status" choices={STATUS_CHOICES} />,
+    <SelectInput key="status" source="status" label={t('Status')} choices={STATUS_CHOICES} />,
     <BooleanInput key="escalated" source="escalated" label={t('Escalated')} />,
     <DateInput key="from" source="from" label={t('From')} />,
     <DateInput key="to" source="to" label={t('To')} />,
@@ -87,10 +87,10 @@ export const ConversationList = () => {
       >
         {isMobile ? (
           <MobileList
-            primaryText={(r) => `${r.topic || '—'} · ${r.status}${r.escalated ? ' · escalated' : ''}`}
+            primaryText={(r) => `${r.topic || '—'} · ${r.status}${r.escalated ? ` · ${t('escalated')}` : ''}`}
             secondaryText={(r) => `${r.lang || ''} · ${r.id}`}
             tertiaryText={(r) =>
-              `${r.message_count ?? 0} msgs · $${(r.cost_usd_total ?? 0).toFixed(4)} · ${
+              `${r.message_count ?? 0} ${t('msgs')} · $${(r.cost_usd_total ?? 0).toFixed(4)} · ${
                 r.created_at ? new Date(r.created_at).toLocaleString() : ''
               }`
             }
@@ -104,10 +104,10 @@ export const ConversationList = () => {
           }
         >
           <TextField source="id" label={t('Session')} sortable={false} />
-          <TextField source="topic" sortable={false} />
+          <TextField source="topic" label={t('Topic')} sortable={false} />
           <TextField source="lang" label={t('Lang')} sortable={false} />
-          <TextField source="status" sortable={false} />
-          <BooleanField source="escalated" sortable={false} />
+          <TextField source="status" label={t('Status')} sortable={false} />
+          <BooleanField source="escalated" label={t('Escalated')} sortable={false} />
           <NumberField source="message_count" label={t('Msgs')} sortable={false} />
           <NumberField
             source="cost_usd_total"
@@ -115,7 +115,7 @@ export const ConversationList = () => {
             options={{ maximumFractionDigits: 4 }}
             sortable={false}
           />
-          <DateField source="created_at" showTime sortable={false} />
+          <DateField source="created_at" label={t('Created')} showTime sortable={false} />
           {isAdmin && (
             <DeleteButton mutationMode="pessimistic" redirect={false} />
           )}
@@ -151,7 +151,7 @@ const MessageThread = () => {
           >
             <Chip
               size="small"
-              label={`switched ${item.payload?.from || '?'} → ${item.payload?.to || '?'}${
+              label={`${t('switched')} ${item.payload?.from || '?'} → ${item.payload?.to || '?'}${
                 item.payload?.cost_usd ? ` · $${item.payload.cost_usd}` : ''
               }`}
             />
@@ -171,7 +171,7 @@ const MessageThread = () => {
                 {item.role} · {new Date(item.created_at).toLocaleString()}
                 {item.model ? ` · ${item.model}` : ''}
                 {item.cost_usd ? ` · $${item.cost_usd.toFixed(5)}` : ''}
-                {item.ping_context ? ` · ⚡ proactive: ${item.ping_context}` : ''}
+                {item.ping_context ? ` · ⚡ ${t('proactive')}: ${item.ping_context}` : ''}
               </Typography>
               <Typography sx={{ whiteSpace: 'pre-wrap' }}>{item.content}</Typography>
             </CardContent>

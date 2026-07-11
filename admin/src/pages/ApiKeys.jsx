@@ -27,16 +27,17 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { API_URL, httpClient } from '../httpClient';
 import useIsMobile from '../lib/useIsMobile';
 import { t } from '../i18n';
+import rich from '../components/Rich';
 
 const ROLE_CHOICES = [
-  ['admin', 'admin (read + write)'],
-  ['manager', 'manager (read-only)'],
+  ['admin', t('admin (read + write)')],
+  ['manager', t('manager (read-only)')],
 ];
 
 const SCOPE_CHOICES = [
-  ['global', 'Global (everything)'],
-  ['partner', 'Partner (all its products)'],
-  ['product', 'Single product'],
+  ['global', t('Global (everything)')],
+  ['partner', t('Partner (all its products)')],
+  ['product', t('Single product')],
 ];
 
 const EMPTY_FORM = {
@@ -68,7 +69,7 @@ const ApiKeys = () => {
   const load = useCallback(() => {
     httpClient(`${API_URL}/admin/api-keys`)
       .then(({ json }) => setKeys(json.keys || []))
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
     httpClient(`${API_URL}/admin/structure`)
       .then(({ json }) => setStructure(json))
       .catch(() => setStructure(null));
@@ -84,8 +85,7 @@ const ApiKeys = () => {
         <Title title={t('API keys')} />
         <Alert severity="info" sx={{ maxWidth: 640 }}>
           <AlertTitle>{t('Admins only')}</AlertTitle>
-          Service API keys are credentials — only admin accounts may view or
-          manage them.
+          {t('Service API keys are credentials — only admin accounts may view or manage them.')}
         </Alert>
       </Box>
     );
@@ -102,9 +102,9 @@ const ApiKeys = () => {
     products.find((pr) => pr.id === id)?.name || `product #${id}`;
 
   const scopeLabel = (k) => {
-    if (k.scope_type === 'global') return 'Global';
-    if (k.scope_type === 'partner') return `Partner · ${partnerName(k.partner_id)}`;
-    return `Product · ${productName(k.product_id)}`;
+    if (k.scope_type === 'global') return t('Global');
+    if (k.scope_type === 'partner') return `${t('Partner')} · ${partnerName(k.partner_id)}`;
+    return `${t('Product')} · ${productName(k.product_id)}`;
   };
 
   const create = async () => {
@@ -123,7 +123,7 @@ const ApiKeys = () => {
       setForm({ ...EMPTY_FORM });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Create failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Create failed'), { type: 'error' });
     }
   };
 
@@ -135,25 +135,25 @@ const ApiKeys = () => {
       });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     }
   };
 
   const remove = async (id, name) => {
-    if (!window.confirm(`Delete the key “${name}”? Consumers using it stop working immediately.`))
+    if (!window.confirm(`${t('Delete the key')} “${name}”? ${t('Consumers using it stop working immediately.')}`))
       return;
     try {
       await httpClient(`${API_URL}/admin/api-keys/${id}`, { method: 'DELETE' });
-      notify('Key deleted', { type: 'success' });
+      notify(t('Key deleted'), { type: 'success' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Delete failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Delete failed'), { type: 'error' });
     }
   };
 
   const copyToken = async () => {
     await navigator.clipboard.writeText(minted.token);
-    notify('Token copied', { type: 'info' });
+    notify(t('Token copied'), { type: 'info' });
   };
 
   const createDisabled =
@@ -161,23 +161,23 @@ const ApiKeys = () => {
     (form.scope_type === 'partner' && !form.partner_id) ||
     (form.scope_type === 'product' && !form.product_id);
 
-  if (keys === null) return <Box sx={{ p: 2 }}>Loading…</Box>;
+  if (keys === null) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
 
   return (
     <Box sx={{ p: 2, maxWidth: 1100 }}>
       <Title title={t('API keys')} />
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Service keys for machine consumers of the admin API (partner
-        back-offices, BI, CI). A key behaves like an admin account with exactly
-        one role × scope and is sent as <code>Authorization: Bearer sak_…</code>.
-        The token is shown once at creation — store it in the consumer&apos;s
-        secret store.
+        {rich(
+          t(
+            "Service keys for machine consumers of the admin API (partner back-offices, BI, CI). A key behaves like an admin account with exactly one role × scope and is sent as `Authorization: Bearer sak_…`. The token is shown once at creation — store it in the consumer's secret store."
+          )
+        )}
       </Typography>
 
       <Card sx={{ mb: 2 }}>
         <CardContent>
           <Typography variant="h6" gutterBottom>
-            Create key
+            {t('Create key')}
           </Typography>
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <TextField
@@ -250,13 +250,13 @@ const ApiKeys = () => {
               </TextField>
             )}
             <Button variant="contained" size="small" onClick={create} disabled={createDisabled}>
-              Create
+              {t('Create')}
             </Button>
           </Stack>
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-            Give a key the narrowest scope that works — a read-only manager key
-            per product for pulls, an admin key only when the consumer must
-            write.
+            {t(
+              'Give a key the narrowest scope that works — a read-only manager key per product for pulls, an admin key only when the consumer must write.'
+            )}
           </Typography>
         </CardContent>
       </Card>
@@ -265,13 +265,13 @@ const ApiKeys = () => {
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell>Name</TableCell>
-              <TableCell>Token</TableCell>
-              <TableCell>Role</TableCell>
-              <TableCell>Scope</TableCell>
-              <TableCell>Active</TableCell>
-              <TableCell>Last used</TableCell>
-              <TableCell>Created</TableCell>
+              <TableCell>{t('Name')}</TableCell>
+              <TableCell>{t('Token')}</TableCell>
+              <TableCell>{t('Role')}</TableCell>
+              <TableCell>{t('Scope')}</TableCell>
+              <TableCell>{t('Active')}</TableCell>
+              <TableCell>{t('Last used')}</TableCell>
+              <TableCell>{t('Created')}</TableCell>
               <TableCell />
             </TableRow>
           </TableHead>
@@ -296,7 +296,7 @@ const ApiKeys = () => {
                   />
                 </TableCell>
                 <TableCell>
-                  {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never'}
+                  {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : t('never')}
                 </TableCell>
                 <TableCell>
                   {new Date(k.created_at).toLocaleString()}
@@ -304,7 +304,7 @@ const ApiKeys = () => {
                 </TableCell>
                 <TableCell>
                   <Button size="small" color="error" onClick={() => remove(k.id, k.name)}>
-                    Delete
+                    {t('Delete')}
                   </Button>
                 </TableCell>
               </TableRow>
@@ -313,7 +313,7 @@ const ApiKeys = () => {
               <TableRow>
                 <TableCell colSpan={8}>
                   <Typography color="text.secondary" sx={{ py: 2 }}>
-                    No API keys yet — create the first one above.
+                    {t('No API keys yet — create the first one above.')}
                   </Typography>
                 </TableCell>
               </TableRow>
@@ -323,16 +323,16 @@ const ApiKeys = () => {
       </Box>
 
       <Dialog open={!!minted} onClose={() => setMinted(null)} maxWidth="sm" fullWidth fullScreen={isMobile}>
-        <DialogTitle>Key created — copy the token now</DialogTitle>
+        <DialogTitle>{t('Key created — copy the token now')}</DialogTitle>
         <DialogContent dividers>
           <Alert severity="warning" sx={{ mb: 2 }}>
-            This token is shown ONCE and cannot be recovered. Copy it into the
-            consumer&apos;s secret store before closing; if it is lost, delete
-            the key and mint a new one.
+            {t(
+              "This token is shown ONCE and cannot be recovered. Copy it into the consumer's secret store before closing; if it is lost, delete the key and mint a new one."
+            )}
           </Alert>
           <TextField
             value={minted?.token || ''}
-            label={`Token · ${minted?.key?.name || ''}`}
+            label={`${t('Token')} · ${minted?.key?.name || ''}`}
             fullWidth
             size="small"
             slotProps={{
@@ -356,9 +356,9 @@ const ApiKeys = () => {
             startIcon={<ContentCopyIcon fontSize="small" />}
             onClick={copyToken}
           >
-            Copy token
+            {t('Copy token')}
           </Button>
-          <Button onClick={() => setMinted(null)}>Done</Button>
+          <Button onClick={() => setMinted(null)}>{t('Done')}</Button>
         </DialogActions>
       </Dialog>
     </Box>

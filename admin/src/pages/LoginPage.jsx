@@ -34,7 +34,7 @@ const LoginForm = () => {
   return (
     <Box component="form" onSubmit={submit} sx={{ p: 2, width: 300 }}>
       <TextField
-        label="Email"
+        label={t('Email')}
         type="email"
         value={email}
         onChange={(e) => setEmail(e.target.value)}

@@ -89,7 +89,7 @@ const TranslationsInner = () => {
         setTitles({});
         setLang((prev) => prev || (t.json.languages || [])[0]?.code || '');
       })
-      .catch((e) => notify(e.message || 'Load failed', { type: 'error' }));
+      .catch((e) => notify(e.message || tr('Load failed'), { type: 'error' }));
 
   useEffect(() => {
     load();
@@ -181,7 +181,7 @@ const TranslationsInner = () => {
       notify(tr('Translations saved — live'), { type: 'success' });
       await load();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || tr('Save failed'), { type: 'error' });
     } finally {
       setSaving(false);
     }
@@ -189,7 +189,7 @@ const TranslationsInner = () => {
 
   return (
     <Box sx={{ p: 2, maxWidth: 1000 }}>
-      <Title title="Translations" />
+      <Title title={tr('Translations')} />
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
         {tr(
           "Everything the player sees, editable per language and split into blocks: the general widget interface, the support bot's messages, the Telegram retention bot's messages, and the service / error notices — plus the topic names. Clearing a field falls back to the shipped default (shown as placeholder)."
