@@ -79,6 +79,11 @@ async def meta(product_id: Optional[int] = None,
     # supported) so the language tab can render a checkbox per known language, not
     # only the ones already enabled. `iso_catalog` is the full ISO 639-1 list that
     # drives the "add a language" picker. `supported` flags which are enabled.
+    # Current model + its USD-per-1M-token pricing so the SPA can render live
+    # character/token/cost counters on prompt and KB editors. `pricing` is None
+    # for a model missing from openai_client._PRICING (the SPA then shows
+    # tokens without a cost estimate).
+    mdl = str(settings_mod.model().get("model") or "")
     return JSONResponse(content={
         "languages": language.selectable_languages(),
         "supported": language.supported_codes(),
@@ -86,6 +91,8 @@ async def meta(product_id: Optional[int] = None,
         "iso_catalog": [{"code": c, "name": n}
                         for c, n in sorted(language.ISO_639_1.items(),
                                            key=lambda kv: kv[1])],
+        "model_pricing": {"model": mdl,
+                          "pricing": openai_client.pricing_for_model(mdl)},
     })
 
 
@@ -318,6 +325,13 @@ async def kb_topics(product_id: Optional[int] = None,
 async def kb_upsert_topic(body: TopicUpsert,
                           admin=Depends(require_admin_write)) -> JSONResponse:
     pid = await _resolve_admin_product(admin, body.product_id, write=True)
+    try:
+        # Only the canonical English title feeds the model (topic routing);
+        # other languages are player-facing copy and stay multilingual.
+        settings_mod.ensure_english((body.title or {}).get("en", ""),
+                                    "topic title (en)")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     tid = await db.upsert_topic(product_id=pid, slug=body.slug, title=body.title,
                                 display_order=body.order, active=body.active)
     await db.log_admin_event(None, "kb_topic_upserted", {"id": tid, "slug": body.slug})
@@ -339,6 +353,11 @@ async def kb_content(topic_id: int, admin=Depends(require_admin)) -> JSONRespons
 async def kb_set_content(body: KBContentWrite,
                          admin=Depends(require_admin_write)) -> JSONResponse:
     await _topic_for_write(admin, body.topic_id)
+    try:
+        # KB text feeds the model-facing prompt (Layer 2) - English only.
+        settings_mod.ensure_english(body.content, "KB content")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     eid = await db.set_kb_content(body.topic_id, body.content)
     await db.log_admin_event(None, "kb_content_updated", {"topic_id": body.topic_id})
     return JSONResponse(content={"id": eid})
@@ -379,6 +398,11 @@ async def kb_set_variable(key: str, body: KBVariableWrite,
                           admin=Depends(require_admin_write)) -> JSONResponse:
     if body.key != key:
         raise HTTPException(status_code=400, detail="Path key and body key must match.")
+    try:
+        # KB variable values are substituted into the model-facing KB text.
+        settings_mod.ensure_english(body.value, f"KB variable {key!r}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     pid = await _resolve_admin_product(admin, product_id, write=True)
     item = await db.set_kb_variable(
         product_id=pid,

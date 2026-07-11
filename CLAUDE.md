@@ -390,6 +390,16 @@ NB: `list_kb_variables`/`set_kb_variable` must return `updated_at` as an **isofo
 (via `db._row_to_kb_variable`) — a raw `datetime` cannot be serialized by `JSONResponse` and 500s
 the tab (the bug that shipped with the feature).
 
+### English-only guard for model-facing content (`settings.ensure_english`)
+The model-facing prompt is English by design (invariant §7), so every admin write
+that FEEDS the prompt is validated to Latin script and 400s on Cyrillic/CJK/Arabic/
+etc.: prompt variables (support + retention), KB texts (`PUT /admin/kb/content`),
+the canonical English topic title, KB variable values, the retention KB document
+and site-map titles/purposes. Player-facing copy (translations, per-language topic
+titles) and the multilingual escalation keyword stems are deliberately NOT guarded.
+The error names the first offending character and points the operator at
+Translations.
+
 ### Prompt variables — the brand-uniquification registry (`prompts.py` + `settings.prompt_variables`)
 The prompt in `prompts.py` is a **dry template**: `SYSTEM_CORE`, `_GUARDRAILS`, the
 forbidden-topics list/refusal and the closing-goodbye directive carry `{placeholder}` tokens
@@ -1091,6 +1101,14 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   cleared when the player writes again) are honoured on every send. NB: the agent
   is event-driven — with the ladder gone there is NO idle-player re-engagement
   until an inactivity trigger is added to the agent.
+- **Delivery + gate knobs** (both in the hot `retention` settings group, edited in
+  Telegram · Retention → Bot settings): `silent_notifications` (proactive sends go
+  out with Telegram `disable_notification` — no sound on the player's phone;
+  dialogue replies always notify normally; plumbed through
+  `telegram_transport.send_*`/`retention._send_ai_text`/`_send_photo` and read in
+  the agent's send site) and `subscription_cache_ttl_sec` (how long a positive
+  `getChatMember` check is cached; 0 = re-check live every message — the old
+  hardcoded 600s constant remains only as the fallback default).
 - **Telegram anti-spam gate** (`retention._handle_message`, mirrors the widget gate): per-user
   rate limit with its OWN chat-paced allowance — `antispam.check_rate_limit("tg:{pid}:{uid}",
   cfg["tg_rate_limit_max_per_user"])` (`antispam` group knob, env `TG_RATE_LIMIT_MAX_PER_USER`,
@@ -1534,7 +1552,31 @@ Map of what lives where:
   Dashboard, Structure and Users stay usable at the all/partner scope. **Settings** (`pages/Settings.jsx` + `settingsSchema.js`) is a
   typed, tabbed editor (one tab per group + a Languages tab with an ISO-picker
   add-language / default / custom-name editor) — not a raw-JSON textarea — with a
-  scope banner (global defaults vs the selected product). **Topic titles are
+  scope banner (global defaults vs the selected product). **Settings are split into
+  three MODULE surfaces** (`?module=support|retention|core`, each its own sidebar
+  entry): Support chat → Chat settings (widget anti-spam + chat limits), Telegram ·
+  Retention → Bot settings (the whole `retention` group + the Telegram rate-limit
+  slice of `antispam`), System → Settings (model, languages, technical limits).
+  The split is presentation-only — schema fields carry a `module` tag
+  (`settingsSchema.js` `GROUP_MODULE`/`fieldsForModule`) and a group is still
+  SAVED whole (the form round-trips unseen fields unchanged). Each module page
+  opens with a plain-language "How it works" accordion; long field explanations
+  render as an (i) tooltip instead of a helper line. **The admin chrome is
+  bilingual (EN/RU)**: `src/i18n.js` is a gettext-style dictionary keyed by the
+  English source strings, `t()` wraps render sites, and the AppBar carries an
+  EN/RU toggle (persisted in localStorage; switching reloads). Only the chrome is
+  translated — the CONTENT stays English (see the English-only guard below).
+  **Bundle is code-split**: pages load via `React.lazy` (per-page chunks) and
+  vite `manualChunks` splits recharts/mui/react-admin/vendor, so the entry chunk
+  is ~55 KB instead of a 1.5 MB monolith. Sidebar custom entries all render
+  through ONE `SubItem` component with an EXACT pathname matcher (an earlier
+  `startsWith('/retention')` bug lit up "Telegram config" while the
+  /retention-agent page was open, and the differently-rendered Menu.Item sat out
+  of line with its ListItemButton siblings). **Token/cost counters**: prompt and
+  KB editors (support KB, retention KB, both prompt-variable editors, both
+  prompt previews) render a live `TextStats` line — characters, estimated
+  tokens, and the uncached-input cost for the CURRENT model, priced from
+  `GET /admin/meta`'s `model_pricing` block (`openai_client.pricing_for_model`). **Topic titles are
   single-sourced** in Translations → Topic names; the KB form keeps only the
   canonical English title (the prompt is English-only) and links there. **SET-state
   is explicit**: `components/SetBadge` shows a green check for configured secrets

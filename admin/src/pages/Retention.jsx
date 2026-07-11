@@ -39,6 +39,8 @@ import {
 import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
 import SecretField from '../components/SecretField';
+import TextStats from '../components/TextStats';
+import { t } from '../i18n';
 
 // ---------------------------------------------------------------------------
 // Setup guide tab — the short "how to connect the bot" checklist that replaced
@@ -196,7 +198,7 @@ const ConfigTab = ({ productId }) => {
         method: 'PUT',
         body: JSON.stringify(form),
       });
-      notify('Telegram config saved', { type: 'success' });
+      notify(t('Telegram config saved'), { type: 'success' });
       load();
     } catch (e) {
       notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
@@ -215,7 +217,7 @@ const ConfigTab = ({ productId }) => {
         method: 'PUT',
         body: JSON.stringify(fields),
       });
-      notify('Secrets saved', { type: 'success' });
+      notify(t('Secrets saved'), { type: 'success' });
       setSecrets({});
       load();
     } catch (e) {
@@ -266,13 +268,13 @@ const ConfigTab = ({ productId }) => {
               onChange={(e) => setForm({ ...form, retention_enabled: e.target.checked })}
             />
           }
-          label="Retention bot enabled"
+          label={t('Retention bot enabled')}
         />
         {[
-          ['telegram_bot_username', 'Bot username (without @)'],
-          ['telegram_channel_id', 'Channel id (@channel or -100…)'],
-          ['telegram_channel_url', 'Channel URL (subscription gate)'],
-          ['player_api_url', 'Player API URL (profile pull)'],
+          ['telegram_bot_username', t('Bot username (without @)')],
+          ['telegram_channel_id', t('Channel id (@channel or -100…)')],
+          ['telegram_channel_url', t('Channel URL (subscription gate)')],
+          ['player_api_url', t('Player API URL (profile pull)')],
         ].map(([f, label]) => (
           <TextField
             key={f}
@@ -284,10 +286,10 @@ const ConfigTab = ({ productId }) => {
           />
         ))}
         <Button variant="contained" onClick={save} sx={{ mt: 1, mr: 1 }}>
-          Save config
+          {t('Save config')}
         </Button>
         <Button variant="outlined" onClick={registerWebhook} sx={{ mt: 1 }}>
-          Register Telegram webhook
+          {t('Register Telegram webhook')}
         </Button>
         {data.webhook_url && (
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
@@ -295,7 +297,7 @@ const ConfigTab = ({ productId }) => {
           </Typography>
         )}
         <Typography variant="h6" sx={{ mt: 2 }}>
-          Secrets
+          {t('Secrets')}
         </Typography>
         <SecretField
           label="Telegram bot token"
@@ -312,7 +314,7 @@ const ConfigTab = ({ productId }) => {
           onClear={() => clearSecret('player_api_key', 'Player API key')}
         />
         <Button variant="contained" size="small" onClick={saveSecrets} sx={{ mt: 1 }}>
-          Save secrets
+          {t('Save secrets')}
         </Button>
       </CardContent>
     </Card>
@@ -343,7 +345,7 @@ const KbTab = ({ productId }) => {
         { method: 'PUT', body: JSON.stringify({ text }) }
       );
       setText(json.text ?? '');
-      notify('Retention KB saved', { type: 'success' });
+      notify(t('Retention KB saved'), { type: 'success' });
     } catch (e) {
       notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
     } finally {
@@ -363,6 +365,13 @@ const KbTab = ({ productId }) => {
           model, and Nika answers in the player&apos;s language regardless.{' '}
           <code>{'{placeholders}'}</code> are substituted from KB variables.
         </Typography>
+        <Alert severity="info" sx={{ mb: 1 }}>
+          <b>{t('English only')}.</b>{' '}
+          {t(
+            'Model-facing content must be in English — the backend rejects other scripts. Player-facing copy belongs in Translations.'
+          )}
+        </Alert>
+        <TextStats text={text} />
         <TextField
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -415,7 +424,7 @@ const VariablesTab = ({ productId }) => {
         { method: 'PUT', body: JSON.stringify({ value: values }) }
       );
       apply(json.variables);
-      notify('Retention prompt variables saved', { type: 'success' });
+      notify(t('Retention prompt variables saved'), { type: 'success' });
     } catch (e) {
       notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
     } finally {
@@ -437,6 +446,16 @@ const VariablesTab = ({ productId }) => {
       </Alert>
       <Card>
         <CardContent>
+          <Alert severity="info" sx={{ mb: 1 }}>
+            <b>{t('English only')}.</b>{' '}
+            {t(
+              'Model-facing content must be in English — the backend rejects other scripts. Player-facing copy belongs in Translations.'
+            )}
+          </Alert>
+          <TextStats
+            label="Total"
+            text={vars.map((v) => values[v.key] || v.default || '')}
+          />
           {vars.map((v) => (
             <TextField
               key={v.key}
@@ -451,7 +470,7 @@ const VariablesTab = ({ productId }) => {
             />
           ))}
           <Button variant="contained" onClick={save} disabled={saving} sx={{ mt: 1 }}>
-            {saving ? 'Saving…' : 'Save variables'}
+            {saving ? t('Saving…') : t('Save variables')}
           </Button>
         </CardContent>
       </Card>
@@ -472,6 +491,7 @@ const PreviewBlock = ({ title, text }) => (
       <Typography variant="h6" gutterBottom>
         {title}
       </Typography>
+      <TextStats text={text || ''} sx={{ mb: 1 }} />
       <Typography
         component="pre"
         sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 13, m: 0 }}
@@ -501,6 +521,11 @@ const PromptTab = ({ productId }) => {
         are on the{' '}
         <Link href="#/retention?tab=variables">Prompt variables</Link> tab.
       </Typography>
+      <TextStats
+        label="Total"
+        text={[preview?.system, preview?.user]}
+        sx={{ mb: 1.5 }}
+      />
       <PreviewBlock
         title="System message (retention Layer 1 core + Layer 2 retention KB)"
         text={preview?.system}
@@ -820,7 +845,7 @@ const PhotosTab = ({ productId }) => {
       <Card sx={{ mb: 2 }}>
         <CardContent>
           <Typography variant="h6" gutterBottom>
-            Upload photos
+            {t('Upload photos')}
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
             Pick any number of files at once. The fields below apply to every
@@ -832,7 +857,7 @@ const PhotosTab = ({ productId }) => {
             <Grid size={{ xs: 12 }}>
               <TextField
                 size="small"
-                label="Description (grounds the caption the model writes)"
+                label={t('Description (grounds the caption the model writes)')}
                 value={upload.description}
                 onChange={(e) => setUpload({ ...upload, description: e.target.value })}
                 fullWidth
@@ -842,7 +867,7 @@ const PhotosTab = ({ productId }) => {
             <Grid size={{ xs: 12, sm: 6, md: 4 }}>
               <TextField
                 size="small"
-                label="Tags (comma-separated)"
+                label={t('Tags (comma-separated)')}
                 value={upload.tags}
                 onChange={(e) => setUpload({ ...upload, tags: e.target.value })}
                 fullWidth
@@ -852,7 +877,7 @@ const PhotosTab = ({ productId }) => {
               <TextField
                 select
                 size="small"
-                label="Level (min VIP tier)"
+                label={t('Level (min VIP tier)')}
                 value={upload.level_min}
                 onChange={(e) => setUpload({ ...upload, level_min: Number(e.target.value) })}
                 helperText="VIP tier to unlock"
@@ -867,7 +892,7 @@ const PhotosTab = ({ productId }) => {
               <TextField
                 select
                 size="small"
-                label="Stage (explicitness)"
+                label={t('Stage (explicitness)')}
                 value={upload.stage}
                 onChange={(e) => setUpload({ ...upload, stage: Number(e.target.value) })}
                 helperText="1 = softest"
@@ -881,7 +906,7 @@ const PhotosTab = ({ productId }) => {
             <Grid size={{ xs: 12, sm: 6, md: 4 }}>
               <TextField
                 size="small"
-                label="Category"
+                label={t('Category')}
                 value={upload.category}
                 onChange={(e) => setUpload({ ...upload, category: e.target.value })}
                 fullWidth
@@ -902,7 +927,7 @@ const PhotosTab = ({ productId }) => {
               />
             </Button>
             <Button variant="contained" onClick={doUpload} disabled={!files.length || uploading}>
-              {uploading ? 'Uploading…' : 'Upload'}
+              {uploading ? t('Uploading…') : t('Upload')}
             </Button>
           </Stack>
         </CardContent>
@@ -919,7 +944,7 @@ const PhotosTab = ({ productId }) => {
           >
             <TextField
               size="small"
-              label="Search (description, tags, category)"
+              label={t('Search (description, tags, category)')}
               value={filters.q}
               onChange={(e) => setFilter({ q: e.target.value })}
               sx={{ minWidth: 240 }}
@@ -927,7 +952,7 @@ const PhotosTab = ({ productId }) => {
             <TextField
               select
               size="small"
-              label="Stage"
+              label={t('Stage')}
               value={filters.stage}
               onChange={(e) => setFilter({ stage: e.target.value })}
               sx={{ minWidth: 110 }}
@@ -942,7 +967,7 @@ const PhotosTab = ({ productId }) => {
             <TextField
               select
               size="small"
-              label="Level min"
+              label={t('Level min')}
               value={filters.level}
               onChange={(e) => setFilter({ level: e.target.value })}
               sx={{ minWidth: 110 }}
@@ -957,7 +982,7 @@ const PhotosTab = ({ productId }) => {
             <TextField
               select
               size="small"
-              label="Status"
+              label={t('Status')}
               value={filters.status}
               onChange={(e) => setFilter({ status: e.target.value })}
               sx={{ minWidth: 110 }}
@@ -979,14 +1004,14 @@ const PhotosTab = ({ productId }) => {
             sx={{ mt: 1.5 }}
           >
             <Button size="small" onClick={selectAllVisible} disabled={!visible.length}>
-              Select all shown
+              {t('Select all shown')}
             </Button>
             <Button
               size="small"
               onClick={() => setSelected(new Set())}
               disabled={!selected.size}
             >
-              Clear selection
+              {t('Clear selection')}
             </Button>
             <Button
               variant="contained"
@@ -996,7 +1021,7 @@ const PhotosTab = ({ productId }) => {
             >
               {generating
                 ? `Generating… ${genProgress}`
-                : `Generate metadata (${selected.size})`}
+                : `${t('Generate metadata')} (${selected.size})`}
             </Button>
             <Typography variant="caption" color="text.secondary">
               AI (the product&apos;s own model + API key) fills the description,
@@ -1070,7 +1095,7 @@ const PhotosTab = ({ productId }) => {
                   />
                   <TextField
                     size="small"
-                    label="Tags (comma-separated)"
+                    label={t('Tags (comma-separated)')}
                     defaultValue={(ph.tags || []).join(', ')}
                     onBlur={(e) => {
                       const tags = e.target.value
@@ -1105,7 +1130,7 @@ const PhotosTab = ({ productId }) => {
                     <TextField
                       select
                       size="small"
-                      label="Stage"
+                      label={t('Stage')}
                       value={ph.stage}
                       onChange={(e) =>
                         Number(e.target.value) !== ph.stage &&
@@ -1207,7 +1232,7 @@ const ManagersTab = ({ productId }) => {
   };
 
   const remove = async (id) => {
-    if (!window.confirm('Delete this manager?')) return;
+    if (!window.confirm(t('Delete this manager?'))) return;
     try {
       await httpClient(`${API_URL}/admin/retention/managers/${id}`, { method: 'DELETE' });
       load();
@@ -1219,10 +1244,10 @@ const ManagersTab = ({ productId }) => {
   return (
     <Box>
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
-        <TextField size="small" label="Display name" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
-        <TextField size="small" label="Telegram username (without @)" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+        <TextField size="small" label={t('Display name')} value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
+        <TextField size="small" label={t('Telegram username (without @)')} value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
         <Button variant="outlined" onClick={create} disabled={!form.display_name || !form.username}>
-          Add manager
+          {t('Add manager')}
         </Button>
       </Stack>
       <Box sx={{ overflowX: 'auto' }}>
@@ -1616,7 +1641,7 @@ const AnalyticsTab = ({ productId }) => {
         <TextField
           size="small"
           type="date"
-          label="From"
+          label={t('From')}
           value={range.from}
           onChange={(e) => e.target.value && setRange({ ...range, from: e.target.value })}
           slotProps={{ inputLabel: { shrink: true } }}
@@ -1624,53 +1649,52 @@ const AnalyticsTab = ({ productId }) => {
         <TextField
           size="small"
           type="date"
-          label="To"
+          label={t('To')}
           value={range.to}
           onChange={(e) => e.target.value && setRange({ ...range, to: e.target.value })}
           slotProps={{ inputLabel: { shrink: true } }}
         />
         <Typography variant="caption" color="text.secondary">
-          Both days inclusive. “Player base” below is lifetime; everything else
-          counts this range.
+          {t('Both days inclusive. “Player base” below is lifetime; everything else counts this range.')}
         </Typography>
       </Stack>
 
       <Typography variant="h6" sx={{ mb: 1 }}>
-        Player base
+        {t('Player base')}
       </Typography>
       <Grid container spacing={2} alignItems="stretch" sx={{ mb: 2 }}>
-        <KpiCard label="Linked players" value={base?.total} hint="lifetime deeplink entries" />
-        <KpiCard label="Subscribed" value={base?.subscribed} hint="passed the channel gate" />
-        <KpiCard label="Pings muted" value={base?.pings_muted} hint="opted out via /stop" />
-        <KpiCard label="Unreachable" value={base?.unreachable} hint="blocked the bot / sends fail" />
+        <KpiCard label={t('Linked players')} value={base?.total} hint={t('lifetime deeplink entries')} />
+        <KpiCard label={t('Subscribed')} value={base?.subscribed} hint={t('passed the channel gate')} />
+        <KpiCard label={t('Pings muted')} value={base?.pings_muted} hint={t('opted out via /stop')} />
+        <KpiCard label={t('Unreachable')} value={base?.unreachable} hint={t('blocked the bot / sends fail')} />
       </Grid>
 
       <Typography variant="h6" sx={{ mb: 1 }}>
-        In range
+        {t('In range')}
       </Typography>
       <Grid container spacing={2} alignItems="stretch" sx={{ mb: 2 }}>
-        <KpiCard label="Active players" value={inRange?.active_users} hint="wrote in the range" />
-        <KpiCard label="New players" value={inRange?.new_users} hint="first deeplink entry" />
-        <KpiCard label="Player messages" value={inRange?.user_messages} />
-        <KpiCard label="Photos sent" value={inRange?.photos_sent} />
+        <KpiCard label={t('Active players')} value={inRange?.active_users} hint={t('wrote in the range')} />
+        <KpiCard label={t('New players')} value={inRange?.new_users} hint={t('first deeplink entry')} />
+        <KpiCard label={t('Player messages')} value={inRange?.user_messages} />
+        <KpiCard label={t('Photos sent')} value={inRange?.photos_sent} />
         <KpiCard
-          label="Pings sent"
+          label={t('Pings sent')}
           value={inRange?.pings_sent}
-          hint={inRange?.pings_failed ? `${inRange.pings_failed} failed` : 'proactive nudges'}
+          hint={inRange?.pings_failed ? `${inRange.pings_failed} ${t('failed')}` : t('proactive nudges')}
         />
-        <KpiCard label="Ping replies" value={inRange?.ping_replies} hint={replyRate} />
-        <KpiCard label="Hand-offs" value={inRange?.handoffs} hint="to manager / site support" />
+        <KpiCard label={t('Ping replies')} value={inRange?.ping_replies} hint={replyRate} />
+        <KpiCard label={t('Hand-offs')} value={inRange?.handoffs} hint={t('to manager / site support')} />
         <KpiCard
-          label="Cost (USD)"
+          label={t('Cost (USD)')}
           value={inRange?.cost_usd != null ? `$${Number(inRange.cost_usd).toFixed(4)}` : undefined}
-          hint="TG dialog + photo metadata"
+          hint={t('TG dialog + photo metadata')}
         />
       </Grid>
 
       <Card sx={{ mb: 2 }}>
         <CardContent>
           <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-            Daily activity
+            {t('Daily activity')}
           </Typography>
           <SeriesLineChart data={series} series={TIMESERIES_SERIES} />
         </CardContent>
@@ -1717,7 +1741,7 @@ const AnalyticsTab = ({ productId }) => {
       </Grid>
 
       <Typography variant="h6" sx={{ mb: 1 }}>
-        Linked players ({users.length})
+        {t('Linked players')} ({users.length})
       </Typography>
       <Box sx={{ overflowX: 'auto' }}>
         <Table size="small">
@@ -1784,12 +1808,12 @@ const COMPONENTS = {
 
 const SUBTABS = {
   config: [
-    ['config', 'Telegram config'],
-    ['guide', 'Setup guide'],
+    ['config', t('Telegram config')],
+    ['guide', t('Setup guide')],
   ],
   prompt: [
-    ['prompt', 'Prompt preview'],
-    ['variables', 'Prompt variables'],
+    ['prompt', t('Prompt preview')],
+    ['variables', t('Prompt variables')],
   ],
 };
 

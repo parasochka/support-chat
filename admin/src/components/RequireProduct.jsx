@@ -3,6 +3,7 @@ import Alert from '@mui/material/Alert';
 import AlertTitle from '@mui/material/AlertTitle';
 import { Title } from 'react-admin';
 import { getProductId } from '../productScope';
+import { t } from '../i18n';
 
 /**
  * Gate for surfaces whose data belongs to a single product (KB, Prompt,
@@ -29,9 +30,10 @@ const RequireProduct = ({ title, children }) => {
     >
       {title && <Title title={title} />}
       <Alert severity="info" sx={{ maxWidth: 640 }}>
-        <AlertTitle>Please select a product</AlertTitle>
-        This screen shows data for a single product. Pick a product in the
-        Partner → Product switcher at the top-right to continue.
+        <AlertTitle>{t('Please select a product')}</AlertTitle>
+        {t(
+          'This screen shows data for a single product. Pick a product in the Partner → Product switcher at the top-right to continue.'
+        )}
       </Alert>
     </Box>
   );

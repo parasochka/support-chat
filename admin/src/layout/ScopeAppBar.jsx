@@ -3,8 +3,42 @@ import { AppBar, TitlePortal } from 'react-admin';
 import ListSubheader from '@mui/material/ListSubheader';
 import MenuItem from '@mui/material/MenuItem';
 import Select from '@mui/material/Select';
+import ToggleButton from '@mui/material/ToggleButton';
+import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
+import Tooltip from '@mui/material/Tooltip';
 import { API_URL, httpClient, getToken } from '../httpClient';
 import { getPartnerId, getProductId, setScope } from '../productScope';
+import { getAdminLang, setAdminLang, t } from '../i18n';
+
+/**
+ * EN/RU switch for the admin UI language (persisted in localStorage; the
+ * switch reloads so every module-level string re-resolves). Only the admin
+ * CHROME is bilingual — the content it edits stays English by contract.
+ */
+const LangSwitch = () => (
+  <Tooltip title={t('Admin language')}>
+    <ToggleButtonGroup
+      size="small"
+      exclusive
+      value={getAdminLang()}
+      onChange={(e, v) => v && v !== getAdminLang() && setAdminLang(v)}
+      sx={{
+        mx: { xs: 0.5, sm: 1 },
+        flexShrink: 0,
+        '& .MuiToggleButton-root': {
+          px: 1,
+          py: 0.25,
+          fontSize: '0.75rem',
+          fontWeight: 600,
+          lineHeight: 1.6,
+        },
+      }}
+    >
+      <ToggleButton value="en">EN</ToggleButton>
+      <ToggleButton value="ru">RU</ToggleButton>
+    </ToggleButtonGroup>
+  </Tooltip>
+);
 
 /**
  * AppBar with the Partner → Product switcher (GET /admin/structure). Changing
@@ -129,6 +163,7 @@ const ScopeAppBar = () => (
       }}
     />
     <ScopeSelect />
+    <LangSwitch />
   </AppBar>
 );
 

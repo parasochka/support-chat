@@ -16,6 +16,7 @@ import Typography from '@mui/material/Typography';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { API_URL, httpClient } from '../httpClient';
 import SecretField from '../components/SecretField';
+import { t } from '../i18n';
 import SetBadge from '../components/SetBadge';
 
 const embedSnippet = (widgetKey) =>
@@ -151,7 +152,7 @@ const ProductCard = ({ product, onChanged }) => {
                 onChange={(e) => saveProduct({ active: e.target.checked })}
               />
             }
-            label="Active"
+            label={t('Active')}
           />
         </Stack>
 
@@ -161,7 +162,7 @@ const ProductCard = ({ product, onChanged }) => {
         </Typography>
         <TextField
           value={product.widget_key || ''}
-          label="Widget key"
+          label={t('Widget key')}
           fullWidth
           size="small"
           margin="dense"
@@ -185,7 +186,7 @@ const ProductCard = ({ product, onChanged }) => {
         />
         <TextField
           value={embedSnippet(product.widget_key)}
-          label="Embed snippet"
+          label={t('Embed snippet')}
           fullWidth
           multiline
           size="small"
@@ -228,7 +229,7 @@ const ProductCard = ({ product, onChanged }) => {
         >
           <TextField
             size="small"
-            label="Turnstile site key"
+            label={t('Turnstile site key')}
             value={turnstileSiteKey}
             onChange={(e) => setTurnstileSiteKey(e.target.value)}
             sx={{ minWidth: 220, flex: '1 1 320px' }}
@@ -263,7 +264,7 @@ const ProductCard = ({ product, onChanged }) => {
         >
           <TextField
             size="small"
-            label="Site URL (home page)"
+            label={t('Site URL (home page)')}
             placeholder="https://example.com/"
             helperText="Telegram hand-off 'support on the site' button lands here"
             value={siteUrl}
@@ -356,14 +357,14 @@ const NewProductForm = ({ partnerId, onChanged }) => {
     >
       <TextField
         size="small"
-        label="New product slug"
+        label={t('New product slug')}
         value={slug}
         onChange={(e) => setSlug(e.target.value)}
         sx={{ flex: '1 1 220px', maxWidth: 360 }}
       />
       <TextField
         size="small"
-        label="Name"
+        label={t('Name')}
         value={name}
         onChange={(e) => setName(e.target.value)}
         sx={{ flex: '1 1 220px', maxWidth: 360 }}
@@ -432,7 +433,7 @@ const PartnerCard = ({ partner, onChanged }) => {
                 onChange={(e) => savePartner({ active: e.target.checked })}
               />
             }
-            label="Active"
+            label={t('Active')}
           />
         </Stack>
         <Divider sx={{ my: 2 }} />
@@ -483,7 +484,7 @@ const Structure = () => {
 
   return (
     <Box sx={{ p: 2, maxWidth: 1000 }}>
-      <Title title="Structure" />
+      <Title title={t('Structure')} />
       {structure.global_role === 'admin' && (
         <Stack
           direction="row"
@@ -495,14 +496,14 @@ const Structure = () => {
         >
           <TextField
             size="small"
-            label="New partner slug"
+            label={t('New partner slug')}
             value={newPartner.slug}
             onChange={(e) => setNewPartner({ ...newPartner, slug: e.target.value })}
             sx={{ flex: '1 1 220px', maxWidth: 360 }}
           />
           <TextField
             size="small"
-            label="Name"
+            label={t('Name')}
             value={newPartner.name}
             onChange={(e) => setNewPartner({ ...newPartner, name: e.target.value })}
             sx={{ flex: '1 1 220px', maxWidth: 360 }}

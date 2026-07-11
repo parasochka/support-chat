@@ -1,5 +1,9 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Title, useNotify } from 'react-admin';
+import Accordion from '@mui/material/Accordion';
+import AccordionDetails from '@mui/material/AccordionDetails';
+import AccordionSummary from '@mui/material/AccordionSummary';
 import Alert from '@mui/material/Alert';
 import AlertTitle from '@mui/material/AlertTitle';
 import Box from '@mui/material/Box';
@@ -11,35 +15,80 @@ import Divider from '@mui/material/Divider';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Grid from '@mui/material/Grid';
 import IconButton from '@mui/material/IconButton';
+import InputAdornment from '@mui/material/InputAdornment';
 import MenuItem from '@mui/material/MenuItem';
 import Stack from '@mui/material/Stack';
 import Switch from '@mui/material/Switch';
 import Tab from '@mui/material/Tab';
 import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import DeleteIcon from '@mui/icons-material/Delete';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutlined';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import PublicIcon from '@mui/icons-material/Public';
+import { useMemo } from 'react';
 import { API_URL, httpClient } from '../httpClient';
 import { getProductId, getScopeName, withProduct } from '../productScope';
-import { GROUP_FIELDS, GROUP_HELP, GROUP_LABELS } from './settingsSchema';
-
-// Content-tuning group edited from the Prompt page; kept out of this editor.
-const SKIP_GROUPS = ['escalation'];
-const GROUP_ORDER = ['antispam', 'model', 'general', 'retention', 'language'];
+import { t } from '../i18n';
+import {
+  GROUP_HELP,
+  GROUP_LABELS,
+  MODULES,
+  fieldsForModule,
+} from './settingsSchema';
 
 // Sub-headers for grouped fields inside a settings group (schema `section`).
 const SECTION_LABELS = {
   progression: 'Photo unlock progression (Stage × VIP Level)',
   agent: 'Proactive agent (event-driven)',
   guards: 'Send-frequency guards (per-player protection)',
+  delivery: 'Delivery',
 };
+
+// Per-module tab labels where the group name alone would mislead (the
+// support module shows only the CHAT slice of `general`; the retention module
+// shows only the Telegram slice of `antispam`).
+const TAB_LABELS = {
+  'support:general': 'Chat limits',
+  'retention:antispam': 'Anti-spam',
+};
+
+// The plain-language "how it works" intro per module — the first thing a
+// non-technical manager sees on the page.
+const MODULE_HOWTO = {
+  support:
+    'The support widget answers players on the site from the per-topic Knowledge base. Before the model sees a message it passes the anti-spam gates below; the chat limits bound one session. Content (KB texts, prompt variables, translations) is edited in the Support chat section of the menu.',
+  retention:
+    'The Telegram bot re-engages players: it chats in persona, sends photos gated by Stage × VIP level, and the proactive agent reacts to casino events (deposits, level-ups, losses). The guards below are the dials for how often one player may be written to — the agent can never exceed them.',
+  core:
+    'These settings are shared by BOTH bots: which OpenAI model answers (and its budgets/timeouts), which languages the assistant supports, and technical request limits. Change with care — they apply to every product without its own override.',
+};
+
+// A label with an (i) tooltip carrying the long explanation — short label on
+// the input, the full description one hover/tap away.
+const LONG_HELP = 96;
+const InfoAdornment = ({ help }) => (
+  <InputAdornment position="end">
+    <Tooltip title={help} enterTouchDelay={0} leaveTouchDelay={4000}>
+      <InfoOutlinedIcon
+        fontSize="small"
+        sx={{ color: 'text.disabled', cursor: 'help' }}
+      />
+    </Tooltip>
+  </InputAdornment>
+);
 
 // ---------------------------------------------------------------------------
 // One typed field
 // ---------------------------------------------------------------------------
 const Field = ({ field, value, onChange, form }) => {
-  const { type, label, help } = field;
+  const { type } = field;
+  const label = t(field.label);
+  const help = t(field.help);
+  const longHelp = (help || '').length > LONG_HELP;
 
   // Explicitness-stage thresholds shown as one labelled column per stage
   // (Stage 1 is always the free baseline), instead of an opaque textarea list.
@@ -102,18 +151,24 @@ const Field = ({ field, value, onChange, form }) => {
   if (type === 'bool') {
     return (
       <Grid size={{ xs: 12, sm: 6 }}>
-        <FormControlLabel
-          control={
-            <Switch
-              checked={Boolean(value)}
-              onChange={(e) => onChange(e.target.checked)}
+        <Stack direction="row" alignItems="center" spacing={0.5}>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={Boolean(value)}
+                onChange={(e) => onChange(e.target.checked)}
+              />
+            }
+            label={label}
+            sx={{ mr: 0 }}
+          />
+          <Tooltip title={help} enterTouchDelay={0} leaveTouchDelay={4000}>
+            <InfoOutlinedIcon
+              fontSize="small"
+              sx={{ color: 'text.disabled', cursor: 'help' }}
             />
-          }
-          label={label}
-        />
-        <Typography variant="caption" color="text.secondary" display="block" sx={{ ml: 6, mt: -0.5 }}>
-          {help}
-        </Typography>
+          </Tooltip>
+        </Stack>
       </Grid>
     );
   }
@@ -126,9 +181,10 @@ const Field = ({ field, value, onChange, form }) => {
           label={label}
           value={value ?? ''}
           onChange={(e) => onChange(e.target.value)}
-          helperText={help}
+          helperText={longHelp ? undefined : help}
           fullWidth
           size="small"
+          slotProps={longHelp ? { input: { endAdornment: <InfoAdornment help={help} /> } } : undefined}
         >
           {field.options.map((o) => (
             <MenuItem key={o} value={o}>
@@ -166,7 +222,7 @@ const Field = ({ field, value, onChange, form }) => {
     // Order the columns by a sibling ordered list (e.g. vip_tiers) so the
     // ceilings read lowest → highest tier instead of hash order.
     const order = field.orderByField && Array.isArray(form?.[field.orderByField])
-      ? form[field.orderByField].map((t) => String(t).toLowerCase())
+      ? form[field.orderByField].map((x) => String(x).toLowerCase())
       : [];
     const keys = [...new Set([...order, ...Object.keys(obj)])].filter((k) => k in obj);
     const lo = field.min ?? 0;
@@ -210,27 +266,27 @@ const Field = ({ field, value, onChange, form }) => {
           if (raw === '') return onChange('');
           onChange(type === 'float' ? Number(raw) : parseInt(raw, 10));
         }}
-        helperText={help}
+        helperText={longHelp ? undefined : help}
         fullWidth
         size="small"
-        slotProps={
-          type === 'string'
-            ? undefined
-            : { htmlInput: { min: field.min, max: field.max, step: field.step } }
-        }
+        slotProps={{
+          ...(type === 'string' ? {} : { htmlInput: { min: field.min, max: field.max, step: field.step } }),
+          ...(longHelp ? { input: { endAdornment: <InfoAdornment help={help} /> } } : {}),
+        }}
       />
     </Grid>
   );
 };
 
 // ---------------------------------------------------------------------------
-// One group (typed fields) — saves the whole group object
+// One group (typed fields) — saves the whole group object. `fields` is the
+// module-filtered slice; the form still carries the FULL resolved group, so
+// the save round-trips unseen fields unchanged.
 // ---------------------------------------------------------------------------
-const GroupEditor = ({ group, resolved, onSaved, scopeLabel }) => {
+const GroupEditor = ({ group, fields, resolved, onSaved, scopeLabel }) => {
   const notify = useNotify();
   const [form, setForm] = useState(() => ({ ...(resolved || {}) }));
   const [saving, setSaving] = useState(false);
-  const fields = GROUP_FIELDS[group] || [];
 
   const setField = (name, v) => setForm((f) => ({ ...f, [name]: v }));
 
@@ -241,10 +297,10 @@ const GroupEditor = ({ group, resolved, onSaved, scopeLabel }) => {
         method: 'PUT',
         body: JSON.stringify({ value: form }),
       });
-      notify(`${GROUP_LABELS[group] || group} settings saved`, { type: 'success' });
+      notify(`${t(GROUP_LABELS[group] || group)} — ${t('settings saved')}`, { type: 'success' });
       onSaved?.();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     } finally {
       setSaving(false);
     }
@@ -254,19 +310,14 @@ const GroupEditor = ({ group, resolved, onSaved, scopeLabel }) => {
     <Card>
       <CardContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          {GROUP_HELP[group]}
+          {t(GROUP_HELP[group])}
         </Typography>
         {group === 'retention' && (
           <Alert severity="info" sx={{ mb: 2 }}>
-            <AlertTitle>How photos unlock — two gates, both must pass</AlertTitle>
-            A photo carries a <b>Stage</b> (how explicit/hot it is, 1 = softest) and a{' '}
-            <b>Level</b> (the minimum VIP tier that may see it). To receive a photo a
-            player needs BOTH: enough <b>chatting</b> to reach that Stage (the
-            thresholds below) AND a high enough <b>VIP tier</b> — the tier caps the
-            top Stage they can ever reach (its ceiling below) and clears the photo’s
-            Level. Chatting alone never beats the tier ceiling; a high tier alone
-            never skips the chatting. Set the same numbers on each photo in{' '}
-            <b>Media</b>.
+            <AlertTitle>{t('How photos unlock — two gates, both must pass')}</AlertTitle>
+            {t(
+              'A photo carries a Stage (how explicit/hot it is, 1 = softest) and a Level (the minimum VIP tier that may see it). To receive a photo a player needs BOTH: enough chatting to reach that Stage (the thresholds below) AND a high enough VIP tier — the tier caps the top Stage they can ever reach and clears the photo’s Level. Set the same numbers on each photo in Media.'
+            )}
           </Alert>
         )}
         <Grid container spacing={2}>
@@ -278,7 +329,7 @@ const GroupEditor = ({ group, resolved, onSaved, scopeLabel }) => {
                   <Grid size={{ xs: 12 }}>
                     <Divider sx={{ mb: 1 }} />
                     <Typography variant="subtitle1">
-                      {SECTION_LABELS[f.section] || f.section}
+                      {t(SECTION_LABELS[f.section] || f.section)}
                     </Typography>
                   </Grid>
                 )}
@@ -288,7 +339,7 @@ const GroupEditor = ({ group, resolved, onSaved, scopeLabel }) => {
           })}
         </Grid>
         <Button variant="contained" onClick={save} disabled={saving} sx={{ mt: 2 }}>
-          {saving ? 'Saving…' : `Save ${GROUP_LABELS[group] || group}${scopeLabel}`}
+          {saving ? t('Saving…') : `${t('Save')} — ${t(GROUP_LABELS[group] || group)}${scopeLabel}`}
         </Button>
       </CardContent>
     </Card>
@@ -335,7 +386,7 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
 
   const save = async () => {
     if (!supported.length) {
-      notify('Keep at least one supported language', { type: 'warning' });
+      notify(t('Keep at least one supported language'), { type: 'warning' });
       return;
     }
     // Only persist non-empty custom names for still-supported codes.
@@ -351,10 +402,10 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
           value: { default: supported.includes(def) ? def : supported[0], supported, names: cleanNames },
         }),
       });
-      notify('Languages saved', { type: 'success' });
+      notify(t('Languages saved'), { type: 'success' });
       onSaved?.();
     } catch (e) {
-      notify(e.body?.detail || e.message || 'Save failed', { type: 'error' });
+      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
     } finally {
       setSaving(false);
     }
@@ -364,11 +415,11 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
     <Card>
       <CardContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          {GROUP_HELP.language}
+          {t(GROUP_HELP.language)}
         </Typography>
 
         <Typography variant="subtitle2" gutterBottom>
-          Default answer language
+          {t('Default answer language')}
         </Typography>
         <TextField
           select
@@ -376,7 +427,7 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
           value={supported.includes(def) ? def : ''}
           onChange={(e) => setDef(e.target.value)}
           sx={{ minWidth: 240, mb: 2 }}
-          helperText="Fallback when the player's language can't be detected."
+          helperText={t("Fallback when the player's language can't be detected.")}
         >
           {supported.map((c) => (
             <MenuItem key={c} value={c}>
@@ -386,11 +437,12 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
         </TextField>
 
         <Typography variant="subtitle2" gutterBottom>
-          Supported languages ({supported.length})
+          {t('Supported languages')} ({supported.length})
         </Typography>
         <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-          A language added here starts on English copy and becomes translatable in the Translations tab.
-          Edit the display name (optional) to override the built-in name.
+          {t(
+            'A language added here starts on English copy and becomes translatable in the Translations tab. Edit the display name (optional) to override the built-in name.'
+          )}
         </Typography>
         <Stack spacing={1} sx={{ mb: 2 }}>
           {supported.map((c) => (
@@ -403,7 +455,9 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
                 onChange={(e) => setNames((n) => ({ ...n, [c]: e.target.value }))}
                 sx={{ minWidth: { xs: 150, sm: 220 }, flex: '1 1 150px', maxWidth: 320 }}
               />
-              {def === c && <Chip label="default" size="small" color="primary" variant="outlined" />}
+              {def === c && (
+                <Chip label={t('default')} size="small" color="primary" variant="outlined" />
+              )}
               <IconButton
                 size="small"
                 color="error"
@@ -419,13 +473,13 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
 
         <Divider sx={{ my: 2 }} />
         <Typography variant="subtitle2" gutterBottom>
-          Add a language
+          {t('Add a language')}
         </Typography>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
           <TextField
             select
             size="small"
-            label="ISO 639-1 language"
+            label={t('ISO 639-1 language')}
             value={addCode}
             onChange={(e) => setAddCode(e.target.value)}
             sx={{ minWidth: 280 }}
@@ -437,13 +491,13 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
             ))}
           </TextField>
           <Button variant="outlined" onClick={addLanguage} disabled={!addCode}>
-            Add
+            {t('Add')}
           </Button>
         </Stack>
 
         <Box sx={{ mt: 2 }}>
           <Button variant="contained" onClick={save} disabled={saving}>
-            {saving ? 'Saving…' : `Save languages${scopeLabel}`}
+            {saving ? t('Saving…') : `${t('Save')} — ${t('Languages')}${scopeLabel}`}
           </Button>
         </Box>
       </CardContent>
@@ -452,13 +506,16 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
 };
 
 // ---------------------------------------------------------------------------
-// page
+// page — one settings surface per module (?module=support|retention|core),
+// each linked from its own sidebar section.
 // ---------------------------------------------------------------------------
 const Settings = () => {
   const notify = useNotify();
+  const [params, setParams] = useSearchParams();
+  const module = MODULES[params.get('module')] ? params.get('module') : 'core';
+  const mod = MODULES[module];
   const [settings, setSettings] = useState(null);
   const [meta, setMeta] = useState(null);
-  const [tab, setTab] = useState('antispam');
   const [loadError, setLoadError] = useState(null);
 
   const load = () =>
@@ -475,8 +532,8 @@ const Settings = () => {
         // A partner/product-scoped admin at the All-products scope gets a 403
         // (global settings need a global account) — show a way out instead of
         // an eternal "Loading…".
-        setLoadError(e.body?.detail || e.message || 'Load failed');
-        notify(e.message || 'Load failed', { type: 'error' });
+        setLoadError(e.body?.detail || e.message || t('Load failed'));
+        notify(e.message || t('Load failed'), { type: 'error' });
       });
 
   useEffect(() => {
@@ -484,71 +541,103 @@ const Settings = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Groups visible in this module: language is its own editor (core only);
+  // other groups appear when they have at least one field tagged for the module.
+  const groups = mod.groups.filter(
+    (g) =>
+      g === 'language' ||
+      (fieldsForModule(g, module).length > 0 &&
+        (settings?.keys || []).includes(g))
+  );
+
+  const requestedTab = params.get('tab');
+  const tab = groups.includes(requestedTab) ? requestedTab : groups[0];
+  const setTab = (v) =>
+    setParams({ module, tab: v }, { replace: true });
+
   if (!settings && loadError) {
     return (
       <Box sx={{ p: 2, maxWidth: 720 }}>
-        <Title title="Settings" />
+        <Title title={t(mod.title)} />
         <Alert severity="warning">
-          <AlertTitle>Settings could not be loaded</AlertTitle>
-          {String(loadError)} — global defaults are editable only by a global
-          admin account. Pick a concrete product in the Partner → Product
-          switcher (top-right) to edit that product's settings.
+          <AlertTitle>{t('Settings could not be loaded')}</AlertTitle>
+          {String(loadError)}
         </Alert>
       </Box>
     );
   }
-  if (!settings) return <Box sx={{ p: 2 }}>Loading…</Box>;
+  if (!settings) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
 
-  const groups = GROUP_ORDER.filter(
-    (k) => k === 'language' || ((settings.keys || []).includes(k) && !SKIP_GROUPS.includes(k))
-  );
   const productId = getProductId();
   const scopeName = getScopeName();
   // Rides in every Save button so the write scope is unmistakable even after
   // the operator scrolled the banner away.
   const scopeLabel = productId
-    ? ` for ${scopeName || `product #${productId}`}`
-    : ' — GLOBAL defaults';
+    ? ` (${t('for')} ${scopeName || `#${productId}`})`
+    : ` (${t('GLOBAL defaults')})`;
 
   return (
     <Box sx={{ p: 2, maxWidth: 1000 }}>
-      <Title title="Settings" />
+      <Title title={t(mod.title)} />
+      <Typography variant="h5" sx={{ mb: 0.5 }}>
+        {t(mod.title)}
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+        {t(mod.help)}
+      </Typography>
+
+      <Accordion disableGutters sx={{ mb: 2 }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <HelpOutlineIcon fontSize="small" color="action" />
+            <Typography variant="subtitle2">{t('How it works')}</Typography>
+          </Stack>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Typography variant="body2" color="text.secondary">
+            {t(MODULE_HOWTO[module])}
+          </Typography>
+        </AccordionDetails>
+      </Accordion>
+
       {productId ? (
         <Alert severity="success" sx={{ mb: 2 }}>
           <AlertTitle>
-            Product settings — {scopeName || `product #${productId}`}
+            {t('Product settings')} — {scopeName || `#${productId}`}
           </AlertTitle>
-          Values you save here override the global defaults for this product
-          only.
+          {t('Values you save here override the global defaults for this product only.')}
         </Alert>
       ) : (
         <Alert severity="warning" icon={<PublicIcon />} sx={{ mb: 2 }}>
-          <AlertTitle>Global defaults — the fallback for EVERY product</AlertTitle>
-          No product is selected, so you are editing the deploy-wide fallback
-          layer (model tuning, limits, languages) that applies to every product
-          without its own override. Writing here needs a global admin account.
-          To tune a single casino, pick it in the Partner → Product switcher at
-          the top-right. Per-product secrets (OpenAI/API keys) live on the
-          Structure page, not here.
+          <AlertTitle>{t('Global defaults — the fallback for EVERY product')}</AlertTitle>
+          {t(
+            'No product is selected, so you are editing the deploy-wide fallback layer that applies to every product without its own override. To tune a single casino, pick it in the Partner → Product switcher at the top-right.'
+          )}
         </Alert>
       )}
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Hot-reloaded runtime settings — effective values shown (precedence
-        product&nbsp;→ global&nbsp;→ env&nbsp;→ default). The backend validates and
-        rejects out-of-range values.
+        {t(
+          'Hot-reloaded runtime settings — effective values shown (precedence product → global → env → default). The backend validates and rejects out-of-range values.'
+        )}
       </Typography>
 
-      <Tabs
-        value={tab}
-        onChange={(e, v) => setTab(v)}
-        sx={{ mb: 2, borderBottom: 1, borderColor: 'divider' }}
-        variant="scrollable"
-        allowScrollButtonsMobile
-      >
-        {groups.map((g) => (
-          <Tab key={g} value={g} label={GROUP_LABELS[g] || g} />
-        ))}
-      </Tabs>
+      {groups.length > 1 && (
+        <Tabs
+          value={tab}
+          onChange={(e, v) => setTab(v)}
+          sx={{ mb: 2, borderBottom: 1, borderColor: 'divider' }}
+          variant="scrollable"
+          allowScrollButtonsMobile
+        >
+          {groups.map((g) => (
+            <Tab
+              key={g}
+              value={g}
+              label={t(TAB_LABELS[`${module}:${g}`] || GROUP_LABELS[g] || g)}
+            />
+          ))}
+        </Tabs>
+      )}
 
       {groups.map((g) =>
         g !== tab ? null : g === 'language' ? (
@@ -565,8 +654,9 @@ const Settings = () => {
             // Key on the resolved values so the form re-syncs after a save —
             // server-side clamping/normalization (e.g. worker interval 5..3600)
             // becomes visible immediately instead of after a tab switch.
-            key={`${g}:${JSON.stringify(settings.resolved?.[g] || {})}`}
+            key={`${module}:${g}:${JSON.stringify(settings.resolved?.[g] || {})}`}
             group={g}
+            fields={fieldsForModule(g, module)}
             resolved={settings.resolved?.[g]}
             onSaved={load}
             scopeLabel={scopeLabel}

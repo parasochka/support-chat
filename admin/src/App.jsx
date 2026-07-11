@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Suspense, lazy, useState } from 'react';
 import {
   Admin,
   CustomRoutes,
@@ -11,6 +11,7 @@ import {
 } from 'react-admin';
 import { Navigate, Route, useLocation, useNavigate } from 'react-router-dom';
 import Box from '@mui/material/Box';
+import CircularProgress from '@mui/material/CircularProgress';
 import Collapse from '@mui/material/Collapse';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
@@ -33,25 +34,65 @@ import TelegramIcon from '@mui/icons-material/Telegram';
 import TranslateIcon from '@mui/icons-material/Translate';
 import TuneIcon from '@mui/icons-material/Tune';
 
+import polyglotI18nProvider from 'ra-i18n-polyglot';
+import englishMessages from 'ra-language-english';
+import russianMessages from 'ra-language-russian';
+
 import authProvider from './authProvider';
 import dataProvider from './dataProvider';
 import buildStore from './store';
 import LoginPage from './pages/LoginPage';
-import ApiKeys from './pages/ApiKeys';
-import Dashboard from './dashboard/Dashboard';
 import ScopeAppBar from './layout/ScopeAppBar';
 import { ConversationList, ConversationShow } from './resources/Conversations';
 import { EscalationList } from './resources/Escalations';
 import { KbCreate, KbEdit, KbList } from './resources/KnowledgeBase';
 import { KbVariableEdit, KbVariableList } from './resources/KbVariables';
 import { UserCreate, UserEdit, UserList } from './resources/Users';
-import Prompt from './pages/Prompt';
-import Retention from './pages/Retention';
-import RetentionAgent from './pages/RetentionAgent';
-import Settings from './pages/Settings';
-import SiteMap from './pages/SiteMap';
-import Structure from './pages/Structure';
-import Translations from './pages/Translations';
+import { getAdminLang, t } from './i18n';
+
+// React-admin's own chrome (list toolbars, pagination, login, confirm dialogs)
+// follows the same persisted EN/RU choice as the custom pages' t() dictionary.
+const i18nProvider = polyglotI18nProvider(
+  (locale) => (locale === 'ru' ? russianMessages : englishMessages),
+  getAdminLang(),
+  [
+    { locale: 'en', name: 'English' },
+    { locale: 'ru', name: 'Русский' },
+  ],
+  { allowMissing: true }
+);
+
+// ---------------------------------------------------------------------------
+// Code splitting: every heavy page loads on demand (React.lazy → its own
+// chunk), so the initial bundle carries only the shell + the list resources.
+// Dashboard and Retention pull recharts; lazy-loading them moves the chart
+// library out of the entry chunk entirely.
+// ---------------------------------------------------------------------------
+const PageFallback = () => (
+  <Box sx={{ display: 'flex', justifyContent: 'center', p: 6 }}>
+    <CircularProgress size={28} />
+  </Box>
+);
+
+const lazyPage = (importer) => {
+  const C = lazy(importer);
+  const Wrapped = (props) => (
+    <Suspense fallback={<PageFallback />}>
+      <C {...props} />
+    </Suspense>
+  );
+  return Wrapped;
+};
+
+const Dashboard = lazyPage(() => import('./dashboard/Dashboard'));
+const ApiKeys = lazyPage(() => import('./pages/ApiKeys'));
+const Prompt = lazyPage(() => import('./pages/Prompt'));
+const Retention = lazyPage(() => import('./pages/Retention'));
+const RetentionAgent = lazyPage(() => import('./pages/RetentionAgent'));
+const Settings = lazyPage(() => import('./pages/Settings'));
+const SiteMap = lazyPage(() => import('./pages/SiteMap'));
+const Structure = lazyPage(() => import('./pages/Structure'));
+const Translations = lazyPage(() => import('./pages/Translations'));
 
 // One store instance for the app: a localStorage store whose reset() preserves
 // the theme + sidebar preference across logout (see ./store).
@@ -98,26 +139,17 @@ const CollapsibleSection = ({ id, label, children }) => {
   );
 };
 
-// Two retention tabs are bundled under a parent's sidebar entry (like the
-// Support "Prompt" page): the Setup guide lives under Telegram config, and the
-// Prompt variables under Prompt. So those parent entries stay highlighted while
-// their sub-tab is active.
-const RETENTION_TAB_PARENT = { guide: 'config', variables: 'prompt' };
-
-// A retention sub-tab as its own sidebar entry: navigates to /retention?tab=…
-// and highlights when that tab (or one bundled under it) is the active one (the
-// page reads ?tab=).
-const RetentionSubItem = ({ tab, label, icon }) => {
+// A generic sidebar sub-entry (ListItemButton — the SAME renderer for every
+// custom entry, so no item can drift out of line with its siblings). `to` is a
+// path (+ optional query); `active` is an exact matcher over the location so
+// e.g. /retention-agent can never light up a /retention?tab=… sibling.
+const SubItem = ({ to, label, icon, active }) => {
   const navigate = useNavigate();
   const location = useLocation();
-  const current = new URLSearchParams(location.search).get('tab') || 'config';
-  const active =
-    location.pathname.startsWith('/retention') &&
-    (RETENTION_TAB_PARENT[current] || current) === tab;
   return (
     <ListItemButton
-      selected={active}
-      onClick={() => navigate(`/retention?tab=${tab}`)}
+      selected={active(location)}
+      onClick={() => navigate(to)}
       sx={{ pl: 4, py: { xs: 1, md: 0.4 } }}
     >
       <ListItemIcon sx={{ minWidth: 34 }}>{icon}</ListItemIcon>
@@ -127,6 +159,45 @@ const RetentionSubItem = ({ tab, label, icon }) => {
     </ListItemButton>
   );
 };
+
+// Two retention tabs are bundled under a parent's sidebar entry (like the
+// Support "Prompt" page): the Setup guide lives under Telegram config, and the
+// Prompt variables under Prompt. So those parent entries stay highlighted while
+// their sub-tab is active.
+const RETENTION_TAB_PARENT = { guide: 'config', variables: 'prompt' };
+
+// A retention sub-tab as its own sidebar entry: navigates to /retention?tab=…
+// and highlights when that tab (or one bundled under it) is the active one (the
+// page reads ?tab=). The pathname match is EXACT — '/retention-agent' also
+// startsWith '/retention', which used to light up "Telegram config" whenever
+// the Proactive agent page was open.
+const RetentionSubItem = ({ tab, label, icon }) => (
+  <SubItem
+    to={`/retention?tab=${tab}`}
+    label={label}
+    icon={icon}
+    active={(location) => {
+      if (location.pathname !== '/retention') return false;
+      const current = new URLSearchParams(location.search).get('tab') || 'config';
+      return (RETENTION_TAB_PARENT[current] || current) === tab;
+    }}
+  />
+);
+
+// A settings surface entry: /settings?module=… — matched on the module param
+// (three sidebar sections each link their own module of the same page).
+const SettingsSubItem = ({ module, label }) => (
+  <SubItem
+    to={`/settings?module=${module}`}
+    label={label}
+    icon={<SettingsIcon fontSize="small" />}
+    active={(location) => {
+      if (location.pathname !== '/settings') return false;
+      const m = new URLSearchParams(location.search).get('module') || 'core';
+      return m === module;
+    }}
+  />
+);
 
 /**
  * The sidebar in three collapsible sections: the support-chat surface, the
@@ -143,7 +214,7 @@ const AppMenu = () => {
     // differs, so they must be normalized to ONE look. The catch: RA's
     // Menu.ResourceItem / Menu.Item (MenuItemLink) render the label as a bare
     // <Typography variant="inherit"> directly inside .MuiMenuItem-root — NOT a
-    // ListItemText — while the retention sub-items (ListItemButton) render a
+    // ListItemText — while the custom sub-items (ListItemButton) render a
     // .MuiListItemText-primary. A rule that targets only one of those leaves the
     // column two-toned. So every rule below is written to cover BOTH the MenuItem
     // label and the ListItemText label. Section headers keep their overline
@@ -155,7 +226,7 @@ const AppMenu = () => {
         '& .MuiListItemIcon-root': { minWidth: 34, color: 'text.secondary' },
         // One inactive label size + colour. .MuiMenuItem-root covers the RA
         // links (label is an inheriting Typography), .MuiListItemText-primary
-        // covers the retention sub-items; both to text.secondary so the whole
+        // covers the custom sub-items; both to text.secondary so the whole
         // inactive column is a single tone (RA's default, matching Dashboard).
         '& .MuiMenuItem-root': { fontSize: '0.875rem', color: 'text.secondary' },
         '& .MuiListItemText-primary:not(.MuiTypography-overline)': {
@@ -164,7 +235,7 @@ const AppMenu = () => {
         },
         // Active/selected entry — same accent for every source. RA marks the
         // active link with .RaMenuItemLink-active on the MenuItem (its inheriting
-        // label picks up the colour); the retention sub-item uses .Mui-selected
+        // label picks up the colour); the custom sub-item uses .Mui-selected
         // on the ListItemButton (colour pinned on its ListItemText). Cover both,
         // label + icon, so the highlight reads identically everywhere.
         '& .RaMenuItemLink-active': { color: 'primary.main', fontWeight: 600 },
@@ -176,54 +247,61 @@ const AppMenu = () => {
           { color: 'primary.main' },
       }}
     >
-      <Menu.DashboardItem primaryText="Dashboard" />
+      <Menu.DashboardItem primaryText={t('Dashboard')} />
 
-      <CollapsibleSection id="support" label="Support chat">
+      <CollapsibleSection id="support" label={t('Support chat')}>
         <Menu.ResourceItem name="sessions" />
         <Menu.ResourceItem name="unresolved" />
         <Menu.ResourceItem name="kb" />
-        <Menu.Item to="/site-map" primaryText="Site map" leftIcon={<LinkIcon />} />
-        <Menu.Item to="/prompt" primaryText="Prompt" leftIcon={<TuneIcon />} />
+        <Menu.Item to="/site-map" primaryText={t('Site map')} leftIcon={<LinkIcon />} />
+        <Menu.Item to="/prompt" primaryText={t('Prompt')} leftIcon={<TuneIcon />} />
         <Menu.Item
           to="/translations"
-          primaryText="Translations"
+          primaryText={t('Translations')}
           leftIcon={<TranslateIcon />}
         />
+        <SettingsSubItem module="support" label={t('Chat settings')} />
         {/* The combined dashboard narrowed to the support block. */}
         <Menu.Item
           to="/?module=support"
-          primaryText="Analytics"
+          primaryText={t('Analytics')}
           leftIcon={<InsightsIcon />}
         />
       </CollapsibleSection>
 
-      <CollapsibleSection id="retention" label="Telegram · Retention">
+      <CollapsibleSection id="retention" label={t('Telegram · Retention')}>
         {/* Setup guide is a sub-tab of Telegram config; Prompt variables a
             sub-tab of Prompt — so neither gets its own sidebar entry. */}
-        <RetentionSubItem tab="config" label="Telegram config" icon={<TelegramIcon fontSize="small" />} />
-        <RetentionSubItem tab="kb" label="Retention KB" icon={<LibraryBooksIcon fontSize="small" />} />
-        <RetentionSubItem tab="prompt" label="Prompt" icon={<TuneIcon fontSize="small" />} />
-        <RetentionSubItem tab="photos" label="Media" icon={<PhotoLibraryIcon fontSize="small" />} />
-        <RetentionSubItem tab="managers" label="Managers" icon={<SupportAgentIcon fontSize="small" />} />
-        {/* The proactive agent — the event-driven regime that writes first;
-            a full page of its own (enable + tune in Settings → Retention bot). */}
-        <Menu.Item
+        <RetentionSubItem tab="config" label={t('Telegram config')} icon={<TelegramIcon fontSize="small" />} />
+        <RetentionSubItem tab="kb" label={t('Retention KB')} icon={<LibraryBooksIcon fontSize="small" />} />
+        <RetentionSubItem tab="prompt" label={t('Prompt')} icon={<TuneIcon fontSize="small" />} />
+        <RetentionSubItem tab="photos" label={t('Media')} icon={<PhotoLibraryIcon fontSize="small" />} />
+        <RetentionSubItem tab="managers" label={t('Managers')} icon={<SupportAgentIcon fontSize="small" />} />
+        {/* The proactive agent — the event-driven regime that writes first.
+            Rendered by the SAME SubItem as its siblings so it aligns with them
+            (the old Menu.Item carried different padding and sat out of line). */}
+        <SubItem
           to="/retention-agent"
-          primaryText="Proactive agent"
-          leftIcon={<SmartToyIcon />}
+          label={t('Proactive agent')}
+          icon={<SmartToyIcon fontSize="small" />}
+          active={(location) =>
+            location.pathname === '/retention-agent' ||
+            location.pathname === '/retention-v2'
+          }
         />
-        <RetentionSubItem tab="chats" label="Conversations" icon={<ForumIcon fontSize="small" />} />
-        <RetentionSubItem tab="analytics" label="Analytics" icon={<InsightsIcon fontSize="small" />} />
+        <SettingsSubItem module="retention" label={t('Bot settings')} />
+        <RetentionSubItem tab="chats" label={t('Conversations')} icon={<ForumIcon fontSize="small" />} />
+        <RetentionSubItem tab="analytics" label={t('Analytics')} icon={<InsightsIcon fontSize="small" />} />
       </CollapsibleSection>
 
-      <CollapsibleSection id="system" label="System">
-        <Menu.Item to="/structure" primaryText="Structure" leftIcon={<AccountTreeIcon />} />
-        <Menu.Item to="/settings" primaryText="Settings" leftIcon={<SettingsIcon />} />
+      <CollapsibleSection id="system" label={t('System')}>
+        <Menu.Item to="/structure" primaryText={t('Structure')} leftIcon={<AccountTreeIcon />} />
+        <SettingsSubItem module="core" label={t('Settings')} />
         {/* User management is admin-only server-side (403 for managers) —
             hide the entry instead of showing a dead link. */}
         {permissions === 'admin' && <Menu.ResourceItem name="users" />}
         {permissions === 'admin' && (
-          <Menu.Item to="/api-keys" primaryText="API keys" leftIcon={<VpnKeyIcon />} />
+          <Menu.Item to="/api-keys" primaryText={t('API keys')} leftIcon={<VpnKeyIcon />} />
         )}
       </CollapsibleSection>
     </Menu>
@@ -240,6 +318,7 @@ const App = () => (
   <Admin
     dataProvider={dataProvider}
     authProvider={authProvider}
+    i18nProvider={i18nProvider}
     store={store}
     loginPage={LoginPage}
     dashboard={Dashboard}
@@ -252,20 +331,20 @@ const App = () => (
   >
     <Resource
       name="sessions"
-      options={{ label: 'Conversations' }}
+      options={{ label: t('Conversations') }}
       list={ConversationList}
       show={ConversationShow}
       icon={ForumIcon}
     />
     <Resource
       name="unresolved"
-      options={{ label: 'Escalations' }}
+      options={{ label: t('Escalations') }}
       list={EscalationList}
       icon={ReportProblemIcon}
     />
     <Resource
       name="kb"
-      options={{ label: 'Knowledge base' }}
+      options={{ label: t('Knowledge base') }}
       list={KbList}
       edit={KbEdit}
       create={KbCreate}
@@ -279,7 +358,7 @@ const App = () => (
     />
     <Resource
       name="users"
-      options={{ label: 'Users' }}
+      options={{ label: t('Users') }}
       list={UserList}
       edit={UserEdit}
       create={UserCreate}

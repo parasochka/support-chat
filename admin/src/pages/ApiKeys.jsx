@@ -26,6 +26,7 @@ import Typography from '@mui/material/Typography';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { API_URL, httpClient } from '../httpClient';
 import useIsMobile from '../lib/useIsMobile';
+import { t } from '../i18n';
 
 const ROLE_CHOICES = [
   ['admin', 'admin (read + write)'],
@@ -80,9 +81,9 @@ const ApiKeys = () => {
   if (permissions !== 'admin') {
     return (
       <Box sx={{ p: 2 }}>
-        <Title title="API keys" />
+        <Title title={t('API keys')} />
         <Alert severity="info" sx={{ maxWidth: 640 }}>
-          <AlertTitle>Admins only</AlertTitle>
+          <AlertTitle>{t('Admins only')}</AlertTitle>
           Service API keys are credentials — only admin accounts may view or
           manage them.
         </Alert>
@@ -164,7 +165,7 @@ const ApiKeys = () => {
 
   return (
     <Box sx={{ p: 2, maxWidth: 1100 }}>
-      <Title title="API keys" />
+      <Title title={t('API keys')} />
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         Service keys for machine consumers of the admin API (partner
         back-offices, BI, CI). A key behaves like an admin account with exactly
@@ -181,7 +182,7 @@ const ApiKeys = () => {
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <TextField
               size="small"
-              label="Name (what uses it)"
+              label={t('Name (what uses it)')}
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
               sx={{ flex: '1 1 220px', maxWidth: 360 }}
@@ -189,7 +190,7 @@ const ApiKeys = () => {
             <TextField
               select
               size="small"
-              label="Role"
+              label={t('Role')}
               value={form.role}
               onChange={(e) => setForm({ ...form, role: e.target.value })}
               sx={{ minWidth: 200 }}
@@ -203,7 +204,7 @@ const ApiKeys = () => {
             <TextField
               select
               size="small"
-              label="Scope"
+              label={t('Scope')}
               value={form.scope_type}
               onChange={(e) =>
                 setForm({ ...form, scope_type: e.target.value, partner_id: '', product_id: '' })
@@ -220,7 +221,7 @@ const ApiKeys = () => {
               <TextField
                 select
                 size="small"
-                label="Partner"
+                label={t('Partner')}
                 value={form.partner_id}
                 onChange={(e) => setForm({ ...form, partner_id: e.target.value })}
                 sx={{ minWidth: 220 }}
@@ -236,7 +237,7 @@ const ApiKeys = () => {
               <TextField
                 select
                 size="small"
-                label="Product"
+                label={t('Product')}
                 value={form.product_id}
                 onChange={(e) => setForm({ ...form, product_id: e.target.value })}
                 sx={{ minWidth: 220 }}

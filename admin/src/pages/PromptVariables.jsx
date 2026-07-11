@@ -12,6 +12,8 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import { API_URL, httpClient } from '../httpClient';
 import { withProduct } from '../productScope';
+import TextStats from '../components/TextStats';
+import { t } from '../i18n';
 
 const PROFILE_FIELDS = [
   'id',
@@ -155,6 +157,18 @@ const PromptVariables = () => {
           <Typography variant="h6" gutterBottom>
             Prompt variables
           </Typography>
+          <Alert severity="info" sx={{ mb: 1 }}>
+            <b>{t('English only')}.</b>{' '}
+            {t(
+              'Model-facing content must be in English — the backend rejects other scripts. Player-facing copy belongs in Translations.'
+            )}
+          </Alert>
+          {/* Combined volume of the values as they will render into the prompt
+              (an empty field contributes its default). */}
+          <TextStats
+            label="Total"
+            text={vars.map((v) => values[v.key] || v.default || '')}
+          />
           {vars.map((v) => (
             <TextField
               key={v.key}

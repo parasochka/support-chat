@@ -560,7 +560,7 @@ def _patch_send_env(monkeypatch, sent, persisted):
             pass
 
         async def send_message_verbose(self, chat_id, text, parse_mode=None,
-                                       reply_markup=None):
+                                       reply_markup=None, **kwargs):
             sent["text"] = text
             return {"message_id": 1}, None, None
 

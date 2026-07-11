@@ -28,6 +28,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { API_URL, httpClient } from '../httpClient';
 import { withProduct } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
+import { t } from '../i18n';
 
 /**
  * The proactive agent (event-driven) — the one regime that writes to players
@@ -153,24 +154,24 @@ const StatusHeader = ({ status, onRefresh, onRun, canWrite, running }) => {
       <CardContent>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
           <Chip
-            label={status.v2_enabled ? 'Agent ENABLED' : 'Agent DISABLED (no proactive messages)'}
+            label={status.v2_enabled ? t('Agent ENABLED') : t('Agent DISABLED (no proactive messages)')}
             color={status.v2_enabled ? 'success' : 'default'}
           />
           <Chip
-            label={status.v2_dry_run ? 'DRY-RUN (decides, never sends)' : 'LIVE sending'}
+            label={status.v2_dry_run ? t('DRY-RUN (decides, never sends)') : t('LIVE sending')}
             color={status.v2_dry_run ? 'info' : 'warning'}
           />
           <Chip
-            label={`today: ${fmtCost(status.cost_today_usd)} / budget ${
-              status.daily_budget_usd ? `$${status.daily_budget_usd}` : 'none'
+            label={`${t('today')}: ${fmtCost(status.cost_today_usd)} / ${t('budget')} ${
+              status.daily_budget_usd ? `$${status.daily_budget_usd}` : t('none')
             }`}
           />
-          <Chip label={`queued events: ${status.queued_events}`} />
+          <Chip label={`${t('queued events')}: ${status.queued_events}`} />
           <Box sx={{ flex: 1 }} />
           <Button size="small" startIcon={<RefreshIcon />} onClick={onRefresh}>
-            Refresh
+            {t('Refresh')}
           </Button>
-          <Tooltip title="Drain the event queue through the pipeline now (the worker does the same on its timer).">
+          <Tooltip title={t('Drain the event queue through the pipeline now (the worker does the same on its timer).')}>
             <span>
               <Button
                 size="small"
@@ -179,7 +180,7 @@ const StatusHeader = ({ status, onRefresh, onRun, canWrite, running }) => {
                 onClick={onRun}
                 disabled={!canWrite || running || !status.v2_enabled}
               >
-                {running ? 'Running…' : 'Process queue now'}
+                {running ? t('Running…') : t('Process queue now')}
               </Button>
             </span>
           </Tooltip>
@@ -193,11 +194,11 @@ const StatusHeader = ({ status, onRefresh, onRun, canWrite, running }) => {
             color={status.scheduler_enabled ? 'success' : 'error'}
             label={
               status.scheduler_enabled
-                ? `worker: running every ${status.sweep_interval_sec}s`
-                : 'worker: OFF (RETENTION_SCHEDULER_ENABLED=0 in deploy env — only «Process queue now» works)'
+                ? `${t('worker: running every')} ${status.sweep_interval_sec}s`
+                : t('worker: OFF (RETENTION_SCHEDULER_ENABLED=0 in deploy env — only «Process queue now» works)')
             }
           />
-          <Chip size="small" variant="outlined" label={`last event: ${fmtDT(act.last_event_at)}`} />
+          <Chip size="small" variant="outlined" label={`${t('last event')}: ${fmtDT(act.last_event_at)}`} />
           <Chip size="small" variant="outlined" label={`last processed: ${fmtDT(act.last_processed_at)}`} />
           <Chip size="small" variant="outlined" label={`last decision: ${fmtDT(act.last_decision_at)}`} />
           <Chip
@@ -300,7 +301,7 @@ const Simulator = ({ status, onDone, canWrite }) => {
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
           <TextField
             select
-            label="Event"
+            label={t('Event')}
             size="small"
             value={eventName}
             onChange={(e) => pickEvent(e.target.value)}
@@ -314,7 +315,7 @@ const Simulator = ({ status, onDone, canWrite }) => {
           </TextField>
           <TextField
             select
-            label="Telegram recipient"
+            label={t('Telegram recipient')}
             size="small"
             value={tgUserId}
             onChange={(e) => pickTgUser(e.target.value)}
@@ -334,7 +335,7 @@ const Simulator = ({ status, onDone, canWrite }) => {
             ))}
           </TextField>
           <TextField
-            label="Player id"
+            label={t('Player id')}
             size="small"
             value={playerId}
             onChange={(e) => setPlayerId(e.target.value)}
@@ -342,14 +343,14 @@ const Simulator = ({ status, onDone, canWrite }) => {
             placeholder="the casino player_id"
           />
           <TextField
-            label="Payload (JSON)"
+            label={t('Payload (JSON)')}
             size="small"
             value={payload}
             onChange={(e) => setPayload(e.target.value)}
             sx={{ flex: 1 }}
           />
           <Button variant="contained" onClick={send} disabled={busy || !canWrite || !playerId.trim()}>
-            {busy ? 'Sending…' : 'Inject event'}
+            {busy ? t('Sending…') : t('Inject event')}
           </Button>
         </Stack>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
@@ -668,7 +669,7 @@ const GuideTab = ({ status }) => {
   return (
     <Card>
       <CardContent>
-        <Section title="What the proactive agent is">
+        <Section title={t('What the proactive agent is')}>
           <P>
             An event-driven agent that reacts to what just happened at the
             casino. A canonical event (deposit, big loss, level-up, …)
@@ -725,7 +726,7 @@ const GuideTab = ({ status }) => {
         </Section>
         <Divider sx={{ mb: 2 }} />
 
-        <Section title="Turning it on and off">
+        <Section title={t('Turning it on and off')}>
           <Box component="ul" sx={{ pl: 3, my: 0 }}>
             <LI>
               <b>Agent enabled</b> (Settings → Retention bot → «Proactive
@@ -754,7 +755,7 @@ const GuideTab = ({ status }) => {
         </Section>
         <Divider sx={{ mb: 2 }} />
 
-        <Section title="Where the voice, persona and content come from">
+        <Section title={t('Where the voice, persona and content come from')}>
           <Box component="ul" sx={{ pl: 3, my: 0 }}>
             <LI>
               <b>Persona &amp; tone of voice</b> — Retention → Prompt
@@ -791,7 +792,7 @@ const GuideTab = ({ status }) => {
         </Section>
         <Divider sx={{ mb: 2 }} />
 
-        <Section title="Which events wake the agent">
+        <Section title={t('Which events wake the agent')}>
           <P>
             <b>Decision-worthy</b> (the agent is consulted, a ledger row
             appears):{' '}
@@ -818,7 +819,7 @@ const GuideTab = ({ status }) => {
         </Section>
         <Divider sx={{ mb: 2 }} />
 
-        <Section title="Guards — how often the agent may write to one player">
+        <Section title={t('Guards — how often the agent may write to one player')}>
           <P>
             Deterministic rails the model can never override. They are the
             knobs that decide the send frequency — all editable live in
@@ -861,7 +862,7 @@ const GuideTab = ({ status }) => {
         </Section>
         <Divider sx={{ mb: 2 }} />
 
-        <Section title="How to test, step by step">
+        <Section title={t('How to test, step by step')}>
           <Box component="ol" sx={{ pl: 3, my: 0 }}>
             <LI>
               Select the product in the header switcher, then in Settings →
@@ -915,7 +916,7 @@ const GuideTab = ({ status }) => {
         </Section>
         <Divider sx={{ mb: 2 }} />
 
-        <Section title="Costs">
+        <Section title={t('Costs')}>
           <P>
             Every decision is one cheap model call; a sent message adds one
             generation call. Both land in <code>ai_interaction_logs</code> and
@@ -995,7 +996,7 @@ const RetentionAgentInner = () => {
 
   return (
     <Box sx={{ p: 2 }}>
-      <Title title="Proactive agent" />
+      <Title title={t('Proactive agent')} />
       {status && !status.v2_enabled && (
         <Alert severity="info" sx={{ mb: 2 }}>
           The agent is OFF for this product — no proactive messages are sent
@@ -1021,10 +1022,10 @@ const RetentionAgentInner = () => {
         allowScrollButtonsMobile
         sx={{ mb: 2 }}
       >
-        <Tab value="events" label={`Events${events ? ` (${events.total})` : ''}`} />
-        <Tab value="decisions" label={`Decisions${decisions ? ` (${decisions.total})` : ''}`} />
-        <Tab value="logs" label={`System log${logs ? ` (${logs.total})` : ''}`} />
-        <Tab value="guide" label="How it works & testing" />
+        <Tab value="events" label={`${t('Events')}${events ? ` (${events.total})` : ''}`} />
+        <Tab value="decisions" label={`${t('Decisions')}${decisions ? ` (${decisions.total})` : ''}`} />
+        <Tab value="logs" label={`${t('System log')}${logs ? ` (${logs.total})` : ''}`} />
+        <Tab value="guide" label={t('How it works & testing')} />
       </Tabs>
       {tab === 'events' && (
         <EventsTab
@@ -1059,7 +1060,7 @@ const RetentionAgentInner = () => {
 };
 
 const RetentionAgent = () => (
-  <RequireProduct title="Proactive agent">
+  <RequireProduct title={t('Proactive agent')}>
     <RetentionAgentInner />
   </RequireProduct>
 );

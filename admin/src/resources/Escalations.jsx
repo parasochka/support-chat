@@ -16,11 +16,12 @@ import Alert from '@mui/material/Alert';
 import MobileList from '../components/MobileList';
 import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
+import { t } from '../i18n';
 
 const filters = [
-  <TextInput key="topic" source="topic" label="Topic slug" alwaysOn />,
-  <DateInput key="from" source="from" label="From" />,
-  <DateInput key="to" source="to" label="To" />,
+  <TextInput key="topic" source="topic" label={t('Topic slug')} alwaysOn />,
+  <DateInput key="from" source="from" label={t('From')} />,
+  <DateInput key="to" source="to" label={t('To')} />,
 ];
 
 /**
@@ -36,17 +37,18 @@ export const EscalationList = () => {
   const isAdmin = permissions === 'admin';
   const isMobile = useIsMobile();
   return (
-    <RequireProduct title="Escalations / unresolved">
+    <RequireProduct title={t('Escalations / unresolved')}>
       <Alert severity="info" sx={{ mt: 2 }}>
-        Sessions that still need attention: escalated hand-offs and abandoned
-        open chats. Rows open the full conversation.
+        {t(
+          'Sessions that still need attention: escalated hand-offs and abandoned open chats. Rows open the full conversation.'
+        )}
       </Alert>
       <List
         resource="unresolved"
         filters={filters}
         perPage={25}
         exporter={false}
-        title="Escalations / unresolved"
+        title={t('Escalations / unresolved')}
       >
         {isMobile ? (
           <MobileList
@@ -70,17 +72,17 @@ export const EscalationList = () => {
             }}
           >
             <TextField source="topic" />
-            <TextField source="session_id" label="Session" />
-            <TextField source="lang" label="Lang" />
+            <TextField source="session_id" label={t('Session')} />
+            <TextField source="lang" label={t('Lang')} />
             <TextField source="status" />
             <BooleanField source="escalated" />
-            <NumberField source="message_count" label="Msgs" />
+            <NumberField source="message_count" label={t('Msgs')} />
             <NumberField
               source="cost_usd_total"
-              label="Cost $"
+              label={t('Cost $')}
               options={{ maximumFractionDigits: 4 }}
             />
-            <TextField source="first_message" label="First message" sx={{ display: 'block', maxWidth: 320 }} />
+            <TextField source="first_message" label={t('First message')} sx={{ display: 'block', maxWidth: 320 }} />
             <DateField source="created_at" showTime />
             {isAdmin && (
               <DeleteButton mutationMode="pessimistic" redirect={false} />

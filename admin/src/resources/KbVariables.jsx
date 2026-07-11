@@ -13,6 +13,7 @@ import RouteTabs from '../components/RouteTabs';
 import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
 import { KB_TABS } from './kbTabs';
+import { t } from '../i18n';
 
 /**
  * The admin-managed {placeholder} registry substituted into KB texts. It is
@@ -23,9 +24,9 @@ export const KbVariableList = () => {
   const isMobile = useIsMobile();
   const redirect = useRedirect();
   return (
-    <RequireProduct title="Knowledge base · variables">
+    <RequireProduct title={t('Knowledge base · variables')}>
       <RouteTabs tabs={KB_TABS} />
-      <List perPage={50} exporter={false} title="Knowledge base · variables">
+      <List perPage={50} exporter={false} title={t('Knowledge base · variables')}>
         {isMobile ? (
           <MobileList
             primaryText={(r) => r.key}
@@ -48,8 +49,8 @@ export const KbVariableList = () => {
 };
 
 export const KbVariableEdit = () => (
-  <RequireProduct title="Knowledge base · variables">
-    <Edit mutationMode="pessimistic" title="Edit KB variable">
+  <RequireProduct title={t('Knowledge base · variables')}>
+    <Edit mutationMode="pessimistic" title={t('Edit KB variable')}>
       <SimpleForm>
         <TextInput source="key" disabled />
         <TextInput source="description" fullWidth />

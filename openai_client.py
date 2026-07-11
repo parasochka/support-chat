@@ -107,6 +107,19 @@ def _pricing_for_model(model: str) -> Optional[tuple[float, float, float]]:
     return None
 
 
+def pricing_for_model(model: str) -> Optional[dict[str, float]]:
+    """Public pricing lookup for the admin UI (USD per 1M tokens), or None.
+
+    Powers the admin's token-cost counters (/admin/meta `model_pricing`). Same
+    caveat as _PRICING: verify before trusting - prices may be stale.
+    """
+    p = _pricing_for_model(model)
+    if not p:
+        return None
+    return {"input_per_1m": p[0], "cached_input_per_1m": p[1],
+            "output_per_1m": p[2]}
+
+
 # A reasoning model (the GPT-5 family) can spend the WHOLE output budget on hidden
 # reasoning and return an empty visible answer (finish_reason 'length'). When that
 # happens we retry the call once with a larger budget — at least

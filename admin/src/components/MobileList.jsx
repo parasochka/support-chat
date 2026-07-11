@@ -5,6 +5,7 @@ import ListItemText from '@mui/material/ListItemText';
 import Typography from '@mui/material/Typography';
 import CircularProgress from '@mui/material/CircularProgress';
 import Box from '@mui/material/Box';
+import { t } from '../i18n';
 
 /**
  * Compact card-style rows for phones, replacing a wide <Datagrid> that would
@@ -26,7 +27,7 @@ const MobileList = ({ primaryText, secondaryText, tertiaryText, onRowClick }) =>
   if (!data || data.length === 0) {
     return (
       <Typography color="text.secondary" sx={{ p: 2 }}>
-        No results.
+        {t('No results.')}
       </Typography>
     );
   }
