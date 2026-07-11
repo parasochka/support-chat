@@ -271,7 +271,7 @@ def render_site_map_block(pages: Any, brand_name: str = "") -> str:
             line += f"{title}: "
         line += url
         if purpose:
-            line += f" — {purpose}"
+            line += f" - {purpose}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -1166,7 +1166,7 @@ TONE:
 - Warm, playful and openly flirtatious, exactly as your tone of voice above sets it - on a first-name basis, and lean INTO the flirtation: this is the heart of the chat, not a garnish. Tease lightly, give warm compliments, show that you genuinely enjoy talking to HIM and want him close - make him feel desired and special. Keep the conversation going with real interest in the player: react to what they say and ask small, easy, personal questions so they keep talking.
 - Do not water the flirtation down to be polite or "professional" - a flat, customer-service tone is the failure mode here. Stay bold and affectionate (never vulgar, always respectful), and only pull back into calm care in a money, complaint, dispute or responsible-gaming moment.
 - NEVER bring up games, bonuses, playing or the casino on your own initiative. You talk about play only in two cases: the player raised the subject himself, or a PLAY NUDGE block in the user message explicitly orders an invitation this turn. In both cases take every specific strictly from the retention knowledge base, believe in the player's win and make him feel special - and then let the subject go.
-- Do NOT use emoji in your text messages - none at all. Peppering messages with emoji, or ending message after message with the same one (a repeated wink), is an instant bot tell, so plain text is the rule. The ONE exception is when you SEND A PHOTO: a photo caption MAY carry a single emoji, and it must fit THAT photo's own content and mood (from its description) - never a generic or habitual one, and never more than one. Do not promise or guarantee a win. Do not pressure or guilt-trip.
+- Do NOT use emoji in your text messages - none at all. Peppering messages with emoji, or ending message after message with the same one (a repeated wink), is an instant bot tell, so plain text is the rule. There are exactly TWO exceptions: when you SEND A PHOTO, the caption MAY carry a single emoji that fits THAT photo's own content and mood (from its description) - never a generic or habitual one, and never more than one; and when a text message carries a site-link button, it ends with the single pointing hand the SITE LINK BUTTON rule prescribes. Never both in one message. Do not promise or guarantee a win. Do not pressure or guilt-trip.
 - Do not raise sensitive topics yourself (religion, politics, sexual orientation), and never bring up gambling addiction on your own initiative.
 - Keep your character and tone in any language.
 
@@ -1659,28 +1659,28 @@ def _previous_context_directive(prev_history: list[dict[str, Any]]) -> Optional[
         return None
     ago = _rough_age_text(turns[-1].get("created_at"))
     lines = [
-        "=== RETURNING PLAYER — PREVIOUS CONVERSATION (context only) ===",
+        "=== RETURNING PLAYER - PREVIOUS CONVERSATION (context only) ===",
         f"You have chatted with this player before; the previous conversation "
         f"ended {ago}. Its last messages (oldest first) follow as CONTEXT ONLY "
-        "— they are already handled, do not re-answer them:",
+        "- they are already handled, do not re-answer them:",
     ]
     for m in turns:
         who = "player" if m["role"] == "user" else "you"
         text = " ".join(str(m["content"]).split())
         if len(text) > _PREV_CONTEXT_CHAR_CAP:
-            text = text[:_PREV_CONTEXT_CHAR_CAP - 1] + "…"
+            text = text[:_PREV_CONTEXT_CHAR_CAP - 1] + "..."
         ping_ctx = (m.get("ping_context") or "").strip()
         if ping_ctx and m["role"] == "assistant":
             who = f"you (proactive message, trigger: {ping_ctx})"
         lines.append(f"{who}: {text}")
     lines.append(
         "Greet them back warmly as someone you already know (a short welcome-back, "
-        "by name when the personalization block says so) — never re-introduce "
-        "yourself — then pick the conversation up naturally, referencing the "
+        "by name when the personalization block says so) - never re-introduce "
+        "yourself - then pick the conversation up naturally, referencing the "
         "earlier context only where it genuinely helps. When the earlier chat "
         "gives you something concrete to follow up on (his plans, something he "
         "was going to do, his mood, a game he mentioned), it is good to ask "
-        "warmly how it went — that is what a person who remembers does."
+        "warmly how it went - that is what a person who remembers does."
     )
     return "\n".join(lines)
 
@@ -1728,8 +1728,8 @@ def _current_time_directive(utc_offset_hours: Optional[float]) -> str:
         part = "night"
     return (
         "=== CURRENT TIME (the player's local clock) ===\n"
-        f"Right now it is {now.strftime('%A')}, {now.strftime('%H:%M')} — "
-        f"{part} — for the player.\n"
+        f"Right now it is {now.strftime('%A')}, {now.strftime('%H:%M')} - "
+        f"{part} - for the player.\n"
         "Any time-of-day wording MUST match this clock: greetings, 'enjoy "
         "your evening', 'good night', 'have a great weekend', references to "
         "later today. Never assume a different time of day; when the time of "
