@@ -65,12 +65,24 @@ def test_resolve_site_link_empty_site_map(monkeypatch):
 def test_play_nudge_due_cadence(monkeypatch):
     monkeypatch.setattr(settings, "retention",
                         lambda: {"play_reminder_every_msgs": 5})
-    # message_count is the counter BEFORE this reply: reply N = count+1.
-    assert [chat_service.play_nudge_due(n) for n in range(0, 11)] == [
-        False, False, False, False, True,   # counts 0..4 -> replies 1..5
-        False, False, False, False, True,   # replies 6..10
-        False,
-    ]
+    # message_count is the counter BEFORE this reply: reply N = count+1. The
+    # cadence DRIFTS ±2 around the knob (a strictly periodic every-5th nudge is
+    # a clockable pattern), so pin the schedule's PROPERTIES, not positions:
+    # deterministic per session, never the first reply, gaps within every±2.
+    fired = [n + 1 for n in range(0, 60)
+             if chat_service.play_nudge_due(n, "sess-1")]
+    again = [n + 1 for n in range(0, 60)
+             if chat_service.play_nudge_due(n, "sess-1")]
+    assert fired == again                      # stateless + reproducible
+    assert fired and fired[0] > 1              # never the opening reply
+    assert 3 <= fired[0] <= 7
+    gaps = [b - a for a, b in zip(fired, fired[1:])]
+    assert gaps and all(3 <= g <= 7 for g in gaps)
+    # The jitter is keyed on session_id + cycle: schedules differ between
+    # sessions or at least vary their gaps within one.
+    other = [n + 1 for n in range(0, 60)
+             if chat_service.play_nudge_due(n, "sess-2")]
+    assert other != fired or len(set(gaps)) > 1
 
 
 def test_play_nudge_zero_disables(monkeypatch):

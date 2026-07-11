@@ -46,6 +46,18 @@ _product_cache: dict[int, dict[str, Any]] = {}
 SETTING_KEYS = ("escalation", "language", "antispam", "model", "general",
                 "retention")
 
+# Fields that are meaningful ONLY at the GLOBAL layer: they are read by
+# deploy-wide machinery that runs outside any product scope (the agent worker
+# loop, the request-body middleware, admin-token minting), so a product-layer
+# override of them can never apply. The group resolution below IGNORES them on
+# the product layer and the admin write strips them from product-layer saves —
+# otherwise the Settings editor happily stores a value the runtime never reads
+# (the "I changed the worker interval and nothing happened" trap).
+GLOBAL_ONLY_FIELDS: dict[str, frozenset[str]] = {
+    "retention": frozenset({"worker_interval_sec"}),
+    "general": frozenset({"admin_token_ttl_min", "body_max_bytes"}),
+}
+
 # Retention-bot defaults (photo progression, limits, proactivity, VIP tiers).
 # The ordered `vip_tiers` list turns a free-text vip_level string into a numeric
 # tier ordinal (its index) so a photo's `level_min` (int) gates by tier. Every
@@ -119,7 +131,10 @@ def _group(key: str, product_id: Optional[int] = None) -> dict[str, Any]:
     if pid is not None:
         prod = (_product_cache.get(pid) or {}).get(key)
         if isinstance(prod, dict):
-            out.update(prod)
+            # Global-only fields never resolve from the product layer (a stale
+            # stored value there must not mislead the editor or the runtime).
+            g_only = GLOBAL_ONLY_FIELDS.get(key, frozenset())
+            out.update({k: v for k, v in prod.items() if k not in g_only})
     return out
 
 
@@ -420,10 +435,6 @@ def retention() -> dict[str, Any]:
         # Dry-run logs full decisions to the ledger without sending.
         "v2_enabled": db_v.get("v2_enabled", config.RETENTION_V2_ENABLED),
         "v2_dry_run": db_v.get("v2_dry_run", config.RETENTION_V2_DRY_RUN),
-        # Show the fired trigger as a chrome line in every proactive message
-        # (testing aid; turn off for production players).
-        "v2_show_trigger": db_v.get("v2_show_trigger",
-                                    config.RETENTION_V2_SHOW_TRIGGER),
         "v2_daily_budget_usd": db_v.get("v2_daily_budget_usd",
                                         config.RETENTION_V2_DAILY_BUDGET_USD),
         "v2_loss_comfort_hours": db_v.get("v2_loss_comfort_hours",
@@ -433,6 +444,22 @@ def retention() -> dict[str, Any]:
         "v2_same_event_cooldown_hours": db_v.get(
             "v2_same_event_cooldown_hours",
             config.RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS),
+        # Humanizing send delay: an event is reacted to a random min..max
+        # seconds after it arrived (per event), never instantly — the admin
+        # «Process queue now» button bypasses it.
+        "v2_send_delay_min_sec": db_v.get(
+            "v2_send_delay_min_sec", config.RETENTION_V2_SEND_DELAY_MIN_SEC),
+        "v2_send_delay_max_sec": db_v.get(
+            "v2_send_delay_max_sec", config.RETENTION_V2_SEND_DELAY_MAX_SEC),
+        # The agent's INACTIVITY trigger (the idle rules ladder / the admin
+        # Idle pings tab). Off = the agent reacts to events only.
+        "idle_pings_enabled": db_v.get("idle_pings_enabled",
+                                       config.RETENTION_IDLE_PINGS_ENABLED),
+        # Which canonical events may wake the agent (the Decisions pipeline);
+        # everything else stays state food. None/absent = the built-in set
+        # (retention_v2.DECISION_EVENTS); bet_settled is special-cased on the
+        # loss threshold and never listed here.
+        "v2_decision_events": db_v.get("v2_decision_events"),
     }
 
 
@@ -570,11 +597,26 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "worker_interval_sec", 5, 3_600)
         _require_bool(value, "v2_enabled")
         _require_bool(value, "v2_dry_run")
-        _require_bool(value, "v2_show_trigger")
         _require_float(value, "v2_daily_budget_usd", 0.0, 10_000.0)  # 0 = no budget
         _require_int(value, "v2_loss_comfort_hours", 0, 720)
         _require_float(value, "v2_loss_high_usd", 0.0, 1_000_000.0)
         _require_int(value, "v2_same_event_cooldown_hours", 0, 720)  # 0 = off
+        _require_int(value, "v2_send_delay_min_sec", 0, 21_600)  # <= 6h
+        _require_int(value, "v2_send_delay_max_sec", 0, 21_600)
+        if ("v2_send_delay_min_sec" in value and "v2_send_delay_max_sec" in value
+                and value["v2_send_delay_max_sec"] < value["v2_send_delay_min_sec"]):
+            raise ValueError("v2_send_delay_max_sec must be >= v2_send_delay_min_sec")
+        _require_bool(value, "idle_pings_enabled")
+        if value.get("v2_decision_events") is not None:
+            import player_sync  # lazy: avoid an import cycle at module load
+            v = value["v2_decision_events"]
+            if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                raise ValueError("v2_decision_events must be a list of event names")
+            allowed = set(player_sync.CANONICAL_EVENTS) - {"bet_settled"}
+            for name in v:
+                if name not in allowed:
+                    raise ValueError(
+                        f"{name!r} is not a decision-eligible canonical event")
         if "stage_advance_msgs" in value:
             v = value["stage_advance_msgs"]
             if (not isinstance(v, list)

@@ -31,6 +31,7 @@ import PhotoLibraryIcon from '@mui/icons-material/PhotoLibrary';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import SettingsIcon from '@mui/icons-material/Settings';
 import SupportAgentIcon from '@mui/icons-material/SupportAgent';
+import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
 import TelegramIcon from '@mui/icons-material/Telegram';
 import TranslateIcon from '@mui/icons-material/Translate';
 import TuneIcon from '@mui/icons-material/Tune';
@@ -299,6 +300,8 @@ const AppMenu = () => {
             location.pathname === '/retention-v2'
           }
         />
+        {/* The agent's inactivity ladder — "quiet N days → Nika writes first". */}
+        <RetentionSubItem tab="idle" label={t('Idle pings')} icon={<NotificationsActiveIcon fontSize="small" />} />
         <SettingsSubItem module="retention" label={t('Bot settings')} />
         <RetentionSubItem tab="chats" label={t('Conversations')} icon={<ForumIcon fontSize="small" />} />
         <RetentionSubItem tab="analytics" label={t('Analytics')} icon={<InsightsIcon fontSize="small" />} />

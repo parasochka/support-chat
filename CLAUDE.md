@@ -368,8 +368,9 @@ itself under the registry-default brand) — so a new product never inherits ano
 seed so it applies immediately); (4) the **starter retention-KB document**
 (`starter_kb.STARTER_RETENTION_KB` via `db.seed_starter_retention_kb` — same brand-neutral
 English contract, seeded only when the product has no retention KB at all) so the Telegram
-bot also works out of the box. (The old item 5 — the starter ping-matrix rules — was removed
-with the v1 ping matrix; the retention agent needs no per-product rule seed.) Translations and
+bot also works out of the box; (5) the **starter idle-ping ladder**
+(`retention_idle.seed_starter_idle_rules` — the 7/14/30-day re-engagement rules, seeded only
+when the product has no rules) so quiet players are re-engaged out of the box. Translations and
 the `retention`/other settings groups need
 **no** per-product seed: their shipped defaults resolve for every product until overridden.
 `db.seed_starter_kb` is idempotent-safe: it inserts only
@@ -936,10 +937,17 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   deterministically after the model turn (`telegram_format.normalize_punctuation` in
   `chat_service` — em/en dashes → `-`, guillemet/curly quotes → straight ASCII), so the
   persisted transcript and the sent message match. **Liveliness rules (static, Layer 1)** —
-  tuned after a live transcript read like a bot: emoji are RARE (at most one, in roughly one
-  message out of 3-4, varied — a 😉 on every message is called out as a forbidden bot-tell;
-  support Nika still uses none); replies default to 1-2 short sentences with varied length and
-  rhythm (longer only when asked for a story/details); the "do you want X or Y?" two-option
+  tuned after a live transcript read like a bot: emoji in ordinary TEXT messages are **banned
+  outright** (a repeated 😉 was the loudest bot-tell; support Nika uses none either) — the ONLY
+  two allowed emoji are chrome-level exceptions with a strict priority: a PHOTO caption may end
+  with a SINGLE emoji picked from THAT photo's own content/mood, and a plain-text message
+  carrying a site-link button ends with the single 👇 hand — never both (a photo with a button
+  keeps only the caption's mood emoji; the 👇 is never added on a photo); replies default to
+  1-2 short sentences with varied length and rhythm (longer only when asked for a
+  story/details), and a reply MAY arrive as a burst of consecutive Telegram messages (blank-line
+  split in the model text, delivered as separate sends with a typing pause —
+  `retention._split_reply_parts`: usually one message, sometimes two, rarely three; an inline
+  button rides on the LAST part); the "do you want X or Y?" two-option
   closer is explicitly banned as a template, and question-ending is rationed (at most one
   message in two-three ends with a question); the ENGAGEMENT directive **bans self-initiated
   play invitations outright** — the model may talk games/bonuses ONLY when the player raises
@@ -1006,11 +1014,22 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   engagement directive — see the liveliness bullet): the **`retention.play_reminder_every_msgs`
   knob** (default 5, 0 = off; env `RETENTION_PLAY_REMINDER_EVERY_MSGS`) is the ONE pacing
   control. `chat_service.play_nudge_due` keys on the session's `message_count` (one bump per
-  persisted turn; never the very first reply), and every N-th reply carries the Layer-3
+  persisted turn; never the very first reply) and the cadence **DRIFTS ±2 around N**
+  (cumulative schedule, jitter keyed on session_id + cycle via `_nudge_jitter` — stateless,
+  reproducible, gaps always within N±2): a strictly periodic every-5th-message invitation
+  was a pattern a player could clock. The due reply carries the Layer-3
   `prompts._PLAY_NUDGE_DIRECTIVE` — explicitly framed as "the ONE permission you get to
   invite": continue the conversation normally, weave in ONE light in-context invitation to
-  play, attach the best-fitting site-map page as the button, and skip it entirely in a
-  complaint/money/just-lost/sensitive moment. Tests: `tests/test_retention_cta.py`.
+  play, attach the best-fitting site-map page as the button — **and ROTATE the
+  destination**: the attached `[[LINK:url]]` is persisted on the message row
+  (`chat_messages.link_url`) and rendered into the retention prompt history
+  ("[with this message you attached a site page button: …]",
+  `prompts._retention_history_content`), and the nudge directive orders a DIFFERENT
+  fitting page than the previous invitation (main page / casino / slots / tournaments)
+  — without the history note the model could not see which button it already sent and
+  pinned the same page every time. Skip the invitation entirely in a
+  complaint/money/just-lost/sensitive moment. Tests: `tests/test_retention_cta.py`,
+  `tests/test_naturalness.py`.
 - **Media library + file_id cache**: `retention_photos` gates by `level_min` (VIP-tier ordinal) ×
   `stage` (explicitness). **Both values are bounded to the product's real ranges on EVERY write**
   — `stage` to 1..`max_stage`, `level_min` to 0..(last tier ordinal) — whether the value is
@@ -1110,21 +1129,22 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `last_deposit_at` (ISO-8601, parsed + validated in `db.update_retention_profile`; unparsable
   values are dropped) — the agent's state resolver keys on them.
 - **Proactive contact is the RETENTION AGENT** (see the "RETENTION AGENT" section
-  below) — the one place the bot ever writes FIRST. The old v1 "ping matrix"
-  (`retention_pings.py`, admin-managed `retention_rules`, the starter ping ladder,
-  `pings_enabled`) was REMOVED; the `retention_rules` table survives only as an
-  inert FK target of historical `retention_pings.rule_id` rows. The shared send
-  machinery stayed: a proactive message goes out with the localized italic
-  `rtn_ping_header` line ("✨ A little note from {persona}", translations registry)
-  above the generated text — the header is chrome, only the model text is
+  below) — the one place the bot ever writes FIRST, with TWO triggers: casino
+  EVENTS (`retention_v2.py`) and player INACTIVITY (`retention_idle.py` — the
+  admin-managed idle rules ladder in `retention_rules`, the successor of the old
+  v1 "ping matrix"; see the agent section). The shared send
+  machinery: a proactive message goes out with the localized italic
+  `rtn_ping_header` line ("✨ Hey, it's {persona}", translations registry)
+  above the generated text — an EVENT reaction merges its localized occasion
+  phrase into that same line ("✨ Привет, это Ника! Спасибо за депозит 10 USD",
+  the `rtn_trig_*` registry keys) — the header is chrome, only the model text is
   persisted (`db.persist_ping_turn`, assistant-only atomic variant) — a validated
-  `[[LINK:url]]` site-map page rides under it as ONE inline button, every attempt
+  `[[LINK:url]]` site-map page rides under it as ONE inline button (and is
+  recorded on the message row, `chat_messages.link_url`), every attempt
   lands in the `retention_pings` ledger (+ per-player counters via
   `db.record_retention_ping`), the `/stop` opt-out (`pings_muted`; `/resume`
   re-enables) and the blocked-bot flag (`unreachable`, set on a Telegram 403,
-  cleared when the player writes again) are honoured on every send. NB: the agent
-  is event-driven — with the ladder gone there is NO idle-player re-engagement
-  until an inactivity trigger is added to the agent.
+  cleared when the player writes again) are honoured on every send.
 - **Delivery + gate knobs** (both in the hot `retention` settings group, edited in
   Telegram · Retention → Bot settings): `silent_notifications` (proactive sends go
   out with Telegram `disable_notification` — no sound on the player's phone;
@@ -1133,6 +1153,17 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   the agent's send site) and `subscription_cache_ttl_sec` (how long a positive
   `getChatMember` check is cached; 0 = re-check live every message — the old
   hardcoded 600s constant remains only as the fallback default).
+- **Temporal naturalness at the send site (`retention.py`)**: a dialogue turn
+  runs under a native Telegram **typing indicator** (`retention._typing` — a
+  task re-sending `sendChatAction` every ~4.5s while the model thinks, so a
+  long reasoning turn shows «печатает…» instead of dead silence; purely
+  cosmetic, failures never drop the reply), and a model reply carrying BLANK
+  lines is delivered as a **burst of separate messages**
+  (`retention._split_reply_parts` in `_send_ai_text`, max 3 parts, extra
+  chunks collapse into the last part; typing + a length-proportional pause
+  between parts; an inline button always rides on the LAST part; photo
+  captions are never split). The persona's RESPONSE STYLE core invites the
+  split: usually one message, sometimes two, rarely three.
 - **Telegram anti-spam gate** (`retention._handle_message`, mirrors the widget gate): per-user
   rate limit with its OWN chat-paced allowance — `antispam.check_rate_limit("tg:{pid}:{uid}",
   cfg["tg_rate_limit_max_per_user"])` (`antispam` group knob, env `TG_RATE_LIMIT_MAX_PER_USER`,
@@ -1296,10 +1327,14 @@ drainers pick up the same event.
   never amounts); `retention_v2.occasion_for` folds whitelisted non-money
   payload details into it (`level_up`→level, `class_up`→class, bonus type,
   `deposit_failed` reason — `_OCCASION_DETAIL_KEYS`). **The trigger travels
-  with the turn**: (1) with `retention.v2_show_trigger` on (ships ON — a
-  testing aid, off for production players) the sent message carries an italic
-  `rtn_ping_trigger` chrome line («⚡ Trigger: deposit_confirmed») under the
-  ping header (photo sends prepend it to the caption); (2) the trigger +
+  with the turn**: (1) the sent message ALWAYS opens with the persona header
+  + a localized human occasion phrase merged onto ONE line
+  (`retention_v2._proactive_header`: «✨ Привет, это Ника! Спасибо за депозит
+  10 USD» — the `rtn_trig_<event>` translations keys, admin-editable per
+  language; `{detail}` carries the safe payload detail and, in CHROME only,
+  the amount; a comfort touch gets the bare header, photo sends prepend the
+  line to the caption — the old raw «⚡ Trigger: …» line and its
+  `v2_show_trigger` knob were removed); (2) the trigger +
   occasion are ALWAYS persisted on the message row
   (`chat_messages.ping_context`, via `db.persist_ping_turn`), so the prompt
   history renders the proactive turn with an inline "[you sent this
@@ -1315,9 +1350,45 @@ drainers pick up the same event.
   the clock or drop the time-of-day wording" rule — without it the model
   guessed («наслаждайся вечером» sent at 10:00). Tuning the offset knob
   (Settings → Retention bot) tunes both quiet hours and this block. Only decision-worthy events wake the
-  agent (`DECISION_EVENTS`; `bet_settled` only when the loss window crosses
-  `v2_loss_high_usd`); everything else is state food, marked processed
-  silently — no model call, no ledger row.
+  agent — the set is **admin-tunable per product** (`retention.v2_decision_events`,
+  the agent page's **Triggers** tab; `None`/unset = the built-in
+  `DECISION_EVENTS`, resolved via `retention_v2.effective_decision_events`;
+  `bet_settled` stays special-cased: only when the loss window crosses
+  `v2_loss_high_usd`, never toggleable); everything else is state food, marked
+  processed silently — no model call, no ledger row (the Triggers tab explains
+  exactly this, so "why is my event not in Decisions?" is self-serve).
+  **Humanizing send delay:** an event is reacted to a per-event pseudo-random
+  `v2_send_delay_min_sec`..`v2_send_delay_max_sec` (defaults 300/900 — 5–15
+  min, ~10 avg) AFTER it arrived — an instant thank-you three seconds after a
+  deposit reads as transaction surveillance. Implemented at CLAIM time
+  (`db.claim_retention_events` skips events younger than their id-keyed
+  delay), so it survives restarts and instances; the admin «Process queue now»
+  button bypasses it (`ignore_send_delay=True`).
+- **Idle re-engagement (`retention_idle.py`)** — the agent's INACTIVITY
+  trigger: the admin-managed rules ladder in `retention_rules` («player quiet
+  N days → Nika writes first»; triggers `bot_inactivity` /
+  `casino_inactivity` / `no_deposit`, per-rule action message|photo, English
+  `intent` hint (ensure_english-guarded), VIP-tier filter, per-player
+  `cooldown_days`, priority). Swept from the SAME worker loop (called at the
+  end of `run_product_events`, self-paced ~10 min per product), bounded by the
+  SAME machinery: `db.eligible_ping_users` prefilters (subscribed / not muted
+  / not unreachable / `ping_min_gap_hours` / `ping_daily_cap`), quiet hours,
+  the daily AI budget, and **`v2_dry_run`** (a matched rule logs a
+  `trigger_kind='idle'` ledger row and sends nothing). A delivered idle ping
+  persists via `db.persist_ping_turn` with an `idle_reengagement: …`
+  ping_context, lands in BOTH ledgers (`retention_pings` with `rule_id` — the
+  per-rule cooldown reads it — and `retention_v2_decisions`), and the message
+  text comes from the normal persona ping stack (`_RETENTION_PING_TASK` idle
+  wording + `rtn_ping_header`). Per-product master switch
+  `retention.idle_pings_enabled` (hot, ships ON; env
+  `RETENTION_IDLE_PINGS_ENABLED`); NEW products are seeded with the 7/14/30
+  starter ladder (`retention_idle.seed_starter_idle_rules`, called from
+  `db.create_product`, only when the product has no rules). Admin: the
+  **Retention · Telegram → Idle pings** tab (`/retention?tab=idle` — rules
+  CRUD, enable switches, a «Run now» test sweep that skips quiet hours/pacing,
+  and the send ledger) over `GET/POST/PUT/DELETE /admin/retention/idle/rules*`,
+  `GET /admin/retention/idle/ledger`, `POST /admin/retention/idle/run`.
+  Tests: `tests/test_naturalness.py`.
 - **The decision ledger (`retention_v2_decisions`)** is the audit trail: ONE
   row per decision whatever the outcome — state snapshot, guard verdict +
   reasons, the agent's action/tone/intent/reason, dry-run flag, delivery,
@@ -1422,8 +1493,19 @@ Map of what lives where:
   `db.py` (`_row_to_admin_user` drops it).
 - **Settings** (`settings.py`, `app_settings` table): hot-reloaded runtime tuning with
   precedence `app_settings` (DB) → env → default. A sync in-process cache (populated at
-  startup, reloaded on write) is read by `antispam`/`escalation`/`openai_client`/`language`/
-  `auth`/api; writes validate hard and log `setting_updated`. Groups: `escalation`
+  startup, reloaded on write, and **re-pulled every 60s** by `main._settings_refresh_loop`
+  so a write made by another instance — or directly in the DB — applies without a restart)
+  is read by `antispam`/`escalation`/`openai_client`/`language`/
+  `auth`/api; writes validate hard and log `setting_updated`. **GLOBAL-ONLY fields**
+  (`settings.GLOBAL_ONLY_FIELDS`: `retention.worker_interval_sec`,
+  `general.admin_token_ttl_min`, `general.body_max_bytes`) are read by deploy-wide
+  machinery that runs OUTSIDE any product scope (the agent worker loop, admin-token
+  minting, the body-cap middleware), so a product-layer override of them can never
+  apply — `_group()` ignores them on the product layer, `PUT /admin/settings/{key}`
+  strips them from product-layer saves (self-healing older stored junk on the next
+  save), and the SPA locks the field with a "switch to All products" hint when a
+  product is selected. This fixed «I changed the worker interval on a product and
+  nothing happened». Groups: `escalation`
   (`high_risk_keywords`, `human_request_keywords` — content tuning, so its ONLY editor is the
   Prompt → Prompt variables sub-tab; the Settings tab skips this group to avoid a duplicate
   editor. `max_messages_per_session` moved to `general`; a legacy `escalation` override is still

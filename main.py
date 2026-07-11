@@ -69,6 +69,21 @@ def _warn_insecure_config() -> None:
         )
 
 
+_SETTINGS_REFRESH_SEC = 60
+
+
+async def _settings_refresh_loop() -> None:
+    """Re-pull the settings caches from the DB every minute (multi-instance)."""
+    while True:
+        await asyncio.sleep(_SETTINGS_REFRESH_SEC)
+        try:
+            await settings.reload()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a transient DB error must not kill the loop
+            log.exception("settings_refresh_failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Starting %s: init_db", config.SERVICE_NAME)
@@ -88,14 +103,22 @@ async def lifespan(app: FastAPI):
     if config.RETENTION_SCHEDULER_ENABLED:
         import retention_v2
         agent_task = asyncio.create_task(retention_v2.scheduler_loop())
+    # Periodic settings-cache refresh: the in-process cache is reloaded on a
+    # local admin write, but a write made by ANOTHER instance (or directly in
+    # the DB) was invisible until restart — the "I changed a setting and
+    # nothing happened" failure on multi-instance deployments. Two cheap
+    # SELECTs a minute.
+    refresh_task = asyncio.create_task(_settings_refresh_loop())
     log.info("Startup complete")
     try:
         yield
     finally:
-        if agent_task is not None:
-            agent_task.cancel()
+        for task in (agent_task, refresh_task):
+            if task is None:
+                continue
+            task.cancel()
             try:
-                await agent_task
+                await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         await db.close()

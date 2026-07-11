@@ -176,8 +176,8 @@ bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию
           engaged → photo_receivers → handoffs</code>.</td></tr>
   <tr><td><span class="tag get">GET</span><code>/admin/retention/timeseries</code></td>
       <td>Дневные ряды: сообщения, активные игроки, фото, пинги, стоимость.</td></tr>
-  <tr><td><span class="tag get">GET</span><code>/admin/retention/pings</code></td>
-      <td>Леджер проактивных пингов: кому, каким правилом, статус, стоимость.</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/retention/idle/ledger</code></td>
+      <td>Леджер проактивных отправок: кому, каким правилом, статус, стоимость.</td></tr>
 </table>
 <p class="muted">Все четыре принимают <code>from</code>/<code>to</code> + опциональные
 <code>product_id</code>/<code>partner_id</code>.</p>
@@ -252,6 +252,10 @@ bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию
           заполняет описание, теги, стадию откровенности и минимальный VIP-уровень.</td></tr>
   <tr><td><span class="tag get">GET</span><code>/admin/retention/users</code> · <code>/admin/retention/sessions</code></td>
       <td>Игроки бота / Telegram-чаты (транскрипт — через общий <code>GET /admin/session/{id}</code>).</td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag post">POST</span><span class="tag put">PUT</span><span class="tag del">DEL</span><code>/admin/retention/idle/rules*</code>
+          · <span class="tag post">POST</span><code>/admin/retention/idle/run</code></td>
+      <td>Пинги неактивности: CRUD правил лестницы («молчит N дней → бот пишет первым») и ручной
+          тестовый прогон.</td></tr>
   <tr><td><span class="tag get">GET</span><span class="tag post">POST</span><span class="tag del">DEL</span><code>/admin/retention/v2/*</code></td>
       <td>Проактивный агент (событийный режим): <code>GET …/status</code> (переключатели,
           статус воркера и активность, очередь, бюджет дня, таксономия событий),

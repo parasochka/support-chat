@@ -602,7 +602,13 @@ async def put_setting(key: str, body: SettingWrite,
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if product_id is not None:
-        # Per-product operational knobs (the casino owner's layer).
+        # Per-product operational knobs (the casino owner's layer). Global-only
+        # fields are stripped: the runtime that reads them runs outside any
+        # product scope, so storing them here would be a dead write (and the
+        # whole-value upsert below also self-heals older stored junk).
+        g_only = settings_mod.GLOBAL_ONLY_FIELDS.get(key, frozenset())
+        if isinstance(validated, dict) and g_only:
+            validated = {k: v for k, v in validated.items() if k not in g_only}
         pid = await _resolve_admin_product(admin, product_id, write=True)
         await db.set_product_setting(pid, key, validated,
                                      updated_by=admin.get("email") or admin.get("role"))
