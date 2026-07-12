@@ -19,6 +19,7 @@ import prompts
 import retention_v2
 import settings
 import tenancy
+import translations
 
 
 def _iso_days_ago(days: float) -> str:
@@ -628,9 +629,24 @@ def test_trigger_phrase_details_and_punctuation():
     # …and an empty detail leaves no dangling space before punctuation.
     p = retention_v2._trigger_phrase(_evt(payload={}), "en")
     assert p == "Thank you for the deposit!"
-    # Unregistered events carry no phrase (header only).
+    # Unregistered events carry no phrase (header only) — bet_settled is the
+    # one canonical event without a rtn_trig_* key by design (its touch is
+    # the comfort path, which shows the bare header).
     assert retention_v2._trigger_phrase(
-        _evt(event_name="session_started"), "en") == ""
+        _evt(event_name="bet_settled"), "en") == ""
+
+
+def test_every_toggleable_event_has_phrase_and_occasion():
+    # The Triggers tab lets the owner enable ANY canonical event (except the
+    # special-cased bet_settled), so every one of them must ship an
+    # admin-editable header phrase (rtn_trig_*) and a model-facing occasion
+    # line — otherwise enabling it sends a bare, unexplained header.
+    registered = {k for k, _scope, _d in translations.KEYS}
+    for name in sorted(player_sync.CANONICAL_EVENTS - {"bet_settled"}):
+        assert f"rtn_trig_{name}" in registered, name
+        assert retention_v2._trigger_phrase(
+            _evt(event_name=name, payload={}), "en") != "", name
+        assert name in retention_v2._OCCASIONS, name
 
 
 def test_proactive_header_merges_on_one_line():
