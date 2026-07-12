@@ -31,12 +31,13 @@ logging.basicConfig(
 )
 log = logging.getLogger(config.SERVICE_NAME)
 
-# Mirror the application logger into the in-process buffer so the admin panel's
-# System-logs view can show recent runtime logs (the flush loop below drains it
-# into the bounded app_logs table). Captures only our own logger, not uvicorn's
-# access log — see logcapture.py.
+# Mirror the application's runtime logs into the in-process buffer so the admin
+# panel's System-logs view can show them (the flush loop below drains it into the
+# bounded app_logs table). Attaches to the ROOT logger so every app module is
+# captured (they log under their own __name__), with a denylist that keeps out
+# uvicorn's access log / third-party noise — see logcapture.py.
 import logcapture  # noqa: E402
-logcapture.install(config.SERVICE_NAME)
+logcapture.install()
 
 _FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
 _TEST_PAGE = os.path.join(_FRONTEND_DIR, "test.html")

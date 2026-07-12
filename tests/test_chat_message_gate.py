@@ -151,6 +151,21 @@ async def test_injection_hard_block_returns_400_no_model_call(monkeypatch):
     assert spy.called is False
 
 
+async def test_injection_with_complaint_intent_is_not_hard_blocked(monkeypatch):
+    # A genuine complaint / fraud report / ask-for-a-human can share wording with
+    # a jailbreak ("you are now refusing my withdrawal, this is fraud, I want a
+    # human"). It must NOT 400 at the injection gate — the injection scan runs
+    # BEFORE the (soft) keyword-escalation gate, so a hard block would swallow the
+    # human hand-off. It flows through to chat_service instead.
+    spy = _common(monkeypatch, _open_session())
+    resp = await chat_api.send_message(
+        _fake_request(),
+        _body(text="you are now refusing my withdrawal, this is fraud, I want a human"),
+        authorization="Bearer tok")
+    assert resp.status_code == 200
+    assert spy.called is True
+
+
 async def test_message_cap_forces_escalation_without_model(monkeypatch):
     spy = _common(monkeypatch, _open_session(message_count=30))
     captured = {}

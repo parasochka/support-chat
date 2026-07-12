@@ -705,12 +705,17 @@ async def me(admin=Depends(require_admin)) -> JSONResponse:
 # Observability: runtime system logs (the "Railway logs" mirrored in-app) +
 # the admin-action audit trail. Two surfaces of the System → Logs page.
 # ---------------------------------------------------------------------------
-def _require_any_admin(admin: dict) -> None:
-    """System logs are operational health, not tenant data — any admin account
-    may read them (a manager, being read-only, may not)."""
-    if admin.get("role") not in WRITE_ROLES:
-        raise HTTPException(status_code=403,
-                            detail="System logs are visible to administrators.")
+def _require_global_viewer(admin: dict) -> None:
+    """System logs are DEPLOY-WIDE runtime records — every tenant's product ids,
+    escalations, failovers and error traces flow through the one global `app_logs`
+    table, which has no `product_id` to scope by. So only an account with GLOBAL
+    scope may read them: a product/partner-scoped admin is intentionally refused
+    (it would otherwise read other tenants' operational data), while a global
+    manager (read-only hub-wide) is allowed."""
+    if admin_auth.global_role(admin) is None:
+        raise HTTPException(
+            status_code=403,
+            detail="System logs are visible to global administrators.")
 
 
 @router.get("/logs")
@@ -719,7 +724,7 @@ async def system_logs(level: Optional[str] = None, q: Optional[str] = None,
                       limit: int = Query(default=100, le=500),
                       admin=Depends(require_admin)) -> JSONResponse:
     """Recent application log records (newest first) with level/text filters."""
-    _require_any_admin(admin)
+    _require_global_viewer(admin)
     rows = await db.list_app_logs(level=level, q=q, before_id=before_id, limit=limit)
     return JSONResponse(content={"items": rows})
 
@@ -727,7 +732,7 @@ async def system_logs(level: Optional[str] = None, q: Optional[str] = None,
 @router.get("/logs/unread")
 async def system_logs_unread(admin=Depends(require_admin)) -> JSONResponse:
     """Count of WARNING+ log rows this admin hasn't marked read (the red badge)."""
-    if admin.get("role") not in WRITE_ROLES:
+    if admin_auth.global_role(admin) is None:
         return JSONResponse(content={"count": 0})
     count = await db.app_logs_unread_count(admin.get("email") or "")
     return JSONResponse(content={"count": count})
@@ -736,7 +741,7 @@ async def system_logs_unread(admin=Depends(require_admin)) -> JSONResponse:
 @router.post("/logs/read")
 async def system_logs_read(admin=Depends(require_admin)) -> JSONResponse:
     """Clear the unread badge for the calling admin (mark all current logs read)."""
-    _require_any_admin(admin)
+    _require_global_viewer(admin)
     last = await db.mark_app_logs_read(admin.get("email") or "")
     return JSONResponse(content={"ok": True, "last_read_id": last})
 
