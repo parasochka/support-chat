@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -29,6 +30,13 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 log = logging.getLogger(config.SERVICE_NAME)
+
+# Mirror the application logger into the in-process buffer so the admin panel's
+# System-logs view can show recent runtime logs (the flush loop below drains it
+# into the bounded app_logs table). Captures only our own logger, not uvicorn's
+# access log — see logcapture.py.
+import logcapture  # noqa: E402
+logcapture.install(config.SERVICE_NAME)
 
 _FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
 _TEST_PAGE = os.path.join(_FRONTEND_DIR, "test.html")
@@ -84,6 +92,33 @@ async def _settings_refresh_loop() -> None:
             log.exception("settings_refresh_failed")
 
 
+_LOG_FLUSH_SEC = 3
+_LOG_KEEP_ROWS = 5000
+_LOG_PRUNE_EVERY = 20  # prune once every N flushes (~1 min)
+
+
+async def _log_flush_loop() -> None:
+    """Drain captured log records into app_logs; periodically prune the table.
+
+    Keeps the admin System-logs view fed without the logging hot path ever
+    touching the DB (logcapture buffers in memory; this loop is the only writer).
+    """
+    ticks = 0
+    while True:
+        await asyncio.sleep(_LOG_FLUSH_SEC)
+        try:
+            items = logcapture.drain()
+            if items:
+                await db.insert_app_logs(items)
+            ticks += 1
+            if ticks % _LOG_PRUNE_EVERY == 0:
+                await db.prune_app_logs(_LOG_KEEP_ROWS)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - never let a DB hiccup kill the loop
+            pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Starting %s: init_db", config.SERVICE_NAME)
@@ -116,11 +151,13 @@ async def lifespan(app: FastAPI):
     # nothing happened" failure on multi-instance deployments. Two cheap
     # SELECTs a minute.
     refresh_task = asyncio.create_task(_settings_refresh_loop())
+    # Flush captured runtime logs into app_logs for the admin System-logs view.
+    log_task = asyncio.create_task(_log_flush_loop())
     log.info("Startup complete")
     try:
         yield
     finally:
-        for task in (agent_task, media_task, refresh_task):
+        for task in (agent_task, media_task, refresh_task, log_task):
             if task is None:
                 continue
             task.cancel()
@@ -198,6 +235,81 @@ async def body_size_cap(request: Request, call_next):
                                "send a Content-Length header."},
         )
     return await call_next(request)
+
+
+# --- Admin audit middleware -------------------------------------------------
+# Records one row per SUCCESSFUL mutating /admin/* request (who + what + which
+# product scope + when) so the admin panel's Activity log can answer "who
+# changed what?". The actor is stashed on request.state by require_admin; the
+# product is read from the ?product_id= query param or a /products/{id} path.
+# Best-effort: an audit-write failure never affects the response.
+_AUDIT_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+# Auth/session churn and the log-read marker aren't content changes worth a row.
+_AUDIT_SKIP_PATHS = {"/admin/login", "/admin/logout", "/admin/logs/read"}
+_PRODUCT_PATH_RE = re.compile(r"/products/(\d+)")
+
+# Friendly action labels by path fragment (first match wins), so the Activity
+# log reads in plain language instead of raw method+path.
+_AUDIT_LABELS = (
+    ("/admin/settings", "Updated settings"),
+    ("/admin/kb/variables", "Edited KB variables"),
+    ("/admin/kb/content", "Edited knowledge base"),
+    ("/admin/kb/topics", "Edited topics"),
+    ("/admin/translations", "Edited translations"),
+    ("/admin/prompt-variables", "Edited prompt variables"),
+    ("/admin/test-profile", "Edited test profile"),
+    ("/admin/site-map", "Edited site map"),
+    ("/admin/retention/photos", "Media library change"),
+    ("/admin/retention/kb", "Edited retention KB"),
+    ("/admin/retention/prompt-variables", "Edited retention prompt"),
+    ("/admin/retention/managers", "Managers change"),
+    ("/admin/retention/idle", "Idle-ping rules change"),
+    ("/admin/retention/v2", "Proactive-agent change"),
+    ("/admin/retention", "Retention config change"),
+    ("/admin/users", "User management"),
+    ("/admin/api-keys", "API key management"),
+    ("/admin/products", "Structure change"),
+    ("/admin/partners", "Structure change"),
+)
+
+
+def _audit_action_label(method: str, path: str) -> str:
+    for frag, label in _AUDIT_LABELS:
+        if path.startswith(frag):
+            verb = "Deleted" if method == "DELETE" else None
+            return f"{label} (deleted)" if verb else label
+    return f"{method} {path}"
+
+
+@app.middleware("http")
+async def audit_admin_actions(request: Request, call_next):
+    response = await call_next(request)
+    try:
+        path = request.url.path
+        if (request.method in _AUDIT_METHODS
+                and path.startswith("/admin/")
+                and path not in _AUDIT_SKIP_PATHS
+                and 200 <= response.status_code < 400):
+            actor = getattr(request.state, "audit_actor", None)
+            if actor and actor.get("email"):
+                pid = request.query_params.get("product_id")
+                product_id = int(pid) if pid and pid.isdigit() else None
+                if product_id is None:
+                    m = _PRODUCT_PATH_RE.search(path)
+                    if m:
+                        product_id = int(m.group(1))
+                await db.log_audit(
+                    actor_email=actor["email"],
+                    actor_role=actor.get("role"),
+                    method=request.method,
+                    path=path,
+                    action=_audit_action_label(request.method, path),
+                    product_id=product_id,
+                    status=response.status_code,
+                )
+    except Exception:  # noqa: BLE001 - auditing must never break the request
+        pass
+    return response
 
 
 # --- routers ----------------------------------------------------------------

@@ -13,6 +13,8 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import { API_URL, httpClient } from '../httpClient';
 import { withProduct } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
+import RouteTabs from '../components/RouteTabs';
+import { CONTENT_TABS } from '../contentTabs';
 import { t } from '../i18n';
 
 const emptyRow = () => ({ title: '', url: '', purpose: '' });
@@ -74,6 +76,7 @@ const SiteMapEditor = () => {
   return (
     <Box sx={{ p: 2, maxWidth: 900 }}>
       <Title title={t('Site map')} />
+      <RouteTabs tabs={CONTENT_TABS} />
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         {t(
           "Official pages of this product's website. They are added to the system prompt of BOTH the support chat and the Telegram retention bot, and to their links policy, so the assistant links players to real pages instead of inventing URLs. One entry per page — the URL is required and must start with http:// or https://."

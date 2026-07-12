@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import {
   Admin,
   CustomRoutes,
@@ -10,6 +10,7 @@ import {
   usePermissions,
 } from 'react-admin';
 import { Navigate, Route, useLocation, useNavigate } from 'react-router-dom';
+import Badge from '@mui/material/Badge';
 import Box from '@mui/material/Box';
 import CircularProgress from '@mui/material/CircularProgress';
 import Collapse from '@mui/material/Collapse';
@@ -25,16 +26,11 @@ import HelpOutlineIcon from '@mui/icons-material/HelpOutlined';
 import VpnKeyIcon from '@mui/icons-material/VpnKey';
 import InsightsIcon from '@mui/icons-material/Insights';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
-import LinkIcon from '@mui/icons-material/Link';
+import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
 import PeopleIcon from '@mui/icons-material/People';
-import PhotoLibraryIcon from '@mui/icons-material/PhotoLibrary';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import SettingsIcon from '@mui/icons-material/Settings';
-import SupportAgentIcon from '@mui/icons-material/SupportAgent';
-import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
 import TelegramIcon from '@mui/icons-material/Telegram';
-import TranslateIcon from '@mui/icons-material/Translate';
-import TuneIcon from '@mui/icons-material/Tune';
 
 import polyglotI18nProvider from 'ra-i18n-polyglot';
 import englishMessages from 'ra-language-english';
@@ -45,6 +41,7 @@ import dataProvider from './dataProvider';
 import buildStore from './store';
 import LoginPage from './pages/LoginPage';
 import ScopeAppBar from './layout/ScopeAppBar';
+import { API_URL, httpClient } from './httpClient';
 import { ConversationList, ConversationShow } from './resources/Conversations';
 import { EscalationList } from './resources/Escalations';
 import { KbCreate, KbEdit, KbList } from './resources/KnowledgeBase';
@@ -63,6 +60,13 @@ const i18nProvider = polyglotI18nProvider(
   ],
   { allowMissing: true }
 );
+// The AppBar carries our own compact EN/RU toggle (ScopeAppBar → LangSwitch),
+// so react-admin's built-in LocalesMenuButton ("ENGLISH ▾") is a redundant
+// second language control. On a phone that ~130px button also shoved the theme
+// toggle and the user menu (logout!) off the right edge of the toolbar. Report
+// no locales so the built-in button renders nothing; our toggle stays the one
+// switcher (it drives the same persisted admin_lang, then reloads).
+i18nProvider.getLocales = () => [];
 
 // ---------------------------------------------------------------------------
 // Code splitting: every heavy page loads on demand (React.lazy → its own
@@ -87,7 +91,9 @@ const lazyPage = (importer) => {
 };
 
 const Dashboard = lazyPage(() => import('./dashboard/Dashboard'));
+const Account = lazyPage(() => import('./pages/Account'));
 const ApiKeys = lazyPage(() => import('./pages/ApiKeys'));
+const Logs = lazyPage(() => import('./pages/Logs'));
 const Prompt = lazyPage(() => import('./pages/Prompt'));
 const Retention = lazyPage(() => import('./pages/Retention'));
 const RetentionAgent = lazyPage(() => import('./pages/RetentionAgent'));
@@ -155,7 +161,10 @@ const SubItem = ({ to, label, icon, active }) => {
       onClick={() => navigate(to)}
       sx={{ pl: 4, py: { xs: 1, md: 0.4 } }}
     >
-      <ListItemIcon sx={{ minWidth: 34 }}>{icon}</ListItemIcon>
+      {/* 40px matches react-admin's own MenuItemLink icon box, so the custom
+          sub-items and the RA resource/menu links share ONE icon column and the
+          text labels line up exactly (a 34 vs 40 mismatch made them "jump"). */}
+      <ListItemIcon sx={{ minWidth: 40 }}>{icon}</ListItemIcon>
       {/* No typography override: the Menu-level rule below pins one font size
           for every entry, so sub-items match the resource/custom items. */}
       <ListItemText primary={label} />
@@ -163,11 +172,59 @@ const SubItem = ({ to, label, icon, active }) => {
   );
 };
 
-// Two retention tabs are bundled under a parent's sidebar entry (like the
-// Support "Prompt" page): the Setup guide lives under Telegram config, and the
-// Prompt variables under Prompt. So those parent entries stay highlighted while
-// their sub-tab is active.
-const RETENTION_TAB_PARENT = { guide: 'config', variables: 'prompt' };
+// The System → Logs entry carries a red badge counting unread WARNING+ runtime
+// logs, so an admin sees at a glance that something needs attention without
+// opening the page. Polls the cheap count endpoint and re-checks on navigation
+// (visiting the Logs page marks them read, which clears the badge next poll).
+const LogsMenuItem = () => {
+  const [unread, setUnread] = useState(0);
+  const location = useLocation();
+  useEffect(() => {
+    let alive = true;
+    const poll = () =>
+      httpClient(`${API_URL}/admin/logs/unread`)
+        .then(({ json }) => {
+          if (alive) setUnread(json.count || 0);
+        })
+        .catch(() => {});
+    poll();
+    const id = setInterval(poll, 30000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [location.pathname]);
+  return (
+    <SubItem
+      to="/logs"
+      label={t('Logs')}
+      icon={
+        <Badge color="error" badgeContent={unread} max={99} overlap="circular">
+          <ReceiptLongIcon fontSize="small" />
+        </Badge>
+      }
+      active={(loc) => loc.pathname === '/logs'}
+    />
+  );
+};
+
+// The retention page's tabs map onto the few grouped sidebar entries so the
+// right one stays highlighted whichever tab is open (the page's own top tab
+// strip does the fine navigation). "Bot setup" = config/guide; "Bot content" =
+// everything the bot knows/shows (kb/prompt/media/managers) + idle pings, which
+// all live on the /retention page; Conversations and Analytics are direct.
+const RETENTION_TAB_PARENT = {
+  config: 'config',
+  guide: 'config',
+  kb: 'kb',
+  prompt: 'kb',
+  variables: 'kb',
+  photos: 'kb',
+  managers: 'kb',
+  idle: 'kb',
+  chats: 'chats',
+  analytics: 'analytics',
+};
 
 // A retention sub-tab as its own sidebar entry: navigates to /retention?tab=…
 // and highlights when that tab (or one bundled under it) is the active one (the
@@ -226,7 +283,7 @@ const AppMenu = () => {
       sx={{
         '& .MuiListItemIcon-root .MuiSvgIcon-root': { fontSize: 20 },
         // One icon size + inactive colour for every entry source.
-        '& .MuiListItemIcon-root': { minWidth: 34, color: 'text.secondary' },
+        '& .MuiListItemIcon-root': { minWidth: 40, color: 'text.secondary' },
         // One inactive label size + colour. .MuiMenuItem-root covers the RA
         // links (label is an inheriting Typography), .MuiListItemText-primary
         // covers the custom sub-items; both to text.secondary so the whole
@@ -263,13 +320,18 @@ const AppMenu = () => {
         />
         <Menu.ResourceItem name="sessions" />
         <Menu.ResourceItem name="unresolved" />
-        <Menu.ResourceItem name="kb" />
-        <Menu.Item to="/site-map" primaryText={t('Site map')} leftIcon={<LinkIcon />} />
-        <Menu.Item to="/prompt" primaryText={t('Prompt')} leftIcon={<TuneIcon />} />
-        <Menu.Item
-          to="/translations"
-          primaryText={t('Translations')}
-          leftIcon={<TranslateIcon />}
+        {/* Content hub: KB, Site map, Prompt and Translations share one tab
+            strip (see contentTabs.js), so they need only ONE sidebar entry.
+            Highlighted for any of those routes. */}
+        <SubItem
+          to="/kb"
+          label={t('Content')}
+          icon={<LibraryBooksIcon fontSize="small" />}
+          active={(location) =>
+            ['/kb', '/kb_variables', '/site-map', '/prompt', '/translations'].some((p) =>
+              location.pathname.startsWith(p)
+            )
+          }
         />
         <SettingsSubItem module="support" label={t('Chat settings')} />
         {/* The combined dashboard narrowed to the support block. */}
@@ -281,16 +343,16 @@ const AppMenu = () => {
       </CollapsibleSection>
 
       <CollapsibleSection id="retention" label={t('Telegram · Retention')}>
-        {/* Setup guide is a sub-tab of Telegram config; Prompt variables a
-            sub-tab of Prompt — so neither gets its own sidebar entry. */}
-        <RetentionSubItem tab="config" label={t('Telegram config')} icon={<TelegramIcon fontSize="small" />} />
-        <RetentionSubItem tab="kb" label={t('Retention KB')} icon={<LibraryBooksIcon fontSize="small" />} />
-        <RetentionSubItem tab="prompt" label={t('Prompt')} icon={<TuneIcon fontSize="small" />} />
-        <RetentionSubItem tab="photos" label={t('Media')} icon={<PhotoLibraryIcon fontSize="small" />} />
-        <RetentionSubItem tab="managers" label={t('Managers')} icon={<SupportAgentIcon fontSize="small" />} />
-        {/* The proactive agent — the event-driven regime that writes first.
-            Rendered by the SAME SubItem as its siblings so it aligns with them
-            (the old Menu.Item carried different padding and sat out of line). */}
+        {/* Grouped shortcuts: the /retention page carries its own top tab strip
+            (Setup · KB · Prompt · Media · Managers · Idle pings · Conversations
+            · Analytics), so the sidebar stays short and the fine navigation
+            lives on the page. "Bot setup" lands on Telegram config (+ the Setup
+            guide sub-tab — the retention onboarding); "Bot content" lands on the
+            KB and reaches Prompt/Media/Managers/Idle from the page strip. */}
+        <RetentionSubItem tab="config" label={t('Bot setup')} icon={<TelegramIcon fontSize="small" />} />
+        <RetentionSubItem tab="kb" label={t('Bot content')} icon={<LibraryBooksIcon fontSize="small" />} />
+        {/* The proactive agent — the event-driven regime that writes first (its
+            own route/page). */}
         <SubItem
           to="/retention-agent"
           label={t('Proactive agent')}
@@ -300,16 +362,17 @@ const AppMenu = () => {
             location.pathname === '/retention-v2'
           }
         />
-        {/* The agent's inactivity ladder — "quiet N days → Nika writes first". */}
-        <RetentionSubItem tab="idle" label={t('Idle pings')} icon={<NotificationsActiveIcon fontSize="small" />} />
-        <SettingsSubItem module="retention" label={t('Bot settings')} />
         <RetentionSubItem tab="chats" label={t('Conversations')} icon={<ForumIcon fontSize="small" />} />
+        <SettingsSubItem module="retention" label={t('Bot settings')} />
         <RetentionSubItem tab="analytics" label={t('Analytics')} icon={<InsightsIcon fontSize="small" />} />
       </CollapsibleSection>
 
       <CollapsibleSection id="system" label={t('System')}>
         <Menu.Item to="/structure" primaryText={t('Structure')} leftIcon={<AccountTreeIcon />} />
         <SettingsSubItem module="core" label={t('Settings')} />
+        {/* Logs (system runtime + admin activity) — admin-only, with an unread
+            badge for warnings/errors. Managers are 403'd server-side. */}
+        {permissions === 'admin' && <LogsMenuItem />}
         {/* User management is admin-only server-side (403 for managers) —
             hide the entry instead of showing a dead link. */}
         {permissions === 'admin' && <Menu.ResourceItem name="users" />}
@@ -321,8 +384,23 @@ const AppMenu = () => {
   );
 };
 
+// React-admin's Layout root ships with `min-width: fit-content`, and its flex
+// frame/content wrappers default to `min-width: auto`. Together they let any
+// wide child (a data table, a long chip row) grow the whole document past the
+// device width, so the PAGE BODY scrolls horizontally on a phone instead of the
+// individual table scrolling inside its own `overflowX: auto` box. Zeroing the
+// min-width down the flex chain lets those wrappers shrink to the viewport, so
+// the inner scroll containers clip and scroll as intended. `maxWidth: 100%` on
+// the content is the belt-and-suspenders cap.
+const LAYOUT_SX = {
+  minWidth: 0,
+  '& .RaLayout-appFrame': { minWidth: 0 },
+  '& .RaLayout-contentWithSidebar': { minWidth: 0 },
+  '& .RaLayout-content': { minWidth: 0, maxWidth: '100%' },
+};
+
 const AppLayout = ({ children }) => (
-  <Layout menu={AppMenu} appBar={ScopeAppBar}>
+  <Layout menu={AppMenu} appBar={ScopeAppBar} sx={LAYOUT_SX}>
     {children}
   </Layout>
 );
@@ -395,6 +473,8 @@ const App = () => (
       {/* Legacy bookmark: the old Retention v2 path lands on the agent page. */}
       <Route path="/retention-v2" element={<RetentionAgent />} />
       <Route path="/api-keys" element={<ApiKeys />} />
+      <Route path="/account" element={<Account />} />
+      <Route path="/logs" element={<Logs />} />
     </CustomRoutes>
   </Admin>
 );

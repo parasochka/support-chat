@@ -6,6 +6,8 @@ import Tabs from '@mui/material/Tabs';
 import PromptPreview from './PromptPreview';
 import PromptVariables from './PromptVariables';
 import RequireProduct from '../components/RequireProduct';
+import RouteTabs from '../components/RouteTabs';
+import { CONTENT_TABS } from '../contentTabs';
 import { t } from '../i18n';
 
 /**
@@ -22,6 +24,7 @@ const Prompt = () => {
     <RequireProduct title={t('Prompt')}>
     <Box sx={{ p: 2 }}>
       <Title title={t('Prompt')} />
+      <RouteTabs tabs={CONTENT_TABS} />
       <Tabs
         value={tab}
         onChange={(e, v) => setParams({ tab: v }, { replace: true })}

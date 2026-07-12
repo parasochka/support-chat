@@ -13,6 +13,7 @@ import RouteTabs from '../components/RouteTabs';
 import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
 import { KB_TABS } from './kbTabs';
+import { CONTENT_TABS } from '../contentTabs';
 import { t } from '../i18n';
 
 /**
@@ -25,6 +26,7 @@ export const KbVariableList = () => {
   const redirect = useRedirect();
   return (
     <RequireProduct title={t('Knowledge base · variables')}>
+      <RouteTabs tabs={CONTENT_TABS} />
       <RouteTabs tabs={KB_TABS} />
       <List perPage={50} exporter={false} title={t('Knowledge base · variables')}>
         {isMobile ? (

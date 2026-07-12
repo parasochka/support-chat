@@ -1,44 +1,86 @@
 import { useEffect, useState } from 'react';
-import { AppBar, TitlePortal } from 'react-admin';
+import {
+  AppBar,
+  LoadingIndicator,
+  Logout,
+  TitlePortal,
+  useGetIdentity,
+} from 'react-admin';
+import { useNavigate } from 'react-router-dom';
+import Divider from '@mui/material/Divider';
+import IconButton from '@mui/material/IconButton';
+import ListItemIcon from '@mui/material/ListItemIcon';
 import ListSubheader from '@mui/material/ListSubheader';
+import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import Select from '@mui/material/Select';
-import ToggleButton from '@mui/material/ToggleButton';
-import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import Tooltip from '@mui/material/Tooltip';
+import Typography from '@mui/material/Typography';
+import AccountCircleIcon from '@mui/icons-material/AccountCircle';
+import SettingsIcon from '@mui/icons-material/ManageAccounts';
 import { API_URL, httpClient, getToken } from '../httpClient';
 import { getPartnerId, getProductId, setScope } from '../productScope';
-import { getAdminLang, setAdminLang, t } from '../i18n';
+import { t } from '../i18n';
 
 /**
- * EN/RU switch for the admin UI language (persisted in localStorage; the
- * switch reloads so every module-level string re-resolves). Only the admin
- * CHROME is bilingual — the content it edits stays English by contract.
+ * User menu (identity + logout). React-admin's built-in UserMenu renders its
+ * popover left-anchored in this version, so on both desktop and mobile the
+ * "Logout" panel opened past the right edge of the screen and was clipped. This
+ * drop-in right-anchors the Menu (its right edge meets the button's right edge)
+ * and lets MUI clamp it into the viewport, so it always opens fully on-screen.
  */
-const LangSwitch = () => (
-  <Tooltip title={t('Admin language')}>
-    <ToggleButtonGroup
-      size="small"
-      exclusive
-      value={getAdminLang()}
-      onChange={(e, v) => v && v !== getAdminLang() && setAdminLang(v)}
-      sx={{
-        mx: { xs: 0.5, sm: 1 },
-        flexShrink: 0,
-        '& .MuiToggleButton-root': {
-          px: 1,
-          py: 0.25,
-          fontSize: '0.75rem',
-          fontWeight: 600,
-          lineHeight: 1.6,
-        },
-      }}
-    >
-      <ToggleButton value="en">EN</ToggleButton>
-      <ToggleButton value="ru">RU</ToggleButton>
-    </ToggleButtonGroup>
-  </Tooltip>
-);
+const AppUserMenu = () => {
+  const [anchor, setAnchor] = useState(null);
+  const { identity } = useGetIdentity();
+  const navigate = useNavigate();
+  const close = () => setAnchor(null);
+  return (
+    <>
+      <Tooltip title={t('Profile')}>
+        <IconButton
+          color="inherit"
+          aria-haspopup="true"
+          onClick={(e) => setAnchor(e.currentTarget)}
+          sx={{ flexShrink: 0 }}
+        >
+          <AccountCircleIcon />
+        </IconButton>
+      </Tooltip>
+      <Menu
+        anchorEl={anchor}
+        open={Boolean(anchor)}
+        onClose={close}
+        disableScrollLock
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        slotProps={{ paper: { sx: { minWidth: 200, maxWidth: '92vw' } } }}
+      >
+        {identity?.fullName && (
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{ px: 2, py: 1, wordBreak: 'break-all' }}
+          >
+            {identity.fullName}
+          </Typography>
+        )}
+        {identity?.fullName && <Divider />}
+        <MenuItem
+          onClick={() => {
+            close();
+            navigate('/account');
+          }}
+        >
+          <ListItemIcon>
+            <SettingsIcon fontSize="small" />
+          </ListItemIcon>
+          {t('Account & appearance')}
+        </MenuItem>
+        <Logout />
+      </Menu>
+    </>
+  );
+};
 
 /**
  * AppBar with the Partner → Product switcher (GET /admin/structure). Changing
@@ -148,7 +190,12 @@ const ScopeSelect = () => {
 };
 
 const ScopeAppBar = () => (
-  <AppBar>
+  // toolbar override: the default AppBar toolbar bundles a theme toggle (and the
+  // locales menu we already dropped). Theme + language now live on the Account
+  // page, so the header carries only the loading indicator — the toolbar stays
+  // uncluttered and the phone tool-row never overflows. The user menu links to
+  // the Account page for those controls.
+  <AppBar userMenu={<AppUserMenu />} toolbar={<LoadingIndicator />}>
     {/* The title is the flex-grower: it takes the slack and truncates with an
         ellipsis (minWidth: 0) so the switcher and the toolbar buttons keep their
         room instead of being crowded together on narrow screens. */}
@@ -163,7 +210,6 @@ const ScopeAppBar = () => (
       }}
     />
     <ScopeSelect />
-    <LangSwitch />
   </AppBar>
 );
 

@@ -27,6 +27,8 @@ import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import Link from '@mui/material/Link';
+import LinearProgress from '@mui/material/LinearProgress';
+import Tooltip from '@mui/material/Tooltip';
 import MuiPagination from '@mui/material/Pagination';
 import { API_URL, httpClient, getToken } from '../httpClient';
 import { getProductId } from '../productScope';
@@ -607,7 +609,9 @@ const PhotosTab = ({ productId }) => {
   const [uploading, setUploading] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [generating, setGenerating] = useState(false);
-  const [genProgress, setGenProgress] = useState('');
+  // { done, total } while a metadata batch runs — drives the determinate
+  // progress bar so the operator sees it moving and knows it hasn't stalled.
+  const [genProgress, setGenProgress] = useState(null);
   const [normalizing, setNormalizing] = useState(false);
   const [filters, setFilters] = useState({ q: '', stage: 'all', level: 'all', status: 'all' });
   const [page, setPage] = useState(1);
@@ -762,6 +766,7 @@ const PhotosTab = ({ productId }) => {
       return;
     }
     setGenerating(true);
+    setGenProgress({ done: 0, total: ids.length });
     let ok = 0;
     let failed = 0;
     const errors = [];
@@ -769,7 +774,7 @@ const PhotosTab = ({ productId }) => {
     // discard the counts of chunks that already succeeded server-side.
     for (let i = 0; i < ids.length; i += META_CHUNK) {
       const chunk = ids.slice(i, i + META_CHUNK);
-      setGenProgress(`${Math.min(i + chunk.length, ids.length)} / ${ids.length}`);
+      setGenProgress({ done: i, total: ids.length });
       try {
         const { json } = await httpClient(
           `${API_URL}/admin/retention/photos/generate-metadata?product_id=${productId}`,
@@ -786,6 +791,7 @@ const PhotosTab = ({ productId }) => {
         failed += chunk.length;
         errors.push(e.body?.detail || e.message || t('request failed'));
       }
+      setGenProgress({ done: Math.min(i + chunk.length, ids.length), total: ids.length });
     }
     try {
       if (failed) {
@@ -803,7 +809,7 @@ const PhotosTab = ({ productId }) => {
       setSelected(new Set());
     } finally {
       setGenerating(false);
-      setGenProgress('');
+      setGenProgress(null);
       load();
     }
   };
@@ -992,53 +998,88 @@ const PhotosTab = ({ productId }) => {
                 .replace('{total}', items.length)}
             </Typography>
           </Stack>
+          {/* Action row: short, single-word buttons (the full explanation is an
+              (i) tooltip) so they never wrap to a ragged two-line shape, and a
+              live progress bar under the row while a batch runs. */}
           <Stack
             direction="row"
             spacing={1}
             alignItems="center"
             flexWrap="wrap"
             useFlexGap
-            sx={{ mt: 1.5 }}
+            sx={{ mt: 1.5, '& .MuiButton-root': { whiteSpace: 'nowrap' } }}
           >
             <Button size="small" onClick={selectAllVisible} disabled={!visible.length}>
-              {t('Select all shown')}
+              {t('Select all')}
             </Button>
             <Button
               size="small"
               onClick={() => setSelected(new Set())}
               disabled={!selected.size}
             >
-              {t('Clear selection')}
+              {t('Clear')}
             </Button>
-            <Button
-              variant="contained"
-              size="small"
-              onClick={generate}
-              disabled={!selected.size || generating}
-            >
-              {generating
-                ? `${t('Generating…')} ${genProgress}`
-                : `${t('Generate metadata')} (${selected.size})`}
-            </Button>
-            <Typography variant="caption" color="text.secondary">
-              {t(
-                "AI (the product's own model + API key) fills the description, tags, stage and minimum VIP level for every selected photo."
+            <Tooltip
+              title={t(
+                "AI (the product's own model + API key) fills the description, tags, stage and minimum VIP level for every selected photo. Current values are overwritten."
               )}
-            </Typography>
-            <Button
-              variant="outlined"
-              size="small"
-              onClick={normalize}
-              disabled={normalizing}
             >
-              {normalizing ? t('Normalizing…') : t('Normalize media now')}
-            </Button>
-            <Typography variant="caption" color="text.secondary">
-              {t(
-                'Re-encodes heavy uploads (multi-MB JPG/PNG) to Telegram-sized WebP and deletes the originals. Runs automatically on a schedule — the button is the immediate run.'
+              <span>
+                <Button
+                  variant="contained"
+                  size="small"
+                  onClick={generate}
+                  disabled={!selected.size || generating}
+                >
+                  {generating ? t('Generating…') : t('Generate')}
+                  {selected.size ? ` (${selected.size})` : ''}
+                </Button>
+              </span>
+            </Tooltip>
+            <Tooltip
+              title={t(
+                'Re-encodes heavy uploads (multi-MB JPG/PNG) to Telegram-sized WebP and deletes the originals. Runs automatically on a schedule — this is the immediate run.'
               )}
-            </Typography>
+            >
+              <span>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={normalize}
+                  disabled={normalizing}
+                >
+                  {normalizing ? t('Optimizing…') : t('Optimize')}
+                </Button>
+              </span>
+            </Tooltip>
           </Stack>
+          {/* Progress feedback — determinate for the chunked metadata batch (so
+              the operator sees N/total advance), indeterminate for the single
+              server-side normalize sweep (whose duration we can't predict). */}
+          {generating && genProgress && (
+            <Box sx={{ mt: 1.5 }}>
+              <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">
+                  {t('Generating metadata…')}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {genProgress.done} / {genProgress.total}
+                </Typography>
+              </Stack>
+              <LinearProgress
+                variant="determinate"
+                value={genProgress.total ? (genProgress.done / genProgress.total) * 100 : 0}
+              />
+            </Box>
+          )}
+          {normalizing && (
+            <Box sx={{ mt: 1.5 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                {t('Optimizing media… this can take a while, keep this tab open.')}
+              </Typography>
+              <LinearProgress />
+            </Box>
+          )}
         </CardContent>
       </Card>
 
@@ -2302,6 +2343,23 @@ const SUBTABS = {
 const groupFor = (tab) =>
   Object.values(SUBTABS).find((entries) => entries.some(([v]) => v === tab));
 
+// The top-level section strip on the retention page. It carries the bot's whole
+// surface so, with the sidebar trimmed to a few grouped shortcuts, every area
+// is still one click away from inside the page (the "cascade": sidebar →
+// section strip → sub-tabs). Each entry's value is the section's landing tab.
+const MAIN_TABS = [
+  ['config', t('Setup')],
+  ['kb', t('Knowledge base')],
+  ['prompt', t('Prompt')],
+  ['photos', t('Media')],
+  ['managers', t('Managers')],
+  ['idle', t('Idle pings')],
+  ['chats', t('Conversations')],
+  ['analytics', t('Analytics')],
+];
+// Sub-tabs collapse onto their section for the top strip's active state.
+const MAIN_OF = { guide: 'config', variables: 'prompt' };
+
 const Retention = () => {
   const [params, setParams] = useSearchParams();
   const productId = getProductId();
@@ -2321,13 +2379,24 @@ const Retention = () => {
   return (
     <Box sx={{ p: 2, maxWidth: 1100 }}>
       <Title title={t('Retention · Telegram')} />
+      <Tabs
+        value={MAIN_OF[tab] || tab}
+        onChange={(e, v) => setParams({ tab: v }, { replace: true })}
+        variant="scrollable"
+        allowScrollButtonsMobile
+        sx={{ borderBottom: 1, borderColor: 'divider', mb: subtabs ? 1 : 2 }}
+      >
+        {MAIN_TABS.map(([value, label]) => (
+          <Tab key={value} value={value} label={label} />
+        ))}
+      </Tabs>
       {subtabs && (
         <Tabs
           value={tab}
           onChange={(e, v) => setParams({ tab: v }, { replace: true })}
           variant="scrollable"
           allowScrollButtonsMobile
-          sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}
+          sx={{ mb: 2 }}
         >
           {subtabs.map(([value, label]) => (
             <Tab key={value} value={value} label={label} />

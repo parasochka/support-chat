@@ -44,6 +44,23 @@ import rich from '../components/Rich';
  * log) so live testing never leaves duplicated rows behind.
  */
 
+// Status chips carry long text (the worker-off explainer, ISO-ish timestamps,
+// the "state food" hints). By default a Chip label is `white-space: nowrap`,
+// so a long one can neither shrink nor wrap and it shoots off the right edge on
+// a phone. Applied to a wrapping Stack, this lets each label wrap to as many
+// lines as it needs and caps the chip at the container width, so the status
+// block stacks tidily instead of stretching horizontally.
+const WRAP_CHIPS_SX = {
+  '& .MuiChip-root': { height: 'auto', maxWidth: '100%' },
+  '& .MuiChip-label': {
+    whiteSpace: 'normal',
+    overflow: 'visible',
+    textOverflow: 'clip',
+    py: 0.4,
+    lineHeight: 1.35,
+  },
+};
+
 const fmtDT = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
 const fmtCost = (v) =>
   v == null ? '—' : `$${Number(v).toFixed(4)}`;
@@ -155,7 +172,7 @@ const StatusHeader = ({ status, onRefresh, onRun, canWrite, running }) => {
   return (
     <Card sx={{ mb: 2 }}>
       <CardContent>
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={WRAP_CHIPS_SX}>
           <Chip
             label={status.v2_enabled ? t('Agent ENABLED') : t('Agent DISABLED (no proactive messages)')}
             color={status.v2_enabled ? 'success' : 'default'}
@@ -190,7 +207,7 @@ const StatusHeader = ({ status, onRefresh, onRun, canWrite, running }) => {
         </Stack>
         {/* Agent / worker liveness — derived from the durable tables, so it
             answers "is the agent actually running and what did it just do?" */}
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 1, ...WRAP_CHIPS_SX }}>
           <Chip
             size="small"
             variant="outlined"
@@ -351,7 +368,7 @@ const Simulator = ({ status, onDone, canWrite }) => {
             {busy ? t('Sending…') : t('Inject event')}
           </Button>
         </Stack>
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 1, ...WRAP_CHIPS_SX }}>
           <Typography variant="caption" color="text.secondary">
             {t('Sample payloads:')}
           </Typography>
