@@ -26,17 +26,11 @@ import HelpOutlineIcon from '@mui/icons-material/HelpOutlined';
 import VpnKeyIcon from '@mui/icons-material/VpnKey';
 import InsightsIcon from '@mui/icons-material/Insights';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
-import LinkIcon from '@mui/icons-material/Link';
 import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
 import PeopleIcon from '@mui/icons-material/People';
-import PhotoLibraryIcon from '@mui/icons-material/PhotoLibrary';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import SettingsIcon from '@mui/icons-material/Settings';
-import SupportAgentIcon from '@mui/icons-material/SupportAgent';
-import NotificationsActiveIcon from '@mui/icons-material/NotificationsActive';
 import TelegramIcon from '@mui/icons-material/Telegram';
-import TranslateIcon from '@mui/icons-material/Translate';
-import TuneIcon from '@mui/icons-material/Tune';
 
 import polyglotI18nProvider from 'ra-i18n-polyglot';
 import englishMessages from 'ra-language-english';
@@ -211,11 +205,23 @@ const LogsMenuItem = () => {
   );
 };
 
-// Two retention tabs are bundled under a parent's sidebar entry (like the
-// Support "Prompt" page): the Setup guide lives under Telegram config, and the
-// Prompt variables under Prompt. So those parent entries stay highlighted while
-// their sub-tab is active.
-const RETENTION_TAB_PARENT = { guide: 'config', variables: 'prompt' };
+// The retention page's tabs map onto the few grouped sidebar entries so the
+// right one stays highlighted whichever tab is open (the page's own top tab
+// strip does the fine navigation). "Bot setup" = config/guide; "Bot content" =
+// everything the bot knows/shows (kb/prompt/media/managers) + idle pings, which
+// all live on the /retention page; Conversations and Analytics are direct.
+const RETENTION_TAB_PARENT = {
+  config: 'config',
+  guide: 'config',
+  kb: 'kb',
+  prompt: 'kb',
+  variables: 'kb',
+  photos: 'kb',
+  managers: 'kb',
+  idle: 'kb',
+  chats: 'chats',
+  analytics: 'analytics',
+};
 
 // A retention sub-tab as its own sidebar entry: navigates to /retention?tab=…
 // and highlights when that tab (or one bundled under it) is the active one (the
@@ -311,13 +317,18 @@ const AppMenu = () => {
         />
         <Menu.ResourceItem name="sessions" />
         <Menu.ResourceItem name="unresolved" />
-        <Menu.ResourceItem name="kb" />
-        <Menu.Item to="/site-map" primaryText={t('Site map')} leftIcon={<LinkIcon />} />
-        <Menu.Item to="/prompt" primaryText={t('Prompt')} leftIcon={<TuneIcon />} />
-        <Menu.Item
-          to="/translations"
-          primaryText={t('Translations')}
-          leftIcon={<TranslateIcon />}
+        {/* Content hub: KB, Site map, Prompt and Translations share one tab
+            strip (see contentTabs.js), so they need only ONE sidebar entry.
+            Highlighted for any of those routes. */}
+        <SubItem
+          to="/kb"
+          label={t('Content')}
+          icon={<LibraryBooksIcon fontSize="small" />}
+          active={(location) =>
+            ['/kb', '/kb_variables', '/site-map', '/prompt', '/translations'].some((p) =>
+              location.pathname.startsWith(p)
+            )
+          }
         />
         <SettingsSubItem module="support" label={t('Chat settings')} />
         {/* The combined dashboard narrowed to the support block. */}
@@ -329,16 +340,16 @@ const AppMenu = () => {
       </CollapsibleSection>
 
       <CollapsibleSection id="retention" label={t('Telegram · Retention')}>
-        {/* Setup guide is a sub-tab of Telegram config; Prompt variables a
-            sub-tab of Prompt — so neither gets its own sidebar entry. */}
-        <RetentionSubItem tab="config" label={t('Telegram config')} icon={<TelegramIcon fontSize="small" />} />
-        <RetentionSubItem tab="kb" label={t('Retention KB')} icon={<LibraryBooksIcon fontSize="small" />} />
-        <RetentionSubItem tab="prompt" label={t('Prompt')} icon={<TuneIcon fontSize="small" />} />
-        <RetentionSubItem tab="photos" label={t('Media')} icon={<PhotoLibraryIcon fontSize="small" />} />
-        <RetentionSubItem tab="managers" label={t('Managers')} icon={<SupportAgentIcon fontSize="small" />} />
-        {/* The proactive agent — the event-driven regime that writes first.
-            Rendered by the SAME SubItem as its siblings so it aligns with them
-            (the old Menu.Item carried different padding and sat out of line). */}
+        {/* Grouped shortcuts: the /retention page carries its own top tab strip
+            (Setup · KB · Prompt · Media · Managers · Idle pings · Conversations
+            · Analytics), so the sidebar stays short and the fine navigation
+            lives on the page. "Bot setup" lands on Telegram config (+ the Setup
+            guide sub-tab — the retention onboarding); "Bot content" lands on the
+            KB and reaches Prompt/Media/Managers/Idle from the page strip. */}
+        <RetentionSubItem tab="config" label={t('Bot setup')} icon={<TelegramIcon fontSize="small" />} />
+        <RetentionSubItem tab="kb" label={t('Bot content')} icon={<LibraryBooksIcon fontSize="small" />} />
+        {/* The proactive agent — the event-driven regime that writes first (its
+            own route/page). */}
         <SubItem
           to="/retention-agent"
           label={t('Proactive agent')}
@@ -348,10 +359,8 @@ const AppMenu = () => {
             location.pathname === '/retention-v2'
           }
         />
-        {/* The agent's inactivity ladder — "quiet N days → Nika writes first". */}
-        <RetentionSubItem tab="idle" label={t('Idle pings')} icon={<NotificationsActiveIcon fontSize="small" />} />
-        <SettingsSubItem module="retention" label={t('Bot settings')} />
         <RetentionSubItem tab="chats" label={t('Conversations')} icon={<ForumIcon fontSize="small" />} />
+        <SettingsSubItem module="retention" label={t('Bot settings')} />
         <RetentionSubItem tab="analytics" label={t('Analytics')} icon={<InsightsIcon fontSize="small" />} />
       </CollapsibleSection>
 

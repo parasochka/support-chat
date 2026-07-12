@@ -2343,6 +2343,23 @@ const SUBTABS = {
 const groupFor = (tab) =>
   Object.values(SUBTABS).find((entries) => entries.some(([v]) => v === tab));
 
+// The top-level section strip on the retention page. It carries the bot's whole
+// surface so, with the sidebar trimmed to a few grouped shortcuts, every area
+// is still one click away from inside the page (the "cascade": sidebar →
+// section strip → sub-tabs). Each entry's value is the section's landing tab.
+const MAIN_TABS = [
+  ['config', t('Setup')],
+  ['kb', t('Knowledge base')],
+  ['prompt', t('Prompt')],
+  ['photos', t('Media')],
+  ['managers', t('Managers')],
+  ['idle', t('Idle pings')],
+  ['chats', t('Conversations')],
+  ['analytics', t('Analytics')],
+];
+// Sub-tabs collapse onto their section for the top strip's active state.
+const MAIN_OF = { guide: 'config', variables: 'prompt' };
+
 const Retention = () => {
   const [params, setParams] = useSearchParams();
   const productId = getProductId();
@@ -2362,13 +2379,24 @@ const Retention = () => {
   return (
     <Box sx={{ p: 2, maxWidth: 1100 }}>
       <Title title={t('Retention · Telegram')} />
+      <Tabs
+        value={MAIN_OF[tab] || tab}
+        onChange={(e, v) => setParams({ tab: v }, { replace: true })}
+        variant="scrollable"
+        allowScrollButtonsMobile
+        sx={{ borderBottom: 1, borderColor: 'divider', mb: subtabs ? 1 : 2 }}
+      >
+        {MAIN_TABS.map(([value, label]) => (
+          <Tab key={value} value={value} label={label} />
+        ))}
+      </Tabs>
       {subtabs && (
         <Tabs
           value={tab}
           onChange={(e, v) => setParams({ tab: v }, { replace: true })}
           variant="scrollable"
           allowScrollButtonsMobile
-          sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}
+          sx={{ mb: 2 }}
         >
           {subtabs.map(([value, label]) => (
             <Tab key={value} value={value} label={label} />
