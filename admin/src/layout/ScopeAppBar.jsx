@@ -1,14 +1,66 @@
 import { useEffect, useState } from 'react';
-import { AppBar, TitlePortal } from 'react-admin';
+import { AppBar, Logout, TitlePortal, useGetIdentity } from 'react-admin';
+import Divider from '@mui/material/Divider';
+import IconButton from '@mui/material/IconButton';
 import ListSubheader from '@mui/material/ListSubheader';
+import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import Select from '@mui/material/Select';
 import ToggleButton from '@mui/material/ToggleButton';
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import Tooltip from '@mui/material/Tooltip';
+import Typography from '@mui/material/Typography';
+import AccountCircleIcon from '@mui/icons-material/AccountCircle';
 import { API_URL, httpClient, getToken } from '../httpClient';
 import { getPartnerId, getProductId, setScope } from '../productScope';
 import { getAdminLang, setAdminLang, t } from '../i18n';
+
+/**
+ * User menu (identity + logout). React-admin's built-in UserMenu renders its
+ * popover left-anchored in this version, so on both desktop and mobile the
+ * "Logout" panel opened past the right edge of the screen and was clipped. This
+ * drop-in right-anchors the Menu (its right edge meets the button's right edge)
+ * and lets MUI clamp it into the viewport, so it always opens fully on-screen.
+ */
+const AppUserMenu = () => {
+  const [anchor, setAnchor] = useState(null);
+  const { identity } = useGetIdentity();
+  return (
+    <>
+      <Tooltip title={t('Profile')}>
+        <IconButton
+          color="inherit"
+          aria-haspopup="true"
+          onClick={(e) => setAnchor(e.currentTarget)}
+          sx={{ flexShrink: 0 }}
+        >
+          <AccountCircleIcon />
+        </IconButton>
+      </Tooltip>
+      <Menu
+        anchorEl={anchor}
+        open={Boolean(anchor)}
+        onClose={() => setAnchor(null)}
+        disableScrollLock
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        slotProps={{ paper: { sx: { minWidth: 180, maxWidth: '92vw' } } }}
+      >
+        {identity?.fullName && (
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{ px: 2, py: 1, wordBreak: 'break-all' }}
+          >
+            {identity.fullName}
+          </Typography>
+        )}
+        {identity?.fullName && <Divider />}
+        <Logout />
+      </Menu>
+    </>
+  );
+};
 
 /**
  * EN/RU switch for the admin UI language (persisted in localStorage; the
@@ -148,7 +200,7 @@ const ScopeSelect = () => {
 };
 
 const ScopeAppBar = () => (
-  <AppBar>
+  <AppBar userMenu={<AppUserMenu />}>
     {/* The title is the flex-grower: it takes the slack and truncates with an
         ellipsis (minWidth: 0) so the switcher and the toolbar buttons keep their
         room instead of being crowded together on narrow screens. */}

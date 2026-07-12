@@ -63,6 +63,13 @@ const i18nProvider = polyglotI18nProvider(
   ],
   { allowMissing: true }
 );
+// The AppBar carries our own compact EN/RU toggle (ScopeAppBar → LangSwitch),
+// so react-admin's built-in LocalesMenuButton ("ENGLISH ▾") is a redundant
+// second language control. On a phone that ~130px button also shoved the theme
+// toggle and the user menu (logout!) off the right edge of the toolbar. Report
+// no locales so the built-in button renders nothing; our toggle stays the one
+// switcher (it drives the same persisted admin_lang, then reloads).
+i18nProvider.getLocales = () => [];
 
 // ---------------------------------------------------------------------------
 // Code splitting: every heavy page loads on demand (React.lazy → its own
@@ -321,8 +328,23 @@ const AppMenu = () => {
   );
 };
 
+// React-admin's Layout root ships with `min-width: fit-content`, and its flex
+// frame/content wrappers default to `min-width: auto`. Together they let any
+// wide child (a data table, a long chip row) grow the whole document past the
+// device width, so the PAGE BODY scrolls horizontally on a phone instead of the
+// individual table scrolling inside its own `overflowX: auto` box. Zeroing the
+// min-width down the flex chain lets those wrappers shrink to the viewport, so
+// the inner scroll containers clip and scroll as intended. `maxWidth: 100%` on
+// the content is the belt-and-suspenders cap.
+const LAYOUT_SX = {
+  minWidth: 0,
+  '& .RaLayout-appFrame': { minWidth: 0 },
+  '& .RaLayout-contentWithSidebar': { minWidth: 0 },
+  '& .RaLayout-content': { minWidth: 0, maxWidth: '100%' },
+};
+
 const AppLayout = ({ children }) => (
-  <Layout menu={AppMenu} appBar={ScopeAppBar}>
+  <Layout menu={AppMenu} appBar={ScopeAppBar} sx={LAYOUT_SX}>
     {children}
   </Layout>
 );
