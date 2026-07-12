@@ -676,6 +676,18 @@ async def put_test_profile(body: TestProfileWrite,
 # ---------------------------------------------------------------------------
 @router.get("/me")
 async def me(admin=Depends(require_admin)) -> JSONResponse:
+    # Registration date + active flag for the Account page. Human accounts have
+    # an admin_users row; a service API key (email "apikey:…") has none, so the
+    # extra fields simply stay null for it.
+    created_at = None
+    active = True
+    email = admin.get("email") or ""
+    if not email.startswith("apikey:"):
+        user = await db.get_admin_user(email)
+        if user:
+            ca = user.get("created_at")
+            created_at = ca.isoformat() if hasattr(ca, "isoformat") else ca
+            active = user.get("active", True)
     return JSONResponse(content={
         "role": admin.get("role"),
         "email": admin.get("email"),
@@ -684,6 +696,8 @@ async def me(admin=Depends(require_admin)) -> JSONResponse:
         # from these (the server stays authoritative on every request).
         "memberships": admin.get("memberships", []),
         "global_role": admin_auth.global_role(admin),
+        "created_at": created_at,
+        "active": active,
     })
 
 

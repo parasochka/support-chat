@@ -94,6 +94,7 @@ const lazyPage = (importer) => {
 };
 
 const Dashboard = lazyPage(() => import('./dashboard/Dashboard'));
+const Account = lazyPage(() => import('./pages/Account'));
 const ApiKeys = lazyPage(() => import('./pages/ApiKeys'));
 const Prompt = lazyPage(() => import('./pages/Prompt'));
 const Retention = lazyPage(() => import('./pages/Retention'));
@@ -417,6 +418,7 @@ const App = () => (
       {/* Legacy bookmark: the old Retention v2 path lands on the agent page. */}
       <Route path="/retention-v2" element={<RetentionAgent />} />
       <Route path="/api-keys" element={<ApiKeys />} />
+      <Route path="/account" element={<Account />} />
     </CustomRoutes>
   </Admin>
 );
