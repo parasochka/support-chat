@@ -175,7 +175,7 @@ const ProductCard = ({ product, onChanged }) => {
                   <IconButton
                     size="small"
                     onClick={() => copy(product.widget_key, t('Widget key copied'))}
-                    aria-label="Copy widget key"
+                    aria-label={t('Copy widget key')}
                   >
                     <ContentCopyIcon fontSize="small" />
                   </IconButton>
