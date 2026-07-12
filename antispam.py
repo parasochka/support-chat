@@ -293,31 +293,53 @@ def _normalize_for_scan(text: str) -> str:
     return norm
 
 
+def _compile_injection_res(patterns: tuple) -> list[re.Pattern]:
+    """Build a WORD-BOUNDARY-aware regex per trigger phrase.
+
+    A plain substring scan produced false positives: "act as" fired inside
+    "contact as" / "react as" / "impact assessment" (and the fully-de-spaced view
+    made it worse — "reactas" contains "actas"), so an ordinary player message
+    like "contact a support agent" was hard-blocked with a 400. Each phrase is
+    matched instead as WHOLE words: a `\\b` is anchored on any alphanumeric edge,
+    and internal spaces become `\\s*` so the phrase still matches when an attacker
+    removes / zero-widths the separators ("ignore​previous" -> "ignoreprevious").
+    Matching runs over `_normalize_for_scan` output (NFKC + zero-width strip +
+    letter-run de-spacing collapses "i g n o r e" -> "ignore"), so obfuscation is
+    still caught while innocent substrings are not.
+    """
+    compiled: list[re.Pattern] = []
+    for raw in patterns:
+        p = (raw or "").strip().lower()
+        if not p:
+            continue
+        core = r"\s*".join(re.escape(tok) for tok in p.split())
+        prefix = r"\b" if p[:1].isalnum() else ""
+        suffix = r"\b" if p[-1:].isalnum() else ""
+        compiled.append(re.compile(prefix + core + suffix))
+    return compiled
+
+
+_INJECTION_RES = _compile_injection_res(_INJECTION_PATTERNS)
+
+
 def scan_injection(text: str) -> bool:
     """Return True if the user message looks like an injection/jailbreak attempt.
 
     SYSTEM_CORE plus the Layer-3 guardrails are the real defence; this scan feeds
     the `injection_blocked` audit log (and an optional hard block, see config).
     Input is normalized first so spacing/zero-width obfuscation can't slip a known
-    trigger past the substring match.
+    trigger past the (word-boundary-aware) match, while an innocent substring of a
+    longer word no longer trips it.
     """
     if not text:
         return False
-    # Check each pattern against three views so neither spacing nor Unicode
-    # obfuscation can slip a known trigger past the substring match:
-    #   - lowered:     the raw text, lower-cased (multi-word patterns, fast path)
-    #   - norm_spaced: NFKC-normalized, zero-width stripped, single-spaced (catches
-    #                  full-width / confusable characters in multi-word patterns)
-    #   - norm_nospace: the same, fully de-spaced (catches "i g n o r e" / zero-width
-    #                  splits inside a single word)
-    lowered = text.lower()
+    # Match each boundary-aware pattern against two views: the normalized
+    # (de-obfuscated) form catches spacing / zero-width / full-width tricks, and
+    # the raw lower-cased text is a cheap belt-and-suspenders for anything NFKC
+    # might alter.
     norm = _normalize_for_scan(text)
-    norm_spaced = " ".join(norm.split())
-    norm_nospace = re.sub(r"\s+", "", norm)
-    return any(
-        p in lowered or p in norm_spaced or p.replace(" ", "") in norm_nospace
-        for p in _INJECTION_PATTERNS
-    )
+    lowered = text.lower()
+    return any(rx.search(norm) or rx.search(lowered) for rx in _INJECTION_RES)
 
 
 def reset_state() -> None:

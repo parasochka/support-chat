@@ -30,7 +30,13 @@ from typing import Any, Optional
 import language
 
 # Machine-readable sentinel the model prepends (own line) when it cannot help.
+# The canonical form is upper-case (the prompt instructs `[[ESCALATE]]`), but the
+# strip/detect is case-INSENSITIVE like every other sentinel below: a reasoning
+# model that emits `[[escalate]]` must still hand off (and never leak the literal
+# tag). This is the most safety-relevant sentinel (responsible-gaming /
+# complaints), so it must not be the one lenient-cased matcher.
 ESCALATE_TAG = "[[ESCALATE]]"
+_ESCALATE_TAG_RE = re.compile(r"\[\[ESCALATE\]\]", re.IGNORECASE)
 
 # Machine-readable sentinel the model prepends (own line) when the player's
 # question clearly belongs to a DIFFERENT support topic than the one currently
@@ -1031,13 +1037,12 @@ def build_messages(
 def strip_escalation_tag(text: str) -> tuple[str, bool]:
     """Detect + strip a leading [[ESCALATE]] line. Returns (clean_text, escalated)."""
     escalated = False
-    lines = text.splitlines()
     cleaned: list[str] = []
-    for i, line in enumerate(lines):
-        if ESCALATE_TAG in line:
+    for line in text.splitlines():
+        if _ESCALATE_TAG_RE.search(line):
             escalated = True
             # drop the tag (and the line if it's only the tag)
-            remainder = line.replace(ESCALATE_TAG, "").strip()
+            remainder = _ESCALATE_TAG_RE.sub("", line).strip()
             if remainder:
                 cleaned.append(remainder)
             continue

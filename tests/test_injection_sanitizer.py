@@ -71,3 +71,14 @@ def test_strip_escalation_tag():
     text2, esc2 = prompts.strip_escalation_tag("All good, here's your answer.")
     assert esc2 is False
     assert text2 == "All good, here's your answer."
+
+
+def test_strip_escalation_tag_case_insensitive():
+    # The most safety-relevant sentinel must strip/detect in ANY case, like every
+    # other sentinel (all IGNORECASE). A lower/mixed-case tag from the model must
+    # still trigger the hand-off AND never leak the literal tag to the player.
+    for tag in ("[[ESCALATE]]", "[[escalate]]", "[[Escalate]]", "[[EsCaLaTe]]"):
+        text, esc = prompts.strip_escalation_tag(tag + "\nI'll connect you to a human.")
+        assert esc is True, tag
+        assert "[[" not in text, tag
+        assert text == "I'll connect you to a human."

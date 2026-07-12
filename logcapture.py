@@ -11,9 +11,13 @@ Design constraints:
   - The deque is capped: if the flusher ever stalls, the OLDEST pending records
     are dropped rather than growing memory without bound.
 
-Only the application logger (config.SERVICE_NAME) is captured — NOT uvicorn's
-access log — so the volume stays meaningful (escalations, failovers, retention
-decisions, warnings, errors), not one row per HTTP request.
+The handler sits on the ROOT logger so it captures EVERY application module —
+they all log via `logging.getLogger(__name__)` ("api.chat", "chat_service",
+"retention", "openai_client", …), which are siblings of the service logger, not
+its descendants. A denylist filter drops framework/third-party noise (uvicorn's
+per-request access log, httpx, asyncpg, …) so the volume stays meaningful
+(escalations, failovers, retention decisions, warnings, errors) rather than one
+row per HTTP request.
 """
 from __future__ import annotations
 
@@ -65,12 +69,42 @@ def drain() -> list[dict[str, Any]]:
     return items
 
 
-def install(logger_name: str, level: int = logging.INFO) -> None:
-    """Attach the buffer handler to the named logger. Idempotent."""
+# Framework / third-party loggers whose records are noise for the operator's
+# runtime view (framework internals + one row per HTTP request). Everything else
+# — every application module — is captured. A denylist (not an allowlist) so a
+# NEW app module is captured automatically without touching this file.
+_THIRD_PARTY_PREFIXES = (
+    "uvicorn", "gunicorn", "hypercorn", "httpx", "httpcore", "asyncpg",
+    "openai", "watchfiles", "multipart", "python_multipart", "urllib3",
+    "aiohttp", "websockets",
+)
+
+
+class _AppOnlyFilter(logging.Filter):
+    """Keep the application's own records; drop framework/third-party noise."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        name = record.name or ""
+        return not any(name == p or name.startswith(p + ".")
+                       for p in _THIRD_PARTY_PREFIXES)
+
+
+def install(level: int = logging.INFO) -> None:
+    """Attach the buffer handler to the ROOT logger (idempotent).
+
+    Root, not `config.SERVICE_NAME`: every app module logs via
+    `logging.getLogger(__name__)` (sibling loggers under root, NOT descendants of
+    the service logger), so attaching only to the service logger — the previous
+    behaviour — captured just main.py / health.py and silently dropped every
+    escalation / failover / retention decision / model error / rate-limit block
+    the System-logs view is meant to surface. On root all those records are seen;
+    a denylist filter keeps out framework noise (uvicorn access log, httpx, …).
+    """
     global _installed
     if _installed:
         return
     handler = _BufferHandler()
     handler.setLevel(level)
-    logging.getLogger(logger_name).addHandler(handler)
+    handler.addFilter(_AppOnlyFilter())
+    logging.getLogger().addHandler(handler)
     _installed = True

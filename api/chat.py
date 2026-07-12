@@ -459,14 +459,23 @@ async def send_message(req: Request, body: MessageSend,
     # 8. injection scan: always audit; optionally hard-block (settings-gated).
     if antispam.scan_injection(body.text):
         hard_block = settings.antispam()["injection_hard_block"]
+        # A genuine complaint / fraud report / ask-for-a-human can share wording
+        # with a jailbreak ("so you are now refusing my withdrawal, this is
+        # fraud, I want a human"). Never 400 such a message: the injection scan
+        # runs BEFORE the (soft) keyword-escalation gate in chat_service, so a
+        # hard block here would swallow the hand-off. Let it through to be
+        # escalated instead — the audit row still records the injection signal.
+        escalation_intent = bool(escalation.keyword_trigger(body.text))
+        blocked = hard_block and not escalation_intent
         log.warning(
-            "chat_message_injection_detected session_id=%s hard_block=%s",
-            body.session_id, hard_block,
+            "chat_message_injection_detected session_id=%s hard_block=%s escalation_intent=%s blocked=%s",
+            body.session_id, hard_block, escalation_intent, blocked,
         )
         await db.log_admin_event_sampled(body.session_id, "injection_blocked",
                                          {"sample": body.text[:120],
-                                          "blocked": hard_block})
-        if hard_block:
+                                          "blocked": blocked,
+                                          "escalation_intent": escalation_intent})
+        if blocked:
             return _err(400, "rejected",
                         "Your message looks like an attempt to manipulate the "
                         "assistant. Please ask a product-support question.")

@@ -844,10 +844,19 @@ bubbles/finish button there.
    (only `id, full_name, email, activation_status` are surfaced to the model).
 2. `antispam.scan_injection` scans the user message (normalized first, so spacing /
    zero-width / Unicode-confusable obfuscation can't hide a known trigger) and **logs**
-   `injection_blocked`. With `injection_hard_block` (now **on by default**, tunable in the
-   `antispam` settings group) it also **rejects** the turn with HTTP 400 before the model
-   call, so a jailbreak attempt burns no tokens; `SYSTEM_CORE` + the Layer-3 guardrails
-   remain the substantive defence.
+   `injection_blocked`. Matching is **word-boundary aware** (`_compile_injection_res`):
+   each trigger phrase is a `\b`-anchored regex with `\s*` between tokens, so a stem like
+   "act as" is caught as whole words / with the separators obfuscated away but NOT inside
+   "contact as" / "react as" / "impact assessment" (plain substring matching, esp. the old
+   fully-de-spaced view, hard-blocked ordinary messages like "contact a support agent").
+   With `injection_hard_block` (**on by default**, tunable in the `antispam` settings group)
+   it also **rejects** the turn with HTTP 400 before the model call, so a jailbreak burns no
+   tokens — **except** when the message is ALSO a keyword-escalation trigger
+   (`escalation.keyword_trigger`: complaint / fraud / ask-for-a-human): the injection gate
+   in `api/chat.py` runs BEFORE the pre-model SOFT escalation, so it deliberately does NOT
+   hard-block such a message (it would swallow the human hand-off) — it flows through to be
+   escalated instead, the audit row still recording the injection signal. `SYSTEM_CORE` +
+   the Layer-3 guardrails remain the substantive defence.
 
 ### Off-topic / forbidden-topics guardrail (`prompts.FORBIDDEN_TOPICS`)
 A Layer-3 line (`prompts._forbidden_topics_directive`) injects the
@@ -1740,14 +1749,23 @@ Map of what lives where:
 - **Observability — System → Logs** (`admin/src/pages/Logs.jsx`, `/logs`,
   admin-only, red unread badge in the sidebar). Two tabs:
   - **System logs** = the app's own runtime logs (the "Railway logs") mirrored
-    in-app. `logcapture.py` attaches a buffer handler to the `config.SERVICE_NAME`
-    logger — the logging hot path only appends to an in-memory deque (thread-safe,
-    no DB, no recursion); a background flush loop in `main.py` (`_log_flush_loop`)
+    in-app. `logcapture.py` attaches a buffer handler to the **ROOT** logger with
+    a denylist filter (framework noise — uvicorn access log, httpx, asyncpg, … —
+    is dropped): every app module logs via `getLogger(__name__)` (sibling loggers
+    under root, NOT descendants of the service logger), so attaching only to
+    `config.SERVICE_NAME` captured just main.py/health.py and dropped every
+    escalation / failover / retention decision / model error the view promises.
+    The logging hot path only appends to an in-memory deque (thread-safe, no DB,
+    no recursion); a background flush loop in `main.py` (`_log_flush_loop`)
     batch-inserts into the bounded `app_logs` table (`db.insert_app_logs`) and
     prunes to the newest 5000 (`db.prune_app_logs`). `GET /admin/logs`
     (level/text filters), `GET /admin/logs/unread` (WARNING+ since the caller's
-    per-admin marker in `app_log_reads`), `POST /admin/logs/read`. Admin-only
-    (managers 403); the sidebar badge polls the unread count.
+    per-admin marker in `app_log_reads`), `POST /admin/logs/read`. **GLOBAL-scope
+    only** (`_require_global_viewer` → `admin_auth.global_role`): `app_logs` is one
+    deploy-wide table with no `product_id`, so a product/partner-scoped admin must
+    NOT read other tenants' operational data — a global manager (read-only
+    hub-wide) may, product/partner admins 403. The sidebar badge polls the unread
+    count.
   - **Activity (audit)** = who changed what. An audit middleware in `main.py`
     (`audit_admin_actions`) writes one `admin_audit_log` row per SUCCESSFUL
     mutating `/admin/*` request: the actor (stashed on `request.state` by
