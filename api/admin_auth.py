@@ -49,8 +49,19 @@ def _client_ip(request: Request) -> str:
     return client_ip(request)
 
 
+def _stash_actor(request: Optional[Request], email: str, role: Optional[str]) -> None:
+    """Record the acting account on the request so the audit middleware
+    (main.py) can attribute a mutating action to it after the handler runs."""
+    if request is not None:
+        try:
+            request.state.audit_actor = {"email": email, "role": role}
+        except Exception:  # noqa: BLE001 - never break auth over audit bookkeeping
+            pass
+
+
 async def require_admin(authorization: Optional[str] = Header(default=None),
-                        response: Response = None) -> dict:
+                        response: Response = None,
+                        request: Request = None) -> dict:
     """FastAPI dependency: verify the admin JWT (or a service API key) or raise
     401. Guards /admin/* data.
 
@@ -80,9 +91,11 @@ async def require_admin(authorization: Optional[str] = Header(default=None),
         membership = {"role": key["role"], "scope_type": key["scope_type"],
                       "partner_id": key.get("partner_id"),
                       "product_id": key.get("product_id")}
+        role = key["role"] if key["role"] in WRITE_ROLES else "manager"
+        _stash_actor(request, f"apikey:{key['name']}", role)
         return {
             "email": f"apikey:{key['name']}",
-            "role": key["role"] if key["role"] in WRITE_ROLES else "manager",
+            "role": role,
             "memberships": [membership],
             "api_key_id": key["id"],
         }
@@ -114,6 +127,7 @@ async def require_admin(authorization: Optional[str] = Header(default=None),
         new_token = auth.refresh_admin_token(payload, payload["role"], email)
         if new_token:
             response.headers["X-Refresh-Token"] = new_token
+    _stash_actor(request, email, payload["role"])
     return payload
 
 

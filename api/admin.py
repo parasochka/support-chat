@@ -702,6 +702,77 @@ async def me(admin=Depends(require_admin)) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Observability: runtime system logs (the "Railway logs" mirrored in-app) +
+# the admin-action audit trail. Two surfaces of the System → Logs page.
+# ---------------------------------------------------------------------------
+def _require_any_admin(admin: dict) -> None:
+    """System logs are operational health, not tenant data — any admin account
+    may read them (a manager, being read-only, may not)."""
+    if admin.get("role") not in WRITE_ROLES:
+        raise HTTPException(status_code=403,
+                            detail="System logs are visible to administrators.")
+
+
+@router.get("/logs")
+async def system_logs(level: Optional[str] = None, q: Optional[str] = None,
+                      before_id: Optional[int] = Query(default=None),
+                      limit: int = Query(default=100, le=500),
+                      admin=Depends(require_admin)) -> JSONResponse:
+    """Recent application log records (newest first) with level/text filters."""
+    _require_any_admin(admin)
+    rows = await db.list_app_logs(level=level, q=q, before_id=before_id, limit=limit)
+    return JSONResponse(content={"items": rows})
+
+
+@router.get("/logs/unread")
+async def system_logs_unread(admin=Depends(require_admin)) -> JSONResponse:
+    """Count of WARNING+ log rows this admin hasn't marked read (the red badge)."""
+    if admin.get("role") not in WRITE_ROLES:
+        return JSONResponse(content={"count": 0})
+    count = await db.app_logs_unread_count(admin.get("email") or "")
+    return JSONResponse(content={"count": count})
+
+
+@router.post("/logs/read")
+async def system_logs_read(admin=Depends(require_admin)) -> JSONResponse:
+    """Clear the unread badge for the calling admin (mark all current logs read)."""
+    _require_any_admin(admin)
+    last = await db.mark_app_logs_read(admin.get("email") or "")
+    return JSONResponse(content={"ok": True, "last_read_id": last})
+
+
+@router.get("/audit")
+async def audit_log(product_id: Optional[int] = None, partner_id: Optional[int] = None,
+                    q: Optional[str] = None, before_id: Optional[int] = Query(default=None),
+                    limit: int = Query(default=100, le=500),
+                    admin=Depends(require_admin)) -> JSONResponse:
+    """Admin-action audit trail, scoped to what this account may see.
+
+    Visibility is two-dimensional (see db.list_audit): SCOPE (which products'
+    actions — from the account's reach / the selected product/partner) and ROLE
+    (a manager sees only manager-authored actions; an admin sees everything in
+    reach). Hub-global actions (user management, system settings) are shown only
+    to a global-scoped viewer, and only when no product/partner is selected.
+    """
+    # resolve_scope_filter runs the read-permission check and yields the product
+    # id filter (None = all products, for a global viewer).
+    product_ids = await admin_auth.resolve_scope_filter(admin, product_id, partner_id)
+    if product_id is not None:
+        role = await admin_auth.role_for_product(admin, product_id)
+    elif partner_id is not None:
+        role = admin_auth.role_for_partner(admin, partner_id)
+    else:
+        role = admin_auth.global_role(admin) or admin.get("role")
+    include_admins = role == "admin"
+    include_global = (product_id is None and partner_id is None
+                      and admin_auth.global_role(admin) is not None)
+    rows = await db.list_audit(product_ids, include_admins=include_admins,
+                               include_global=include_global, q=q,
+                               before_id=before_id, limit=limit)
+    return JSONResponse(content={"items": rows, "role": role})
+
+
+# ---------------------------------------------------------------------------
 # User management — named accounts + scope memberships (multi-tenancy)
 #
 # An account is an email + password; WHAT it may touch is its memberships

@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import {
   Admin,
   CustomRoutes,
@@ -10,6 +10,7 @@ import {
   usePermissions,
 } from 'react-admin';
 import { Navigate, Route, useLocation, useNavigate } from 'react-router-dom';
+import Badge from '@mui/material/Badge';
 import Box from '@mui/material/Box';
 import CircularProgress from '@mui/material/CircularProgress';
 import Collapse from '@mui/material/Collapse';
@@ -26,6 +27,7 @@ import VpnKeyIcon from '@mui/icons-material/VpnKey';
 import InsightsIcon from '@mui/icons-material/Insights';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
 import LinkIcon from '@mui/icons-material/Link';
+import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
 import PeopleIcon from '@mui/icons-material/People';
 import PhotoLibraryIcon from '@mui/icons-material/PhotoLibrary';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
@@ -45,6 +47,7 @@ import dataProvider from './dataProvider';
 import buildStore from './store';
 import LoginPage from './pages/LoginPage';
 import ScopeAppBar from './layout/ScopeAppBar';
+import { API_URL, httpClient } from './httpClient';
 import { ConversationList, ConversationShow } from './resources/Conversations';
 import { EscalationList } from './resources/Escalations';
 import { KbCreate, KbEdit, KbList } from './resources/KnowledgeBase';
@@ -96,6 +99,7 @@ const lazyPage = (importer) => {
 const Dashboard = lazyPage(() => import('./dashboard/Dashboard'));
 const Account = lazyPage(() => import('./pages/Account'));
 const ApiKeys = lazyPage(() => import('./pages/ApiKeys'));
+const Logs = lazyPage(() => import('./pages/Logs'));
 const Prompt = lazyPage(() => import('./pages/Prompt'));
 const Retention = lazyPage(() => import('./pages/Retention'));
 const RetentionAgent = lazyPage(() => import('./pages/RetentionAgent'));
@@ -168,6 +172,42 @@ const SubItem = ({ to, label, icon, active }) => {
           for every entry, so sub-items match the resource/custom items. */}
       <ListItemText primary={label} />
     </ListItemButton>
+  );
+};
+
+// The System → Logs entry carries a red badge counting unread WARNING+ runtime
+// logs, so an admin sees at a glance that something needs attention without
+// opening the page. Polls the cheap count endpoint and re-checks on navigation
+// (visiting the Logs page marks them read, which clears the badge next poll).
+const LogsMenuItem = () => {
+  const [unread, setUnread] = useState(0);
+  const location = useLocation();
+  useEffect(() => {
+    let alive = true;
+    const poll = () =>
+      httpClient(`${API_URL}/admin/logs/unread`)
+        .then(({ json }) => {
+          if (alive) setUnread(json.count || 0);
+        })
+        .catch(() => {});
+    poll();
+    const id = setInterval(poll, 30000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [location.pathname]);
+  return (
+    <SubItem
+      to="/logs"
+      label={t('Logs')}
+      icon={
+        <Badge color="error" badgeContent={unread} max={99} overlap="circular">
+          <ReceiptLongIcon fontSize="small" />
+        </Badge>
+      }
+      active={(loc) => loc.pathname === '/logs'}
+    />
   );
 };
 
@@ -318,6 +358,9 @@ const AppMenu = () => {
       <CollapsibleSection id="system" label={t('System')}>
         <Menu.Item to="/structure" primaryText={t('Structure')} leftIcon={<AccountTreeIcon />} />
         <SettingsSubItem module="core" label={t('Settings')} />
+        {/* Logs (system runtime + admin activity) — admin-only, with an unread
+            badge for warnings/errors. Managers are 403'd server-side. */}
+        {permissions === 'admin' && <LogsMenuItem />}
         {/* User management is admin-only server-side (403 for managers) —
             hide the entry instead of showing a dead link. */}
         {permissions === 'admin' && <Menu.ResourceItem name="users" />}
@@ -419,6 +462,7 @@ const App = () => (
       <Route path="/retention-v2" element={<RetentionAgent />} />
       <Route path="/api-keys" element={<ApiKeys />} />
       <Route path="/account" element={<Account />} />
+      <Route path="/logs" element={<Logs />} />
     </CustomRoutes>
   </Admin>
 );

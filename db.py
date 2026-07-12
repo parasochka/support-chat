@@ -545,6 +545,50 @@ CREATE INDEX IF NOT EXISTS idx_retention_events_player
   ON retention_events(product_id, player_id, ts);
 CREATE INDEX IF NOT EXISTS idx_retention_v2_decisions_product
   ON retention_v2_decisions(product_id, created_at);
+
+-- RUNTIME LOG MIRROR ---------------------------------------------------
+-- Recent application log records (the "Railway logs"), captured in-process by
+-- logcapture.py and batch-flushed here so the admin panel can show them without
+-- leaving for Railway. Bounded: db.prune_app_logs keeps only the newest N rows.
+CREATE TABLE IF NOT EXISTS app_logs (
+  id          BIGSERIAL PRIMARY KEY,
+  level       TEXT NOT NULL,            -- DEBUG|INFO|WARNING|ERROR|CRITICAL
+  logger      TEXT NOT NULL DEFAULT '',
+  message     TEXT NOT NULL DEFAULT '',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_app_logs_id ON app_logs(id);
+CREATE INDEX IF NOT EXISTS idx_app_logs_level ON app_logs(level, id);
+
+-- Per-admin "last read" marker for the runtime-log unread badge: unread =
+-- warnings/errors with id greater than this reader's last_read_id.
+CREATE TABLE IF NOT EXISTS app_log_reads (
+  reader        TEXT PRIMARY KEY,       -- admin account email
+  last_read_id  BIGINT NOT NULL DEFAULT 0,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ADMIN ACTION AUDIT ---------------------------------------------------
+-- One row per successful mutating /admin/* request: who (actor + their role
+-- over the affected scope), what (method + path + a friendly action label),
+-- where (product/partner, NULL for hub-global actions), when. Written by the
+-- audit middleware in main.py. Scope-tiered visibility is applied at read time
+-- (db.list_audit): you see actions on products within your reach, and managers
+-- see only manager-authored actions while admins see everything in reach.
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+  id           BIGSERIAL PRIMARY KEY,
+  actor_email  TEXT NOT NULL,
+  actor_role   TEXT,                    -- 'admin'|'manager' over the affected scope
+  method       TEXT NOT NULL,
+  path         TEXT NOT NULL,
+  action       TEXT,                    -- friendly label ("Updated settings", …)
+  product_id   INT REFERENCES products(id),
+  partner_id   INT REFERENCES partners(id),
+  status       INT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON admin_audit_log(id);
+CREATE INDEX IF NOT EXISTS idx_audit_product ON admin_audit_log(product_id, id);
 """
 # NB: indexes over the product_id columns of PRE-TENANCY tables live in
 # _ensure_columns — they must run AFTER the ADD COLUMN guards (_SCHEMA runs
@@ -4610,3 +4654,179 @@ async def retention_kb_block(product_id: int) -> str:
             continue
         parts.append(_legacy_retention_entry_text(e))
     return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Runtime log mirror (app_logs) + per-admin read markers
+# ---------------------------------------------------------------------------
+_WARN_LEVELS = ("WARNING", "ERROR", "CRITICAL")
+
+
+async def insert_app_logs(items: list[dict[str, Any]]) -> None:
+    """Batch-insert drained log records (logcapture.drain() output)."""
+    if not items:
+        return
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    rows = [
+        (it.get("level", "INFO"), (it.get("logger") or "")[:200],
+         (it.get("message") or "")[:8000],
+         _dt.datetime.fromtimestamp(it["created"], tz=_dt.timezone.utc)
+         if it.get("created") else now)
+        for it in items
+    ]
+    await _pool.executemany(
+        "INSERT INTO app_logs (level, logger, message, created_at) "
+        "VALUES ($1, $2, $3, $4)",
+        rows,
+    )
+
+
+async def prune_app_logs(keep: int = 5000) -> None:
+    """Keep only the newest `keep` rows (bounded table)."""
+    await _pool.execute(
+        "DELETE FROM app_logs WHERE id <= "
+        "(SELECT COALESCE(MAX(id), 0) - $1 FROM app_logs)",
+        keep,
+    )
+
+
+async def list_app_logs(level: Optional[str] = None, q: Optional[str] = None,
+                        before_id: Optional[int] = None, limit: int = 100
+                        ) -> list[dict[str, Any]]:
+    """Recent log rows, newest first, with optional level / text filters.
+
+    `level` filters to a MINIMUM severity ('warning' -> WARNING+ERROR+CRITICAL;
+    'error' -> ERROR+CRITICAL) so the operator can jump straight to the bad
+    ones; an exact level name also works.
+    """
+    where, args = [], []
+    lvl = (level or "").strip().upper()
+    if lvl in ("WARNING", "WARN"):
+        where.append(f"level = ANY(${len(args) + 1})")
+        args.append(list(_WARN_LEVELS))
+    elif lvl in ("ERROR", "CRITICAL"):
+        where.append(f"level = ANY(${len(args) + 1})")
+        args.append(["ERROR", "CRITICAL"])
+    elif lvl == "INFO":
+        where.append(f"level = ${len(args) + 1}")
+        args.append("INFO")
+    if q:
+        args.append(f"%{q}%")
+        where.append(f"message ILIKE ${len(args)}")
+    if before_id:
+        args.append(before_id)
+        where.append(f"id < ${len(args)}")
+    args.append(max(1, min(limit, 500)))
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    rows = await _pool.fetch(
+        f"SELECT id, level, logger, message, created_at FROM app_logs "
+        f"{where_sql} ORDER BY id DESC LIMIT ${len(args)}",
+        *args,
+    )
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["created_at"] = d["created_at"].isoformat()
+        out.append(d)
+    return out
+
+
+async def app_logs_unread_count(reader: str) -> int:
+    """How many WARNING+ log rows are newer than this reader's last-read marker."""
+    return await _pool.fetchval(
+        "SELECT COUNT(*) FROM app_logs WHERE level = ANY($1) AND id > "
+        "COALESCE((SELECT last_read_id FROM app_log_reads WHERE reader = $2), 0)",
+        list(_WARN_LEVELS), reader,
+    ) or 0
+
+
+async def mark_app_logs_read(reader: str) -> int:
+    """Mark all current logs read for this reader (badge clears). Returns the id."""
+    max_id = await _pool.fetchval("SELECT COALESCE(MAX(id), 0) FROM app_logs") or 0
+    await _pool.execute(
+        "INSERT INTO app_log_reads (reader, last_read_id, updated_at) "
+        "VALUES ($1, $2, now()) ON CONFLICT (reader) DO UPDATE "
+        "SET last_read_id = GREATEST(app_log_reads.last_read_id, EXCLUDED.last_read_id), "
+        "updated_at = now()",
+        reader, max_id,
+    )
+    return max_id
+
+
+# ---------------------------------------------------------------------------
+# Admin action audit (admin_audit_log)
+# ---------------------------------------------------------------------------
+async def log_audit(*, actor_email: str, actor_role: Optional[str], method: str,
+                    path: str, action: Optional[str], product_id: Optional[int],
+                    status: Optional[int]) -> None:
+    """Record one mutating admin action. Best-effort (caller swallows errors).
+
+    The partner is derived from the product so the read-time scope filter can
+    match a partner-scoped viewer without a join per query.
+    """
+    partner_id = None
+    if product_id is not None:
+        partner_id = await _pool.fetchval(
+            "SELECT partner_id FROM products WHERE id = $1", product_id
+        )
+    await _pool.execute(
+        "INSERT INTO admin_audit_log "
+        "(actor_email, actor_role, method, path, action, product_id, partner_id, status) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        actor_email, actor_role, method, path, action, product_id, partner_id, status,
+    )
+
+
+async def list_audit(product_ids: Optional[list[int]], *, include_admins: bool,
+                     include_global: bool, q: Optional[str] = None,
+                     before_id: Optional[int] = None, limit: int = 100
+                     ) -> list[dict[str, Any]]:
+    """Scoped audit rows, newest first.
+
+    `product_ids`: None = every product (global viewer); a list = only those
+    products. `include_global`: whether hub-global actions (product_id IS NULL,
+    e.g. user management / system settings) are visible — only a global viewer
+    sees them. `include_admins`: False restricts to manager-authored rows (a
+    manager viewer sees only manager actions); True shows all actors (an admin
+    viewer). Product-scope rows are always gated by `product_ids`.
+    """
+    conds, args = [], []
+    # Scope (WHERE) — which products' rows this viewer may see.
+    if product_ids is None:
+        scope = "TRUE" if include_global else "product_id IS NOT NULL"
+    else:
+        if not product_ids:
+            scope = "product_id IS NULL AND FALSE"  # no product reach
+        else:
+            args.append(product_ids)
+            scope = f"product_id = ANY(${len(args)})"
+        if include_global:
+            scope = f"({scope} OR product_id IS NULL)"
+    conds.append(scope)
+    # Role depth (WHOSE) — managers see only manager-authored actions.
+    if not include_admins:
+        conds.append("(actor_role IS NULL OR actor_role = 'manager')")
+    if q:
+        args.append(f"%{q}%")
+        conds.append(f"(actor_email ILIKE ${len(args)} OR action ILIKE ${len(args)} "
+                     f"OR path ILIKE ${len(args)})")
+    if before_id:
+        args.append(before_id)
+        conds.append(f"id < ${len(args)}")
+    args.append(max(1, min(limit, 500)))
+    where_sql = " AND ".join(f"({c})" for c in conds)
+    rows = await _pool.fetch(
+        f"SELECT a.id, a.actor_email, a.actor_role, a.method, a.path, a.action, "
+        f"a.product_id, a.partner_id, a.status, a.created_at, "
+        f"p.name AS product_name FROM admin_audit_log a "
+        f"LEFT JOIN products p ON p.id = a.product_id "
+        f"WHERE {where_sql} ORDER BY a.id DESC LIMIT ${len(args)}",
+        *args,
+    )
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["created_at"] = d["created_at"].isoformat()
+        out.append(d)
+    return out
