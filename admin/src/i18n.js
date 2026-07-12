@@ -1316,6 +1316,53 @@ const RU = {
   'Not set': 'Не задано',
   '1M input tokens': '1 млн входных токенов',
 
+  // ----- misc chrome (were wrapped but missing) -----
+  'Profile': 'Профиль',
+  'Level': 'Уровень',
+  'Edit': 'Изменить',
+  'Cancel': 'Отмена',
+  'Copy widget key': 'Копировать ключ виджета',
+  'partner #{id}': 'партнёр #{id}',
+  'product #{id}': 'продукт #{id}',
+
+  // ----- settings schema: fields missing from the dict (translated at render) -----
+  'Media normalization (photo storage)': 'Нормализация медиа (хранение фото)',
+  'Play reminder every ~N replies': 'Приглашение играть примерно каждые N ответов',
+  'Roughly every N-th of Nika’s Telegram replies weaves in a light in-context invitation to play, with a one-tap site button picked from the Site map (0 = off). The actual cadence drifts ±2 around N (…after 3, then 7, then 5…) so the pattern can’t be clocked.':
+    'Примерно каждый N-й ответ Ники в Telegram содержит лёгкое приглашение поиграть с кнопкой сайта из Карты сайта в один тап (0 = выкл). Реальный интервал плавает ±2 вокруг N (…через 3, потом 7, потом 5…), чтобы закономерность нельзя было вычислить.',
+  'Max messages per reply (burst)': 'Макс. сообщений на ответ (серия)',
+  'A reply with blank lines is delivered as a burst of separate Telegram messages (with a typing pause between them). This caps the burst; longer replies collapse into the last message. 1 = always one message.':
+    'Ответ с пустыми строками отправляется серией отдельных сообщений в Telegram (с паузой «печатает» между ними). Этот параметр ограничивает серию; лишнее сваливается в последнее сообщение. 1 = всегда одно сообщение.',
+  'Auto-normalize uploaded photos': 'Авто-нормализация загруженных фото',
+  'The periodic sweep re-encodes heavy uploads (multi-MB JPG/PNG) to WebP at Telegram-appropriate dimensions and DELETES the heavy originals — Telegram re-compresses photos anyway, so the originals only burn storage. GIFs are left alone.':
+    'Периодический проход пережимает тяжёлые загрузки (JPG/PNG в несколько МБ) в WebP под размеры Telegram и УДАЛЯЕТ тяжёлые оригиналы — Telegram всё равно пережимает фото, так что оригиналы только занимают место. GIF не трогаются.',
+  'Normalize sweep interval (sec)': 'Интервал прохода нормализации (сек)',
+  'How often the media sweep runs — ONE loop serves every product, so this is a deploy-wide (global) setting. Default 3600 (hourly). The «Normalize now» button on the Media tab runs one product immediately.':
+    'Как часто выполняется проход нормализации — ОДИН цикл обслуживает все продукты, поэтому это общесистемная (глобальная) настройка. По умолчанию 3600 (раз в час). Кнопка «Нормализовать сейчас» на вкладке «Медиа» запускает один продукт немедленно.',
+  'Max photo side (px)': 'Макс. сторона фото (px)',
+  'Longest side after normalization. Telegram re-compresses photos to ~2560 px anyway, so 2048 keeps full delivered quality at a fraction of the size.':
+    'Самая длинная сторона после нормализации. Telegram всё равно пережимает фото до ~2560 px, так что 2048 сохраняет полное качество доставки при меньшем размере.',
+  'WebP quality (40–100)': 'Качество WebP (40–100)',
+  'Compression quality of the normalized WebP. 82 is visually lossless for chat photos; raise it only if you see artifacts.':
+    'Качество сжатия нормализованного WebP. 82 визуально без потерь для чат-фото; повышайте только если видите артефакты.',
+  'Idle re-engagement pings': 'Пинги возврата неактивных',
+  'The agent’s inactivity trigger: the Idle pings rules ladder («quiet N days → Nika writes first», Retention → Idle pings tab). Off = the agent reacts to casino events only; a quiet player is never written to.':
+    'Триггер неактивности агента: лестница правил пингов («тишина N дней → Ника пишет первой», Ретеншен → Пинги неактивности). Выкл = агент реагирует только на события казино; замолчавшему игроку никто не пишет.',
+  'Idle rules sweep interval (sec)': 'Интервал прохода правил неактивности (сек)',
+  'How often the idle-rules ladder is re-evaluated per product. The rules move on a scale of days, so the default (600 = 10 min) is plenty; «Run now» on the Idle pings tab bypasses it.':
+    'Как часто пересчитывается лестница правил неактивности по продукту. Правила работают в масштабе дней, поэтому по умолчанию (600 = 10 мин) более чем достаточно; «Запустить сейчас» на вкладке пингов обходит интервал.',
+  'Send delay, min (seconds)': 'Задержка отправки, мин (сек)',
+  'A proactive reaction goes out a RANDOM delay after the event, never instantly — an instant thank-you after a deposit reads as surveillance. Default 300 (5 min); each event gets its own delay between min and max. «Process queue now» bypasses the delay.':
+    'Проактивная реакция уходит через СЛУЧАЙНУЮ задержку после события, никогда мгновенно — мгновенное спасибо после депозита выглядит как слежка. По умолчанию 300 (5 мин); каждое событие получает свою задержку между мин и макс. «Обработать очередь» обходит задержку.',
+  'Send delay, max (seconds)': 'Задержка отправки, макс (сек)',
+  'Upper bound of the random per-event send delay. Default 900 (15 min) — so reactions land 5–15 minutes after the event, ~10 on average. Set min = max for an exact delay; both 0 = react immediately.':
+    'Верхняя граница случайной задержки отправки на событие. По умолчанию 900 (15 мин) — реакции приходят через 5–15 минут после события, ~10 в среднем. Задайте мин = макс для точной задержки; оба 0 = реагировать сразу.',
+  'Level-up congratulation message': 'Сообщение-поздравление с новой стадией',
+  'When a player actually unlocks the next photo stage, Nika follows up with a short celebratory note: you two got closer, more daring photos from now on, keep chatting to unlock even more. Persisted with its trigger, so she can later explain what the message was about.':
+    'Когда игрок реально разблокирует следующую фото-стадию, Ника отправляет короткое поздравление: вы стали ближе, дальше — более смелые фото, продолжай общаться, чтобы открыть ещё. Сохраняется с триггером, поэтому позже она может объяснить, о чём было сообщение.',
+  'How often the background worker drains the event queue — ONE loop serves every product, so this is a deploy-wide (global) setting. Applies live on the next tick (no redeploy).':
+    'Как часто фоновый воркер разбирает очередь событий — ОДИН цикл обслуживает все продукты, поэтому это общесистемная (глобальная) настройка. Применяется сразу со следующего тика (без редеплоя).',
+
   // ----- scope switcher -----
   'All products': 'Все продукты',
   'all products': 'все продукты',

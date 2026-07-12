@@ -97,9 +97,9 @@ const ApiKeys = () => {
   );
 
   const partnerName = (id) =>
-    partners.find((pa) => pa.id === id)?.name || `partner #${id}`;
+    partners.find((pa) => pa.id === id)?.name || t('partner #{id}').replace('{id}', id);
   const productName = (id) =>
-    products.find((pr) => pr.id === id)?.name || `product #${id}`;
+    products.find((pr) => pr.id === id)?.name || t('product #{id}').replace('{id}', id);
 
   const scopeLabel = (k) => {
     if (k.scope_type === 'global') return t('Global');
@@ -341,7 +341,7 @@ const ApiKeys = () => {
                 sx: mono,
                 endAdornment: (
                   <InputAdornment position="end">
-                    <IconButton size="small" onClick={copyToken} aria-label="Copy token">
+                    <IconButton size="small" onClick={copyToken} aria-label={t('Copy token')}>
                       <ContentCopyIcon fontSize="small" />
                     </IconButton>
                   </InputAdornment>
