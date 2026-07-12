@@ -161,7 +161,10 @@ const SubItem = ({ to, label, icon, active }) => {
       onClick={() => navigate(to)}
       sx={{ pl: 4, py: { xs: 1, md: 0.4 } }}
     >
-      <ListItemIcon sx={{ minWidth: 34 }}>{icon}</ListItemIcon>
+      {/* 40px matches react-admin's own MenuItemLink icon box, so the custom
+          sub-items and the RA resource/menu links share ONE icon column and the
+          text labels line up exactly (a 34 vs 40 mismatch made them "jump"). */}
+      <ListItemIcon sx={{ minWidth: 40 }}>{icon}</ListItemIcon>
       {/* No typography override: the Menu-level rule below pins one font size
           for every entry, so sub-items match the resource/custom items. */}
       <ListItemText primary={label} />
@@ -280,7 +283,7 @@ const AppMenu = () => {
       sx={{
         '& .MuiListItemIcon-root .MuiSvgIcon-root': { fontSize: 20 },
         // One icon size + inactive colour for every entry source.
-        '& .MuiListItemIcon-root': { minWidth: 34, color: 'text.secondary' },
+        '& .MuiListItemIcon-root': { minWidth: 40, color: 'text.secondary' },
         // One inactive label size + colour. .MuiMenuItem-root covers the RA
         // links (label is an inheriting Typography), .MuiListItemText-primary
         // covers the custom sub-items; both to text.secondary so the whole
