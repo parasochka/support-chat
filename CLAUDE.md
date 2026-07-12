@@ -1727,6 +1727,48 @@ Map of what lives where:
   value (fall back to env) — used in Structure + Retention config; the test-profile
   handshake notice links to Structure to clear the product's handshake secret.
 
+- **Account page + slim header** (`admin/src/pages/Account.jsx`, `/account`,
+  opened from the AppBar user menu): shows the caller's email, active status,
+  role and access groups (memberships) + registration date (from `GET
+  /admin/me`, which now returns `created_at`/`active`). The **light/dark theme
+  toggle and the EN/RU admin-language switch moved here** from the AppBar
+  (`useTheme()` / `setAdminLang`), so the header carries only the product
+  switcher + refresh + user menu. The user menu is a custom right-anchored
+  `Menu` (react-admin's default popover opened off-screen in this RA version);
+  react-admin's built-in LocalesMenuButton is suppressed (`i18nProvider.getLocales
+  = () => []`) so it isn't a redundant second language control.
+- **Observability — System → Logs** (`admin/src/pages/Logs.jsx`, `/logs`,
+  admin-only, red unread badge in the sidebar). Two tabs:
+  - **System logs** = the app's own runtime logs (the "Railway logs") mirrored
+    in-app. `logcapture.py` attaches a buffer handler to the `config.SERVICE_NAME`
+    logger — the logging hot path only appends to an in-memory deque (thread-safe,
+    no DB, no recursion); a background flush loop in `main.py` (`_log_flush_loop`)
+    batch-inserts into the bounded `app_logs` table (`db.insert_app_logs`) and
+    prunes to the newest 5000 (`db.prune_app_logs`). `GET /admin/logs`
+    (level/text filters), `GET /admin/logs/unread` (WARNING+ since the caller's
+    per-admin marker in `app_log_reads`), `POST /admin/logs/read`. Admin-only
+    (managers 403); the sidebar badge polls the unread count.
+  - **Activity (audit)** = who changed what. An audit middleware in `main.py`
+    (`audit_admin_actions`) writes one `admin_audit_log` row per SUCCESSFUL
+    mutating `/admin/*` request: the actor (stashed on `request.state` by
+    `require_admin`), a friendly action label, the product/partner scope (from
+    `?product_id=` or a `/products/{id}` path) and time. Best-effort — never
+    affects the response. `GET /admin/audit` applies **tiered visibility**
+    (`db.list_audit`): SCOPE (products within the viewer's reach / the selected
+    product/partner) × ROLE (a manager sees only manager-authored actions, an
+    admin sees everything in reach); hub-global actions (user mgmt, system
+    settings) show only to a global viewer. NB only admins can mutate today, so
+    audit actors are admins — the manager/admin split is future-proofing.
+- **Sidebar IA — cascading hubs** (`admin/src/App.jsx` + `contentTabs.js`): the
+  sidebar groups related surfaces behind ONE entry with an in-page tab strip
+  (the cascade: sidebar → hub page → sub-tabs). Support's **Content** entry
+  fronts KB · Site map · Prompt · Translations (shared `RouteTabs` strip on each
+  page). The **retention page carries its own top-level section tab strip**
+  (Setup · KB · Prompt · Media · Managers · Idle pings · Conversations ·
+  Analytics), so its sidebar collapses to grouped shortcuts (Bot setup, Bot
+  content, Proactive agent, Conversations, Bot settings, Analytics). All sidebar
+  entries share one 40px icon column (RA's MenuItemLink width) so labels align.
+
 §16 decisions: unresolved analysis = topic-grouped (no embeddings); contact form =
 host-site button only; admin auth = named `admin_users` accounts only (email + password,
 role-driven; no password-only owner login).
