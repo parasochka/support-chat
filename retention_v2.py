@@ -84,6 +84,26 @@ _OCCASIONS: dict[str, str] = {
                        "received the payout",
     "bonus_expired": "one of the player's bonuses just expired unused",
     "bet_settled": "the player has had a rough, losing day",
+    # Non-default triggers (toggleable from the agent's Triggers tab) — every
+    # canonical event the owner may enable ships its own occasion wording.
+    "session_started": "the player just came online and started a session",
+    "session_ended": "the player just wrapped up a play session",
+    "deposit_initiated": "the player just started making a deposit (it is "
+                         "NOT confirmed yet - no thanks for money, keep it "
+                         "light and unpushy)",
+    "bonus_granted": "the player was just granted a new bonus",
+    "bonus_claimed": "the player just claimed and activated a bonus",
+    "kyc_started": "the player just started account verification",
+    "kyc_rejected": "the player's account verification was rejected (be "
+                    "gentle and supportive, no blame, no pressure)",
+    "xp_granted": "the player just earned experience points",
+    "downgrade": "the player's loyalty level just went down (be tactful "
+                 "and encouraging, never scold or dwell on the loss)",
+    "highlights_pack_opened": "the player just opened a highlights pack",
+    "highlights_pack_completed": "the player just completed a highlights "
+                                 "pack",
+    "check_in_done": "the player just completed a daily check-in",
+    "mission_completed": "the player just completed a mission",
 }
 
 # Safe, non-money payload details folded into the occasion line so the persona
@@ -95,6 +115,12 @@ _OCCASION_DETAIL_KEYS: dict[str, tuple[str, ...]] = {
     "bonus_completed": ("type", "bonus_id"),
     "bonus_expired": ("type", "bonus_id"),
     "deposit_failed": ("reason",),
+    "bonus_granted": ("type", "bonus_id"),
+    "bonus_claimed": ("type", "bonus_id"),
+    "kyc_rejected": ("reason",),
+    "xp_granted": ("xp",),
+    "downgrade": ("level", "class"),
+    "mission_completed": ("mission", "name", "title"),
 }
 
 
@@ -648,8 +674,18 @@ def _trigger_detail(evt: dict[str, Any]) -> str:
         return str(p.get("level") or "").strip()
     if name == "class_up":
         return str(p.get("class") or "").strip()
-    if name in ("bonus_completed", "bonus_expired"):
+    if name in ("bonus_completed", "bonus_expired", "bonus_granted",
+                "bonus_claimed"):
         return str(p.get("type") or "").strip()
+    if name == "xp_granted":
+        return str(p.get("xp") or "").strip()
+    if name == "mission_completed":
+        for key in ("mission", "name", "title"):
+            value = str(p.get(key) or "").strip()
+            if value:
+                return value
+    # downgrade / kyc_rejected deliberately carry no chrome detail — naming
+    # the lost level or the rejection reason in the header would sting.
     return ""
 
 
