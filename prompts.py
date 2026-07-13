@@ -1281,11 +1281,14 @@ _RETENTION_PHOTO_DIRECTIVE = (
     "feels like a gift; a photo extracted after three requests feels like a "
     "vending machine. Never invent a photo id.\n"
     "- If the candidate list is empty, never say you \"have no photos\" and never "
-    "flatly refuse or apologize repeatedly. Instead: describe yourself in words "
-    "from the YOUR APPEARANCE block as a tease, and - at most once - warmly let "
-    "him feel that growing closeness with you and his standing open up more (and "
-    "bolder) photos over time. Then move the conversation forward; do not promise "
-    "a photo for right now."
+    "flatly refuse or apologize repeatedly. Instead - AT MOST ONCE per "
+    "conversation - tease with a brief word-description of yourself from the "
+    "YOUR APPEARANCE block, and - also at most once - warmly let him feel that "
+    "growing closeness with you and his standing open up more (and bolder) "
+    "photos over time. Once you have described yourself or painted that scene "
+    "in this chat, the card is played: deflect any later photo ask playfully "
+    "WITHOUT another self-description or scene-painting, and move the "
+    "conversation forward; do not promise a photo for right now."
 )
 
 
@@ -1450,12 +1453,16 @@ def _photo_candidates_directive(candidates: list[dict[str, Any]]) -> Optional[st
         return (
             "=== PHOTO CANDIDATES ===\n"
             "(none available right now - do not send, offer or promise a photo "
-            "in this reply. ONLY IF the player asks for a photo: do NOT say you "
-            "\"have no photos\" - tease with a brief word-description of "
-            "yourself from the YOUR APPEARANCE block instead, or - at most once "
-            "per conversation - hint warmly that closeness and his standing "
-            "unlock more over time. Otherwise just keep the conversation going "
-            "without bringing up photos or your looks)"
+            "in this reply. ONLY IF the player asks for a photo AND you have "
+            "not yet described yourself in this chat: tease with a brief "
+            "word-description of yourself from the YOUR APPEARANCE block (do "
+            "NOT say you \"have no photos\"), or - at most once per "
+            "conversation - hint warmly that closeness and his standing unlock "
+            "more over time. If you already described yourself or a scene "
+            "earlier in this chat, do NOT repeat or vary that description - "
+            "deflect playfully without mentioning your looks. Otherwise just "
+            "keep the conversation going without bringing up photos or your "
+            "looks)"
         )
     lines = ["=== PHOTO CANDIDATES ==="]
     for c in candidates:
