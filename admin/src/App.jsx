@@ -80,8 +80,34 @@ const PageFallback = () => (
   </Box>
 );
 
+// A tab opened BEFORE a redeploy holds an index.html that references the old
+// hashed chunk files; the first navigation to a not-yet-loaded lazy page then
+// 404s its dynamic import and React throws straight into react-admin's error
+// boundary — the whole panel shows "Something went wrong" until the user
+// hard-reloads by hand. Recover automatically instead: on a failed chunk load,
+// force ONE full reload (the fresh index.html brings the new hashes). The
+// sessionStorage guard breaks the loop if the reload doesn't cure it (a truly
+// broken deploy) — then the real error surfaces as before.
+const importWithReload = (importer) => () =>
+  importer().then(
+    (mod) => {
+      sessionStorage.removeItem('np_chunk_reload');
+      return mod;
+    },
+    (err) => {
+      if (!sessionStorage.getItem('np_chunk_reload')) {
+        sessionStorage.setItem('np_chunk_reload', '1');
+        window.location.reload();
+        // Keep Suspense pending while the reload happens so the boundary
+        // never flashes the error page.
+        return new Promise(() => {});
+      }
+      throw err;
+    }
+  );
+
 const lazyPage = (importer) => {
-  const C = lazy(importer);
+  const C = lazy(importWithReload(importer));
   const Wrapped = (props) => (
     <Suspense fallback={<PageFallback />}>
       <C {...props} />
