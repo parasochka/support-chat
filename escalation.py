@@ -188,12 +188,16 @@ def build_payload(lang: str, final: bool = True) -> dict:
     brand's contact link to another brand's players. Non-default products get
     their URL exclusively from their own admin Translations tab.
     """
+    import retention     # lazy: owns the public-Telegram-link normalizer
     import settings      # lazy to keep this module import-light
     import tenancy       # lazy: same
     import translations  # lazy: same
     url = translations.text("contact_url", lang).strip()
     if not url and tenancy.is_default_scope():
         url = settings.general()["contact_form_url"] or ""
+    # A contact URL an operator saved as a suspended `t.me` link would error in
+    # the browser the widget runs in — serve it as the `telegram.me` alias.
+    url = retention.normalize_tg_url(url)
     return {
         "active": True,
         "final": final,

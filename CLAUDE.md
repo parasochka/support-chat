@@ -690,7 +690,7 @@ renders the card without a button link).
 target (a form / support group / chat). But when the session's product has
 `retention_enabled` **and** a `telegram_bot_username`, the escalation button is
 **replaced**: instead of the static link it carries a freshly-minted, one-time
-*escalation-entry* retention deeplink (`https://t.me/<bot>?start=<nonce>`,
+*escalation-entry* retention deeplink (`https://telegram.me/<bot>?start=<nonce>`,
 `entry_type='escalation'`), so tapping it drops the player into Nika's Telegram bot —
 which runs the **channel-subscription gate** on `/start` (they subscribe on the way in)
 and offers **"go to a manager"** in its menu (the escalation entry). The player's session
@@ -1224,7 +1224,7 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `retention_handoff` admin event records the offered target
   (`manager+site`/`manager`/`site`/`none`). Tests: `tests/test_retention_cta.py`.
 - **Managers** (`retention_managers`): round-robin, **sticky** (a returning player keeps their
-  manager); the hand-off is a `t.me/<username>` link; only the fact is logged
+  manager); the hand-off is a `telegram.me/<username>` link; only the fact is logged
   (`retention_manager_handoff`).
 - **Per-product Telegram config** lives on the `products` row: `telegram_bot_token_enc` /
   `player_api_key_enc` (secretbox-encrypted, like the OpenAI keys — `has_*` flags only out),
@@ -1816,6 +1816,22 @@ settings/secrets/KB/copy, the header switcher. When extending, keep these rules:
 
 ## Conventions
 
+- **Public Telegram links = `telegram.me`, via `tglinks.py`** (the ONE home for
+  the domain). The historic `t.me` domain had its registrar delegation suspended
+  (errors in a normal browser; opens only inside the Telegram apps), so every
+  player-/model-facing Telegram link uses the official legacy alias
+  `telegram.me` (identical `?start=` deeplinks + username routes). Two rewriters:
+  `normalize_tg_url` (a single whole-URL field) and `normalize_tg_text` (a link
+  embedded in free text) — each rewrites `t.me` ONLY as the whole host
+  (`not-t.me`/`sub.t.me` left alone). Links the code builds use
+  `tglinks.TG_LINK_BASE` (re-exported as `retention.TG_LINK_BASE`): the entry
+  deeplink + the three manager hand-off links. Operator-stored `t.me` a deploy
+  can't reach in the DB is rewritten **at render time** (no migration) at these
+  read seams: the channel-subscribe button + the hand-off `contact_url`
+  (`retention.py`), the widget escalation button (`escalation.py`), both KBs
+  (support + retention funnel through `kb.render_variables`), `site_map()` urls,
+  and the support/retention `prompt_variables()` values (`settings.py`). Tests:
+  `tests/test_tglinks.py`.
 - Stdlib-only JWT (`auth.py`) — HS256 via `hmac`/`hashlib`/`base64`, no PyJWT.
 - The widget front-end is vanilla ES modules with **no build step**; widget classes
   are prefixed `npchat-` to avoid host-page collisions. The admin SPA is the React
