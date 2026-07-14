@@ -32,6 +32,7 @@ import player_sync
 import settings
 import telegram_format
 import tenancy
+import tglinks
 import translations
 from telegram_transport import (ParsedUpdate, TelegramClient, inline_keyboard,
                                 parse_update)
@@ -39,37 +40,12 @@ from telegram_transport import (ParsedUpdate, TelegramClient, inline_keyboard,
 log = logging.getLogger(__name__)
 
 
-# Public Telegram link base for deeplinks + manager/channel links shown to
-# players. The historic `t.me` domain had its registrar delegation suspended
-# (it resolves only inside the Telegram apps, errors in a normal browser), so
-# every player-facing link is built on the official legacy alias `telegram.me`,
-# which serves the identical `?start=` deeplink and username routes. This is the
-# ONE place the domain lives — every `telegram.me/<...>` in this module comes
-# from here so a future change is a single edit.
-TG_LINK_BASE = "https://telegram.me"
-
-
-def normalize_tg_url(url: Optional[str]) -> str:
-    """Rewrite a legacy `t.me` host to the public `telegram.me` alias.
-
-    Operator-stored URLs (the channel link on the product row) may still point
-    at the suspended `t.me` domain, which a code push can't reach in the DB.
-    Applied at render time to any operator-supplied Telegram URL shown to a
-    player, so a stale `t.me` link is served correctly without a migration.
-    Non-`t.me` URLs (and blanks) pass through untouched.
-    """
-    if not url:
-        return url or ""
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return url
-    host = (parts.hostname or "").lower()
-    if host in ("t.me", "www.t.me"):
-        rest = url.split("//", 1)[1] if "//" in url else url
-        rest = rest.split("/", 1)[1] if "/" in rest else ""
-        return f"{TG_LINK_BASE}/{rest}"
-    return url
+# Public Telegram link base + the `t.me` → `telegram.me` normalizers live in
+# `tglinks` (the ONE home for the suspended-domain migration). Re-exported here
+# so this module's existing callers/tests keep using `retention.TG_LINK_BASE` /
+# `retention.normalize_tg_url` unchanged.
+TG_LINK_BASE = tglinks.TG_LINK_BASE
+normalize_tg_url = tglinks.normalize_tg_url
 
 
 # SSRF guard for admin-configured outbound URLs — the implementation moved to

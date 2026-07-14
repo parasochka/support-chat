@@ -1816,6 +1816,22 @@ settings/secrets/KB/copy, the header switcher. When extending, keep these rules:
 
 ## Conventions
 
+- **Public Telegram links = `telegram.me`, via `tglinks.py`** (the ONE home for
+  the domain). The historic `t.me` domain had its registrar delegation suspended
+  (errors in a normal browser; opens only inside the Telegram apps), so every
+  player-/model-facing Telegram link uses the official legacy alias
+  `telegram.me` (identical `?start=` deeplinks + username routes). Two rewriters:
+  `normalize_tg_url` (a single whole-URL field) and `normalize_tg_text` (a link
+  embedded in free text) — each rewrites `t.me` ONLY as the whole host
+  (`not-t.me`/`sub.t.me` left alone). Links the code builds use
+  `tglinks.TG_LINK_BASE` (re-exported as `retention.TG_LINK_BASE`): the entry
+  deeplink + the three manager hand-off links. Operator-stored `t.me` a deploy
+  can't reach in the DB is rewritten **at render time** (no migration) at these
+  read seams: the channel-subscribe button + the hand-off `contact_url`
+  (`retention.py`), the widget escalation button (`escalation.py`), both KBs
+  (support + retention funnel through `kb.render_variables`), `site_map()` urls,
+  and the support/retention `prompt_variables()` values (`settings.py`). Tests:
+  `tests/test_tglinks.py`.
 - Stdlib-only JWT (`auth.py`) — HS256 via `hmac`/`hashlib`/`base64`, no PyJWT.
 - The widget front-end is vanilla ES modules with **no build step**; widget classes
   are prefixed `npchat-` to avoid host-page collisions. The admin SPA is the React
