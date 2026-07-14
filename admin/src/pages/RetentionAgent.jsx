@@ -535,7 +535,7 @@ const DecisionsTab = ({ decisions, canWrite, onDelete, onClear }) => (
               <TableCell>
                 <Stack direction="row" spacing={0.5}>
                   <Chip size="small" label={d.action} color={ACTION_COLORS[d.action] || 'default'} />
-                  {d.dry_run && <Chip size="small" label="dry-run" variant="outlined" />}
+                  {d.dry_run && <Chip size="small" label={t('dry-run')} variant="outlined" />}
                 </Stack>
               </TableCell>
               <TableCell>{d.tone || '—'}</TableCell>

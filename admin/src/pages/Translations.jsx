@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Title, useNotify } from 'react-admin';
+import { Title, useNotify, usePermissions } from 'react-admin';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
@@ -78,6 +78,10 @@ const TranslationsInner = () => {
   const [lang, setLang] = useState('');
   const [saving, setSaving] = useState(false);
   const notify = useNotify();
+  // Managers are read-only server-side (403 on PUT) — pre-disable the editor
+  // instead of letting them type and lose the edit, matching SiteMap.
+  const { permissions } = usePermissions();
+  const readOnly = permissions !== 'admin';
 
   const load = () =>
     Promise.all([
@@ -231,6 +235,7 @@ const TranslationsInner = () => {
                   fullWidth
                   multiline
                   margin="dense"
+                  disabled={readOnly}
                 />
               ))}
             </CardContent>
@@ -256,6 +261,7 @@ const TranslationsInner = () => {
                 onChange={(e) => setTitle(t.id, e.target.value)}
                 fullWidth
                 margin="dense"
+                disabled={readOnly}
               />
             ))}
           </CardContent>
@@ -263,7 +269,7 @@ const TranslationsInner = () => {
       )}
 
       <Stack direction="row" spacing={1}>
-        <Button variant="contained" onClick={save} disabled={saving}>
+        <Button variant="contained" onClick={save} disabled={saving || readOnly}>
           {saving ? tr('Saving…') : tr('Save translations')}
         </Button>
       </Stack>

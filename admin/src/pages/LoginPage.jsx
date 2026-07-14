@@ -32,7 +32,7 @@ const LoginForm = () => {
   };
 
   return (
-    <Box component="form" onSubmit={submit} sx={{ p: 2, width: 300 }}>
+    <Box component="form" onSubmit={submit} sx={{ p: 2, width: { xs: '100%', sm: 300 }, maxWidth: 300 }}>
       <TextField
         label={t('Email')}
         type="email"

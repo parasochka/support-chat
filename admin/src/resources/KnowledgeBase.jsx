@@ -11,6 +11,7 @@ import {
   TextField,
   TextInput,
   required,
+  usePermissions,
   useRedirect,
 } from 'react-admin';
 import { useWatch } from 'react-hook-form';
@@ -39,8 +40,13 @@ const KbContentStats = () => {
   return <TextStats text={content || ''} />;
 };
 
-const TopicForm = ({ isCreate = false }) => (
-  <SimpleForm>
+// Managers are read-only server-side (403 on write) — drop the save toolbar
+// for them instead of letting them edit and lose the change on Save.
+const TopicForm = ({ isCreate = false }) => {
+  const { permissions } = usePermissions();
+  const readOnly = permissions !== 'admin';
+  return (
+  <SimpleForm toolbar={readOnly ? false : undefined}>
     <TextInput
       source="slug"
       validate={required()}
@@ -76,7 +82,8 @@ const TopicForm = ({ isCreate = false }) => (
       helperText={t("The topic's knowledge base text (Layer 2). {placeholders} are substituted from KB variables. Clearing the field removes the entry.")}
     />
   </SimpleForm>
-);
+  );
+};
 
 export const KbList = () => {
   const isMobile = useIsMobile();
@@ -112,6 +119,9 @@ export const KbList = () => {
 
 export const KbEdit = () => (
   <RequireProduct title={t('Knowledge base')}>
+    {/* Keep the Content hub strip on the drilldown too, so the cross-surface
+        tabs never disappear mid-flow. */}
+    <RouteTabs tabs={CONTENT_TABS} />
     <Edit mutationMode="pessimistic" title={t('Edit topic + KB')}>
       <TopicForm />
     </Edit>
@@ -120,6 +130,7 @@ export const KbEdit = () => (
 
 export const KbCreate = () => (
   <RequireProduct title={t('Knowledge base')}>
+    <RouteTabs tabs={CONTENT_TABS} />
     <Create redirect="list" title={t('New topic')}>
       <TopicForm isCreate />
     </Create>

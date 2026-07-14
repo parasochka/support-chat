@@ -87,7 +87,7 @@ const GUIDE_STEPS = [
     title: t('5 · Content and tuning'),
     body: rich(
       t(
-        'Review the [Retention KB](#/retention?tab=kb) (one text document — what Nika may offer and talk about; a generic English starter is pre-filled, replace it with the brand\'s own), tune the Telegram persona in [Prompt variables](#/retention?tab=variables) (name/role/tone — empty fields use the built-in retention defaults), upload photos in [Media](#/retention?tab=photos) (bulk upload, then select them and press **Generate metadata** to have the AI fill the description, tags, `stage` = explicitness and `level_min` = VIP tier) and add live [Managers](#/retention?tab=managers) (round-robin, sticky). Thresholds (daily photo cap, stage progression, VIP tiers, nonce TTL) are the `retention` group in [Settings](#/settings); bot texts are the `rtn_*` keys in [Translations](#/translations).'
+        'Review the [Retention KB](#/retention?tab=kb) (one text document — what Nika may offer and talk about; a generic English starter is pre-filled, replace it with the brand\'s own), tune the Telegram persona in [Prompt variables](#/retention?tab=variables) (name/role/tone — empty fields use the built-in retention defaults), upload photos in [Media](#/retention?tab=photos) (bulk upload, then select them and press **Generate metadata** to have the AI fill the description, tags, `stage` = explicitness and `level_min` = VIP tier) and add live [Managers](#/retention?tab=managers) (round-robin, sticky). Thresholds (daily photo cap, stage progression, VIP tiers, nonce TTL) are the `retention` group in [Settings](#/settings?module=retention); bot texts are the `rtn_*` keys in [Translations](#/translations).'
       )
     ),
   },
@@ -128,6 +128,9 @@ const GuideTab = () => (
 // ---------------------------------------------------------------------------
 const ConfigTab = ({ productId }) => {
   const notify = useNotify();
+  // Managers are read-only server-side (403 on write) — pre-disable saves.
+  const { permissions } = usePermissions();
+  const readOnly = permissions !== 'admin';
   const [data, setData] = useState(null);
   const [form, setForm] = useState({});
   const [secrets, setSecrets] = useState({});
@@ -251,10 +254,10 @@ const ConfigTab = ({ productId }) => {
             margin="dense"
           />
         ))}
-        <Button variant="contained" onClick={save} sx={{ mt: 1, mr: 1 }}>
+        <Button variant="contained" onClick={save} disabled={readOnly} sx={{ mt: 1, mr: 1 }}>
           {t('Save config')}
         </Button>
-        <Button variant="outlined" onClick={registerWebhook} sx={{ mt: 1 }}>
+        <Button variant="outlined" onClick={registerWebhook} disabled={readOnly} sx={{ mt: 1 }}>
           {t('Register Telegram webhook')}
         </Button>
         {data.webhook_url && (
@@ -279,7 +282,7 @@ const ConfigTab = ({ productId }) => {
           onChange={(e) => setSecrets({ ...secrets, player_api_key: e.target.value })}
           onClear={() => clearSecret('player_api_key', t('Player API key'))}
         />
-        <Button variant="contained" size="small" onClick={saveSecrets} sx={{ mt: 1 }}>
+        <Button variant="contained" size="small" onClick={saveSecrets} disabled={readOnly} sx={{ mt: 1 }}>
           {t('Save secrets')}
         </Button>
       </CardContent>
@@ -294,6 +297,9 @@ const ConfigTab = ({ productId }) => {
 // ---------------------------------------------------------------------------
 const KbTab = ({ productId }) => {
   const notify = useNotify();
+  // Managers are read-only server-side (403 on write) — pre-disable saves.
+  const { permissions } = usePermissions();
+  const readOnly = permissions !== 'admin';
   const [text, setText] = useState(null);
   const [saving, setSaving] = useState(false);
 
@@ -345,7 +351,7 @@ const KbTab = ({ productId }) => {
           minRows={20}
           fullWidth
         />
-        <Button variant="contained" onClick={save} disabled={saving} sx={{ mt: 1.5 }}>
+        <Button variant="contained" onClick={save} disabled={saving || readOnly} sx={{ mt: 1.5 }}>
           {t('Save')}
         </Button>
       </CardContent>
@@ -361,6 +367,9 @@ const KbTab = ({ productId }) => {
 // ---------------------------------------------------------------------------
 const VariablesTab = ({ productId }) => {
   const notify = useNotify();
+  // Managers are read-only server-side (403 on write) — pre-disable saves.
+  const { permissions } = usePermissions();
+  const readOnly = permissions !== 'admin';
   const [vars, setVars] = useState(null);
   const [values, setValues] = useState({});
   const [saving, setSaving] = useState(false);
@@ -434,7 +443,7 @@ const VariablesTab = ({ productId }) => {
               margin="normal"
             />
           ))}
-          <Button variant="contained" onClick={save} disabled={saving} sx={{ mt: 1 }}>
+          <Button variant="contained" onClick={save} disabled={saving || readOnly} sx={{ mt: 1 }}>
             {saving ? t('Saving…') : t('Save variables')}
           </Button>
         </CardContent>
@@ -459,7 +468,7 @@ const PreviewBlock = ({ title, text }) => (
       <TextStats text={text || ''} sx={{ mb: 1 }} />
       <Typography
         component="pre"
-        sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 13, m: 0 }}
+        sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: 'monospace', fontSize: 13, m: 0 }}
       >
         {text || '—'}
       </Typography>
@@ -602,6 +611,9 @@ const META_CHUNK = 10;
 const PHOTOS_PER_PAGE = 21;
 
 const PhotosTab = ({ productId }) => {
+  // Managers are read-only server-side (403 on write) — pre-disable writes.
+  const { permissions } = usePermissions();
+  const readOnly = permissions !== 'admin';
   const notify = useNotify();
   const [items, setItems] = useState([]);
   const [upload, setUpload] = useState({ description: '', tags: '', level_min: 0, stage: 1, category: '' });
@@ -927,7 +939,7 @@ const PhotosTab = ({ productId }) => {
                 onChange={(e) => setFiles([...e.target.files])}
               />
             </Button>
-            <Button variant="contained" onClick={doUpload} disabled={!files.length || uploading}>
+            <Button variant="contained" onClick={doUpload} disabled={!files.length || uploading || readOnly}>
               {uploading ? t('Uploading…') : t('Upload')}
             </Button>
           </Stack>
@@ -1017,7 +1029,7 @@ const PhotosTab = ({ productId }) => {
               onClick={() => setSelected(new Set())}
               disabled={!selected.size}
             >
-              {t('Clear')}
+              {t('Clear selection')}
             </Button>
             <Tooltip
               title={t(
@@ -1029,7 +1041,7 @@ const PhotosTab = ({ productId }) => {
                   variant="contained"
                   size="small"
                   onClick={generate}
-                  disabled={!selected.size || generating}
+                  disabled={!selected.size || generating || readOnly}
                 >
                   {generating ? t('Generating…') : t('Generate')}
                   {selected.size ? ` (${selected.size})` : ''}
@@ -1046,7 +1058,7 @@ const PhotosTab = ({ productId }) => {
                   variant="outlined"
                   size="small"
                   onClick={normalize}
-                  disabled={normalizing}
+                  disabled={normalizing || readOnly}
                 >
                   {normalizing ? t('Optimizing…') : t('Optimize')}
                 </Button>
@@ -1245,6 +1257,9 @@ const PhotosTab = ({ productId }) => {
 // ---------------------------------------------------------------------------
 const ManagersTab = ({ productId }) => {
   const notify = useNotify();
+  // Managers are read-only server-side (403 on write) — pre-disable writes.
+  const { permissions } = usePermissions();
+  const readOnly = permissions !== 'admin';
   const [items, setItems] = useState([]);
   const [form, setForm] = useState({ display_name: '', username: '' });
 
@@ -1298,7 +1313,7 @@ const ManagersTab = ({ productId }) => {
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
         <TextField size="small" label={t('Display name')} value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
         <TextField size="small" label={t('Telegram username (without @)')} value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
-        <Button variant="outlined" onClick={create} disabled={!form.display_name || !form.username}>
+        <Button variant="outlined" onClick={create} disabled={!form.display_name || !form.username || readOnly}>
           {t('Add manager')}
         </Button>
       </Stack>
@@ -1441,8 +1456,58 @@ const ConversationsTab = ({ productId }) => {
           </Button>
         </Stack>
       )}
+      {isMobile ? (
+        // Card rows on phones — the same pattern the react-admin lists use
+        // (MobileList), instead of a 10-column horizontal-scroll table.
+        <Stack spacing={1} sx={{ mb: 1 }}>
+          {data.items.map((s) => (
+            <Card key={s.id} variant="outlined" onClick={() => openTranscript(s.id)} sx={{ cursor: 'pointer' }}>
+              <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                  <Typography variant="subtitle2" sx={{ overflowWrap: 'anywhere' }}>
+                    {s.full_name || s.player_id || '—'}
+                    {s.tg_username ? ` · @${s.tg_username}` : s.tg_user_id ? ` · ${s.tg_user_id}` : ''}
+                  </Typography>
+                  <Chip
+                    size="small"
+                    label={s.status}
+                    color={s.status === 'open' ? 'success' : 'default'}
+                    variant="outlined"
+                  />
+                </Stack>
+                <Typography variant="body2" color="text.secondary">
+                  {t('Msgs')}: {s.message_count} · {t('Cost $')}
+                  {s.cost_usd_total ? s.cost_usd_total.toFixed(4) : '0'}
+                  {s.lang ? ` · ${s.lang}` : ''}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" component="div">
+                  {new Date(s.created_at).toLocaleString()} → {new Date(s.updated_at).toLocaleString()}
+                </Typography>
+                {isAdmin && (
+                  <Button
+                    size="small"
+                    color="error"
+                    sx={{ mt: 0.5 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteIds([s.id]);
+                    }}
+                  >
+                    {t('Delete')}
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+          {data.items.length === 0 && (
+            <Typography color="text.secondary" sx={{ py: 2 }}>
+              {t('No Telegram chats yet.')}
+            </Typography>
+          )}
+        </Stack>
+      ) : (
       <Box sx={{ overflowX: 'auto' }}>
-        <Table size="small">
+        <Table size="small" sx={{ minWidth: 760 }}>
           <TableHead>
             <TableRow>
               {isAdmin && (
@@ -1527,6 +1592,7 @@ const ConversationsTab = ({ productId }) => {
           </TableBody>
         </Table>
       </Box>
+      )}
       {pages > 1 && (
         <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }}>
           <Button size="small" disabled={page <= 1} onClick={() => setPage(page - 1)}>
@@ -1584,7 +1650,7 @@ const ConversationsTab = ({ productId }) => {
                         {item.cost_usd ? ` · $${item.cost_usd.toFixed(5)}` : ''}
                         {item.ping_context ? ` · ⚡ ${t('proactive:')} ${item.ping_context}` : ''}
                       </Typography>
-                      <Typography sx={{ whiteSpace: 'pre-wrap' }}>{item.content}</Typography>
+                      <Typography sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>{item.content}</Typography>
                     </CardContent>
                   </Card>
                 )
@@ -1798,7 +1864,7 @@ const AnalyticsTab = ({ productId }) => {
         {t('Linked players')} ({users.length})
       </Typography>
       <Box sx={{ overflowX: 'auto' }}>
-        <Table size="small">
+        <Table size="small" sx={{ minWidth: 760 }}>
           <TableHead>
             <TableRow>
               <TableCell>{t('Player')}</TableCell>
@@ -1979,7 +2045,7 @@ const IdlePingsTab = ({ productId }) => {
         notify(`${t('Sweep skipped:')} ${s.skipped}`, { type: 'warning' });
       } else {
         notify(
-          `${t('Sweep done')} — ${t('considered')} ${s.considered ?? 0}, ${t('sent')} ${s.sent ?? 0}, ${t('failed')} ${s.failed ?? 0}`,
+          `${t('Sweep done')} — ${t('considered')} ${s.considered ?? 0}, ${t('sent')} ${s.sent ?? 0}, ${s.failed ?? 0} ${t('failed')}`,
           { type: 'success' }
         );
       }
@@ -2051,7 +2117,7 @@ const IdlePingsTab = ({ productId }) => {
         </Typography>
       )}
       <Box sx={{ overflowX: 'auto', mb: 3 }}>
-        <Table size="small">
+        <Table size="small" sx={{ minWidth: 760 }}>
           <TableHead>
             <TableRow>
               <TableCell>{t('On')}</TableCell>
@@ -2121,7 +2187,7 @@ const IdlePingsTab = ({ productId }) => {
         )}
       </Typography>
       <Box sx={{ overflowX: 'auto' }}>
-        <Table size="small">
+        <Table size="small" sx={{ minWidth: 680 }}>
           <TableHead>
             <TableRow>
               <TableCell>{t('When')}</TableCell>

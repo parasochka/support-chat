@@ -173,7 +173,7 @@ const MessageThread = () => {
                 {item.cost_usd ? ` · $${item.cost_usd.toFixed(5)}` : ''}
                 {item.ping_context ? ` · ⚡ ${t('proactive')}: ${item.ping_context}` : ''}
               </Typography>
-              <Typography sx={{ whiteSpace: 'pre-wrap' }}>{item.content}</Typography>
+              <Typography sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>{item.content}</Typography>
             </CardContent>
           </Card>
         )

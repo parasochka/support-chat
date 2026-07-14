@@ -21,6 +21,7 @@ const Block = ({ title, text }) => (
         component="pre"
         sx={{
           whiteSpace: 'pre-wrap',
+          overflowWrap: 'anywhere',
           fontFamily: 'monospace',
           fontSize: 13,
           m: 0,

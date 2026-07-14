@@ -127,7 +127,7 @@ const SystemLogs = () => {
                 <TableCell sx={{ verticalAlign: 'top' }}>
                   <Chip size="small" color={LEVEL_COLOR[r.level] || 'default'} label={r.level} />
                 </TableCell>
-                <TableCell sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 12 }}>
+                <TableCell sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: 'monospace', fontSize: 12 }}>
                   {r.message}
                 </TableCell>
               </TableRow>

@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Title, useNotify } from 'react-admin';
+import { Title, useNotify, usePermissions } from 'react-admin';
 import Accordion from '@mui/material/Accordion';
 import AccordionDetails from '@mui/material/AccordionDetails';
 import AccordionSummary from '@mui/material/AccordionSummary';
@@ -153,7 +153,7 @@ const Field = ({ field, value, onChange, form, locked = false }) => {
         <Grid container spacing={1}>
           <Grid size={{ xs: 6, sm: 3, md: 2 }}>
             <TextField
-              label="Stage 1"
+              label={`${t('Stage')} 1`}
               value="0"
               size="small"
               fullWidth
@@ -164,7 +164,7 @@ const Field = ({ field, value, onChange, form, locked = false }) => {
           {arr.map((n, i) => (
             <Grid size={{ xs: 6, sm: 3, md: 2 }} key={i}>
               <TextField
-                label={`Stage ${i + 2}`}
+                label={`${t('Stage')} ${i + 2}`}
                 type="number"
                 value={n}
                 onChange={(e) => setAt(i, e.target.value)}
@@ -330,6 +330,10 @@ const Field = ({ field, value, onChange, form, locked = false }) => {
 // ---------------------------------------------------------------------------
 const GroupEditor = ({ group, fields, resolved, onSaved, scopeLabel, productScoped }) => {
   const notify = useNotify();
+  // Managers are read-only server-side (403 on PUT) — pre-disable the save,
+  // matching the SiteMap/Translations pattern.
+  const { permissions } = usePermissions();
+  const readOnly = permissions !== 'admin';
   const [form, setForm] = useState(() => ({ ...(resolved || {}) }));
   const [saving, setSaving] = useState(false);
 
@@ -389,7 +393,7 @@ const GroupEditor = ({ group, fields, resolved, onSaved, scopeLabel, productScop
             );
           })}
         </Grid>
-        <Button variant="contained" onClick={save} disabled={saving} sx={{ mt: 2 }}>
+        <Button variant="contained" onClick={save} disabled={saving || readOnly} sx={{ mt: 2 }}>
           {saving ? t('Saving…') : `${t('Save')} — ${t(GROUP_LABELS[group] || group)}${scopeLabel}`}
         </Button>
       </CardContent>
@@ -402,6 +406,8 @@ const GroupEditor = ({ group, fields, resolved, onSaved, scopeLabel, productScop
 // ---------------------------------------------------------------------------
 const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
   const notify = useNotify();
+  const { permissions } = usePermissions();
+  const readOnly = permissions !== 'admin';
   const lang = resolved?.language || {};
   const [supported, setSupported] = useState(() => [...(lang.supported || [])]);
   const [def, setDef] = useState(lang.default || 'en');
@@ -514,7 +520,7 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
                 color="error"
                 onClick={() => removeLanguage(c)}
                 aria-label={`Remove ${c}`}
-                disabled={supported.length <= 1}
+                disabled={supported.length <= 1 || readOnly}
               >
                 <DeleteIcon fontSize="small" />
               </IconButton>
@@ -541,13 +547,13 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
               </MenuItem>
             ))}
           </TextField>
-          <Button variant="outlined" onClick={addLanguage} disabled={!addCode}>
+          <Button variant="outlined" onClick={addLanguage} disabled={!addCode || readOnly}>
             {t('Add')}
           </Button>
         </Stack>
 
         <Box sx={{ mt: 2 }}>
-          <Button variant="contained" onClick={save} disabled={saving}>
+          <Button variant="contained" onClick={save} disabled={saving || readOnly}>
             {saving ? t('Saving…') : `${t('Save')} — ${t('Languages')}${scopeLabel}`}
           </Button>
         </Box>

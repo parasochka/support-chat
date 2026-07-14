@@ -104,7 +104,7 @@ const SiteMapEditor = () => {
                   placeholder={t('Cashier')}
                 />
                 <TextField
-                  label="URL"
+                  label={t('URL')}
                   value={r.url}
                   onChange={(e) => setRow(i, { url: e.target.value })}
                   disabled={readOnly}
