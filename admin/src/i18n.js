@@ -1012,8 +1012,8 @@ const RU = {
 
   // ----- retention: setup guide -----
   '1 · Create the bot': '1 · Создайте бота',
-  'Open [@BotFather](https://t.me/BotFather) → `/newbot`, pick a name and a username, copy the **token**. Optionally set the description, about text and avatar there too. Menu commands are not needed — players enter only via a deeplink from the site.':
-    'Откройте [@BotFather](https://t.me/BotFather) → `/newbot`, задайте имя и username, скопируйте **токен**. Там же при желании настройте описание, текст «о боте» и аватар. Команды меню не нужны — игроки попадают в бота только по deeplink с сайта.',
+  'Open [@BotFather](https://telegram.me/BotFather) → `/newbot`, pick a name and a username, copy the **token**. Optionally set the description, about text and avatar there too. Menu commands are not needed — players enter only via a deeplink from the site.':
+    'Откройте [@BotFather](https://telegram.me/BotFather) → `/newbot`, задайте имя и username, скопируйте **токен**. Там же при желании настройте описание, текст «о боте» и аватар. Команды меню не нужны — игроки попадают в бота только по deeplink с сайта.',
   '2 · Create the channel (subscription gate)': '2 · Создайте канал (проверка подписки)',
   'Create a Telegram **channel** and add the bot as a **channel administrator** — without admin rights the subscription check (`getChatMember`) fails and the gate never passes. Note the channel id (`@name` for public, `-100…` for private) and the channel URL (the gate\'s "open channel" button leads there).':
     'Создайте Telegram-**канал** и добавьте бота **администратором канала** — без прав администратора проверка подписки (`getChatMember`) не работает, и гейт никогда не пройдёт. Запишите id канала (`@name` для публичного, `-100…` для приватного) и URL канала (туда ведёт кнопка «открыть канал» на проверке подписки).',

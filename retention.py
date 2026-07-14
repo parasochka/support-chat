@@ -39,6 +39,39 @@ from telegram_transport import (ParsedUpdate, TelegramClient, inline_keyboard,
 log = logging.getLogger(__name__)
 
 
+# Public Telegram link base for deeplinks + manager/channel links shown to
+# players. The historic `t.me` domain had its registrar delegation suspended
+# (it resolves only inside the Telegram apps, errors in a normal browser), so
+# every player-facing link is built on the official legacy alias `telegram.me`,
+# which serves the identical `?start=` deeplink and username routes. This is the
+# ONE place the domain lives — every `telegram.me/<...>` in this module comes
+# from here so a future change is a single edit.
+TG_LINK_BASE = "https://telegram.me"
+
+
+def normalize_tg_url(url: Optional[str]) -> str:
+    """Rewrite a legacy `t.me` host to the public `telegram.me` alias.
+
+    Operator-stored URLs (the channel link on the product row) may still point
+    at the suspended `t.me` domain, which a code push can't reach in the DB.
+    Applied at render time to any operator-supplied Telegram URL shown to a
+    player, so a stale `t.me` link is served correctly without a migration.
+    Non-`t.me` URLs (and blanks) pass through untouched.
+    """
+    if not url:
+        return url or ""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    host = (parts.hostname or "").lower()
+    if host in ("t.me", "www.t.me"):
+        rest = url.split("//", 1)[1] if "//" in url else url
+        rest = rest.split("/", 1)[1] if "/" in rest else ""
+        return f"{TG_LINK_BASE}/{rest}"
+    return url
+
+
 # SSRF guard for admin-configured outbound URLs — the implementation moved to
 # player_sync (the unified data-sync module) together with the lazy pull; the
 # re-export keeps this module's name (tests and callers monkeypatch/call it here).
@@ -170,7 +203,7 @@ def new_nonce() -> str:
 async def create_deeplink(product: dict[str, Any], handshake_context: dict[str, Any],
                           escalation: bool,
                           lang: Optional[str] = None) -> dict[str, str]:
-    """Mint a nonce for a player's handshake and return the t.me deep link.
+    """Mint a nonce for a player's handshake and return the Telegram deep link.
 
     The full profile is stashed server-side keyed by the nonce (the deeplink
     only carries the short nonce). Redeemed once on /start.
@@ -194,7 +227,7 @@ async def create_deeplink(product: dict[str, Any], handshake_context: dict[str, 
         None, "retention_deeplink_created",
         {"escalation": escalation}, product_id=product["id"])
     username = product.get("telegram_bot_username") or ""
-    deep_link = f"https://t.me/{username}?start={nonce}" if username else ""
+    deep_link = f"{TG_LINK_BASE}/{username}?start={nonce}" if username else ""
     return {"nonce": nonce, "deep_link": deep_link}
 
 
@@ -549,7 +582,7 @@ def fallback_photo_caption(lang: str) -> str:
 
 def _subscribe_markup(product: dict[str, Any], lang: str) -> dict[str, Any]:
     rows = []
-    url = product.get("telegram_channel_url")
+    url = normalize_tg_url(product.get("telegram_channel_url"))
     if url:
         rows.append([{"text": _rtn_text("rtn_btn_open_channel", lang),
                       "url": url}])
@@ -619,7 +652,7 @@ def _site_support_url(lang: str, product: Optional[dict[str, Any]] = None) -> st
         return site_url
     url = (translations.text("contact_url", lang) or "").strip()
     if url.startswith(("http://", "https://")):
-        return url
+        return normalize_tg_url(url)
     for page in settings.site_map() or []:
         if not isinstance(page, dict):
             continue
@@ -654,7 +687,7 @@ async def _send_handoff_choice(client: TelegramClient, product: dict[str, Any],
 
     rows: list[list[dict[str, str]]] = []
     if manager:
-        link = f"https://t.me/{manager['username']}"
+        link = f"{TG_LINK_BASE}/{manager['username']}"
         rows.append([{"text": f"👤 {manager['display_name']}", "url": link}])
         await db.log_admin_event(
             None, "retention_manager_handoff",
@@ -677,7 +710,7 @@ async def _send_handoff_choice(client: TelegramClient, product: dict[str, Any],
                                       reply_markup=markup)
         return "manager+site"
     if manager:
-        link = f"https://t.me/{manager['username']}"
+        link = f"{TG_LINK_BASE}/{manager['username']}"
         intro = _rtn_text("rtn_manager_intro", lang).replace(
             "{manager}", f"{manager['display_name']} ({link})")
         await client.send_message(chat_id, intro,
@@ -695,7 +728,7 @@ async def _route_to_manager(client: TelegramClient, product: dict[str, Any],
     if manager is None:
         await client.send_message(chat_id, _rtn_text("rtn_manager_none", lang))
         return
-    link = f"https://t.me/{manager['username']}"
+    link = f"{TG_LINK_BASE}/{manager['username']}"
     intro = _rtn_text("rtn_manager_intro", lang).replace(
         "{manager}", f"{manager['display_name']} ({link})")
     await client.send_message(chat_id, intro,

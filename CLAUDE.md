@@ -690,7 +690,7 @@ renders the card without a button link).
 target (a form / support group / chat). But when the session's product has
 `retention_enabled` **and** a `telegram_bot_username`, the escalation button is
 **replaced**: instead of the static link it carries a freshly-minted, one-time
-*escalation-entry* retention deeplink (`https://t.me/<bot>?start=<nonce>`,
+*escalation-entry* retention deeplink (`https://telegram.me/<bot>?start=<nonce>`,
 `entry_type='escalation'`), so tapping it drops the player into Nika's Telegram bot —
 which runs the **channel-subscription gate** on `/start` (they subscribe on the way in)
 and offers **"go to a manager"** in its menu (the escalation entry). The player's session
@@ -1224,7 +1224,7 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `retention_handoff` admin event records the offered target
   (`manager+site`/`manager`/`site`/`none`). Tests: `tests/test_retention_cta.py`.
 - **Managers** (`retention_managers`): round-robin, **sticky** (a returning player keeps their
-  manager); the hand-off is a `t.me/<username>` link; only the fact is logged
+  manager); the hand-off is a `telegram.me/<username>` link; only the fact is logged
   (`retention_manager_handoff`).
 - **Per-product Telegram config** lives on the `products` row: `telegram_bot_token_enc` /
   `player_api_key_enc` (secretbox-encrypted, like the OpenAI keys — `has_*` flags only out),
