@@ -22,6 +22,7 @@ import {
 } from 'react-admin';
 import { useFormContext } from 'react-hook-form';
 import Alert from '@mui/material/Alert';
+import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
 import MenuItem from '@mui/material/MenuItem';
@@ -229,7 +230,8 @@ const MembershipsPanel = () => {
         </Alert>
       )}
       {memberships.length > 0 && (
-        <Table size="small" sx={{ maxWidth: 720 }}>
+        <Box sx={{ overflowX: 'auto' }}>
+        <Table size="small" sx={{ maxWidth: 720, minWidth: 420 }}>
           <TableHead>
             <TableRow>
               <TableCell>{t('Scope')}</TableCell>
@@ -260,6 +262,7 @@ const MembershipsPanel = () => {
             ))}
           </TableBody>
         </Table>
+        </Box>
       )}
       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
         <TextField_

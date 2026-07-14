@@ -18,6 +18,7 @@ import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
+import DashboardIcon from '@mui/icons-material/Dashboard';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
@@ -178,14 +179,14 @@ const CollapsibleSection = ({ id, label, children }) => {
 // custom entry, so no item can drift out of line with its siblings). `to` is a
 // path (+ optional query); `active` is an exact matcher over the location so
 // e.g. /retention-agent can never light up a /retention?tab=… sibling.
-const SubItem = ({ to, label, icon, active }) => {
+const SubItem = ({ to, label, icon, active, sx }) => {
   const navigate = useNavigate();
   const location = useLocation();
   return (
     <ListItemButton
       selected={active(location)}
       onClick={() => navigate(to)}
-      sx={{ pl: 4, py: { xs: 1, md: 0.4 } }}
+      sx={{ pl: 4, py: { xs: 1, md: 0.4 }, ...sx }}
     >
       {/* 40px matches react-admin's own MenuItemLink icon box, so the custom
           sub-items and the RA resource/menu links share ONE icon column and the
@@ -333,7 +334,20 @@ const AppMenu = () => {
           { color: 'primary.main' },
       }}
     >
-      <Menu.DashboardItem primaryText={t('Dashboard')} />
+      {/* Custom entry instead of Menu.DashboardItem: the module-scoped
+          dashboard views (/?module=support|retention) have their own sidebar
+          entries, and the built-in item matches on pathname alone, so it
+          stayed lit on those views too. */}
+      <SubItem
+        to="/"
+        label={t('Dashboard')}
+        icon={<DashboardIcon fontSize="small" />}
+        active={(location) =>
+          location.pathname === '/' &&
+          !new URLSearchParams(location.search).get('module')
+        }
+        sx={{ pl: 2 }}
+      />
 
       <CollapsibleSection id="support" label={t('Support chat')}>
         {/* The operator's guide to the whole support module — the support twin
@@ -360,11 +374,18 @@ const AppMenu = () => {
           }
         />
         <SettingsSubItem module="support" label={t('Chat settings')} />
-        {/* The combined dashboard narrowed to the support block. */}
-        <Menu.Item
+        {/* The combined dashboard narrowed to the support block. A SubItem (not
+            Menu.Item): MenuItemLink matches on pathname only, and this link's
+            target lives in the query (?module=support) — pathname `/` made it
+            light up together with Dashboard on every dashboard view. */}
+        <SubItem
           to="/?module=support"
-          primaryText={t('Analytics')}
-          leftIcon={<InsightsIcon />}
+          label={t('Analytics')}
+          icon={<InsightsIcon fontSize="small" />}
+          active={(location) =>
+            location.pathname === '/' &&
+            new URLSearchParams(location.search).get('module') === 'support'
+          }
         />
       </CollapsibleSection>
 
@@ -489,6 +510,11 @@ const App = () => (
         path="/prompt-variables"
         element={<Navigate to="/prompt?tab=variables" replace />}
       />
+      {/* Legacy hashes from the pre-react-admin panel: #variables (the old
+          top-level Variables tab, now KB → Variables) and #test (the old Test
+          sandbox, now the test-profile block on Prompt variables). */}
+      <Route path="/variables" element={<Navigate to="/kb_variables" replace />} />
+      <Route path="/test" element={<Navigate to="/prompt?tab=variables" replace />} />
       <Route path="/translations" element={<Translations />} />
       <Route path="/site-map" element={<SiteMap />} />
       <Route path="/settings" element={<Settings />} />

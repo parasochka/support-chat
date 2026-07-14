@@ -6,6 +6,7 @@ import {
   SimpleForm,
   TextField,
   TextInput,
+  usePermissions,
   useRedirect,
 } from 'react-admin';
 import MobileList from '../components/MobileList';
@@ -50,14 +51,22 @@ export const KbVariableList = () => {
   );
 };
 
-export const KbVariableEdit = () => (
-  <RequireProduct title={t('Knowledge base · variables')}>
-    <Edit mutationMode="pessimistic" title={t('Edit KB variable')}>
-      <SimpleForm>
-        <TextInput source="key" label={t('Key')} disabled />
-        <TextInput source="description" label={t('Description')} fullWidth />
-        <TextInput source="value" label={t('Value')} fullWidth multiline />
-      </SimpleForm>
-    </Edit>
-  </RequireProduct>
-);
+// Managers are read-only server-side (403 on write) — drop the save toolbar
+// for them instead of letting them edit and lose the change on Save.
+export const KbVariableEdit = () => {
+  const { permissions } = usePermissions();
+  const readOnly = permissions !== 'admin';
+  return (
+    <RequireProduct title={t('Knowledge base · variables')}>
+      {/* Keep the Content hub strip on the drilldown too. */}
+      <RouteTabs tabs={CONTENT_TABS} />
+      <Edit mutationMode="pessimistic" title={t('Edit KB variable')}>
+        <SimpleForm toolbar={readOnly ? false : undefined}>
+          <TextInput source="key" label={t('Key')} disabled />
+          <TextInput source="description" label={t('Description')} fullWidth />
+          <TextInput source="value" label={t('Value')} fullWidth multiline />
+        </SimpleForm>
+      </Edit>
+    </RequireProduct>
+  );
+};

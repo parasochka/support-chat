@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNotify } from 'react-admin';
+import { useNotify, usePermissions } from 'react-admin';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -36,6 +36,10 @@ const PROFILE_FIELDS = [
  */
 const PromptVariables = () => {
   const notify = useNotify();
+  // Managers are read-only server-side (403 on PUT) — pre-disable the editors
+  // instead of letting them type and lose the edit, matching SiteMap.
+  const { permissions } = usePermissions();
+  const readOnly = permissions !== 'admin';
 
   // --- prompt variables ---
   const [vars, setVars] = useState([]);
@@ -176,9 +180,10 @@ const PromptVariables = () => {
               multiline
               margin="normal"
               placeholder={v.default}
+              disabled={readOnly}
             />
           ))}
-          <Button variant="contained" onClick={saveVars} disabled={savingVars} sx={{ mt: 1 }}>
+          <Button variant="contained" onClick={saveVars} disabled={savingVars || readOnly} sx={{ mt: 1 }}>
             {savingVars ? t('Saving…') : t('Save variables')}
           </Button>
         </CardContent>
@@ -203,6 +208,7 @@ const PromptVariables = () => {
               multiline
               minRows={6}
               margin="normal"
+              disabled={readOnly}
             />
             <TextField
               label={t('Human-request keywords')}
@@ -212,8 +218,9 @@ const PromptVariables = () => {
               multiline
               minRows={6}
               margin="normal"
+              disabled={readOnly}
             />
-            <Button variant="contained" onClick={saveKeywords} disabled={savingKw}>
+            <Button variant="contained" onClick={saveKeywords} disabled={savingKw || readOnly}>
               {savingKw ? t('Saving…') : t('Save keywords')}
             </Button>
           </CardContent>
@@ -240,6 +247,7 @@ const PromptVariables = () => {
                 <Switch
                   checked={Boolean(profile.enabled)}
                   onChange={(e) => setProfile({ ...profile, enabled: e.target.checked })}
+                  disabled={readOnly}
                 />
               }
               label={t('Enabled (used when no handshake secret is set)')}
@@ -252,12 +260,13 @@ const PromptVariables = () => {
                 onChange={(e) => setProfile({ ...profile, [f]: e.target.value })}
                 fullWidth
                 margin="dense"
+                disabled={readOnly}
               />
             ))}
             <Button
               variant="contained"
               onClick={saveProfile}
-              disabled={savingProfile}
+              disabled={savingProfile || readOnly}
               sx={{ mt: 1 }}
             >
               {savingProfile ? t('Saving…') : t('Save test profile')}
