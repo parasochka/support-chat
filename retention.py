@@ -26,9 +26,11 @@ from urllib.parse import urlsplit
 
 import antispam
 import chat_service
+import config
 import db
 import language
 import player_sync
+import prompts
 import settings
 import telegram_format
 import tenancy
@@ -389,11 +391,44 @@ def resolve_user_lang(ru: dict[str, Any], tg_lang_code: Optional[str] = None) ->
 # Session helper — one telegram chat_session per retention user (lazy)
 # ---------------------------------------------------------------------------
 def _user_context_from_ru(ru: dict[str, Any]) -> dict[str, Any]:
-    """Build the whitelisted Layer-3 player context from a retention_user row."""
+    """Build the whitelisted Layer-3 player context from a retention_user row.
+
+    On a dev/test deploy the admin **Test player** profile is overlaid on top of
+    the snapshot — the same stand-in role it plays for the widget's
+    create_session (api/chat.py) and the read-only prompt previews. This lets an
+    operator drive the retention bot AND the proactive agent on the current test
+    player, so the LIVE bot matches what the preview shows, instead of running on
+    the real/empty Telegram snapshot the model would otherwise invent a
+    balance/VIP for. The gate is the same one the widget uses: it applies only
+    when NO widget handshake secret is configured — a production deploy sets that
+    secret (the host site is authoritative), so real players always keep their
+    own snapshot.
+    """
     ctx = {k: ru.get(k) for k in _PROFILE_FIELDS if ru.get(k)}
     if ru.get("player_id"):
         ctx["id"] = ru.get("player_id")
-    return ctx
+    return _overlay_test_profile(ctx)
+
+
+def _overlay_test_profile(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Overlay the enabled admin Test-player profile over a player context.
+
+    No-op in production (a widget handshake secret is configured) or when the
+    test profile is disabled — the real snapshot then wins untouched. Only the
+    whitelisted `_CONTEXT_FIELDS` are copied, and an empty test field never
+    clobbers a real value (so clearing one test field falls back to the snapshot).
+    """
+    if config.WIDGET_HANDSHAKE_SECRET:
+        return ctx
+    tp = settings.test_profile()
+    if not tp.get("enabled"):
+        return ctx
+    out = dict(ctx)
+    for field in prompts._CONTEXT_FIELDS:
+        val = tp.get(field)
+        if val:
+            out[field] = val
+    return out
 
 
 def session_expired(session: dict[str, Any], *,
@@ -1148,7 +1183,6 @@ def _read_media(storage_ref: Optional[str]) -> Optional[bytes]:
     if not storage_ref:
         return None
     import os
-    import config
     # storage_ref is a bare filename; never allow path traversal out of the dir.
     safe = os.path.basename(storage_ref)
     path = os.path.join(config.RETENTION_MEDIA_DIR, safe)
