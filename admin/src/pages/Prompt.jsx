@@ -6,15 +6,14 @@ import Tabs from '@mui/material/Tabs';
 import PromptPreview from './PromptPreview';
 import PromptVariables from './PromptVariables';
 import RequireProduct from '../components/RequireProduct';
-import RouteTabs from '../components/RouteTabs';
-import { CONTENT_TABS } from '../contentTabs';
 import { t } from '../i18n';
 
 /**
  * The Prompt surface: a read-only Preview of the whole assembled prompt and
- * the editable Prompt variables (brand values + escalation keywords + test
- * profile) as two tabs of one page — they describe the same template. The
- * active tab rides in the ?tab= query param so it survives reloads.
+ * the editable Prompt variables (the brand values) as two tabs of one page —
+ * they describe the same template. The escalation keyword lists and the test
+ * player profile moved to their own pages in the Common section. The active
+ * tab rides in the ?tab= query param so it survives reloads.
  */
 const Prompt = () => {
   const [params, setParams] = useSearchParams();
@@ -24,7 +23,6 @@ const Prompt = () => {
     <RequireProduct title={t('Prompt')}>
     <Box sx={{ p: 2 }}>
       <Title title={t('Prompt')} />
-      <RouteTabs tabs={CONTENT_TABS} />
       <Tabs
         value={tab}
         onChange={(e, v) => setParams({ tab: v }, { replace: true })}

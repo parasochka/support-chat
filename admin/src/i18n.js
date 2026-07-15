@@ -78,29 +78,13 @@ const RU = {
   'Higher wins when several rules match one player.': 'При нескольких совпадениях побеждает правило с большим приоритетом.',
   "Casino triggers need the partner's Player API / event feed to see logins and deposits.": 'Казино-триггерам нужен Player API / поток событий партнёра, чтобы видеть логины и депозиты.',
   "Photo pings pick from the player's unlocked media (tier × stage gates apply).": 'Фото-пинги берут снимки из доступной игроку медиатеки (гейты уровень × стадия действуют).',
-  'Lowercase tier names from Settings → Retention bot → VIP tiers, e.g. gold, platinum.': 'Названия уровней строчными из Настройки → Ретеншен-бот → VIP-уровни, напр. gold, platinum.',
+  'Lowercase tier names from Retention → Settings → VIP tiers, e.g. gold, platinum.': 'Названия уровней строчными из Ретеншен → Настройки → VIP-уровни, напр. gold, platinum.',
   'What the ping should achieve, e.g. “miss them warmly, tease what’s new, invite them back — no pressure”. English only (it feeds the model prompt).': 'Чего должен добиться пинг, напр. «тепло соскучиться, заинтриговать новинками, позвать обратно — без давления». Только на английском (уходит в промпт модели).',
   'Run now sweeps this product once, ignoring quiet hours (you are explicitly asking); every other guard — caps, gaps, cooldowns, opt-outs, dry-run — still applies.': 'Запуск сейчас делает один проход по продукту, игнорируя тихие часы (вы явно просите); остальные ограничители — капы, интервалы, кулдауны, отписки, dry-run — действуют.',
-  'The proactive agent is DISABLED for this product, so idle pings do not fire either (they are part of the agent). Enable it in Settings → Retention bot → «Agent enabled».': 'Проактивный агент для этого продукта ВЫКЛЮЧЕН, поэтому пинги неактивности тоже не срабатывают (они часть агента). Включите его в Настройки → Ретеншен-бот → «Агент включён».',
-  'Dry-run (shadow mode) is ON: matched idle rules are logged to the agent’s Decisions ledger but nothing is sent. Turn it off in Settings → Retention bot when ready.': 'Включён dry-run (теневой режим): сработавшие правила пишутся в журнал решений агента, но ничего не отправляется. Отключите его в Настройки → Ретеншен-бот, когда будете готовы.',
-  'Idle pings re-engage QUIET players — the inactivity side of the proactive agent (casino events are handled by the [Proactive agent](#/retention-agent) page). Each rule picks WHO (a trigger + inactivity window, optionally narrowed to VIP tiers) and WHAT (a message or a photo, with an English intent hint that grounds what Nika writes). Per-player caps, the minimum gap, quiet hours and the daily AI budget from Settings → Retention bot apply to every send; players opt out with `/stop`.': 'Пинги неактивности будят ЗАМОЛЧАВШИХ игроков — это «сторона тишины» проактивного агента (события казино обрабатывает страница [Проактивный агент](#/retention-agent)). Каждое правило задаёт КОГО (триггер + окно неактивности, опционально сужение по VIP-уровням) и ЧТО (сообщение или фото, с англоязычным интентом, направляющим текст Ники). Персональные капы, минимальный интервал, тихие часы и дневной ИИ-бюджет из Настройки → Ретеншен-бот действуют на каждую отправку; игрок отписывается командой `/stop`.',
+  'The proactive agent is DISABLED for this product, so idle pings do not fire either (they are part of the agent). Enable it in Retention → Settings → «Agent enabled».': 'Проактивный агент для этого продукта ВЫКЛЮЧЕН, поэтому пинги неактивности тоже не срабатывают (они часть агента). Включите его в Ретеншен → Настройки → «Агент включён».',
+  'Dry-run (shadow mode) is ON: matched idle rules are logged to the agent’s Decisions ledger but nothing is sent. Turn it off in Retention → Settings when ready.': 'Включён dry-run (теневой режим): сработавшие правила пишутся в журнал решений агента, но ничего не отправляется. Отключите его в Ретеншен → Настройки, когда будете готовы.',
+  'Idle pings re-engage QUIET players — the inactivity side of the proactive agent (casino events are handled by the [Events](#/retention-agent?tab=events) tab). Each rule picks WHO (a trigger + inactivity window, optionally narrowed to VIP tiers) and WHAT (a message or a photo, with an English intent hint that grounds what Nika writes). Per-player caps, the minimum gap, quiet hours and the daily AI budget from Retention → Settings apply to every send; players opt out with `/stop`.': 'Пинги неактивности будят ЗАМОЛЧАВШИХ игроков — это «сторона тишины» проактивного агента (события казино обрабатывает вкладка [События](#/retention-agent?tab=events)). Каждое правило задаёт КОГО (триггер + окно неактивности, опционально сужение по VIP-уровням) и ЧТО (сообщение или фото, с англоязычным интентом, направляющим текст Ники). Персональные капы, минимальный интервал, тихие часы и дневной ИИ-бюджет из Ретеншен → Настройки действуют на каждую отправку; игрок отписывается командой `/stop`.',
   'Every proactive-send attempt (idle rules AND event reactions): who was nudged, by which rule, and what it cost. Skipped rows explain why a candidate was passed over.': 'Каждая попытка проактивной отправки (правила неактивности И реакции на события): кого тронули, каким правилом и сколько это стоило. Пропущенные строки объясняют, почему кандидата обошли.',
-  'Triggers': 'Триггеры',
-  'Triggers saved': 'Триггеры сохранены',
-  'Save triggers': 'Сохранить триггеры',
-  'Reset to defaults': 'Сбросить к дефолтным',
-  'off by default': 'по умолчанию выкл',
-  'Events with the switch ON wake the agent: each one goes through the guards and gets a row in the Decisions ledger (message / photo / silence). Events with the switch OFF are "state food": they still update the player state (activity timestamps, loss window) but never reach a decision — that is why they do not appear in Decisions.': 'События с включённым тумблером будят агента: каждое проходит через ограничители и получает строку в журнале решений (сообщение / фото / молчание). События с выключенным тумблером — «пища для состояния»: они обновляют состояние игрока (метки активности, окно проигрыша), но до решения не доходят — поэтому их и нет в разделе «Решения».',
-  'bet_settled is special and has no switch: it wakes the agent ONLY when the 24h net loss crosses the high-loss threshold (Settings → Retention bot → Send-frequency guards) — the comfort reaction.': 'bet_settled — особый случай без тумблера: он будит агента ТОЛЬКО когда чистый проигрыш за 24 часа превышает порог крупного проигрыша (Настройки → Ретеншен-бот → Ограничители частоты) — это реакция-поддержка.',
-  'State food by default — switch on to react to it.': 'По умолчанию «пища для состояния» — включите, чтобы реагировать.',
-  'A deposit landed — a warm thank-you moment.': 'Пришёл депозит — момент тёплой благодарности.',
-  'A payment attempt failed — a reassuring note.': 'Платёж не прошёл — подбодрить.',
-  'A payout arrived — congratulate.': 'Пришла выплата — поздравить.',
-  'New loyalty level — celebrate.': 'Новый уровень лояльности — отпраздновать.',
-  'New loyalty class — celebrate.': 'Новый класс лояльности — отпраздновать.',
-  'Verification passed — a nice milestone.': 'Пройдена верификация — приятная веха.',
-  'Bonus wagered through — congratulate.': 'Бонус отыгран — поздравить.',
-  'A bonus expired unused — a gentle heads-up.': 'Бонус сгорел неиспользованным — мягко напомнить.',
   'Deploy-wide setting: switch the header to “All products” to edit it.': 'Общесистемная настройка: чтобы изменить её, переключите шапку на «Все продукты».',
   'global': 'глобально',
   'on': 'вкл',
@@ -108,7 +92,6 @@ const RU = {
   // ----- menu / sections -----
   'Dashboard': 'Дашборд',
   'Support chat': 'Чат поддержки',
-  'Telegram · Retention': 'Telegram · Ретеншен',
   'System': 'Система',
   'Conversations': 'Диалоги',
   'Escalations': 'Эскалации',
@@ -127,7 +110,6 @@ const RU = {
   'Users': 'Пользователи',
   'API keys': 'API-ключи',
   'Chat settings': 'Настройки чата',
-  'Bot settings': 'Настройки бота',
   'Core settings': 'Настройки ядра',
 
   // ----- common chrome -----
@@ -359,8 +341,8 @@ const RU = {
   'Support module — how it works': 'Модуль поддержки — как это работает',
   'Retention module — how it works': 'Модуль ретеншена — как это работает',
   'Core — how it works': 'Ядро — как это работает',
-  'The support widget answers players on the site from the per-topic Knowledge base. Before the model sees a message it passes the anti-spam gates below; the chat limits bound one session. Content (KB texts, prompt variables, translations) is edited in the Support chat section of the menu.':
-    'Виджет поддержки отвечает игрокам на сайте по Базе знаний (по темам). До модели сообщение проходит антиспам-фильтры ниже; лимиты чата ограничивают одну сессию. Контент (тексты БЗ, переменные промпта, переводы) редактируется в разделе меню «Чат поддержки».',
+  'The support widget answers players on the site from the per-topic Knowledge base. Before the model sees a message it passes the anti-spam gates below; the chat limits bound one session. Content is edited in the Support chat section (KB texts, prompt variables) and the Common section (translations, site map).':
+    'Виджет поддержки отвечает игрокам на сайте по Базе знаний (по темам). До модели сообщение проходит антиспам-фильтры ниже; лимиты чата ограничивают одну сессию. Контент редактируется в разделах меню «Чат поддержки» (тексты БЗ, переменные промпта) и «Общее» (переводы, карта сайта).',
   'The Telegram bot re-engages players: it chats in persona, sends photos gated by Stage × VIP level, and the proactive agent reacts to casino events (deposits, level-ups, losses). The guards below are the dials for how often one player may be written to — the agent can never exceed them.':
     'Telegram-бот возвращает игроков: общается в персонаже, отправляет фото по стадиям и VIP-уровню, а проактивный агент реагирует на события казино (депозиты, повышения уровня, проигрыши). Ограничители ниже — регуляторы того, как часто можно писать одному игроку: агент не может их превысить.',
   'These settings are shared by BOTH bots: which OpenAI model answers (and its budgets/timeouts), which languages the assistant supports, and technical request limits. Change with care — they apply to every product without its own override.':
@@ -507,7 +489,12 @@ const RU = {
   'By language': 'По языкам',
   'Sessions': 'Сессии',
   'Retention': 'Ретеншен',
-  'Retention · Telegram': 'Ретеншен · Telegram',
+  'Common': 'Общее',
+  'Retention settings': 'Настройки ретеншена',
+  'Parameters': 'Параметры',
+  'Escalation keywords': 'Ключевые слова эскалации',
+  'Stands in for the host-site handshake in dev/test: the player data the model sees (name personalization, VIP level, balance). Ignored when a handshake secret is configured — the real site supplies the context then.':
+    'Заменяет подписанный handshake сайта в dev/test-режиме: данные игрока, которые видит модель (персонализация по имени, VIP-уровень, баланс). Игнорируется, когда настроен секрет handshake — тогда контекст передаёт реальный сайт.',
   'Linked players': 'Привязанные игроки',
   'Active (30d)': 'Активные (30 дн)',
   'wrote in the bot': 'писали боту',
@@ -602,10 +589,6 @@ const RU = {
   'Light': 'Светлая',
   'Dark': 'Тёмная',
   'Switching the language reloads the panel.': 'Переключение языка перезагрузит панель.',
-  'Content': 'Контент',
-  'Bot setup': 'Настройка бота',
-  'Bot content': 'Контент бота',
-  'Setup': 'Настройка',
   'Logs': 'Логи',
   'System logs': 'Системные логи',
   'Activity (who changed what)': 'Активность (кто что менял)',
@@ -721,8 +704,8 @@ const RU = {
     'Каждое сообщение игрока проходит один и тот же конвейер, по порядку:',
   '**Anti-spam gates** — rate limit per IP, a cooldown between messages, a length cap, the low-content guard (one-character spam gets a nudge without a model call) and the prompt-injection scan. All tunable in **Chat settings**; a rejected message never reaches the model, so attacks don’t burn tokens.':
     '**Антиспам-фильтры** — rate-лимит по IP, кулдаун между сообщениями, лимит длины, защита от пустых сообщений (односимвольный спам получает подсказку без вызова модели) и скан на prompt-инъекции. Всё настраивается в «**Настройках чата**»; отклонённое сообщение не доходит до модели, поэтому атаки не сжигают токены.',
-  '**Keyword escalation check** — if the message hits a high-risk stem (fraud, legal threats) or an explicit "call a human", the escalation card is shown immediately, before any model call. The lists are edited in **Prompt → Prompt variables**.':
-    '**Проверка стоп-слов** — если сообщение содержит высокорисковый триггер (мошенничество, юридические угрозы) или явную просьбу позвать человека, карточка эскалации показывается сразу, до вызова модели. Списки редактируются в «**Промпт → Переменные промпта**».',
+  '**Keyword escalation check** — if the message hits a high-risk stem (fraud, legal threats) or an explicit "call a human", the escalation card is shown immediately, before any model call. The lists are edited in **Common → Escalation keywords**.':
+    '**Проверка стоп-слов** — если сообщение содержит высокорисковый триггер (мошенничество, юридические угрозы) или явную просьбу позвать человека, карточка эскалации показывается сразу, до вызова модели. Списки редактируются в «**Общее → Ключевые слова эскалации**».',
   '**Prompt assembly** — three layers: the fixed persona + rules (rendered with your prompt variables), the selected topic’s KB text, and the per-message data (player profile, conversation history, language). Only the selected topic’s KB is loaded — that’s why topic routing matters.':
     '**Сборка промпта** — три слоя: фиксированный персонаж + правила (с вашими переменными промпта), текст БЗ выбранной темы и данные конкретного сообщения (профиль игрока, история диалога, язык). Загружается только БЗ выбранной темы — поэтому маршрутизация тем так важна.',
   '**Model answer** — the AI answers in the player’s language and may attach service signals: a topic switch, follow-up suggestions, a "question resolved" flag, or an escalation. The signals are stripped from the text and become widget behaviour.':
@@ -744,6 +727,7 @@ const RU = {
     'Переиспользуемые значения `{placeholder}`, подставляемые в каждый текст БЗ, — измените лимит один раз, и он обновится везде.',
   'Persona: name, brand, tone of voice': 'Персонаж: имя, бренд, тон общения',
   'Prompt → Prompt variables': 'Промпт → Переменные промпта',
+  'Common → Escalation keywords': 'Общее → Ключевые слова эскалации',
   'The values that uniquify the shared prompt template for this brand. The wording around them is fixed in code.':
     'Значения, которые уникализируют общий шаблон промпта под этот бренд. Формулировки вокруг них зафиксированы в коде.',
   'Escalation trigger words': 'Слова-триггеры эскалации',
@@ -793,8 +777,8 @@ const RU = {
     'БЗ намеренно остаётся на английском (самый экономный по токенам язык для модели) — ассистент всё равно отвечает на языке игрока.',
   'Select the product in the header switcher and check its content: topics + KB texts (**Knowledge base**), persona values (**Prompt → Prompt variables**), the contact link and widget copy (**Translations**).':
     'Выберите продукт в переключателе шапки и проверьте его контент: темы + тексты БЗ («**База знаний**»), значения персонажа («**Промпт → Переменные промпта**»), контактную ссылку и тексты виджета («**Переводы**»).',
-  'Set the **Test player** profile (Prompt → Prompt variables) — on a test deploy without the site handshake it stands in for the real player, so you can check the by-name greeting and VIP personalization.':
-    'Задайте профиль **тестового игрока** (Промпт → Переменные промпта) — на тестовом деплое без хендшейка сайта он заменяет реального игрока, так что можно проверить приветствие по имени и VIP-персонализацию.',
+  'Set the **Test player** profile (Common → Test player profile) — on a test deploy without the site handshake it stands in for the real player, so you can check the by-name greeting and VIP personalization.':
+    'Задайте профиль **тестового игрока** (Общее → Тестовый профиль игрока) — на тестовом деплое без хендшейка сайта он заменяет реального игрока, так что можно проверить приветствие по имени и VIP-персонализацию.',
   'Open the test page (the service root `/`) or embed the snippet from **Structure** on a staging page, pick a topic and ask real questions from the KB — including ones phrased differently from how the KB is written.':
     'Откройте тестовую страницу (корень сервиса `/`) или вставьте код из «**Структуры**» на staging-страницу, выберите тему и задавайте реальные вопросы из БЗ — в том числе сформулированные иначе, чем написано в БЗ.',
   'Ask a question that belongs to ANOTHER topic and watch the automatic switch notice + the re-ask. Then trigger an escalation ("I want to talk to a human") and check the card — its button, language, and (with retention on) the bot deeplink.':
@@ -809,8 +793,8 @@ const RU = {
   'last decision': 'последнее решение',
   'no decisions': 'решений нет',
   'delivered': 'доставлено',
-  'Switches and knobs live in Settings → Retention bot («Proactive agent» + «Send-frequency guards»). The worker interval is a live setting too — 5s means near-realtime reactions. Dry-run ships ON: the agent decides and logs to the ledger below without sending — review its decisions, then turn dry-run off. New here? Read the «How it works & testing» tab.':
-    'Переключатели и настройки живут в Настройки → Ретеншен-бот («Проактивный агент» + «Ограничители частоты»). Интервал воркера — тоже «горячая» настройка: 5с — реакции почти в реальном времени. Dry-run включён по умолчанию: агент принимает решения и пишет их в журнал ниже, но ничего не отправляет — проверьте решения и выключите dry-run. Впервые здесь? Прочитайте вкладку «Как это работает и тестирование».',
+  'Switches and knobs live in Retention → Settings («Proactive agent» + «Send-frequency guards»). The worker interval is a live setting too — 5s means near-realtime reactions. Dry-run ships ON: the agent decides and logs to the ledger below without sending — review its decisions, then turn dry-run off. New here? Read the «How it works & testing» tab.':
+    'Переключатели и настройки живут в Ретеншен → Настройки («Проактивный агент» + «Ограничители частоты»). Интервал воркера — тоже «горячая» настройка: 5с — реакции почти в реальном времени. Dry-run включён по умолчанию: агент принимает решения и пишет их в журнал ниже, но ничего не отправляет — проверьте решения и выключите dry-run. Впервые здесь? Прочитайте вкладку «Как это работает и тестирование».',
 
   // ----- proactive agent page: simulator -----
   'Event simulator — inject a canonical event as if the casino sent it':
@@ -918,8 +902,8 @@ const RU = {
     '**Журнал решений** — ОДНА строка на решение при любом исходе (отправлено, молчание, заблокировано, dry-run): снимок состояния, вердикт ограничителей, рассуждение агента и суммарная стоимость. На вопрос «почему бот написал / не написал?» всегда отвечает вкладка «Решения».',
 
   // ----- proactive agent page: guide, section 2 -----
-  '**Agent enabled** (Settings → Retention bot → «Proactive agent») is the per-product switch. Off = the agent never writes first; queued events wait unprocessed and the ledger stays readable. The dialogue bot (replies to players who write), escalation hand-offs and the photo machinery inside dialogue are never affected.':
-    '**«Агент включён»** (Настройки → Ретеншен-бот → «Проактивный агент») — переключатель на продукт. Выкл = агент никогда не пишет первым; события ждут в очереди необработанными, журнал остаётся доступным для чтения. Диалоговый бот (ответы пишущим игрокам), эскалации и механика фото внутри диалога не затрагиваются.',
+  '**Agent enabled** (Retention → Settings → «Proactive agent») is the per-product switch. Off = the agent never writes first; queued events wait unprocessed and the ledger stays readable. The dialogue bot (replies to players who write), escalation hand-offs and the photo machinery inside dialogue are never affected.':
+    '**«Агент включён»** (Ретеншен → Настройки → «Проактивный агент») — переключатель на продукт. Выкл = агент никогда не пишет первым; события ждут в очереди необработанными, журнал остаётся доступным для чтения. Диалоговый бот (ответы пишущим игрокам), эскалации и механика фото внутри диалога не затрагиваются.',
   '**Dry-run** keeps the agent deciding and logging without sending — the safe review mode.':
     '**Dry-run** — агент принимает решения и пишет их в журнал, но не отправляет: безопасный режим проверки.',
   '**Worker interval** (same Settings section) is how often the background worker drains the event queue — it applies live on the next tick, and 5 seconds gives near-realtime reactions.':
@@ -952,8 +936,8 @@ const RU = {
     'Каждое сохранённое событие также обновляет временные метки активности игрока: `deposit_confirmed → last_deposit_at`, `session_started/ended → last_login_at`, `bet_settled → last_played_at` — их читает резолвер состояния (дни без активности, дни с последнего депозита).',
 
   // ----- proactive agent page: guide, section 5 (guards) -----
-  'Deterministic rails the model can never override. They are the knobs that decide the send frequency — all editable live in Settings → Retention bot → «Send-frequency guards». Current values for this product are shown in the table. Each blocked decision lists its reasons in the Guards column of the ledger:':
-    'Детерминированные рамки, которые модель не может обойти. Именно они определяют частоту отправки — все правятся на лету в Настройки → Ретеншен-бот → «Ограничители частоты». Текущие значения для этого продукта показаны в таблице. Каждое заблокированное решение перечисляет причины в колонке «Ограничители» журнала:',
+  'Deterministic rails the model can never override. They are the knobs that decide the send frequency — all editable live in Retention → Settings → «Send-frequency guards». Current values for this product are shown in the table. Each blocked decision lists its reasons in the Guards column of the ledger:':
+    'Детерминированные рамки, которые модель не может обойти. Именно они определяют частоту отправки — все правятся на лету в Ретеншен → Настройки → «Ограничители частоты». Текущие значения для этого продукта показаны в таблице. Каждое заблокированное решение перечисляет причины в колонке «Ограничители» журнала:',
   'Guard reason': 'Причина блокировки',
   'Current value': 'Текущее значение',
   'What it means / which setting drives it': 'Что это значит / какая настройка этим управляет',
@@ -977,8 +961,8 @@ const RU = {
   'no budget': 'без бюджета',
 
   // ----- proactive agent page: guide, section 6 (testing) -----
-  'Select the product in the header switcher, then in Settings → Retention bot → «Proactive agent» turn **Agent enabled** ON and leave **dry-run** ON (safe: nothing is sent).':
-    'Выберите продукт в переключателе в шапке, затем в Настройки → Ретеншен-бот → «Проактивный агент» включите **«Агент включён»** и оставьте **dry-run** включённым (безопасно: ничего не отправляется).',
+  'Select the product in the header switcher, then in Retention → Settings → «Proactive agent» turn **Agent enabled** ON and leave **dry-run** ON (safe: nothing is sent).':
+    'Выберите продукт в переключателе в шапке, затем в Ретеншен → Настройки → «Проактивный агент» включите **«Агент включён»** и оставьте **dry-run** включённым (безопасно: ничего не отправляется).',
   'Link a test player to the Telegram bot: open the bot through a deeplink (easiest: escalate in the support-chat widget, or `POST /api/retention/deeplink` with a test `user_context`), press /start and subscribe to the channel. The `player_id` from that handshake is the id you feed the simulator.':
     'Привяжите тестового игрока к Telegram-боту: откройте бота по deeplink (проще всего — эскалация в виджете чата поддержки, либо `POST /api/retention/deeplink` с тестовым `user_context`), нажмите /start и подпишитесь на канал. `player_id` из этого хендшейка — тот id, который вы вводите в симулятор.',
   'In the simulator pick an event (e.g. `deposit_confirmed`), enter that player id, pick a sample payload, «Inject event». If several Telegram accounts are linked to the same test player, pick the exact recipient in «Telegram recipient» — on «auto» the message goes to the player’s most recently active link (the Decisions tab shows the actual @username either way).':
@@ -1003,8 +987,8 @@ const RU = {
   'Run failed': 'Не удалось выполнить',
   'Deleted': 'Удалено',
   'Delete failed': 'Не удалось удалить',
-  'The agent is OFF for this product — no proactive messages are sent (the dialogue bot still answers players who write). Enable it in Settings → Retention bot → «Proactive agent» (dry-run stays on until you turn it off, so enabling is safe).':
-    'Агент ВЫКЛЮЧЕН для этого продукта — проактивные сообщения не отправляются (диалоговый бот по-прежнему отвечает пишущим игрокам). Включите его в Настройки → Ретеншен-бот → «Проактивный агент» (dry-run остаётся включённым, пока вы его не выключите, так что включать безопасно).',
+  'The agent is OFF for this product — no proactive messages are sent (the dialogue bot still answers players who write). Enable it in Retention → Settings → «Proactive agent» (dry-run stays on until you turn it off, so enabling is safe).':
+    'Агент ВЫКЛЮЧЕН для этого продукта — проактивные сообщения не отправляются (диалоговый бот по-прежнему отвечает пишущим игрокам). Включите его в Ретеншен → Настройки → «Проактивный агент» (dry-run остаётся включённым, пока вы его не выключите, так что включать безопасно).',
   'Delete ALL events for this product? The loss window and recent-activity state derived from them resets too.':
     'Удалить ВСЕ события этого продукта? Окно проигрыша и производное состояние недавней активности тоже сбросятся.',
   'Delete ALL decisions for this product? Today\'s budget counter and all same-event cooldowns reset.':
@@ -1021,11 +1005,11 @@ const RU = {
   'Set on the service (not per product): `PUBLIC_BASE_URL` (public address, used to build the webhook URL), `TELEGRAM_WEBHOOK_SECRET` (random string, verified in the webhook header), `RETENTION_MEDIA_DIR` (mount path of an attached **Volume**, so photos survive redeploys) and `SECRETS_MASTER_KEY` (encrypts product secrets). The full env table is in the repo\'s README.':
     'Задайте на сервисе (не на продукте): `PUBLIC_BASE_URL` (публичный адрес, из него строится URL вебхука), `TELEGRAM_WEBHOOK_SECRET` (случайная строка, проверяется в заголовке вебхука), `RETENTION_MEDIA_DIR` (путь монтирования подключённого **Volume**, чтобы фото переживали редеплой) и `SECRETS_MASTER_KEY` (шифрует секреты продуктов). Полная таблица переменных — в README репозитория.',
   '4 · Connect this product': '4 · Подключите этот продукт',
-  'On the [Telegram config](#/retention?tab=config) tab: switch on **Retention bot enabled**, fill the bot username, channel id and channel URL → **Save config**. In **Secrets** paste the bot token (and the Player API key, if the casino exposes a profile endpoint) → **Save secrets**. Then press **Register Telegram webhook** — it must report the webhook URL back.':
-    'На вкладке [Настройка Telegram](#/retention?tab=config): включите **Ретеншен-бот включён**, заполните username бота, id канала и URL канала → **Сохранить настройки**. В блоке **Секреты** вставьте токен бота (и ключ Player API, если казино отдаёт эндпоинт профиля) → **Сохранить секреты**. Затем нажмите **Зарегистрировать вебхук Telegram** — в ответ должен вернуться URL вебхука.',
+  'On the [Telegram config](#/retention-settings) tab of Retention → Settings: switch on **Retention bot enabled**, fill the bot username, channel id and channel URL → **Save config**. In **Secrets** paste the bot token (and the Player API key, if the casino exposes a profile endpoint) → **Save secrets**. Then press **Register Telegram webhook** — it must report the webhook URL back.':
+    'На вкладке [Настройка Telegram](#/retention-settings) раздела Ретеншен → Настройки: включите **Ретеншен-бот включён**, заполните username бота, id канала и URL канала → **Сохранить настройки**. В блоке **Секреты** вставьте токен бота (и ключ Player API, если казино отдаёт эндпоинт профиля) → **Сохранить секреты**. Затем нажмите **Зарегистрировать вебхук Telegram** — в ответ должен вернуться URL вебхука.',
   '5 · Content and tuning': '5 · Контент и настройка',
-  'Review the [Retention KB](#/retention?tab=kb) (one text document — what Nika may offer and talk about; a generic English starter is pre-filled, replace it with the brand\'s own), tune the Telegram persona in [Prompt variables](#/retention?tab=variables) (name/role/tone — empty fields use the built-in retention defaults), upload photos in [Media](#/retention?tab=photos) (bulk upload, then select them and press **Generate metadata** to have the AI fill the description, tags, `stage` = explicitness and `level_min` = VIP tier) and add live [Managers](#/retention?tab=managers) (round-robin, sticky). Thresholds (daily photo cap, stage progression, VIP tiers, nonce TTL) are the `retention` group in [Settings](#/settings?module=retention); bot texts are the `rtn_*` keys in [Translations](#/translations).':
-    'Проверьте [Базу знаний бота](#/retention?tab=kb) (один текстовый документ — что Ника может предлагать и о чём говорить; общий английский стартовый текст уже заполнен, замените его контентом бренда), настройте Telegram-персону в [Переменных промпта](#/retention?tab=variables) (имя/роль/тон — пустые поля используют встроенные значения ретеншена), загрузите фото в [Медиа](#/retention?tab=photos) (массовая загрузка, затем выделите их и нажмите **Сгенерировать метаданные** — AI заполнит описание, теги, `stage` = откровенность и `level_min` = VIP-уровень) и добавьте живых [Менеджеров](#/retention?tab=managers) (round-robin, закрепляются за игроком). Пороги (дневной лимит фото, прогрессия стадий, VIP-уровни, TTL нонса) — группа `retention` в [Настройках](#/settings?module=retention); тексты бота — ключи `rtn_*` в [Переводах](#/translations).',
+  'Review the [Retention KB](#/retention?tab=kb) (one text document — what Nika may offer and talk about; a generic English starter is pre-filled, replace it with the brand\'s own), tune the Telegram persona in [Prompt variables](#/retention?tab=variables) (name/role/tone — empty fields use the built-in retention defaults), upload photos in [Media](#/retention?tab=photos) (bulk upload, then select them and press **Generate metadata** to have the AI fill the description, tags, `stage` = explicitness and `level_min` = VIP tier) and add live [Managers](#/retention-settings?tab=managers) (round-robin, sticky). Thresholds (daily photo cap, stage progression, VIP tiers, nonce TTL) are the [Parameters tab of Retention → Settings](#/retention-settings?tab=params); bot texts are the `rtn_*` keys in [Translations](#/translations).':
+    'Проверьте [Базу знаний бота](#/retention?tab=kb) (один текстовый документ — что Ника может предлагать и о чём говорить; общий английский стартовый текст уже заполнен, замените его контентом бренда), настройте Telegram-персону в [Переменных промпта](#/retention?tab=variables) (имя/роль/тон — пустые поля используют встроенные значения ретеншена), загрузите фото в [Медиа](#/retention?tab=photos) (массовая загрузка, затем выделите их и нажмите **Сгенерировать метаданные** — AI заполнит описание, теги, `stage` = откровенность и `level_min` = VIP-уровень) и добавьте живых [Менеджеров](#/retention-settings?tab=managers) (round-robin, закрепляются за игроком). Пороги (дневной лимит фото, прогрессия стадий, VIP-уровни, TTL нонса) — вкладка [Параметры раздела Ретеншен → Настройки](#/retention-settings?tab=params); тексты бота — ключи `rtn_*` в [Переводах](#/translations).',
   '6 · Entry points': '6 · Точки входа',
   'Nothing extra to integrate for the main path: once the bot is enabled, the support widget\'s **escalation button** automatically routes the player into the bot (one-time deeplink, subscription gate on the way in, "go to a manager" in the menu). Optionally the site can mint its own per-player deeplink via `POST /api/retention/deeplink` — the full contract (handshake signing, profile pull/push) is documented at [/integration-telegram](/integration-telegram).':
     'Для основного пути ничего дополнительно интегрировать не нужно: как только бот включён, **кнопка эскалации** виджета поддержки автоматически ведёт игрока в бота (одноразовый deeplink, проверка подписки на входе, «перейти к менеджеру» в меню). Дополнительно сайт может выпускать собственный deeplink на игрока через `POST /api/retention/deeplink` — полный контракт (подпись handshake, pull/push профиля) описан на [/integration-telegram](/integration-telegram).',
@@ -1092,8 +1076,8 @@ const RU = {
   'Username': 'Username',
 
   // ----- retention: conversations -----
-  'Telegram chats with Nika, kept apart from the support-widget conversations. An idle chat closes automatically (the “Session idle (min)” knob in Settings → Retention bot); when the player returns, a new chat starts and Nika is shown the tail of the previous one for continuity. Click a row for the transcript.':
-    'Telegram-чаты с Никой, отдельно от диалогов виджета поддержки. Неактивный чат закрывается автоматически (настройка «Неактивность чата (мин)» в Настройки → Ретеншен-бот); когда игрок возвращается, начинается новый чат, и Ника видит хвост предыдущего для непрерывности. Клик по строке открывает переписку.',
+  'Telegram chats with Nika, kept apart from the support-widget conversations. An idle chat closes automatically (the “Session idle (min)” knob in Retention → Settings); when the player returns, a new chat starts and Nika is shown the tail of the previous one for continuity. Click a row for the transcript.':
+    'Telegram-чаты с Никой, отдельно от диалогов виджета поддержки. Неактивный чат закрывается автоматически (настройка «Неактивность чата (мин)» в Ретеншен → Настройки); когда игрок возвращается, начинается новый чат, и Ника видит хвост предыдущего для непрерывности. Клик по строке открывает переписку.',
   'Delete selected': 'Удалить выбранные',
   'TG user': 'TG-пользователь',
   'Started': 'Начат',
@@ -1222,8 +1206,8 @@ const RU = {
   'Prompt variables saved': 'Переменные промпта сохранены',
   'Escalation keywords saved': 'Ключевые слова эскалации сохранены',
   'Test profile saved': 'Тестовый профиль сохранён',
-  'Brand values substituted into the shared prompt template. Empty values fall back to the built-in defaults. The prompt wording itself is edited in `prompts.py` (see the read-only Prompt preview page). The Telegram retention persona has its own variables in [Telegram · Retention → Prompt variables](#/retention?tab=variables) — a separate prompt: empty retention fields fall back to the built-in retention defaults, never to these support values.':
-    'Брендовые значения, подставляемые в общий шаблон промпта. Пустые значения возвращаются к встроенным. Сами формулировки промпта редактируются в `prompts.py` (см. страницу просмотра промпта, только чтение). У Telegram-персонажа ретеншена свои переменные в [Telegram · Ретеншен → Переменные промпта](#/retention?tab=variables) — это отдельный промпт: пустые поля ретеншена падают на встроенные значения ретеншена и никогда — на эти значения поддержки.',
+  'Brand values substituted into the shared prompt template. Empty values fall back to the built-in defaults. The prompt wording itself is edited in `prompts.py` (see the read-only Prompt preview page). The Telegram retention persona has its own variables in [Retention → Prompt variables](#/retention?tab=variables) — a separate prompt: empty retention fields fall back to the built-in retention defaults, never to these support values.':
+    'Брендовые значения, подставляемые в общий шаблон промпта. Пустые значения возвращаются к встроенным. Сами формулировки промпта редактируются в `prompts.py` (см. страницу просмотра промпта, только чтение). У Telegram-персонажа ретеншена свои переменные в [Ретеншен → Переменные промпта](#/retention?tab=variables) — это отдельный промпт: пустые поля ретеншена падают на встроенные значения ретеншена и никогда — на эти значения поддержки.',
   'Escalation keyword lists': 'Списки ключевых слов эскалации',
   "One entry per line; multilingual stems scan the player's raw message before the model call (soft hand-off, no tokens burned).":
     'По одной записи на строку; многоязычные основы сканируют исходное сообщение игрока до вызова модели (мягкая передача, токены не тратятся).',

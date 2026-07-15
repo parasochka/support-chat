@@ -436,12 +436,12 @@ renders from the in-process cache, so Layer 1 stays **byte-stable between reques
 only on an admin save, the same accepted cache break as a KB edit. Values are English (the
 model-facing prompt stays English; no per-language uniquification). Edited from the admin
 **Prompt → Prompt variables** sub-tab (`GET/PUT /admin/prompt-variables`,
-`settings.validate_prompt_variables`; empty values fall back to the defaults). That sub-tab also
-hosts two sibling blocks: the **escalation keyword lists** (a friendlier one-per-line editor over
-the existing `escalation` settings group — the multilingual trigger stems stay multilingual, they
-scan the player's raw message, not the prompt) and the **test player profile** (the old Test
-sandbox tab, moved here since it exists to test the prompt's personalization; the legacy `#test`
-hash redirects).
+`settings.validate_prompt_variables`; empty values fall back to the defaults). The **escalation
+keyword lists** (a friendlier one-per-line editor over the existing `escalation` settings group —
+the multilingual trigger stems stay multilingual, they scan the player's raw message, not the
+prompt) and the **test player profile** used to be sibling blocks on that sub-tab; they are now
+their own pages in the sidebar's **Common** section (`/escalation-keywords`, `/test-profile`; the
+legacy `#test` hash redirects to the latter).
 
 ### Site map — official pages the model may link to (`prompts.render_site_map_block` + `settings.site_map`)
 A single per-product setting: the list of the product's official website pages (`{title, url,
@@ -460,7 +460,7 @@ Empty list ⇒ no block, so the cores render exactly as before (the byte-stabili
 when no pages are configured; it reads the in-process settings cache, so the block is byte-stable
 WITHIN a product scope and changes only on an admin save — the same accepted cache break as a
 prompt-variable edit). The read-only effective-prompt previews pick it up automatically (they
-reuse `get_system_core`/`get_retention_system_core`). Admin: the **Support chat → Site map** tab
+reuse `get_system_core`/`get_retention_system_core`). Admin: the **Common → Site map** page
 (`admin/src/pages/SiteMap.jsx`, `RequireProduct`-gated, admins edit / managers read-only). No
 per-product seed (like translations — empty until the owner adds pages). Tests:
 `tests/test_site_map.py`.
@@ -665,7 +665,7 @@ stem matches only at the **start of a word** (`поддержк` → «подд�
 stem (≤3 chars) must equal a whole word** — so «судя по всему»/«судьба»/«рассудите» no longer trip
 the `суд` stem (the substring matcher used to escalate-and-close on those). Both lists live in the
 `escalation` settings group — `high_risk_keywords` and `human_request_keywords` — and their ONE
-admin editor is the **Prompt → Prompt variables** sub-tab (content tuning, next to the prompt);
+admin editor is the **Common → Escalation keywords** page;
 the group is deliberately skipped in the generic Settings tab so the same knob is never editable
 from two places. The constants in `escalation.py` are only the built-in defaults. The cap
 fires on the turn whose prospective count (current + 1) reaches `max_messages_per_session` — a
@@ -883,7 +883,7 @@ in the retention core, the SITE LINK BUTTON directive AND the Layer-3 `_RETENTIO
 (the guardrail rides last, so a blanket "money → HANDOFF" there used to override the
 navigation exception — the "как задепать → саппорт" bug). This section IS the spec (the
 old `RETENTION_BOT_SPEC.md`/`RETENTION_SETUP.md` files were removed); the operator's setup
-checklist lives in the admin — the **Retention · Telegram → Setup guide** tab.
+checklist lives in the admin — the **Retention → How it works** page.
 
 - **Transport vs. brain vs. AI turn are separated on purpose** so the transport can be lifted
   into its own service later: `telegram_transport.py` (HTTP to the Bot API + update parsing,
@@ -894,8 +894,8 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   mode is derived from it (telegram ⇒ retention). Support is never duplicated in Telegram.
   **Telegram chats are logged APART from support chats**: the support admin surfaces
   (`db.list_sessions`, `db.unresolved_by_topic` — the Conversations + Unresolved views) exclude
-  `consumer='telegram'` entirely; the Telegram chats live in their own **Retention · Telegram →
-  Conversations** tab (`GET /admin/retention/sessions` → `db.list_retention_sessions`, joined
+  `consumer='telegram'` entirely; the Telegram chats live in their own **Retention →
+  Conversations** page (`GET /admin/retention/sessions` → `db.list_retention_sessions`, joined
   with the `retention_users` identity + summed cost; the transcript opens via the shared
   `GET /admin/session/{id}`, same scope check). **Deleting a Telegram conversation
   (`DELETE /admin/session/{id}` → `db.delete_session`) also PURGES the linked player**: after
@@ -1168,7 +1168,7 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   re-enables) and the blocked-bot flag (`unreachable`, set on a Telegram 403,
   cleared when the player writes again) are honoured on every send.
 - **Delivery + gate knobs** (both in the hot `retention` settings group, edited in
-  Telegram · Retention → Bot settings): `silent_notifications` (proactive sends go
+  Retention → Settings → Parameters): `silent_notifications` (proactive sends go
   out with Telegram `disable_notification` — no sound on the player's phone;
   dialogue replies always notify normally; plumbed through
   `telegram_transport.send_*`/`retention._send_ai_text`/`_send_photo` and read in
@@ -1251,15 +1251,20 @@ checklist lives in the admin — the **Retention · Telegram → Setup guide** t
   `product_id`/`partner_id` — omitted, they aggregate the caller's whole accessible scope
   (the global dashboard's retention block), following the support dashboard's
   `resolve_scope_filter` convention.
-- **Admin**: the SPA **Retention · Telegram** view (sub-tabs: Setup guide — the static
-  "how to connect the bot" checklist that replaced `RETENTION_SETUP.md` —, Telegram config,
-  Retention KB — the one-document text editor —, **Prompt variables** — the Telegram-persona
-  editor (`GET/PUT /admin/retention/prompt-variables`; empty = the retention default — a
-  SEPARATE prompt, no support inheritance, see "Prompt variables") —, **Prompt preview**,
-  Media — bulk upload + AI metadata + filters —,
-  Managers, the **Proactive agent** page (its own sidebar entry — see the
-  "RETENTION AGENT" section), **Conversations** — the Telegram chat list +
-  transcript dialog, see the lifecycle bullet above —, Analytics);
+- **Admin**: the sidebar **Retention** section — one menu entry per surface, no
+  page-wide tab strip: **How it works** (the setup-guide checklist that replaced
+  `RETENTION_SETUP.md`; the section's landing page), **Knowledge base** — the
+  one-document text editor —, **Prompt** (Prompt preview + **Prompt variables**
+  — the Telegram-persona editor, `GET/PUT /admin/retention/prompt-variables`;
+  empty = the retention default — a SEPARATE prompt, no support inheritance,
+  see "Prompt variables" — as an in-page 2-tab strip), **Media** — bulk upload
+  + AI metadata + filters —, the **Proactive agent** page (its own route — see
+  the "RETENTION AGENT" section; idle pings are a tab there), **Conversations**
+  — the Telegram chat list + transcript dialog, see the lifecycle bullet above
+  —, **Settings** (`/retention-settings`: Telegram config · Managers · the
+  `retention` settings group as its Parameters tab; legacy
+  `/settings?module=retention` and `/retention?tab=config|managers` links
+  redirect there), and **Analytics**;
   API under `/admin/retention/*` (`api/retention.py`, guarded per
   product) + the `retention` group via the generic `/admin/settings/retention`. Retention copy
   (menu/gate/handoff strings, `rtn_*` keys) is in the translations registry (scope `retention`).
@@ -1372,14 +1377,16 @@ drainers pick up the same event.
   already run on): local weekday + HH:MM + part of day, with a hard "match
   the clock or drop the time-of-day wording" rule — without it the model
   guessed («наслаждайся вечером» sent at 10:00). Tuning the offset knob
-  (Settings → Retention bot) tunes both quiet hours and this block. Only decision-worthy events wake the
-  agent — the set is **admin-tunable per product** (`retention.v2_decision_events`,
-  the agent page's **Triggers** tab; `None`/unset = the built-in
+  (Retention → Settings) tunes both quiet hours and this block. Only decision-worthy events wake the
+  agent — the set is `retention.v2_decision_events` (`None`/unset = the built-in
   `DECISION_EVENTS`, resolved via `retention_v2.effective_decision_events`;
   `bet_settled` stays special-cased: only when the loss window crosses
-  `v2_loss_high_usd`, never toggleable); everything else is state food, marked
-  processed silently — no model call, no ledger row (the Triggers tab explains
-  exactly this, so "why is my event not in Decisions?" is self-serve).
+  `v2_loss_high_usd`, never toggleable). The set is deliberately NOT editable
+  from the panel (the agent page's old Triggers tab was removed — the defaults
+  are not meant to be tuned; an API consumer can still PUT the `retention`
+  group). Everything else is state food, marked
+  processed silently — no model call, no ledger row (the agent's guide tab
+  explains exactly this, so "why is my event not in Decisions?" is self-serve).
   **Humanizing send delay:** an event is reacted to a per-event pseudo-random
   `v2_send_delay_min_sec`..`v2_send_delay_max_sec` (defaults 300/900 — 5–15
   min, ~10 avg) AFTER it arrived — an instant thank-you three seconds after a
@@ -1408,7 +1415,8 @@ drainers pick up the same event.
   `RETENTION_IDLE_PINGS_ENABLED`); NEW products are seeded with the 7/14/30
   starter ladder (`retention_idle.seed_starter_idle_rules`, called from
   `db.create_product`, only when the product has no rules). Admin: the
-  **Retention · Telegram → Idle pings** tab (`/retention?tab=idle` — rules
+  **Idle pings tab of the Proactive agent page** (`/retention-agent?tab=idle`;
+  the legacy `/retention?tab=idle` link redirects — rules
   CRUD, enable switches, a «Run now» test sweep that skips quiet hours/pacing,
   and the send ledger) over `GET/POST/PUT/DELETE /admin/retention/idle/rules*`,
   `GET /admin/retention/idle/ledger`, `POST /admin/retention/idle/run`.
@@ -1453,8 +1461,8 @@ drainers pick up the same event.
   testing checklist and the cost model). API:
   `/admin/retention/v2/status|events|decisions|logs|simulate-event|run` +
   the four DELETE routes (product-scoped via the admin_auth choke points).
-  The agent knobs are normal `retention`-group settings (Settings → Retention
-  bot → «Proactive agent» + «Send-frequency guards» sections; the
+  The agent knobs are normal `retention`-group settings (Retention → Settings
+  → Parameters → «Proactive agent» + «Send-frequency guards» sections; the
   send-frequency guards — daily cap, min gap, same-event cooldown, quiet
   hours, budget, loss window — are THE dials for how often one player may be
   written to). Tests: `tests/test_retention_v2.py`.
@@ -1543,7 +1551,7 @@ Map of what lives where:
   product is selected. This fixed «I changed the worker interval on a product and
   nothing happened». Groups: `escalation`
   (`high_risk_keywords`, `human_request_keywords` — content tuning, so its ONLY editor is the
-  Prompt → Prompt variables sub-tab; the Settings tab skips this group to avoid a duplicate
+  Common → Escalation keywords page; the Settings tab skips this group to avoid a duplicate
   editor. `max_messages_per_session` moved to `general`; a legacy `escalation` override is still
   read as a fallback),
   `language` (default + supported
@@ -1658,9 +1666,9 @@ Map of what lives where:
   `user_context`; raw browser context is ignored. No secret ⇒ dev behaviour. The
   injection sanitizer runs in every mode.
 - **Test player profile** (`settings.test_profile`/`validate_test_profile`,
-  `app_settings['test_profile']`, `api.admin` `GET/PUT /admin/test-profile`, the **Test
-  player** block in the Prompt → Prompt variables sub-tab — the old top-level Test sandbox
-  tab was folded in there, since the profile exists to test the prompt's personalization):
+  `app_settings['test_profile']`, `api.admin` `GET/PUT /admin/test-profile`, the **Common →
+  Test player profile** page — the old Test sandbox tab, then a block on Prompt variables,
+  now its own page in the shared Common section):
   in test/dev (**no** `WIDGET_HANDSHAKE_SECRET`) there is no host
   site to sign a handshake, so this stored profile stands in for it at `create_session`. It
   drives the Layer-3 player data the model sees (`id, full_name, email, activation_status,
@@ -1695,10 +1703,13 @@ Map of what lives where:
   typed, tabbed editor (one tab per group + a Languages tab with an ISO-picker
   add-language / default / custom-name editor) — not a raw-JSON textarea — with a
   scope banner (global defaults vs the selected product). **Settings are split into
-  three MODULE surfaces** (`?module=support|retention|core`, each its own sidebar
-  entry): Support chat → Chat settings (widget anti-spam + chat limits), Telegram ·
-  Retention → Bot settings (the whole `retention` group + the Telegram rate-limit
-  slice of `antispam`), System → Settings (model, languages, technical limits).
+  three MODULE surfaces**: Support chat → Chat settings (`?module=support` — widget
+  anti-spam + chat limits) and System → Settings (`?module=core` — model, languages,
+  technical limits) on the standalone Settings page, plus the retention module (the
+  whole `retention` group + the Telegram rate-limit slice of `antispam`) embedded as
+  the **Parameters tab of Retention → Settings** (`/retention-settings?tab=params`;
+  the exported `SettingsModule` component — legacy `?module=retention` links
+  redirect there).
   The split is presentation-only — schema fields carry a `module` tag
   (`settingsSchema.js` `GROUP_MODULE`/`fieldsForModule`) and a group is still
   SAVED whole (the form round-trips unseen fields unchanged). Each module page
@@ -1777,15 +1788,19 @@ Map of what lives where:
     admin sees everything in reach); hub-global actions (user mgmt, system
     settings) show only to a global viewer. NB only admins can mutate today, so
     audit actors are admins — the manager/admin split is future-proofing.
-- **Sidebar IA — cascading hubs** (`admin/src/App.jsx` + `contentTabs.js`): the
-  sidebar groups related surfaces behind ONE entry with an in-page tab strip
-  (the cascade: sidebar → hub page → sub-tabs). Support's **Content** entry
-  fronts KB · Site map · Prompt · Translations (shared `RouteTabs` strip on each
-  page). The **retention page carries its own top-level section tab strip**
-  (Setup · KB · Prompt · Media · Managers · Idle pings · Conversations ·
-  Analytics), so its sidebar collapses to grouped shortcuts (Bot setup, Bot
-  content, Proactive agent, Conversations, Bot settings, Analytics). All sidebar
-  entries share one 40px icon column (RA's MenuItemLink width) so labels align.
+- **Sidebar IA — flat sections, one entry per surface** (`admin/src/App.jsx`):
+  four collapsible sections and NO page-wide tab strips (the earlier cascading
+  hubs — Support's Content entry with its `RouteTabs` strip and the retention
+  page's top section strip — were flattened; `contentTabs.js` is gone). **Support
+  chat**: How it works · Conversations · Escalations · Knowledge base (with its
+  KB ↔ Variables sub-strip) · Prompt (Preview/Variables in-page tabs) · Chat
+  settings · Analytics. **Common** — the cross-module surfaces shared by BOTH
+  bots: Translations · Site map · Escalation keywords · Test player profile.
+  **Retention**: How it works · Knowledge base · Prompt · Media · Proactive
+  agent (events/decisions/idle pings/logs/guide tabs) · Conversations · Settings
+  (`/retention-settings`) · Analytics. **System**: Structure · Settings · Logs ·
+  Users · API keys. All sidebar entries share one 40px icon column (RA's
+  MenuItemLink width) so labels align.
 
 §16 decisions: unresolved analysis = topic-grouped (no embeddings); contact form =
 host-site button only; admin auth = named `admin_users` accounts only (email + password,

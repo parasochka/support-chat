@@ -20,23 +20,22 @@ import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
-import FormControlLabel from '@mui/material/FormControlLabel';
-import Switch from '@mui/material/Switch';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import DeleteIcon from '@mui/icons-material/Delete';
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { API_URL, httpClient } from '../httpClient';
-import { withProduct } from '../productScope';
+import { getProductId, withProduct } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
+import IdlePingsTab from './IdlePings';
 import { t } from '../i18n';
 import rich from '../components/Rich';
 
 /**
  * The proactive agent (event-driven) — the one regime that writes to players
  * first. This page is its home: the status header (switches and knobs live in
- * Settings → Retention bot), the canonical-event log with a simulator
+ * Retention → Settings), the canonical-event log with a simulator
  * (exercise the pipeline before the casino integration exists), the agent
  * decision ledger (state snapshot + guard verdict + decision + cost per row —
  * the full audit trail, dry-run rows included), and the "How it works &
@@ -230,7 +229,7 @@ const StatusHeader = ({ status, onRefresh, onRun, canWrite, running }) => {
           />
         </Stack>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-          {t('Switches and knobs live in Settings → Retention bot («Proactive agent» + «Send-frequency guards»). The worker interval is a live setting too — 5s means near-realtime reactions. Dry-run ships ON: the agent decides and logs to the ledger below without sending — review its decisions, then turn dry-run off. New here? Read the «How it works & testing» tab.')}
+          {t('Switches and knobs live in Retention → Settings («Proactive agent» + «Send-frequency guards»). The worker interval is a live setting too — 5s means near-realtime reactions. Dry-run ships ON: the agent decides and logs to the ledger below without sending — review its decisions, then turn dry-run off. New here? Read the «How it works & testing» tab.')}
         </Typography>
       </CardContent>
     </Card>
@@ -704,7 +703,7 @@ const GuideTab = ({ status }) => {
         <Section title={t('Turning it on and off')}>
           <Box component="ul" sx={{ pl: 3, my: 0 }}>
             <LI>
-              {rich(t('**Agent enabled** (Settings → Retention bot → «Proactive agent») is the per-product switch. Off = the agent never writes first; queued events wait unprocessed and the ledger stays readable. The dialogue bot (replies to players who write), escalation hand-offs and the photo machinery inside dialogue are never affected.'))}
+              {rich(t('**Agent enabled** (Retention → Settings → «Proactive agent») is the per-product switch. Off = the agent never writes first; queued events wait unprocessed and the ledger stays readable. The dialogue bot (replies to players who write), escalation hand-offs and the photo machinery inside dialogue are never affected.'))}
             </LI>
             <LI>
               {rich(t('**Dry-run** keeps the agent deciding and logging without sending — the safe review mode.'))}
@@ -764,7 +763,7 @@ const GuideTab = ({ status }) => {
 
         <Section title={t('Guards — how often the agent may write to one player')}>
           <P>
-            {t('Deterministic rails the model can never override. They are the knobs that decide the send frequency — all editable live in Settings → Retention bot → «Send-frequency guards». Current values for this product are shown in the table. Each blocked decision lists its reasons in the Guards column of the ledger:')}
+            {t('Deterministic rails the model can never override. They are the knobs that decide the send frequency — all editable live in Retention → Settings → «Send-frequency guards». Current values for this product are shown in the table. Each blocked decision lists its reasons in the Guards column of the ledger:')}
           </P>
           <Box sx={{ overflowX: 'auto', maxWidth: 980 }}>
           <Table size="small" sx={{ minWidth: 640 }}>
@@ -804,7 +803,7 @@ const GuideTab = ({ status }) => {
         <Section title={t('How to test, step by step')}>
           <Box component="ol" sx={{ pl: 3, my: 0 }}>
             <LI>
-              {rich(t('Select the product in the header switcher, then in Settings → Retention bot → «Proactive agent» turn **Agent enabled** ON and leave **dry-run** ON (safe: nothing is sent).'))}
+              {rich(t('Select the product in the header switcher, then in Retention → Settings → «Proactive agent» turn **Agent enabled** ON and leave **dry-run** ON (safe: nothing is sent).'))}
             </LI>
             <LI>
               {rich(t('Link a test player to the Telegram bot: open the bot through a deeplink (easiest: escalate in the support-chat widget, or `POST /api/retention/deeplink` with a test `user_context`), press /start and subscribe to the channel. The `player_id` from that handshake is the id you feed the simulator.'))}
@@ -833,123 +832,6 @@ const GuideTab = ({ status }) => {
             {rich(t('Every decision is one cheap model call; a sent message adds one generation call. Both land in `ai_interaction_logs` and in the Telegram cost split on Retention → Analytics. The daily budget (Settings) is a hard stop: when the day’s summed ledger cost reaches it, the agent stays quiet until tomorrow.'))}
           </P>
         </Section>
-      </CardContent>
-    </Card>
-  );
-};
-
-// ---------------------------------------------------------------------------
-// Triggers tab — which canonical events WAKE the agent (reach a decision) and
-// which stay "state food" (update the player state silently). The set is the
-// per-product `retention.v2_decision_events` setting; saving merges it into
-// the product's stored retention overrides so no other knob is touched.
-// ---------------------------------------------------------------------------
-const EVENT_HINTS = {
-  deposit_confirmed: 'A deposit landed — a warm thank-you moment.',
-  deposit_failed: 'A payment attempt failed — a reassuring note.',
-  withdrawal_settled: 'A payout arrived — congratulate.',
-  level_up: 'New loyalty level — celebrate.',
-  class_up: 'New loyalty class — celebrate.',
-  kyc_approved: 'Verification passed — a nice milestone.',
-  bonus_completed: 'Bonus wagered through — congratulate.',
-  bonus_expired: 'A bonus expired unused — a gentle heads-up.',
-};
-
-const TriggersTab = ({ status, canWrite, onSaved }) => {
-  const notify = useNotify();
-  const [selected, setSelected] = useState(null); // Set of enabled event names
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (status) setSelected(new Set(status.decision_events || []));
-  }, [status]);
-
-  if (!status || selected === null) return <Typography>{t('Loading…')}</Typography>;
-
-  const candidates = (status.canonical_events || []).filter(
-    (n) => n !== 'bet_settled'
-  );
-  const defaults = new Set(status.decision_events_default || []);
-
-  const toggle = (name, on) => {
-    const next = new Set(selected);
-    if (on) next.add(name);
-    else next.delete(name);
-    setSelected(next);
-  };
-
-  const save = async (value) => {
-    setSaving(true);
-    try {
-      // Merge into the product's STORED retention overrides — a group is
-      // saved whole, so the other knobs must round-trip unchanged.
-      const { json } = await httpClient(withProduct(`${API_URL}/admin/settings`));
-      const overrides = (json.overrides && json.overrides.retention) || {};
-      const body = { ...overrides };
-      if (value === null) delete body.v2_decision_events;
-      else body.v2_decision_events = value;
-      await httpClient(withProduct(`${API_URL}/admin/settings/retention`), {
-        method: 'PUT',
-        body: JSON.stringify({ value: body }),
-      });
-      notify(t('Triggers saved'), { type: 'success' });
-      onSaved?.();
-    } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Card>
-      <CardContent>
-        <Alert severity="info" sx={{ mb: 2 }}>
-          {t(
-            'Events with the switch ON wake the agent: each one goes through the guards and gets a row in the Decisions ledger (message / photo / silence). Events with the switch OFF are "state food": they still update the player state (activity timestamps, loss window) but never reach a decision — that is why they do not appear in Decisions.'
-          )}
-        </Alert>
-        <Alert severity="warning" sx={{ mb: 2 }}>
-          {t(
-            'bet_settled is special and has no switch: it wakes the agent ONLY when the 24h net loss crosses the high-loss threshold (Settings → Retention bot → Send-frequency guards) — the comfort reaction.'
-          )}
-        </Alert>
-        <Stack spacing={0.5}>
-          {candidates.map((name) => (
-            <Stack key={name} direction="row" alignItems="center" spacing={1}>
-              <FormControlLabel
-                control={
-                  <Switch
-                    size="small"
-                    checked={selected.has(name)}
-                    disabled={!canWrite}
-                    onChange={(e) => toggle(name, e.target.checked)}
-                  />
-                }
-                label={<code>{name}</code>}
-                sx={{ minWidth: 260, mr: 0 }}
-              />
-              <Typography variant="caption" color="text.secondary">
-                {t(EVENT_HINTS[name] || 'State food by default — switch on to react to it.')}
-                {defaults.has(name) ? '' : ` (${t('off by default')})`}
-              </Typography>
-            </Stack>
-          ))}
-        </Stack>
-        {canWrite && (
-          <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
-            <Button
-              variant="contained"
-              disabled={saving}
-              onClick={() => save([...selected].sort())}
-            >
-              {saving ? t('Saving…') : t('Save triggers')}
-            </Button>
-            <Button disabled={saving} onClick={() => save(null)}>
-              {t('Reset to defaults')}
-            </Button>
-          </Stack>
-        )}
       </CardContent>
     </Card>
   );
@@ -1024,7 +906,7 @@ const RetentionAgentInner = () => {
       <Title title={t('Proactive agent')} />
       {status && !status.v2_enabled && (
         <Alert severity="info" sx={{ mb: 2 }}>
-          {t('The agent is OFF for this product — no proactive messages are sent (the dialogue bot still answers players who write). Enable it in Settings → Retention bot → «Proactive agent» (dry-run stays on until you turn it off, so enabling is safe).')}
+          {t('The agent is OFF for this product — no proactive messages are sent (the dialogue bot still answers players who write). Enable it in Retention → Settings → «Proactive agent» (dry-run stays on until you turn it off, so enabling is safe).')}
         </Alert>
       )}
       <StatusHeader
@@ -1046,13 +928,11 @@ const RetentionAgentInner = () => {
       >
         <Tab value="events" label={`${t('Events')}${events ? ` (${events.total})` : ''}`} />
         <Tab value="decisions" label={`${t('Decisions')}${decisions ? ` (${decisions.total})` : ''}`} />
-        <Tab value="triggers" label={t('Triggers')} />
+        <Tab value="idle" label={t('Idle pings')} />
         <Tab value="logs" label={`${t('System log')}${logs ? ` (${logs.total})` : ''}`} />
         <Tab value="guide" label={t('How it works & testing')} />
       </Tabs>
-      {tab === 'triggers' && (
-        <TriggersTab status={status} canWrite={canWrite} onSaved={load} />
-      )}
+      {tab === 'idle' && <IdlePingsTab productId={getProductId()} />}
       {tab === 'events' && (
         <EventsTab
           events={events}

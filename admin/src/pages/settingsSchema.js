@@ -97,9 +97,10 @@ export const GROUP_FIELDS = {
     { name: 'history_max_turns', label: 'History turns to model', type: 'int', min: 1, max: 200, module: 'support', help: 'Recent turns fed into the prompt history (full transcript is always stored).' },
     { name: 'body_max_bytes', label: 'Max request body (bytes)', type: 'int', min: 1024, max: 104857600, globalOnly: true, help: 'Largest accepted request body (1 KiB … 100 MiB).' },
   ],
-  // NB: `v2_decision_events` is deliberately ABSENT here — its one editor is
-  // the bespoke checkbox widget on the Proactive agent page (Triggers tab),
-  // which PUTs the same /admin/settings/retention group.
+  // NB: `v2_decision_events` is deliberately ABSENT here — the trigger set is
+  // not meant to be edited from the panel (the agent's Triggers tab was
+  // removed); the built-in defaults apply, and an API consumer can still PUT
+  // the /admin/settings/retention group.
   retention: [
     { name: 'daily_photo_cap', label: 'Daily photo cap', type: 'int', min: 0, max: 10000, help: 'Max photos sent to one player per day (hard, incl. requested).' },
     { name: 'proactive_photo_cooldown_msgs', label: 'Proactive photo cooldown (msgs)', type: 'int', min: 1, max: 10000, help: 'Messages between UNPROMPTED photos (a direct ask bypasses it).' },
