@@ -326,7 +326,7 @@ async def test_handoff_choice_both_destinations(monkeypatch):
     chat_id, text, markup, parse_mode = tg.messages[0]
     assert parse_mode == "HTML" and text.startswith("<b>")
     urls = _urls(markup)
-    assert "https://telegram.me/mgr" in urls
+    assert "https://t.me/mgr" in urls
     assert "https://nikabet.example/" in urls
     assert len(urls) == 2
     assert any("Max" in lb for lb in _labels(markup))
@@ -343,7 +343,7 @@ async def test_handoff_choice_manager_only(monkeypatch):
     assert target == "manager"
     _cid, text, markup, parse_mode = tg.messages[0]
     assert "Max" in text
-    assert _urls(markup) == ["https://telegram.me/mgr"]
+    assert _urls(markup) == ["https://t.me/mgr"]
 
 
 async def test_handoff_choice_site_only(monkeypatch):

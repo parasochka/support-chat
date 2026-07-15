@@ -121,7 +121,7 @@ username и токен от BotFather, — и включить <b>Retention enab
 <h2 id="deeplink">3. Вход: диплинк и одноразовый nonce</h2>
 <p>Полный профиль игрока не влезает в <code>start=</code> Telegram (лимит 64 символа), поэтому обмен
 идёт через одноразовый nonce. Сайт (или бэкенд CMS) зовёт нашу ручку с handshake игрока и получает
-готовую ссылку <code>telegram.me/…?start=…</code>, которую открывает игроку.</p>
+готовую ссылку <code>t.me/…?start=…</code>, которую открывает игроку.</p>
 
 <div class="endpoint"><span class="tag post">POST</span><code>/api/retention/deeplink</code></div>
 <p>Тело: <code>{ widget_key?, signed_context?, escalation?, lang? }</code>. Ответ:
@@ -133,7 +133,7 @@ username и токен от BotFather, — и включить <b>Retention enab
   "escalation": false,                  // true — вход из эскалации чата поддержки
   "lang": "ru"                          // язык, на котором игрок общался (код или локаль "ru-RU")
 }
-→ 200 { "nonce": "r7Kx…", "deep_link": "https://telegram.me/nika_casino_bot?start=r7Kx…" }</code></pre>
+→ 200 { "nonce": "r7Kx…", "deep_link": "https://t.me/nika_casino_bot?start=r7Kx…" }</code></pre>
 <ul>
   <li><b>Профиль</b> в <code>signed_context</code> — тот же подписанный handshake, что и в чате поддержки
       (whitelisted-поля <code>id, full_name, email, activation_status, country, balance, vip_level,
