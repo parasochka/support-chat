@@ -110,32 +110,13 @@ async def test_create_deeplink_carries_lang(monkeypatch):
     product = {"id": 1, "telegram_bot_username": "nika_bot"}
     link = await retention.create_deeplink(product, {"full_name": "Andrey"},
                                            escalation=True, lang="ru")
-    assert link["deep_link"].startswith("https://telegram.me/nika_bot?start=")
+    assert link["deep_link"].startswith("https://t.me/nika_bot?start=")
     assert captured["payload"]["lang"] == "ru"
     assert captured["payload"]["full_name"] == "Andrey"
 
     # an unsupported code is dropped, not stored
     await retention.create_deeplink(product, {}, escalation=False, lang="xx")
     assert "lang" not in captured["payload"]
-
-
-def test_normalize_tg_url_rewrites_legacy_domain():
-    # the suspended t.me host is rewritten to the public telegram.me alias,
-    # path + query preserved
-    assert retention.normalize_tg_url(
-        "https://t.me/nika_bot?start=abc") == "https://telegram.me/nika_bot?start=abc"
-    assert retention.normalize_tg_url(
-        "http://www.t.me/chan") == "https://telegram.me/chan"
-    # non-t.me URLs and blanks pass through untouched
-    assert retention.normalize_tg_url(
-        "https://telegram.me/x") == "https://telegram.me/x"
-    assert retention.normalize_tg_url(
-        "https://casino.example/support") == "https://casino.example/support"
-    assert retention.normalize_tg_url("") == ""
-    assert retention.normalize_tg_url(None) == ""
-    # a domain that merely CONTAINS t.me is not rewritten
-    assert retention.normalize_tg_url(
-        "https://not-t.me.evil.com/x") == "https://not-t.me.evil.com/x"
 
 
 def test_strip_photo_tag():

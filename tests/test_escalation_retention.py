@@ -4,7 +4,7 @@ the player INTO the bot (an escalation-entry deeplink) instead of the static
 escalation payload every hand-off path already returns.
 
 `escalation.build_payload_for_session` is the single seam: retention ON -> a
-`telegram.me/<bot>?start=<nonce>` deeplink + a `retention` marker; retention OFF (or no
+`t.me/<bot>?start=<nonce>` deeplink + a `retention` marker; retention OFF (or no
 bot, or a mint failure) -> the static contact_url, unchanged. It is per-product:
 the product is resolved from the session's own `product_id`.
 """
@@ -43,13 +43,13 @@ def test_retention_on_routes_button_to_the_bot(monkeypatch):
         captured["escalation"] = escalation
         captured["context"] = context
         captured["lang"] = lang
-        return {"nonce": "n1", "deep_link": "https://telegram.me/nika_bot?start=n1"}
+        return {"nonce": "n1", "deep_link": "https://t.me/nika_bot?start=n1"}
     monkeypatch.setattr(retention, "create_deeplink", _create_deeplink)
 
     payload = _run(escalation.build_payload_for_session(_session(), "ru"))
 
     assert payload["active"] is True
-    assert payload["button"]["url"] == "https://telegram.me/nika_bot?start=n1"
+    assert payload["button"]["url"] == "https://t.me/nika_bot?start=n1"
     assert payload.get("retention") is True
     # An ESCALATION-entry deeplink (bot menu offers "go to a manager"), carrying
     # the player's session profile snapshot so Nika greets them by name.

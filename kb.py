@@ -14,7 +14,6 @@ from typing import Any, Optional
 
 import db
 import tenancy
-import tglinks
 
 _VARIABLE_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
 
@@ -75,21 +74,14 @@ async def kb_block_for_topic(topic_id: Optional[int],
 
 
 async def render_variables(text: str, product_id: Optional[int] = None) -> str:
-    """Replace ``{variable}`` placeholders with admin-managed values.
-
-    Both the support KB (via ``kb_block_for_topic``) and the retention KB (the
-    caller renders ``db.retention_kb_block`` through here) pass through this one
-    seam, so any suspended ``t.me`` link an operator typed into the KB text — or
-    into a substituted variable value — is rewritten to ``telegram.me`` here,
-    before Layer 2 reaches the model (which could otherwise echo it to a player).
-    """
+    """Replace ``{variable}`` placeholders with admin-managed values."""
     variables = await db.get_kb_variables_map(_pid(product_id))
 
     def repl(match: re.Match[str]) -> str:
         key = match.group(1)
         return variables.get(key, match.group(0))
 
-    return tglinks.normalize_tg_text(_VARIABLE_RE.sub(repl, text))
+    return _VARIABLE_RE.sub(repl, text)
 
 
 async def suggestable_topics(

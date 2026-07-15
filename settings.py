@@ -26,7 +26,6 @@ import db
 import escalation as _escalation
 import prompts as _prompts
 import tenancy
-import tglinks
 
 # Raw DB values keyed by setting group (e.g. 'antispam' -> {...}). Empty until
 # reload(); an empty cache means every getter falls back to env defaults.
@@ -245,10 +244,7 @@ def prompt_variables() -> dict[str, str]:
             v = db_v.get(key)
             if isinstance(v, str) and v.strip():
                 out[key] = v.strip()
-    # A suspended `t.me` link an operator typed into a variable value (brand,
-    # products, tone) would render into Layer 1 and could be echoed to a player
-    # — rewrite it to `telegram.me` at render time.
-    return {k: tglinks.normalize_tg_text(v) for k, v in out.items()}
+    return out
 
 
 def retention_prompt_variable_overrides() -> dict[str, str]:
@@ -281,7 +277,7 @@ def retention_prompt_variables() -> dict[str, str]:
     overrides = retention_prompt_variable_overrides()
     out: dict[str, str] = {}
     for key, _desc, default, _renders in _prompts.RETENTION_PROMPT_VARIABLES:
-        out[key] = tglinks.normalize_tg_text(overrides.get(key, default or ""))
+        out[key] = overrides.get(key, default or "")
     return out
 
 
@@ -336,23 +332,8 @@ def site_map() -> list[dict[str, str]]:
     if pid is not None:
         prod = (_product_cache.get(pid) or {}).get("site_map")
         if isinstance(prod, list):
-            return _normalize_site_map(prod)
-    return _normalize_site_map(glob)
-
-
-def _normalize_site_map(pages: list) -> list[dict[str, str]]:
-    """Rewrite a suspended `t.me` `url` on any page to `telegram.me`.
-
-    Applied on read so the rendered SITE MAP block, the `[[LINK:url]]` exact-match
-    validation and the resulting player button all agree on the live domain,
-    without a stored-data migration. Non-`t.me` urls pass through untouched.
-    """
-    out: list[dict[str, str]] = []
-    for page in pages:
-        if isinstance(page, dict) and page.get("url"):
-            page = {**page, "url": tglinks.normalize_tg_url(str(page["url"]))}
-        out.append(page)
-    return out
+            return prod
+    return glob
 
 
 def general() -> dict[str, Any]:

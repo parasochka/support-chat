@@ -55,7 +55,7 @@ const GUIDE_STEPS = [
     title: t('1 · Create the bot'),
     body: rich(
       t(
-        'Open [@BotFather](https://telegram.me/BotFather) → `/newbot`, pick a name and a username, copy the **token**. Optionally set the description, about text and avatar there too. Menu commands are not needed — players enter only via a deeplink from the site.'
+        'Open [@BotFather](https://t.me/BotFather) → `/newbot`, pick a name and a username, copy the **token**. Optionally set the description, about text and avatar there too. Menu commands are not needed — players enter only via a deeplink from the site.'
       )
     ),
   },
