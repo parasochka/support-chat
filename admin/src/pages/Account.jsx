@@ -64,7 +64,7 @@ const Account = () => {
   }, []);
 
   return (
-    <Box sx={{ maxWidth: 760 }}>
+    <Box>
       <Title title={t('Account & appearance')} />
 
       <Card sx={{ mt: 2, mb: 2 }}>

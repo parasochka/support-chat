@@ -52,7 +52,7 @@ const PromptPreview = () => {
   }, [notify]);
 
   return (
-    <Box sx={{ maxWidth: 1000 }}>
+    <Box>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         {t('The complete prompt as the model receives it (read-only; example topic:')}{' '}
         {preview?.example?.topic || '—'}, {t('language:')} {preview?.example?.lang || '—'}).{' '}

@@ -476,13 +476,26 @@ const AppMenu = () => {
 // device width, so the PAGE BODY scrolls horizontally on a phone instead of the
 // individual table scrolling inside its own `overflowX: auto` box. Zeroing the
 // min-width down the flex chain lets those wrappers shrink to the viewport, so
-// the inner scroll containers clip and scroll as intended. `maxWidth: 100%` on
-// the content is the belt-and-suspenders cap.
+// the inner scroll containers clip and scroll as intended.
+//
+// Width standard: ONE content width for every page (pages carry no maxWidth of
+// their own anymore). The baseline device is a 13" MacBook Air (1280 logical px):
+// sidebar (240) + content (~1040) fill it edge to edge. On anything wider the
+// whole sidebar+content frame is capped at FRAME_MAX and centered, so big
+// monitors get a centered fixed-width app instead of content smeared across the
+// full screen. `min(...)` keeps the cap from blocking shrink on phones.
+const CONTENT_MAX = 1200;
+const FRAME_MAX = CONTENT_MAX + 240; // + the open sidebar
 const LAYOUT_SX = {
   minWidth: 0,
   '& .RaLayout-appFrame': { minWidth: 0 },
-  '& .RaLayout-contentWithSidebar': { minWidth: 0 },
-  '& .RaLayout-content': { minWidth: 0, maxWidth: '100%' },
+  '& .RaLayout-contentWithSidebar': {
+    minWidth: 0,
+    width: '100%',
+    maxWidth: FRAME_MAX,
+    mx: 'auto',
+  },
+  '& .RaLayout-content': { minWidth: 0, maxWidth: `min(${CONTENT_MAX}px, 100%)` },
 };
 
 const AppLayout = ({ children }) => (

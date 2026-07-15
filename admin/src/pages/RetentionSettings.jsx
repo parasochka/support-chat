@@ -297,10 +297,11 @@ const ManagersTab = ({ productId }) => {
 };
 
 // ---------------------------------------------------------------------------
-// page shell — three tabs; the ?tab= param survives reloads. Config and
-// Managers are strictly per-product; the Parameters tab (the `retention`
-// settings group) also edits the GLOBAL defaults when no product is selected,
-// so it renders without the product gate.
+// page shell — three tabs; the ?tab= param survives reloads. The WHOLE page
+// (tab strip included) sits behind the product gate: every retention surface
+// is per-product, and GLOBAL retention defaults are edited from System →
+// Settings territory by design — rendering the tabs at the All-products scope
+// only invited edits against the wrong scope.
 // ---------------------------------------------------------------------------
 const TABS = [
   ['config', 'Telegram config'],
@@ -308,14 +309,14 @@ const TABS = [
   ['params', 'Parameters'],
 ];
 
-const RetentionSettings = () => {
+const RetentionSettingsInner = () => {
   const [params, setParams] = useSearchParams();
   const productId = getProductId();
   const requested = params.get('tab');
   const tab = TABS.some(([v]) => v === requested) ? requested : 'config';
 
   return (
-    <Box sx={{ p: 2, maxWidth: 1000 }}>
+    <Box sx={{ p: 2 }}>
       <Title title={t('Retention settings')} />
       <Tabs
         value={tab}
@@ -330,8 +331,6 @@ const RetentionSettings = () => {
       </Tabs>
       {tab === 'params' ? (
         <SettingsModule module="retention" />
-      ) : !productId ? (
-        <RequireProduct title={t('Retention settings')} />
       ) : tab === 'managers' ? (
         <ManagersTab productId={productId} />
       ) : (
@@ -340,5 +339,11 @@ const RetentionSettings = () => {
     </Box>
   );
 };
+
+const RetentionSettings = () => (
+  <RequireProduct title={t('Retention settings')}>
+    <RetentionSettingsInner />
+  </RequireProduct>
+);
 
 export default RetentionSettings;

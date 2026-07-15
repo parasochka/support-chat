@@ -450,8 +450,12 @@ const RU = {
   'Service and error notices': 'Служебные и ошибочные уведомления',
   'Technical fallbacks shown on failures and guards (errors, rate limit, low-content and injection nudges) — rarely need brand tuning.':
     'Технические фолбэки при сбоях и срабатывании защит (ошибки, rate-лимит, пустые сообщения, инъекции) — редко требуют брендовой настройки.',
-  "Everything the player sees, editable per language and split into blocks: the general widget interface, the support bot's messages, the Telegram retention bot's messages, and the service / error notices — plus the topic names. Clearing a field falls back to the shipped default (shown as placeholder).":
-    'Всё, что видит игрок, — редактируется по языкам и разбито на блоки: интерфейс виджета, сообщения бота поддержки, сообщения Telegram-бота и служебные уведомления, плюс названия тем. Очистка поля возвращает встроенное значение (показано как плейсхолдер).',
+  "Everything the player sees, editable per language and split into tabs: the general widget interface, the support bot's messages, the Telegram retention bot's messages, the service / error notices and the topic names. Clearing a field falls back to the shipped default (shown as placeholder); the Save button saves edits from every tab at once.":
+    'Всё, что видит игрок, — редактируется по языкам и разбито на вкладки: интерфейс виджета, сообщения бота поддержки, сообщения Telegram-бота, служебные уведомления и названия тем. Очистка поля возвращает встроенное значение (показано как плейсхолдер); кнопка «Сохранить» сохраняет правки со всех вкладок сразу.',
+  'Widget interface': 'Интерфейс виджета',
+  'Support bot': 'Бот поддержки',
+  'Retention bot': 'Ретеншен-бот',
+  'Service & errors': 'Служебные и ошибки',
   'The topic picker buttons, per language. Stored on the topic itself; a missing translation falls back to English.':
     'Кнопки выбора темы, по языкам. Хранится на самой теме; отсутствующий перевод падает на английский.',
   'Translations saved — live': 'Переводы сохранены — применены',
@@ -492,7 +496,7 @@ const RU = {
   'Common': 'Общее',
   'Retention settings': 'Настройки ретеншена',
   'Parameters': 'Параметры',
-  'Escalation keywords': 'Ключевые слова эскалации',
+  'Escalation keywords': 'Ключи эскалации',
   'Stands in for the host-site handshake in dev/test: the player data the model sees (name personalization, VIP level, balance). Ignored when a handshake secret is configured — the real site supplies the context then.':
     'Заменяет подписанный handshake сайта в dev/test-режиме: данные игрока, которые видит модель (персонализация по имени, VIP-уровень, баланс). Игнорируется, когда настроен секрет handshake — тогда контекст передаёт реальный сайт.',
   'Linked players': 'Привязанные игроки',
@@ -705,7 +709,7 @@ const RU = {
   '**Anti-spam gates** — rate limit per IP, a cooldown between messages, a length cap, the low-content guard (one-character spam gets a nudge without a model call) and the prompt-injection scan. All tunable in **Chat settings**; a rejected message never reaches the model, so attacks don’t burn tokens.':
     '**Антиспам-фильтры** — rate-лимит по IP, кулдаун между сообщениями, лимит длины, защита от пустых сообщений (односимвольный спам получает подсказку без вызова модели) и скан на prompt-инъекции. Всё настраивается в «**Настройках чата**»; отклонённое сообщение не доходит до модели, поэтому атаки не сжигают токены.',
   '**Keyword escalation check** — if the message hits a high-risk stem (fraud, legal threats) or an explicit "call a human", the escalation card is shown immediately, before any model call. The lists are edited in **Common → Escalation keywords**.':
-    '**Проверка стоп-слов** — если сообщение содержит высокорисковый триггер (мошенничество, юридические угрозы) или явную просьбу позвать человека, карточка эскалации показывается сразу, до вызова модели. Списки редактируются в «**Общее → Ключевые слова эскалации**».',
+    '**Проверка стоп-слов** — если сообщение содержит высокорисковый триггер (мошенничество, юридические угрозы) или явную просьбу позвать человека, карточка эскалации показывается сразу, до вызова модели. Списки редактируются в «**Общее → Ключи эскалации**».',
   '**Prompt assembly** — three layers: the fixed persona + rules (rendered with your prompt variables), the selected topic’s KB text, and the per-message data (player profile, conversation history, language). Only the selected topic’s KB is loaded — that’s why topic routing matters.':
     '**Сборка промпта** — три слоя: фиксированный персонаж + правила (с вашими переменными промпта), текст БЗ выбранной темы и данные конкретного сообщения (профиль игрока, история диалога, язык). Загружается только БЗ выбранной темы — поэтому маршрутизация тем так важна.',
   '**Model answer** — the AI answers in the player’s language and may attach service signals: a topic switch, follow-up suggestions, a "question resolved" flag, or an escalation. The signals are stripped from the text and become widget behaviour.':
@@ -727,7 +731,7 @@ const RU = {
     'Переиспользуемые значения `{placeholder}`, подставляемые в каждый текст БЗ, — измените лимит один раз, и он обновится везде.',
   'Persona: name, brand, tone of voice': 'Персонаж: имя, бренд, тон общения',
   'Prompt → Prompt variables': 'Промпт → Переменные промпта',
-  'Common → Escalation keywords': 'Общее → Ключевые слова эскалации',
+  'Common → Escalation keywords': 'Общее → Ключи эскалации',
   'The values that uniquify the shared prompt template for this brand. The wording around them is fixed in code.':
     'Значения, которые уникализируют общий шаблон промпта под этот бренд. Формулировки вокруг них зафиксированы в коде.',
   'Escalation trigger words': 'Слова-триггеры эскалации',
@@ -778,7 +782,7 @@ const RU = {
   'Select the product in the header switcher and check its content: topics + KB texts (**Knowledge base**), persona values (**Prompt → Prompt variables**), the contact link and widget copy (**Translations**).':
     'Выберите продукт в переключателе шапки и проверьте его контент: темы + тексты БЗ («**База знаний**»), значения персонажа («**Промпт → Переменные промпта**»), контактную ссылку и тексты виджета («**Переводы**»).',
   'Set the **Test player** profile (Common → Test player profile) — on a test deploy without the site handshake it stands in for the real player, so you can check the by-name greeting and VIP personalization.':
-    'Задайте профиль **тестового игрока** (Общее → Тестовый профиль игрока) — на тестовом деплое без хендшейка сайта он заменяет реального игрока, так что можно проверить приветствие по имени и VIP-персонализацию.',
+    'Задайте профиль **тестового игрока** (Общее → Тестовый профиль) — на тестовом деплое без хендшейка сайта он заменяет реального игрока, так что можно проверить приветствие по имени и VIP-персонализацию.',
   'Open the test page (the service root `/`) or embed the snippet from **Structure** on a staging page, pick a topic and ask real questions from the KB — including ones phrased differently from how the KB is written.':
     'Откройте тестовую страницу (корень сервиса `/`) или вставьте код из «**Структуры**» на staging-страницу, выберите тему и задавайте реальные вопросы из БЗ — в том числе сформулированные иначе, чем написано в БЗ.',
   'Ask a question that belongs to ANOTHER topic and watch the automatic switch notice + the re-ask. Then trigger an escalation ("I want to talk to a human") and check the card — its button, language, and (with retention on) the bot deeplink.':
@@ -1204,7 +1208,7 @@ const RU = {
 
   // ----- prompt variables -----
   'Prompt variables saved': 'Переменные промпта сохранены',
-  'Escalation keywords saved': 'Ключевые слова эскалации сохранены',
+  'Escalation keywords saved': 'Ключи эскалации сохранены',
   'Test profile saved': 'Тестовый профиль сохранён',
   'Brand values substituted into the shared prompt template. Empty values fall back to the built-in defaults. The prompt wording itself is edited in `prompts.py` (see the read-only Prompt preview page). The Telegram retention persona has its own variables in [Retention → Prompt variables](#/retention?tab=variables) — a separate prompt: empty retention fields fall back to the built-in retention defaults, never to these support values.':
     'Брендовые значения, подставляемые в общий шаблон промпта. Пустые значения возвращаются к встроенным. Сами формулировки промпта редактируются в `prompts.py` (см. страницу просмотра промпта, только чтение). У Telegram-персонажа ретеншена свои переменные в [Ретеншен → Переменные промпта](#/retention?tab=variables) — это отдельный промпт: пустые поля ретеншена падают на встроенные значения ретеншена и никогда — на эти значения поддержки.',
@@ -1214,7 +1218,7 @@ const RU = {
   'High-risk keywords (fraud / legal)': 'Ключевые слова высокого риска (мошенничество / юридические)',
   'Human-request keywords': 'Ключевые слова запроса живого оператора',
   'Save keywords': 'Сохранить ключевые слова',
-  'Test player profile': 'Тестовый профиль игрока',
+  'Test player profile': 'Тестовый профиль',
   "A handshake secret is configured — the host site supplies the player context, so this test profile is ignored at session create. To use this profile instead, clear the product's [Widget handshake secret in Structure](#/structure) (use its Clear button). A deploy-wide `WIDGET_HANDSHAKE_SECRET` env value can only be removed in Railway.":
     'Настроен handshake-секрет — контекст игрока передаёт сайт, поэтому при создании сессии этот тестовый профиль игнорируется. Чтобы использовать профиль, очистите [handshake-секрет виджета в «Структуре»](#/structure) (кнопка «Очистить»). Env-значение `WIDGET_HANDSHAKE_SECRET` уровня деплоя убирается только в Railway.',
   'Enabled (used when no handshake secret is set)': 'Включён (используется, когда handshake-секрет не задан)',

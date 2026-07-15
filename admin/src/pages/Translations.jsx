@@ -30,27 +30,34 @@ const SERVICE_KEYS = new Set([
   'rtn_injection_reply',
 ]);
 
+// Each section is a second-level tab (under the language tabs): `tab` is the
+// short tab label, `title`/`help` the in-card heading. The old layout stacked
+// all four blocks + topic names on one page, which read as one big pile.
 const SECTIONS = [
   {
     id: 'widget',
+    tab: tr('Widget interface'),
     title: tr('General — widget interface'),
     help: tr('Chrome strings rendered by the widget itself: header, topic picker, buttons, input placeholder.'),
     match: (k) => k.scope === 'widget' && !SERVICE_KEYS.has(k.key),
   },
   {
     id: 'support',
+    tab: tr('Support bot'),
     title: tr('Support bot — messages to the player'),
     help: tr('What the support bot itself says to the player: the escalation card and its button (incl. the per-language contact_url link) and the closing option.'),
     match: (k) => k.scope === 'server' && !SERVICE_KEYS.has(k.key),
   },
   {
     id: 'retention',
+    tab: tr('Retention bot'),
     title: tr('Retention bot (Telegram) — messages to the player'),
     help: tr('What the Telegram retention bot says: the entry menu and its buttons, the subscription gate, the manager hand-off, the proactive-ping header and the /stop-/resume confirmations.'),
     match: (k) => k.scope === 'retention' && !SERVICE_KEYS.has(k.key),
   },
   {
     id: 'service',
+    tab: tr('Service & errors'),
     title: tr('Service and error notices'),
     help: tr('Technical fallbacks shown on failures and guards (errors, rate limit, low-content and injection nudges) — rarely need brand tuning.'),
     match: (k) => SERVICE_KEYS.has(k.key),
@@ -74,6 +81,7 @@ const TranslationsInner = () => {
   const [texts, setTexts] = useState({}); // lang -> {key: value}, seeded from resolved
   const [titles, setTitles] = useState({}); // topicId -> {lang: value}
   const [lang, setLang] = useState('');
+  const [section, setSection] = useState(SECTIONS[0].id); // second-level tab
   const [saving, setSaving] = useState(false);
   const notify = useNotify();
   // Managers are read-only server-side (403 on PUT) — pre-disable the editor
@@ -192,17 +200,17 @@ const TranslationsInner = () => {
   };
 
   return (
-    <Box sx={{ p: 2, maxWidth: 1000 }}>
+    <Box sx={{ p: 2 }}>
       <Title title={tr('Translations')} />
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
         {tr(
-          "Everything the player sees, editable per language and split into blocks: the general widget interface, the support bot's messages, the Telegram retention bot's messages, and the service / error notices — plus the topic names. Clearing a field falls back to the shipped default (shown as placeholder)."
+          "Everything the player sees, editable per language and split into tabs: the general widget interface, the support bot's messages, the Telegram retention bot's messages, the service / error notices and the topic names. Clearing a field falls back to the shipped default (shown as placeholder); the Save button saves edits from every tab at once."
         )}
       </Typography>
       <Tabs
         value={lang}
         onChange={(e, v) => setLang(v)}
-        sx={{ mb: 2, borderBottom: 1, borderColor: 'divider' }}
+        sx={{ mb: 1, borderBottom: 1, borderColor: 'divider' }}
         variant="scrollable"
         allowScrollButtonsMobile
       >
@@ -211,7 +219,25 @@ const TranslationsInner = () => {
         ))}
       </Tabs>
 
+      {/* Second-level tabs: one per copy section + the topic names. Edits made
+          on other tabs stay in state and are all saved by the one Save button. */}
+      <Tabs
+        value={section}
+        onChange={(e, v) => setSection(v)}
+        sx={{ mb: 2, borderBottom: 1, borderColor: 'divider', minHeight: 40 }}
+        variant="scrollable"
+        allowScrollButtonsMobile
+      >
+        {SECTIONS.filter((s) => (data.keys || []).some(s.match)).map((s) => (
+          <Tab key={s.id} value={s.id} label={s.tab} sx={{ minHeight: 40, py: 0.5 }} />
+        ))}
+        {topics.length > 0 && (
+          <Tab value="topics" label={tr('Topic names')} sx={{ minHeight: 40, py: 0.5 }} />
+        )}
+      </Tabs>
+
       {SECTIONS.map(({ id, title, help, match }) => {
+        if (id !== section) return null;
         const keys = (data.keys || []).filter(match);
         if (!keys.length) return null;
         return (
@@ -240,7 +266,7 @@ const TranslationsInner = () => {
         );
       })}
 
-      {topics.length > 0 && (
+      {section === 'topics' && topics.length > 0 && (
         <Card sx={{ mb: 2 }}>
           <CardContent>
             <Typography variant="h6">{tr('Topic names')}</Typography>
