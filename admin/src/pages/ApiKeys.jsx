@@ -164,7 +164,7 @@ const ApiKeys = () => {
   if (keys === null) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
 
   return (
-    <Box sx={{ p: 2, maxWidth: 1100 }}>
+    <Box sx={{ p: 2 }}>
       <Title title={t('API keys')} />
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         {rich(

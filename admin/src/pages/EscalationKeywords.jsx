@@ -68,7 +68,7 @@ const EscalationKeywordsInner = () => {
   if (!escalation) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
 
   return (
-    <Box sx={{ p: 2, maxWidth: 900 }}>
+    <Box sx={{ p: 2 }}>
       <Title title={t('Escalation keywords')} />
       <Card>
         <CardContent>

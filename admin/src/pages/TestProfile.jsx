@@ -69,7 +69,7 @@ const TestProfileInner = () => {
   if (!profile) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
 
   return (
-    <Box sx={{ p: 2, maxWidth: 900 }}>
+    <Box sx={{ p: 2 }}>
       <Title title={t('Test player profile')} />
       <Card>
         <CardContent>

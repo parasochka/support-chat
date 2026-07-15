@@ -765,7 +765,7 @@ const GuideTab = ({ status }) => {
           <P>
             {t('Deterministic rails the model can never override. They are the knobs that decide the send frequency — all editable live in Retention → Settings → «Send-frequency guards». Current values for this product are shown in the table. Each blocked decision lists its reasons in the Guards column of the ledger:')}
           </P>
-          <Box sx={{ overflowX: 'auto', maxWidth: 980 }}>
+          <Box sx={{ overflowX: 'auto' }}>
           <Table size="small" sx={{ minWidth: 640 }}>
             <TableHead>
               <TableRow>

@@ -480,7 +480,7 @@ const Structure = () => {
   if (!structure) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
 
   return (
-    <Box sx={{ p: 2, maxWidth: 1000 }}>
+    <Box sx={{ p: 2 }}>
       <Title title={t('Structure')} />
       {structure.global_role === 'admin' && (
         <Stack

@@ -61,7 +61,7 @@ const PromptVariables = () => {
   };
 
   return (
-    <Box sx={{ maxWidth: 900 }}>
+    <Box>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         {rich(
           t(

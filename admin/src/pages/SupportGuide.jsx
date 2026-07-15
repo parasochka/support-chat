@@ -9,6 +9,7 @@ import TableCell from '@mui/material/TableCell';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
+import RequireProduct from '../components/RequireProduct';
 import { t } from '../i18n';
 import rich from '../components/Rich';
 
@@ -84,12 +85,9 @@ const CONTENT_MAP = [
   ],
 ];
 
-const SupportGuide = () => (
-  <Box sx={{ p: 2, maxWidth: 1000 }}>
+const SupportGuideInner = () => (
+  <Box sx={{ p: 2 }}>
     <Title title={t('Support chat — how it works')} />
-    <Typography variant="h5" sx={{ mb: 0.5 }}>
-      {t('Support chat — how it works')}
-    </Typography>
     <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
       {t(
         'The operator’s guide to the on-site support chat: what happens to a player’s message, where every piece of content is edited, and how to test the whole flow before going live.'
@@ -344,6 +342,15 @@ const SupportGuide = () => (
       </CardContent>
     </Card>
   </Box>
+);
+
+// The guide describes per-product content (KB, prompt variables, translations)
+// — like the rest of the Support chat section it renders only in a concrete
+// product context.
+const SupportGuide = () => (
+  <RequireProduct title={t('Support chat — how it works')}>
+    <SupportGuideInner />
+  </RequireProduct>
 );
 
 export default SupportGuide;

@@ -242,7 +242,7 @@ const VariablesTab = ({ productId }) => {
   if (vars === null) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
 
   return (
-    <Box sx={{ maxWidth: 900 }}>
+    <Box>
       <Alert severity="info" sx={{ mb: 2 }}>
         {rich(
           t(
@@ -319,7 +319,7 @@ const PromptTab = ({ productId }) => {
   }, [productId, notify]);
 
   return (
-    <Box sx={{ maxWidth: 1000 }}>
+    <Box>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         {rich(
           t(
@@ -1695,7 +1695,7 @@ const Retention = () => {
   const subtabs = tab === 'prompt' || tab === 'variables' ? PROMPT_SUBTABS : null;
 
   return (
-    <Box sx={{ p: 2, maxWidth: 1100 }}>
+    <Box sx={{ p: 2 }}>
       <Title title={t('Retention')} />
       {subtabs && (
         <Tabs

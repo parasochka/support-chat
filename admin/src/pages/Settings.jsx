@@ -33,6 +33,7 @@ import { useMemo } from 'react';
 import { API_URL, httpClient } from '../httpClient';
 import { getProductId, getScopeName, withProduct } from '../productScope';
 import { t } from '../i18n';
+import RequireProduct from '../components/RequireProduct';
 import rich from '../components/Rich';
 import {
   GROUP_HELP,
@@ -632,7 +633,7 @@ export const SettingsModule = ({ module }) => {
     : ` (${t('GLOBAL defaults')})`;
 
   return (
-    <Box sx={{ maxWidth: 1000 }}>
+    <Box>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
         {t(mod.help)}
       </Typography>
@@ -740,15 +741,20 @@ const Settings = () => {
   const module = MODULES[requested] ? requested : 'core';
   const mod = MODULES[module];
 
-  return (
-    <Box sx={{ p: 2, maxWidth: 1000 }}>
+  const page = (
+    <Box sx={{ p: 2 }}>
       <Title title={t(mod.title)} />
-      <Typography variant="h5" sx={{ mb: 0.5 }}>
-        {t(mod.title)}
-      </Typography>
       <SettingsModule module={module} />
     </Box>
   );
+
+  // The support module lives in the per-product Support chat section — like
+  // its siblings it needs a concrete product selected; the core (System)
+  // module is the deploy-wide surface and stays reachable at any scope.
+  if (module === 'support') {
+    return <RequireProduct title={t(mod.title)}>{page}</RequireProduct>;
+  }
+  return page;
 };
 
 export default Settings;
