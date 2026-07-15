@@ -636,17 +636,29 @@ def test_trigger_phrase_details_and_punctuation():
         _evt(event_name="bet_settled"), "en") == ""
 
 
-def test_every_toggleable_event_has_phrase_and_occasion():
-    # The Triggers tab lets the owner enable ANY canonical event (except the
-    # special-cased bet_settled), so every one of them must ship an
-    # admin-editable header phrase (rtn_trig_*) and a model-facing occasion
-    # line — otherwise enabling it sends a bare, unexplained header.
+def test_every_decision_event_has_phrase_and_occasion():
+    # Only the decision events actually wake the agent and send a message, so
+    # each must ship an admin-editable header phrase (rtn_trig_*) and a
+    # model-facing occasion line — otherwise a reaction sends a bare header.
+    # bet_settled is the one decision-worthy event without a phrase by design
+    # (its touch is the comfort path, which shows the bare header).
     registered = {k for k, _scope, _d in translations.KEYS}
-    for name in sorted(player_sync.CANONICAL_EVENTS - {"bet_settled"}):
+    for name in sorted(retention_v2.DECISION_EVENTS):
         assert f"rtn_trig_{name}" in registered, name
         assert retention_v2._trigger_phrase(
             _evt(event_name=name, payload={}), "en") != "", name
         assert name in retention_v2._OCCASIONS, name
+
+
+def test_state_food_events_have_no_trigger_phrase():
+    # The non-decision (state-food) canonical events never stimulate a message,
+    # so their rtn_trig_* keys were removed. Each degrades to a bare header.
+    registered = {k for k, _scope, _d in translations.KEYS}
+    for name in sorted(player_sync.CANONICAL_EVENTS
+                       - retention_v2.DECISION_EVENTS - {"bet_settled"}):
+        assert f"rtn_trig_{name}" not in registered, name
+        assert retention_v2._trigger_phrase(
+            _evt(event_name=name, payload={}), "en") == "", name
 
 
 def test_proactive_header_merges_on_one_line():
