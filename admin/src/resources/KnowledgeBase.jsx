@@ -21,7 +21,6 @@ import MobileList from '../components/MobileList';
 import TextStats from '../components/TextStats';
 import { t } from '../i18n';
 import RouteTabs from '../components/RouteTabs';
-import { CONTENT_TABS } from '../contentTabs';
 import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
 import { KB_TABS } from './kbTabs';
@@ -90,7 +89,6 @@ export const KbList = () => {
   const redirect = useRedirect();
   return (
     <RequireProduct title={t('Knowledge base')}>
-      <RouteTabs tabs={CONTENT_TABS} />
       <RouteTabs tabs={KB_TABS} />
       <List perPage={25} exporter={false} title={t('Knowledge base')}>
         {isMobile ? (
@@ -119,9 +117,6 @@ export const KbList = () => {
 
 export const KbEdit = () => (
   <RequireProduct title={t('Knowledge base')}>
-    {/* Keep the Content hub strip on the drilldown too, so the cross-surface
-        tabs never disappear mid-flow. */}
-    <RouteTabs tabs={CONTENT_TABS} />
     <Edit mutationMode="pessimistic" title={t('Edit topic + KB')}>
       <TopicForm />
     </Edit>
@@ -130,7 +125,6 @@ export const KbEdit = () => (
 
 export const KbCreate = () => (
   <RequireProduct title={t('Knowledge base')}>
-    <RouteTabs tabs={CONTENT_TABS} />
     <Create redirect="list" title={t('New topic')}>
       <TopicForm isCreate />
     </Create>

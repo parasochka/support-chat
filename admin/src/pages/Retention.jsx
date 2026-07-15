@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Navigate, useSearchParams } from 'react-router-dom';
 import { Title, useNotify, usePermissions } from 'react-admin';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
@@ -40,7 +40,6 @@ import {
 } from '../components/charts';
 import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
-import SecretField from '../components/SecretField';
 import TextStats from '../components/TextStats';
 import rich from '../components/Rich';
 import { t } from '../i18n';
@@ -79,7 +78,7 @@ const GUIDE_STEPS = [
     title: t('4 · Connect this product'),
     body: rich(
       t(
-        'On the [Telegram config](#/retention?tab=config) tab: switch on **Retention bot enabled**, fill the bot username, channel id and channel URL → **Save config**. In **Secrets** paste the bot token (and the Player API key, if the casino exposes a profile endpoint) → **Save secrets**. Then press **Register Telegram webhook** — it must report the webhook URL back.'
+        'On the [Telegram config](#/retention-settings) tab of Retention → Settings: switch on **Retention bot enabled**, fill the bot username, channel id and channel URL → **Save config**. In **Secrets** paste the bot token (and the Player API key, if the casino exposes a profile endpoint) → **Save secrets**. Then press **Register Telegram webhook** — it must report the webhook URL back.'
       )
     ),
   },
@@ -87,7 +86,7 @@ const GUIDE_STEPS = [
     title: t('5 · Content and tuning'),
     body: rich(
       t(
-        'Review the [Retention KB](#/retention?tab=kb) (one text document — what Nika may offer and talk about; a generic English starter is pre-filled, replace it with the brand\'s own), tune the Telegram persona in [Prompt variables](#/retention?tab=variables) (name/role/tone — empty fields use the built-in retention defaults), upload photos in [Media](#/retention?tab=photos) (bulk upload, then select them and press **Generate metadata** to have the AI fill the description, tags, `stage` = explicitness and `level_min` = VIP tier) and add live [Managers](#/retention?tab=managers) (round-robin, sticky). Thresholds (daily photo cap, stage progression, VIP tiers, nonce TTL) are the `retention` group in [Settings](#/settings?module=retention); bot texts are the `rtn_*` keys in [Translations](#/translations).'
+        'Review the [Retention KB](#/retention?tab=kb) (one text document — what Nika may offer and talk about; a generic English starter is pre-filled, replace it with the brand\'s own), tune the Telegram persona in [Prompt variables](#/retention?tab=variables) (name/role/tone — empty fields use the built-in retention defaults), upload photos in [Media](#/retention?tab=photos) (bulk upload, then select them and press **Generate metadata** to have the AI fill the description, tags, `stage` = explicitness and `level_min` = VIP tier) and add live [Managers](#/retention-settings?tab=managers) (round-robin, sticky). Thresholds (daily photo cap, stage progression, VIP tiers, nonce TTL) are the [Parameters tab of Retention → Settings](#/retention-settings?tab=params); bot texts are the `rtn_*` keys in [Translations](#/translations).'
       )
     ),
   },
@@ -122,173 +121,6 @@ const GuideTab = () => (
     </Typography>
   </Box>
 );
-
-// ---------------------------------------------------------------------------
-// Telegram config tab
-// ---------------------------------------------------------------------------
-const ConfigTab = ({ productId }) => {
-  const notify = useNotify();
-  // Managers are read-only server-side (403 on write) — pre-disable saves.
-  const { permissions } = usePermissions();
-  const readOnly = permissions !== 'admin';
-  const [data, setData] = useState(null);
-  const [form, setForm] = useState({});
-  const [secrets, setSecrets] = useState({});
-
-  const load = useCallback(() => {
-    httpClient(`${API_URL}/admin/retention/telegram/${productId}`)
-      .then(({ json }) => {
-        setData(json);
-        const p = json.product || {};
-        setForm({
-          telegram_bot_username: p.telegram_bot_username || '',
-          telegram_channel_id: p.telegram_channel_id || '',
-          telegram_channel_url: p.telegram_channel_url || '',
-          player_api_url: p.player_api_url || '',
-          retention_enabled: Boolean(p.retention_enabled),
-        });
-      })
-      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
-  }, [productId, notify]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const save = async () => {
-    try {
-      await httpClient(`${API_URL}/admin/retention/telegram/${productId}`, {
-        method: 'PUT',
-        body: JSON.stringify(form),
-      });
-      notify(t('Telegram config saved'), { type: 'success' });
-      load();
-    } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
-    }
-  };
-
-  const saveSecrets = async () => {
-    // Only send fields the operator actually typed into (a non-empty string).
-    // Clearing is an explicit action (clearSecret), not "leave the box empty".
-    const fields = Object.fromEntries(
-      Object.entries(secrets).filter(([, v]) => v !== undefined && v !== '')
-    );
-    if (!Object.keys(fields).length) return;
-    try {
-      await httpClient(`${API_URL}/admin/products/${productId}/secrets`, {
-        method: 'PUT',
-        body: JSON.stringify(fields),
-      });
-      notify(t('Secrets saved'), { type: 'success' });
-      setSecrets({});
-      load();
-    } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
-    }
-  };
-
-  const clearSecret = async (field, label) => {
-    if (
-      !window.confirm(
-        t('Clear {label}? It falls back to the deploy env value.').replace('{label}', label)
-      )
-    ) {
-      return;
-    }
-    try {
-      await httpClient(`${API_URL}/admin/products/${productId}/secrets`, {
-        method: 'PUT',
-        body: JSON.stringify({ [field]: '' }),
-      });
-      notify(t('{label} cleared').replace('{label}', label), { type: 'success' });
-      setSecrets({ ...secrets, [field]: '' });
-      load();
-    } catch (e) {
-      notify(e.body?.detail || e.message || t('Clear failed'), { type: 'error' });
-    }
-  };
-
-  const registerWebhook = async () => {
-    try {
-      const { json } = await httpClient(
-        `${API_URL}/admin/retention/webhook/${productId}`,
-        { method: 'POST' }
-      );
-      notify(`${t('Webhook registered:')} ${json.webhook_url || 'ok'}`, { type: 'success' });
-      load();
-    } catch (e) {
-      notify(e.body?.detail || e.message || t('Webhook registration failed'), {
-        type: 'error',
-      });
-    }
-  };
-
-  if (!data) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
-  const p = data.product || {};
-
-  return (
-    <Card>
-      <CardContent>
-        <FormControlLabel
-          control={
-            <Switch
-              checked={Boolean(form.retention_enabled)}
-              onChange={(e) => setForm({ ...form, retention_enabled: e.target.checked })}
-            />
-          }
-          label={t('Retention bot enabled')}
-        />
-        {[
-          ['telegram_bot_username', t('Bot username (without @)')],
-          ['telegram_channel_id', t('Channel id (@channel or -100…)')],
-          ['telegram_channel_url', t('Channel URL (subscription gate)')],
-          ['player_api_url', t('Player API URL (profile pull)')],
-        ].map(([f, label]) => (
-          <TextField
-            key={f}
-            label={label}
-            value={form[f] ?? ''}
-            onChange={(e) => setForm({ ...form, [f]: e.target.value })}
-            fullWidth
-            margin="dense"
-          />
-        ))}
-        <Button variant="contained" onClick={save} disabled={readOnly} sx={{ mt: 1, mr: 1 }}>
-          {t('Save config')}
-        </Button>
-        <Button variant="outlined" onClick={registerWebhook} disabled={readOnly} sx={{ mt: 1 }}>
-          {t('Register Telegram webhook')}
-        </Button>
-        {data.webhook_url && (
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            {t('Webhook URL:')} <code>{data.webhook_url}</code>
-          </Typography>
-        )}
-        <Typography variant="h6" sx={{ mt: 2 }}>
-          {t('Secrets')}
-        </Typography>
-        <SecretField
-          label={t('Telegram bot token')}
-          set={Boolean(p.has_telegram_bot_token)}
-          value={secrets.telegram_bot_token}
-          onChange={(e) => setSecrets({ ...secrets, telegram_bot_token: e.target.value })}
-          onClear={() => clearSecret('telegram_bot_token', t('Telegram bot token'))}
-        />
-        <SecretField
-          label={t('Player API key')}
-          set={Boolean(p.has_player_api_key)}
-          value={secrets.player_api_key}
-          onChange={(e) => setSecrets({ ...secrets, player_api_key: e.target.value })}
-          onClear={() => clearSecret('player_api_key', t('Player API key'))}
-        />
-        <Button variant="contained" size="small" onClick={saveSecrets} disabled={readOnly} sx={{ mt: 1 }}>
-          {t('Save secrets')}
-        </Button>
-      </CardContent>
-    </Card>
-  );
-};
 
 // ---------------------------------------------------------------------------
 // Retention KB tab — ONE free-text document per product, edited exactly like a
@@ -1253,103 +1085,6 @@ const PhotosTab = ({ productId }) => {
 };
 
 // ---------------------------------------------------------------------------
-// Managers tab (round-robin hand-off targets)
-// ---------------------------------------------------------------------------
-const ManagersTab = ({ productId }) => {
-  const notify = useNotify();
-  // Managers are read-only server-side (403 on write) — pre-disable writes.
-  const { permissions } = usePermissions();
-  const readOnly = permissions !== 'admin';
-  const [items, setItems] = useState([]);
-  const [form, setForm] = useState({ display_name: '', username: '' });
-
-  const load = useCallback(() => {
-    httpClient(`${API_URL}/admin/retention/managers?product_id=${productId}`)
-      .then(({ json }) => setItems(json.items || []))
-      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
-  }, [productId, notify]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const create = async () => {
-    try {
-      await httpClient(`${API_URL}/admin/retention/managers?product_id=${productId}`, {
-        method: 'POST',
-        body: JSON.stringify(form),
-      });
-      setForm({ display_name: '', username: '' });
-      load();
-    } catch (e) {
-      notify(e.body?.detail || e.message || t('Create failed'), { type: 'error' });
-    }
-  };
-
-  const patch = async (id, fields) => {
-    try {
-      await httpClient(`${API_URL}/admin/retention/managers/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(fields),
-      });
-      load();
-    } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
-    }
-  };
-
-  const remove = async (id) => {
-    if (!window.confirm(t('Delete this manager?'))) return;
-    try {
-      await httpClient(`${API_URL}/admin/retention/managers/${id}`, { method: 'DELETE' });
-      load();
-    } catch (e) {
-      notify(e.body?.detail || e.message || t('Delete failed'), { type: 'error' });
-    }
-  };
-
-  return (
-    <Box>
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
-        <TextField size="small" label={t('Display name')} value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
-        <TextField size="small" label={t('Telegram username (without @)')} value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
-        <Button variant="outlined" onClick={create} disabled={!form.display_name || !form.username || readOnly}>
-          {t('Add manager')}
-        </Button>
-      </Stack>
-      <Box sx={{ overflowX: 'auto' }}>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>{t('Name')}</TableCell>
-              <TableCell>{t('Username')}</TableCell>
-              <TableCell>{t('Active')}</TableCell>
-              <TableCell />
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {items.map((m) => (
-              <TableRow key={m.id}>
-                <TableCell>{m.display_name}</TableCell>
-                <TableCell>@{m.username}</TableCell>
-                <TableCell>
-                  <Switch size="small" checked={Boolean(m.active)} onChange={(e) => patch(m.id, { active: e.target.checked })} />
-                </TableCell>
-                <TableCell>
-                  <Button size="small" color="error" onClick={() => remove(m.id)}>
-                    {t('Delete')}
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Box>
-    </Box>
-  );
-};
-
-// ---------------------------------------------------------------------------
 // Conversations tab — the Telegram chats, logged apart from support. A chat
 // "closes" when it sits idle past the `session_idle_minutes` retention knob
 // (status becomes resolved); the player's next message starts a fresh chat
@@ -1440,7 +1175,7 @@ const ConversationsTab = ({ productId }) => {
     <Box>
       <Alert severity="info" sx={{ mb: 2 }}>
         {t(
-          'Telegram chats with Nika, kept apart from the support-widget conversations. An idle chat closes automatically (the “Session idle (min)” knob in Settings → Retention bot); when the player returns, a new chat starts and Nika is shown the tail of the previous one for continuity. Click a row for the transcript.'
+          'Telegram chats with Nika, kept apart from the support-widget conversations. An idle chat closes automatically (the “Session idle (min)” knob in Retention → Settings); when the player returns, a new chat starts and Nika is shown the tail of the previous one for continuity. Click a row for the transcript.'
         )}
       </Alert>
       {isAdmin && (
@@ -1906,563 +1641,69 @@ const AnalyticsTab = ({ productId }) => {
 };
 
 // ---------------------------------------------------------------------------
-// Idle pings tab — the agent's INACTIVITY ladder ("player quiet N days ->
-// Nika writes first"): rules in retention_rules, swept by retention_idle.py
-// from the same worker loop as the event agent (shared guards + dry-run).
-// ---------------------------------------------------------------------------
-const TRIGGER_LABELS = {
-  bot_inactivity: 'Quiet in the bot',
-  casino_inactivity: 'Not playing on the site',
-  no_deposit: 'No deposit',
-};
-
-const STATUS_COLORS = { sent: 'success', failed: 'error', skipped: 'default' };
-
-const EMPTY_RULE = {
-  name: '',
-  enabled: true,
-  trigger_kind: 'bot_inactivity',
-  inactivity_days: 7,
-  action: 'message',
-  intent: '',
-  vip_tiers: '',
-  cooldown_days: 14,
-  priority: 0,
-};
-
-const IdlePingsTab = ({ productId }) => {
-  const isMobile = useIsMobile();
-  const notify = useNotify();
-  const { permissions } = usePermissions();
-  const canWrite = permissions === 'admin';
-  const [rules, setRules] = useState([]);
-  const [ledger, setLedger] = useState({ items: [], total: 0 });
-  const [page, setPage] = useState(1);
-  const [editing, setEditing] = useState(null); // EMPTY_RULE-shaped, id when editing
-  const [running, setRunning] = useState(false);
-  const [agent, setAgent] = useState(null); // /v2/status snapshot
-  const pageSize = 50;
-
-  const loadRules = useCallback(() => {
-    httpClient(`${API_URL}/admin/retention/idle/rules?product_id=${productId}`)
-      .then(({ json }) => setRules(json.items || []))
-      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
-  }, [productId, notify]);
-
-  const loadLedger = useCallback(() => {
-    httpClient(
-      `${API_URL}/admin/retention/idle/ledger?product_id=${productId}&page=${page}&page_size=${pageSize}`
-    )
-      .then(({ json }) => setLedger(json))
-      .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
-  }, [productId, page, notify]);
-
-  useEffect(() => {
-    loadRules();
-  }, [loadRules]);
-
-  useEffect(() => {
-    loadLedger();
-  }, [loadLedger]);
-
-  useEffect(() => {
-    httpClient(`${API_URL}/admin/retention/v2/status?product_id=${productId}`)
-      .then(({ json }) => setAgent(json))
-      .catch(() => {});
-  }, [productId]);
-
-  const openEditor = (rule) =>
-    setEditing(
-      rule
-        ? { ...rule, vip_tiers: (rule.vip_tiers || []).join(', ') }
-        : { ...EMPTY_RULE }
-    );
-
-  const saveRule = async () => {
-    const body = {
-      name: editing.name,
-      enabled: Boolean(editing.enabled),
-      trigger_kind: editing.trigger_kind,
-      inactivity_days: Number(editing.inactivity_days) || 1,
-      action: editing.action,
-      intent: editing.intent,
-      vip_tiers: editing.vip_tiers
-        .split(',')
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean),
-      cooldown_days: Number(editing.cooldown_days) || 0,
-      priority: Number(editing.priority) || 0,
-    };
-    try {
-      await httpClient(
-        editing.id
-          ? `${API_URL}/admin/retention/idle/rules/${editing.id}?product_id=${productId}`
-          : `${API_URL}/admin/retention/idle/rules?product_id=${productId}`,
-        { method: editing.id ? 'PUT' : 'POST', body: JSON.stringify(body) }
-      );
-      notify(editing.id ? t('Rule saved') : t('Rule created'), { type: 'success' });
-      setEditing(null);
-      loadRules();
-    } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
-    }
-  };
-
-  const patchRule = async (id, fields) => {
-    try {
-      await httpClient(
-        `${API_URL}/admin/retention/idle/rules/${id}?product_id=${productId}`,
-        { method: 'PUT', body: JSON.stringify(fields) }
-      );
-      loadRules();
-    } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
-    }
-  };
-
-  const removeRule = async (id) => {
-    if (!window.confirm(t('Delete this ping rule? The ledger history stays.'))) return;
-    try {
-      await httpClient(
-        `${API_URL}/admin/retention/idle/rules/${id}?product_id=${productId}`,
-        { method: 'DELETE' }
-      );
-      loadRules();
-    } catch (e) {
-      notify(e.body?.detail || e.message || t('Delete failed'), { type: 'error' });
-    }
-  };
-
-  const runNow = async () => {
-    setRunning(true);
-    try {
-      const { json } = await httpClient(
-        `${API_URL}/admin/retention/idle/run?product_id=${productId}`,
-        { method: 'POST' }
-      );
-      const s = json.stats || {};
-      if (s.skipped) {
-        notify(`${t('Sweep skipped:')} ${s.skipped}`, { type: 'warning' });
-      } else {
-        notify(
-          `${t('Sweep done')} — ${t('considered')} ${s.considered ?? 0}, ${t('sent')} ${s.sent ?? 0}, ${s.failed ?? 0} ${t('failed')}`,
-          { type: 'success' }
-        );
-      }
-      loadLedger();
-    } catch (e) {
-      notify(e.body?.detail || e.message || t('Run failed'), { type: 'error' });
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  const pages = Math.max(1, Math.ceil((ledger.total || 0) / pageSize));
-
-  return (
-    <Box>
-      {agent && !agent.v2_enabled && (
-        <Alert severity="warning" sx={{ mb: 2 }}>
-          {t(
-            'The proactive agent is DISABLED for this product, so idle pings do not fire either (they are part of the agent). Enable it in Settings → Retention bot → «Agent enabled».'
-          )}
-        </Alert>
-      )}
-      {agent && agent.v2_enabled && agent.v2_dry_run && (
-        <Alert severity="info" sx={{ mb: 2 }}>
-          {t(
-            'Dry-run (shadow mode) is ON: matched idle rules are logged to the agent’s Decisions ledger but nothing is sent. Turn it off in Settings → Retention bot when ready.'
-          )}
-        </Alert>
-      )}
-      <Alert severity="info" sx={{ mb: 2 }}>
-        {rich(
-          t(
-            'Idle pings re-engage QUIET players — the inactivity side of the proactive agent (casino events are handled by the [Proactive agent](#/retention-agent) page). Each rule picks WHO (a trigger + inactivity window, optionally narrowed to VIP tiers) and WHAT (a message or a photo, with an English intent hint that grounds what Nika writes). Per-player caps, the minimum gap, quiet hours and the daily AI budget from Settings → Retention bot apply to every send; players opt out with `/stop`.'
-          )
-        )}
-      </Alert>
-
-      <Stack
-        direction="row"
-        spacing={1}
-        alignItems="center"
-        justifyContent="space-between"
-        flexWrap="wrap"
-        useFlexGap
-        sx={{ mb: 1 }}
-      >
-        <Typography variant="h6">{t('Rules')}</Typography>
-        {canWrite && (
-          <Stack direction="row" spacing={1}>
-            <Button variant="outlined" size="small" onClick={() => openEditor(null)}>
-              {t('Add rule')}
-            </Button>
-            <Button
-              variant="contained"
-              size="small"
-              onClick={runNow}
-              disabled={running}
-            >
-              {running ? t('Running…') : t('Run now')}
-            </Button>
-          </Stack>
-        )}
-      </Stack>
-      {canWrite && (
-        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-          {t(
-            'Run now sweeps this product once, ignoring quiet hours (you are explicitly asking); every other guard — caps, gaps, cooldowns, opt-outs, dry-run — still applies.'
-          )}
-        </Typography>
-      )}
-      <Box sx={{ overflowX: 'auto', mb: 3 }}>
-        <Table size="small" sx={{ minWidth: 760 }}>
-          <TableHead>
-            <TableRow>
-              <TableCell>{t('On')}</TableCell>
-              <TableCell>{t('Name')}</TableCell>
-              <TableCell>{t('Trigger')}</TableCell>
-              <TableCell align="right">{t('Days')}</TableCell>
-              <TableCell>{t('Action')}</TableCell>
-              <TableCell>{t('VIP tiers')}</TableCell>
-              <TableCell align="right">{t('Cooldown')}</TableCell>
-              <TableCell align="right">{t('Priority')}</TableCell>
-              <TableCell />
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {rules.map((r) => (
-              <TableRow key={r.id} hover>
-                <TableCell>
-                  <Switch
-                    size="small"
-                    checked={Boolean(r.enabled)}
-                    disabled={!canWrite}
-                    onChange={(e) => patchRule(r.id, { enabled: e.target.checked })}
-                  />
-                </TableCell>
-                <TableCell>{r.name}</TableCell>
-                <TableCell>{t(TRIGGER_LABELS[r.trigger_kind]) || r.trigger_kind}</TableCell>
-                <TableCell align="right">{r.inactivity_days}</TableCell>
-                <TableCell>{r.action}</TableCell>
-                <TableCell>
-                  {(r.vip_tiers || []).length ? r.vip_tiers.join(', ') : t('all')}
-                </TableCell>
-                <TableCell align="right">{r.cooldown_days}d</TableCell>
-                <TableCell align="right">{r.priority}</TableCell>
-                <TableCell>
-                  {canWrite && (
-                    <>
-                      <Button size="small" onClick={() => openEditor(r)}>
-                        {t('Edit')}
-                      </Button>
-                      <Button size="small" color="error" onClick={() => removeRule(r.id)}>
-                        {t('Delete')}
-                      </Button>
-                    </>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-            {rules.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={9}>
-                  <Typography color="text.secondary" sx={{ py: 2 }}>
-                    {t('No rules yet — quiet players are not re-engaged until a rule exists.')}
-                  </Typography>
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </Box>
-
-      <Typography variant="h6" sx={{ mb: 1 }}>
-        {t('Ledger')}
-      </Typography>
-      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-        {t(
-          'Every proactive-send attempt (idle rules AND event reactions): who was nudged, by which rule, and what it cost. Skipped rows explain why a candidate was passed over.'
-        )}
-      </Typography>
-      <Box sx={{ overflowX: 'auto' }}>
-        <Table size="small" sx={{ minWidth: 680 }}>
-          <TableHead>
-            <TableRow>
-              <TableCell>{t('When')}</TableCell>
-              <TableCell>{t('Player')}</TableCell>
-              <TableCell>{t('Rule')}</TableCell>
-              <TableCell>{t('Action')}</TableCell>
-              <TableCell>{t('Status')}</TableCell>
-              <TableCell>{t('Detail')}</TableCell>
-              <TableCell align="right">{t('Cost $')}</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {ledger.items.map((p) => (
-              <TableRow key={p.id} hover>
-                <TableCell>{new Date(p.created_at).toLocaleString()}</TableCell>
-                <TableCell>
-                  {p.full_name ||
-                    (p.tg_username ? `@${p.tg_username}` : p.player_id) ||
-                    '—'}
-                </TableCell>
-                <TableCell>{p.rule_name || '—'}</TableCell>
-                <TableCell>{p.action}</TableCell>
-                <TableCell>
-                  <Chip
-                    size="small"
-                    label={p.status}
-                    color={STATUS_COLORS[p.status] || 'default'}
-                    variant="outlined"
-                  />
-                </TableCell>
-                <TableCell>{p.detail || ''}</TableCell>
-                <TableCell align="right">
-                  {p.cost_usd ? Number(p.cost_usd).toFixed(5) : '—'}
-                </TableCell>
-              </TableRow>
-            ))}
-            {ledger.items.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={7}>
-                  <Typography color="text.secondary" sx={{ py: 2 }}>
-                    {t('No proactive sends yet.')}
-                  </Typography>
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </Box>
-      {pages > 1 && (
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }}>
-          <Button size="small" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-            {t('Prev')}
-          </Button>
-          <Typography variant="body2">
-            {page} / {pages} · {ledger.total}
-          </Typography>
-          <Button size="small" disabled={page >= pages} onClick={() => setPage(page + 1)}>
-            {t('Next')}
-          </Button>
-        </Stack>
-      )}
-
-      <Dialog open={!!editing} onClose={() => setEditing(null)} maxWidth="sm" fullWidth fullScreen={isMobile}>
-        <DialogTitle>{editing?.id ? t('Edit rule') : t('New rule')}</DialogTitle>
-        <DialogContent dividers>
-          {editing && (
-            <Stack spacing={2} sx={{ mt: 0.5 }}>
-              <TextField
-                size="small"
-                label={t('Name')}
-                value={editing.name}
-                onChange={(e) => setEditing({ ...editing, name: e.target.value })}
-                helperText={t('Shown in the rules table and the ledger.')}
-                fullWidth
-              />
-              <TextField
-                select
-                size="small"
-                label={t('Trigger')}
-                value={editing.trigger_kind}
-                onChange={(e) => setEditing({ ...editing, trigger_kind: e.target.value })}
-                helperText={t(
-                  "Casino triggers need the partner's Player API / event feed to see logins and deposits."
-                )}
-                fullWidth
-              >
-                {Object.entries(TRIGGER_LABELS).map(([value, label]) => (
-                  <MenuItem key={value} value={value}>
-                    {t(label)}
-                  </MenuItem>
-                ))}
-              </TextField>
-              <TextField
-                size="small"
-                type="number"
-                label={t('Inactivity days')}
-                value={editing.inactivity_days}
-                onChange={(e) => setEditing({ ...editing, inactivity_days: e.target.value })}
-                helperText={t('How many quiet days before the rule fires.')}
-                fullWidth
-                slotProps={{ htmlInput: { min: 1, max: 365 } }}
-              />
-              <TextField
-                select
-                size="small"
-                label={t('Action')}
-                value={editing.action}
-                onChange={(e) => setEditing({ ...editing, action: e.target.value })}
-                helperText={t(
-                  "Photo pings pick from the player's unlocked media (tier × stage gates apply)."
-                )}
-                fullWidth
-              >
-                <MenuItem value="message">{t('message')}</MenuItem>
-                <MenuItem value="photo">{t('photo')}</MenuItem>
-              </TextField>
-              <TextField
-                size="small"
-                label={t('Intent (English hint for the AI)')}
-                value={editing.intent}
-                onChange={(e) => setEditing({ ...editing, intent: e.target.value })}
-                helperText={t(
-                  'What the ping should achieve, e.g. “miss them warmly, tease what’s new, invite them back — no pressure”. English only (it feeds the model prompt).'
-                )}
-                fullWidth
-                multiline
-                minRows={2}
-              />
-              <TextField
-                size="small"
-                label={t('VIP tiers (comma-separated, empty = all)')}
-                value={editing.vip_tiers}
-                onChange={(e) => setEditing({ ...editing, vip_tiers: e.target.value })}
-                helperText={t(
-                  'Lowercase tier names from Settings → Retention bot → VIP tiers, e.g. gold, platinum.'
-                )}
-                fullWidth
-              />
-              <Stack direction="row" spacing={2}>
-                <TextField
-                  size="small"
-                  type="number"
-                  label={t('Cooldown days')}
-                  value={editing.cooldown_days}
-                  onChange={(e) => setEditing({ ...editing, cooldown_days: e.target.value })}
-                  helperText={t('Days before the SAME rule may hit the same player again.')}
-                  fullWidth
-                  slotProps={{ htmlInput: { min: 0, max: 365 } }}
-                />
-                <TextField
-                  size="small"
-                  type="number"
-                  label={t('Priority')}
-                  value={editing.priority}
-                  onChange={(e) => setEditing({ ...editing, priority: e.target.value })}
-                  helperText={t('Higher wins when several rules match one player.')}
-                  fullWidth
-                  slotProps={{ htmlInput: { min: -1000, max: 1000 } }}
-                />
-              </Stack>
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={Boolean(editing.enabled)}
-                    onChange={(e) => setEditing({ ...editing, enabled: e.target.checked })}
-                  />
-                }
-                label={t('Enabled')}
-              />
-            </Stack>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setEditing(null)}>{t('Cancel')}</Button>
-          <Button variant="contained" onClick={saveRule} disabled={!editing?.name?.trim()}>
-            {t('Save')}
-          </Button>
-        </DialogActions>
-      </Dialog>
-    </Box>
-  );
-};
-
-// ---------------------------------------------------------------------------
 // page shell — needs a concrete product (retention is strictly per-product)
 // ---------------------------------------------------------------------------
-// Navigation between sections is the sidebar's job now (each section is its own
-// entry, like Support), so there is no page-wide tab strip. Two sections bundle
-// a secondary sub-tab under one sidebar entry (mirrors the Support "Prompt"
-// page): the Setup guide under Telegram config, and the Prompt variables under
-// Prompt. Those groups render a small internal 2-tab strip; every other section
-// renders its component directly.
+// Navigation between sections is the sidebar's job: each section is its own
+// menu entry (How it works / KB / Prompt / Media / Conversations / Analytics),
+// so there is no page-wide tab strip. The one exception: the Prompt section
+// bundles its read-only preview and the editable variables as a small internal
+// 2-tab strip (mirrors the Support "Prompt" page). The Telegram config,
+// Managers and the `retention` settings group moved to the Retention →
+// Settings page (/retention-settings); Idle pings became a tab of the
+// Proactive agent page — legacy ?tab= links redirect below.
 const COMPONENTS = {
-  config: ConfigTab,
   guide: GuideTab,
   kb: KbTab,
   prompt: PromptTab,
   variables: VariablesTab,
   photos: PhotosTab,
-  managers: ManagersTab,
-  idle: IdlePingsTab,
   chats: ConversationsTab,
   analytics: AnalyticsTab,
 };
 
-const SUBTABS = {
-  config: [
-    ['config', t('Telegram config')],
-    ['guide', t('Setup guide')],
-  ],
-  prompt: [
-    ['prompt', t('Prompt preview')],
-    ['variables', t('Prompt variables')],
-  ],
-};
-
-// The group (and its sub-tab strip) a tab belongs to, if any; the group's first
-// entry is the sidebar's landing tab.
-const groupFor = (tab) =>
-  Object.values(SUBTABS).find((entries) => entries.some(([v]) => v === tab));
-
-// The top-level section strip on the retention page. It carries the bot's whole
-// surface so, with the sidebar trimmed to a few grouped shortcuts, every area
-// is still one click away from inside the page (the "cascade": sidebar →
-// section strip → sub-tabs). Each entry's value is the section's landing tab.
-const MAIN_TABS = [
-  ['config', t('Setup')],
-  ['kb', t('Knowledge base')],
-  ['prompt', t('Prompt')],
-  ['photos', t('Media')],
-  ['managers', t('Managers')],
-  ['idle', t('Idle pings')],
-  ['chats', t('Conversations')],
-  ['analytics', t('Analytics')],
+const PROMPT_SUBTABS = [
+  ['prompt', t('Prompt preview')],
+  ['variables', t('Prompt variables')],
 ];
-// Sub-tabs collapse onto their section for the top strip's active state.
-const MAIN_OF = { guide: 'config', variables: 'prompt' };
+
+// Tabs that used to live on this page and moved elsewhere (old bookmarks and
+// cross-page links keep working).
+const LEGACY_REDIRECTS = {
+  config: '/retention-settings',
+  managers: '/retention-settings?tab=managers',
+  idle: '/retention-agent?tab=idle',
+};
 
 const Retention = () => {
   const [params, setParams] = useSearchParams();
   const productId = getProductId();
   const requested = params.get('tab');
-  const tab = COMPONENTS[requested] ? requested : 'config';
+  const tab = COMPONENTS[requested] ? requested : 'guide';
+
+  if (LEGACY_REDIRECTS[requested]) {
+    return <Navigate to={LEGACY_REDIRECTS[requested]} replace />;
+  }
 
   // Retention data is strictly per-product; refuse to render without one so the
   // operator can't edit the default product by accident (same gate as KB /
   // Prompt / Translations).
   if (!productId) {
-    return <RequireProduct title={t('Retention · Telegram')} />;
+    return <RequireProduct title={t('Retention')} />;
   }
 
   const Component = COMPONENTS[tab];
-  const subtabs = groupFor(tab);
+  const subtabs = tab === 'prompt' || tab === 'variables' ? PROMPT_SUBTABS : null;
 
   return (
     <Box sx={{ p: 2, maxWidth: 1100 }}>
-      <Title title={t('Retention · Telegram')} />
-      <Tabs
-        value={MAIN_OF[tab] || tab}
-        onChange={(e, v) => setParams({ tab: v }, { replace: true })}
-        variant="scrollable"
-        allowScrollButtonsMobile
-        sx={{ borderBottom: 1, borderColor: 'divider', mb: subtabs ? 1 : 2 }}
-      >
-        {MAIN_TABS.map(([value, label]) => (
-          <Tab key={value} value={value} label={label} />
-        ))}
-      </Tabs>
+      <Title title={t('Retention')} />
       {subtabs && (
         <Tabs
           value={tab}
           onChange={(e, v) => setParams({ tab: v }, { replace: true })}
           variant="scrollable"
           allowScrollButtonsMobile
-          sx={{ mb: 2 }}
+          sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}
         >
           {subtabs.map(([value, label]) => (
             <Tab key={value} value={value} label={label} />

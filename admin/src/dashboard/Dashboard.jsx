@@ -444,7 +444,7 @@ const Dashboard = () => {
       )}
       {showRetention && (
         <Box>
-          <SectionTitle>{t('Retention · Telegram')}</SectionTitle>
+          <SectionTitle>{t('Retention')}</SectionTitle>
           <RetentionBlock />
         </Box>
       )}

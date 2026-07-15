@@ -31,7 +31,12 @@ import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
 import PeopleIcon from '@mui/icons-material/People';
 import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import SettingsIcon from '@mui/icons-material/Settings';
-import TelegramIcon from '@mui/icons-material/Telegram';
+import TranslateIcon from '@mui/icons-material/Translate';
+import MapIcon from '@mui/icons-material/Map';
+import SupportAgentIcon from '@mui/icons-material/SupportAgent';
+import PersonSearchIcon from '@mui/icons-material/PersonSearch';
+import PhotoLibraryIcon from '@mui/icons-material/PhotoLibrary';
+import EditNoteIcon from '@mui/icons-material/EditNote';
 
 import polyglotI18nProvider from 'ra-i18n-polyglot';
 import englishMessages from 'ra-language-english';
@@ -123,6 +128,9 @@ const ApiKeys = lazyPage(() => import('./pages/ApiKeys'));
 const Logs = lazyPage(() => import('./pages/Logs'));
 const Prompt = lazyPage(() => import('./pages/Prompt'));
 const Retention = lazyPage(() => import('./pages/Retention'));
+const RetentionSettings = lazyPage(() => import('./pages/RetentionSettings'));
+const EscalationKeywords = lazyPage(() => import('./pages/EscalationKeywords'));
+const TestProfile = lazyPage(() => import('./pages/TestProfile'));
 const RetentionAgent = lazyPage(() => import('./pages/RetentionAgent'));
 const Settings = lazyPage(() => import('./pages/Settings'));
 const SiteMap = lazyPage(() => import('./pages/SiteMap'));
@@ -235,29 +243,23 @@ const LogsMenuItem = () => {
   );
 };
 
-// The retention page's tabs map onto the few grouped sidebar entries so the
-// right one stays highlighted whichever tab is open (the page's own top tab
-// strip does the fine navigation). "Bot setup" = config/guide; "Bot content" =
-// everything the bot knows/shows (kb/prompt/media/managers) + idle pings, which
-// all live on the /retention page; Conversations and Analytics are direct.
+// Sub-tabs that render under one retention section (the prompt preview and
+// the prompt variables are one sidebar entry).
 const RETENTION_TAB_PARENT = {
-  config: 'config',
-  guide: 'config',
+  guide: 'guide',
   kb: 'kb',
-  prompt: 'kb',
-  variables: 'kb',
-  photos: 'kb',
-  managers: 'kb',
-  idle: 'kb',
+  prompt: 'prompt',
+  variables: 'prompt',
+  photos: 'photos',
   chats: 'chats',
   analytics: 'analytics',
 };
 
-// A retention sub-tab as its own sidebar entry: navigates to /retention?tab=…
-// and highlights when that tab (or one bundled under it) is the active one (the
+// A retention tab as its own sidebar entry: navigates to /retention?tab=… and
+// highlights when that tab (or one bundled under it) is the active one (the
 // page reads ?tab=). The pathname match is EXACT — '/retention-agent' also
-// startsWith '/retention', which used to light up "Telegram config" whenever
-// the Proactive agent page was open.
+// startsWith '/retention', which used to light up a sibling whenever the
+// Proactive agent page was open.
 const RetentionSubItem = ({ tab, label, icon }) => (
   <SubItem
     to={`/retention?tab=${tab}`}
@@ -265,7 +267,7 @@ const RetentionSubItem = ({ tab, label, icon }) => (
     icon={icon}
     active={(location) => {
       if (location.pathname !== '/retention') return false;
-      const current = new URLSearchParams(location.search).get('tab') || 'config';
+      const current = new URLSearchParams(location.search).get('tab') || 'guide';
       return (RETENTION_TAB_PARENT[current] || current) === tab;
     }}
   />
@@ -360,18 +362,20 @@ const AppMenu = () => {
         />
         <Menu.ResourceItem name="sessions" />
         <Menu.ResourceItem name="unresolved" />
-        {/* Content hub: KB, Site map, Prompt and Translations share one tab
-            strip (see contentTabs.js), so they need only ONE sidebar entry.
-            Highlighted for any of those routes. */}
+        {/* KB covers the topics list AND the KB variables sub-tab (one surface). */}
         <SubItem
           to="/kb"
-          label={t('Content')}
+          label={t('Knowledge base')}
           icon={<LibraryBooksIcon fontSize="small" />}
           active={(location) =>
-            ['/kb', '/kb_variables', '/site-map', '/prompt', '/translations'].some((p) =>
-              location.pathname.startsWith(p)
-            )
+            ['/kb', '/kb_variables'].some((p) => location.pathname.startsWith(p))
           }
+        />
+        <SubItem
+          to="/prompt"
+          label={t('Prompt')}
+          icon={<SmartToyIcon fontSize="small" />}
+          active={(location) => location.pathname.startsWith('/prompt')}
         />
         <SettingsSubItem module="support" label={t('Chat settings')} />
         {/* The combined dashboard narrowed to the support block. A SubItem (not
@@ -389,17 +393,47 @@ const AppMenu = () => {
         />
       </CollapsibleSection>
 
-      <CollapsibleSection id="retention" label={t('Telegram · Retention')}>
-        {/* Grouped shortcuts: the /retention page carries its own top tab strip
-            (Setup · KB · Prompt · Media · Managers · Idle pings · Conversations
-            · Analytics), so the sidebar stays short and the fine navigation
-            lives on the page. "Bot setup" lands on Telegram config (+ the Setup
-            guide sub-tab — the retention onboarding); "Bot content" lands on the
-            KB and reaches Prompt/Media/Managers/Idle from the page strip. */}
-        <RetentionSubItem tab="config" label={t('Bot setup')} icon={<TelegramIcon fontSize="small" />} />
-        <RetentionSubItem tab="kb" label={t('Bot content')} icon={<LibraryBooksIcon fontSize="small" />} />
+      {/* Cross-module surfaces shared by BOTH bots (player-facing copy, the
+          official site pages, the pre-model escalation stems and the dev test
+          player) — neither support-only nor retention-only, so they get their
+          own section. */}
+      <CollapsibleSection id="common" label={t('Common')}>
+        <SubItem
+          to="/translations"
+          label={t('Translations')}
+          icon={<TranslateIcon fontSize="small" />}
+          active={(location) => location.pathname.startsWith('/translations')}
+        />
+        <SubItem
+          to="/site-map"
+          label={t('Site map')}
+          icon={<MapIcon fontSize="small" />}
+          active={(location) => location.pathname.startsWith('/site-map')}
+        />
+        <SubItem
+          to="/escalation-keywords"
+          label={t('Escalation keywords')}
+          icon={<SupportAgentIcon fontSize="small" />}
+          active={(location) => location.pathname === '/escalation-keywords'}
+        />
+        <SubItem
+          to="/test-profile"
+          label={t('Test player profile')}
+          icon={<PersonSearchIcon fontSize="small" />}
+          active={(location) => location.pathname === '/test-profile'}
+        />
+      </CollapsibleSection>
+
+      <CollapsibleSection id="retention" label={t('Retention')}>
+        {/* Every bot surface is its own entry (the page carries no top tab
+            strip anymore); config/managers/settings live together on the
+            Retention settings page. */}
+        <RetentionSubItem tab="guide" label={t('How it works')} icon={<HelpOutlineIcon fontSize="small" />} />
+        <RetentionSubItem tab="kb" label={t('Knowledge base')} icon={<LibraryBooksIcon fontSize="small" />} />
+        <RetentionSubItem tab="prompt" label={t('Prompt')} icon={<EditNoteIcon fontSize="small" />} />
+        <RetentionSubItem tab="photos" label={t('Media')} icon={<PhotoLibraryIcon fontSize="small" />} />
         {/* The proactive agent — the event-driven regime that writes first (its
-            own route/page). */}
+            own route/page; idle pings are its inactivity tab). */}
         <SubItem
           to="/retention-agent"
           label={t('Proactive agent')}
@@ -410,7 +444,12 @@ const AppMenu = () => {
           }
         />
         <RetentionSubItem tab="chats" label={t('Conversations')} icon={<ForumIcon fontSize="small" />} />
-        <SettingsSubItem module="retention" label={t('Bot settings')} />
+        <SubItem
+          to="/retention-settings"
+          label={t('Settings')}
+          icon={<SettingsIcon fontSize="small" />}
+          active={(location) => location.pathname === '/retention-settings'}
+        />
         <RetentionSubItem tab="analytics" label={t('Analytics')} icon={<InsightsIcon fontSize="small" />} />
       </CollapsibleSection>
 
@@ -512,15 +551,18 @@ const App = () => (
       />
       {/* Legacy hashes from the pre-react-admin panel: #variables (the old
           top-level Variables tab, now KB → Variables) and #test (the old Test
-          sandbox, now the test-profile block on Prompt variables). */}
+          sandbox, now the Common → Test player profile page). */}
       <Route path="/variables" element={<Navigate to="/kb_variables" replace />} />
-      <Route path="/test" element={<Navigate to="/prompt?tab=variables" replace />} />
+      <Route path="/test" element={<Navigate to="/test-profile" replace />} />
+      <Route path="/escalation-keywords" element={<EscalationKeywords />} />
+      <Route path="/test-profile" element={<TestProfile />} />
       <Route path="/translations" element={<Translations />} />
       <Route path="/site-map" element={<SiteMap />} />
       <Route path="/settings" element={<Settings />} />
       <Route path="/structure" element={<Structure />} />
       <Route path="/support-guide" element={<SupportGuide />} />
       <Route path="/retention" element={<Retention />} />
+      <Route path="/retention-settings" element={<RetentionSettings />} />
       <Route path="/retention-agent" element={<RetentionAgent />} />
       {/* Legacy bookmark: the old Retention v2 path lands on the agent page. */}
       <Route path="/retention-v2" element={<RetentionAgent />} />

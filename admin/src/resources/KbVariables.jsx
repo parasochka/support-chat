@@ -14,7 +14,6 @@ import RouteTabs from '../components/RouteTabs';
 import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
 import { KB_TABS } from './kbTabs';
-import { CONTENT_TABS } from '../contentTabs';
 import { t } from '../i18n';
 
 /**
@@ -27,7 +26,6 @@ export const KbVariableList = () => {
   const redirect = useRedirect();
   return (
     <RequireProduct title={t('Knowledge base · variables')}>
-      <RouteTabs tabs={CONTENT_TABS} />
       <RouteTabs tabs={KB_TABS} />
       <List perPage={50} exporter={false} title={t('Knowledge base · variables')}>
         {isMobile ? (
@@ -58,8 +56,6 @@ export const KbVariableEdit = () => {
   const readOnly = permissions !== 'admin';
   return (
     <RequireProduct title={t('Knowledge base · variables')}>
-      {/* Keep the Content hub strip on the drilldown too. */}
-      <RouteTabs tabs={CONTENT_TABS} />
       <Edit mutationMode="pessimistic" title={t('Edit KB variable')}>
         <SimpleForm toolbar={readOnly ? false : undefined}>
           <TextInput source="key" label={t('Key')} disabled />

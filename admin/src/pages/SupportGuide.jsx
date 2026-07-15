@@ -59,7 +59,7 @@ const CONTENT_MAP = [
   ],
   [
     'Escalation trigger words',
-    'Prompt → Prompt variables',
+    'Common → Escalation keywords',
     'Two keyword lists (high-risk + "call a human") checked BEFORE the model — a match hands off without burning tokens.',
   ],
   [
@@ -122,7 +122,7 @@ const SupportGuide = () => (
             <LI>
               {rich(
                 t(
-                  '**Keyword escalation check** — if the message hits a high-risk stem (fraud, legal threats) or an explicit "call a human", the escalation card is shown immediately, before any model call. The lists are edited in **Prompt → Prompt variables**.'
+                  '**Keyword escalation check** — if the message hits a high-risk stem (fraud, legal threats) or an explicit "call a human", the escalation card is shown immediately, before any model call. The lists are edited in **Common → Escalation keywords**.'
                 )
               )}
             </LI>
@@ -303,7 +303,7 @@ const SupportGuide = () => (
             <LI>
               {rich(
                 t(
-                  'Set the **Test player** profile (Prompt → Prompt variables) — on a test deploy without the site handshake it stands in for the real player, so you can check the by-name greeting and VIP personalization.'
+                  'Set the **Test player** profile (Common → Test player profile) — on a test deploy without the site handshake it stands in for the real player, so you can check the by-name greeting and VIP personalization.'
                 )
               )}
             </LI>

@@ -12,8 +12,6 @@ import Typography from '@mui/material/Typography';
 import { API_URL, httpClient } from '../httpClient';
 import { getProductId, withProduct } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
-import RouteTabs from '../components/RouteTabs';
-import { CONTENT_TABS } from '../contentTabs';
 import { t as tr } from '../i18n';
 
 // Keys that are service/error notices rather than the bot's own voice — split
@@ -196,7 +194,6 @@ const TranslationsInner = () => {
   return (
     <Box sx={{ p: 2, maxWidth: 1000 }}>
       <Title title={tr('Translations')} />
-      <RouteTabs tabs={CONTENT_TABS} />
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
         {tr(
           "Everything the player sees, editable per language and split into blocks: the general widget interface, the support bot's messages, the Telegram retention bot's messages, and the service / error notices — plus the topic names. Clearing a field falls back to the shipped default (shown as placeholder)."

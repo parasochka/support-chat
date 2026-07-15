@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Navigate, useSearchParams } from 'react-router-dom';
 import { Title, useNotify, usePermissions } from 'react-admin';
 import Accordion from '@mui/material/Accordion';
 import AccordionDetails from '@mui/material/AccordionDetails';
@@ -64,7 +64,7 @@ const TAB_LABELS = {
 const MODULE_HOWTO = {
   support: {
     intro:
-      'The support widget answers players on the site from the per-topic Knowledge base. Before the model sees a message it passes the anti-spam gates below; the chat limits bound one session. Content (KB texts, prompt variables, translations) is edited in the Support chat section of the menu.',
+      'The support widget answers players on the site from the per-topic Knowledge base. Before the model sees a message it passes the anti-spam gates below; the chat limits bound one session. Content is edited in the Support chat section (KB texts, prompt variables) and the Common section (translations, site map).',
     points: [
       'Gate order for every message: rate limit → cooldown → length cap → low-content guard → injection scan. A message rejected by a gate never reaches the model — attacks and spam cost no tokens.',
       '**Anti-spam** ships with sensible values; raise the rate limit only if real players actually hit it. The injection hard-block and low-content guard are safe to keep on.',
@@ -563,17 +563,18 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
 };
 
 // ---------------------------------------------------------------------------
-// page — one settings surface per module (?module=support|retention|core),
-// each linked from its own sidebar section.
+// One settings surface (module = a slice of the groups). Exported so the
+// Retention → Settings page can embed the retention module next to the
+// Telegram config and Managers tabs; the group tab is local state, so an
+// embedding page's own ?tab= param is never clobbered.
 // ---------------------------------------------------------------------------
-const Settings = () => {
+export const SettingsModule = ({ module }) => {
   const notify = useNotify();
-  const [params, setParams] = useSearchParams();
-  const module = MODULES[params.get('module')] ? params.get('module') : 'core';
   const mod = MODULES[module];
   const [settings, setSettings] = useState(null);
   const [meta, setMeta] = useState(null);
   const [loadError, setLoadError] = useState(null);
+  const [tabState, setTabState] = useState(null);
 
   const load = () =>
     Promise.all([
@@ -607,15 +608,12 @@ const Settings = () => {
         (settings?.keys || []).includes(g))
   );
 
-  const requestedTab = params.get('tab');
-  const tab = groups.includes(requestedTab) ? requestedTab : groups[0];
-  const setTab = (v) =>
-    setParams({ module, tab: v }, { replace: true });
+  const tab = groups.includes(tabState) ? tabState : groups[0];
+  const setTab = (v) => setTabState(v);
 
   if (!settings && loadError) {
     return (
-      <Box sx={{ p: 2, maxWidth: 720 }}>
-        <Title title={t(mod.title)} />
+      <Box sx={{ maxWidth: 720 }}>
         <Alert severity="warning">
           <AlertTitle>{t('Settings could not be loaded')}</AlertTitle>
           {String(loadError)}
@@ -623,7 +621,7 @@ const Settings = () => {
       </Box>
     );
   }
-  if (!settings) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
+  if (!settings) return <Box>{t('Loading…')}</Box>;
 
   const productId = getProductId();
   const scopeName = getScopeName();
@@ -634,11 +632,7 @@ const Settings = () => {
     : ` (${t('GLOBAL defaults')})`;
 
   return (
-    <Box sx={{ p: 2, maxWidth: 1000 }}>
-      <Title title={t(mod.title)} />
-      <Typography variant="h5" sx={{ mb: 0.5 }}>
-        {t(mod.title)}
-      </Typography>
+    <Box sx={{ maxWidth: 1000 }}>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
         {t(mod.help)}
       </Typography>
@@ -728,6 +722,31 @@ const Settings = () => {
           />
         )
       )}
+    </Box>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// page — the standalone settings surfaces (?module=support|core), each linked
+// from its own sidebar section. The retention module moved into the combined
+// Retention → Settings page; legacy links redirect there.
+// ---------------------------------------------------------------------------
+const Settings = () => {
+  const [params] = useSearchParams();
+  const requested = params.get('module');
+  if (requested === 'retention') {
+    return <Navigate to="/retention-settings?tab=params" replace />;
+  }
+  const module = MODULES[requested] ? requested : 'core';
+  const mod = MODULES[module];
+
+  return (
+    <Box sx={{ p: 2, maxWidth: 1000 }}>
+      <Title title={t(mod.title)} />
+      <Typography variant="h5" sx={{ mb: 0.5 }}>
+        {t(mod.title)}
+      </Typography>
+      <SettingsModule module={module} />
     </Box>
   );
 };
