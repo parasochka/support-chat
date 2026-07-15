@@ -51,7 +51,7 @@ _HUMAN_KEYWORDS = (
     "agent", "human", "operator", "complaint", "representative",
     "agente", "humano", "queja", "reclamo",
     "operatör", "şikayet", "temsilci",
-    "atendente", "reclamação", "humano",
+    "atendente", "reclamação",
 )
 
 # High-risk keywords -> immediate escalation. Built-in DEFAULT only; overridable

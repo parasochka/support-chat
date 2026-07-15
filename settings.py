@@ -69,7 +69,7 @@ _DEFAULT_RETENTION: dict[str, Any] = {
     # Higher VIP tiers unlock hotter (higher-stage) photos; the base tier stops
     # short of the top stages no matter how much the player chats.
     "max_stage_by_tier": {
-        "none": 3, "bronze": 4, "silver": 5, "gold": 5,
+        "none": 3, "bronze": 3, "silver": 4, "gold": 4,
         "platinum": 5, "diamond": 5,
     },
     # accumulated meaningful player messages required to unlock stages 2 / 3 /

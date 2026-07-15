@@ -351,13 +351,15 @@ per-brand-only values), because the same registry seeds every product.
 
 **Exception — NEW products get a starter baseline (`starter_kb.py`).** `db.create_product`
 (the admin "add product" path, NOT boot) seeds the new casino so its chat works out of the box
-before the owner translates/uniquifies: (1) the kb_variables registry; (2) the generic starter
-topics + KB texts from `starter_kb.STARTER_TOPICS` — brand-neutral, English, Q&A-style casino
-support content, **seven topics** mirroring the live picker (deposits, withdrawals, account &
-verification, bonuses, betting & games, technical + `other` last) that asserts **no**
-brand-specific facts (no names, URLs, amounts, timeframes — it
-points the player at the cashier/terms/game-info UI instead) and deliberately copies nothing
-from any live product's KB; (3) the FULL `prompt_variables` set into `product_settings`
+before the owner translates/uniquifies: (1) the kb_variables registry; (2) the starter
+topics + KB texts from `starter_kb.STARTER_TOPICS` — the ANONYMIZED production KB developed
+on the original tenant: brand-neutral, English, structured JSON Q&A documents,
+**seven topics** mirroring the live picker (deposits, withdrawals, account &
+verification, bonuses, betting & games, technical + `other` last) that assert **no**
+brand-specific facts (no brand names, URLs, campaign names, amounts or schedules — every
+brand-specific value is a `{placeholder}` from the default kb_variables registry, which
+seeds alongside the texts as a matched pair, and market/campaign specifics were rewritten
+generically); (3) the FULL `prompt_variables` set into `product_settings`
 (template defaults, `brand_name` = the product's name, via
 `starter_kb.starter_prompt_variables`) — **and, symmetrically, the FULL
 `retention_prompt_variables` set** (`starter_kb.starter_retention_prompt_variables`,
@@ -369,7 +371,8 @@ seed so it applies immediately); (4) the **starter retention-KB document**
 (`starter_kb.STARTER_RETENTION_KB` via `db.seed_starter_retention_kb` — same brand-neutral
 English contract, seeded only when the product has no retention KB at all) so the Telegram
 bot also works out of the box; (5) the **starter idle-ping ladder**
-(`retention_idle.seed_starter_idle_rules` — the 7/14/30-day re-engagement rules, seeded only
+(`retention_idle.seed_starter_idle_rules` — the production-tuned 3/5/7/10/14/21/30/45/60-day
+re-engagement ladder, seeded only
 when the product has no rules) so quiet players are re-engaged out of the box. Translations and
 the `retention`/other settings groups need
 **no** per-product seed: their shipped defaults resolve for every product until overridden.
@@ -1412,8 +1415,8 @@ drainers pick up the same event.
   text comes from the normal persona ping stack (`_RETENTION_PING_TASK` idle
   wording + `rtn_ping_header`). Per-product master switch
   `retention.idle_pings_enabled` (hot, ships ON; env
-  `RETENTION_IDLE_PINGS_ENABLED`); NEW products are seeded with the 7/14/30
-  starter ladder (`retention_idle.seed_starter_idle_rules`, called from
+  `RETENTION_IDLE_PINGS_ENABLED`); NEW products are seeded with the
+  production-tuned 3–60-day starter ladder (`retention_idle.seed_starter_idle_rules`, called from
   `db.create_product`, only when the product has no rules). Admin: the
   **Idle pings tab of the Proactive agent page** (`/retention-agent?tab=idle`;
   the legacy `/retention?tab=idle` link redirects — rules

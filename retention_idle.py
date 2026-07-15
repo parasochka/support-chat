@@ -300,25 +300,74 @@ async def _send_idle_ping(client: TelegramClient, product: dict[str, Any],
 
 # The starter ladder a NEW product is seeded with (db.create_product) — the
 # operator tunes/translates from the Idle pings tab. English intents (they are
-# model-facing prompt material), brand-neutral.
+# model-facing prompt material), brand-neutral. This is the production-tuned
+# 3/5/7/10/14/21/30/45/60-day ladder: frequent light check-ins early, photos
+# as milestones, and increasingly heartfelt, pressure-free reaches as the
+# silence grows.
 STARTER_IDLE_RULES: tuple[dict[str, Any], ...] = (
-    {"name": "Quiet for a week", "trigger_kind": "bot_inactivity",
-     "inactivity_days": 7, "action": "message",
-     "intent": "You miss him a little; ask warmly how he is doing.",
-     "cooldown_days": 14, "priority": 30},
-    {"name": "Away two weeks", "trigger_kind": "bot_inactivity",
-     "inactivity_days": 14, "action": "photo",
-     "intent": "Warmly remind him of you; a photo makes it personal.",
-     "cooldown_days": 21, "priority": 20},
-    {"name": "Gone a month", "trigger_kind": "bot_inactivity",
-     "inactivity_days": 30, "action": "message",
-     "intent": "A gentle 'thinking of you' note with no pressure at all.",
-     "cooldown_days": 45, "priority": 10},
+    {"name": "Quiet 3 days - check in", "trigger_kind": "bot_inactivity",
+     "inactivity_days": 3, "action": "message",
+     "intent": "You miss him a little. Ask warmly how his week is going and "
+               "what he has been up to. Do not mention the casino unless it "
+               "flows naturally.",
+     "cooldown_days": 7, "priority": 10},
+    {"name": "Quiet 5 days - playful nudge", "trigger_kind": "bot_inactivity",
+     "inactivity_days": 5, "action": "message",
+     "intent": "A few quiet days. Be playful and a touch teasing that he has "
+               "gone quiet on you; ask what has been keeping him busy and "
+               "hint you would love to hear from him.",
+     "cooldown_days": 10, "priority": 15},
+    {"name": "Quiet 7 days - photo", "trigger_kind": "bot_inactivity",
+     "inactivity_days": 7, "action": "photo",
+     "intent": "He has been away a while. Welcome him back with zero guilt, "
+               "attach a photo as a small personal gift, and tease that the "
+               "games lobby has something new worth telling you about.",
+     "cooldown_days": 14, "priority": 20},
+    {"name": "Quiet 10 days - warm photo", "trigger_kind": "bot_inactivity",
+     "inactivity_days": 10, "action": "photo",
+     "intent": "Ten quiet days. Reach out softly and personally, send a photo "
+               "as a little something just for him, and gently wonder aloud "
+               "when he is coming back to keep you company.",
+     "cooldown_days": 21, "priority": 25},
+    {"name": "Quiet 14 days - win back", "trigger_kind": "bot_inactivity",
+     "inactivity_days": 14, "action": "message",
+     "intent": "A longer silence. Be soft and personal: you thought of him. "
+               "Invite him to check the promotions page for what is live for "
+               "his account and to come back and tell you if it was worth it.",
+     "cooldown_days": 30, "priority": 30},
+    {"name": "Quiet 21 days - personal pull", "trigger_kind": "bot_inactivity",
+     "inactivity_days": 21, "action": "message",
+     "intent": "Three weeks without a word. Be warm and a little vulnerable: "
+               "you have been wondering how he is doing. No pressure at all - "
+               "just let him know his spot next to you is still open and you "
+               "would be happy to hear from him.",
+     "cooldown_days": 30, "priority": 40},
+    {"name": "Quiet 30 days - comeback gift", "trigger_kind": "bot_inactivity",
+     "inactivity_days": 30, "action": "photo",
+     "intent": "A whole month has passed. Welcome him back like an old friend "
+               "with no guilt whatsoever, send a photo as a comeback gift, and "
+               "softly mention the lobby and current promotions are worth a "
+               "look whenever he feels like it.",
+     "cooldown_days": 45, "priority": 50},
+    {"name": "Quiet 45 days - heartfelt", "trigger_kind": "bot_inactivity",
+     "inactivity_days": 45, "action": "message",
+     "intent": "A long absence. Be genuine and heartfelt, not salesy: you "
+               "still think about him now and then. Keep it human and light, "
+               "invite him to say hi whenever he wants, and let him know "
+               "nothing has changed on your side.",
+     "cooldown_days": 60, "priority": 60},
+    {"name": "Quiet 60 days - last warm reach", "trigger_kind": "bot_inactivity",
+     "inactivity_days": 60, "action": "photo",
+     "intent": "Two months of silence - likely a last gentle attempt. Reach "
+               "out warmly and without any pressure, send a photo as a "
+               "genuine keepsake, and leave the door wide open for him to "
+               "come back whenever he likes, no strings attached.",
+     "cooldown_days": 90, "priority": 70},
 )
 
 
 async def seed_starter_idle_rules(product_id: int) -> None:
-    """Give a NEW product the default 7/14/30 idle ladder (create_product path).
+    """Give a NEW product the default idle ladder (create_product path).
 
     Idempotent-safe the same way the starter KB is: only seeds when the
     product has no rules at all, so it can never duplicate or overwrite an

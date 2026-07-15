@@ -113,8 +113,8 @@ SESSION_JWT_SECRET: str = require_env("SESSION_JWT_SECRET")
 # instead — see openai_client._KeyClient.call and the `model` settings group.
 OPENAI_API_KEY_FALLBACK: str | None = _env_opt("OPENAI_API_KEY_FALLBACK")
 OPENAI_MODEL: str = _env("OPENAI_MODEL", "gpt-5-mini")
-OPENAI_REQUEST_TIMEOUT_SEC: int = _env_int("OPENAI_REQUEST_TIMEOUT_SEC", 40)
-OPENAI_KEY_SWITCH_TIMEOUT_SEC: int = _env_int("OPENAI_KEY_SWITCH_TIMEOUT_SEC", 25)
+OPENAI_REQUEST_TIMEOUT_SEC: int = _env_int("OPENAI_REQUEST_TIMEOUT_SEC", 30)
+OPENAI_KEY_SWITCH_TIMEOUT_SEC: int = _env_int("OPENAI_KEY_SWITCH_TIMEOUT_SEC", 15)
 OPENAI_MAX_ATTEMPTS: int = _env_int("OPENAI_MAX_ATTEMPTS", 3)
 # Reasoning effort and output verbosity. Empty string ⇒ omit the parameter from
 # the request (use the model's own default). "low" keeps support answers fast,
@@ -139,11 +139,11 @@ OPENAI_BREAKER_COOLDOWN_SEC: int = _env_int("OPENAI_BREAKER_COOLDOWN_SEC", 30)
 
 # --- Sessions / limits ------------------------------------------------------
 SESSION_TTL_HOURS: int = _env_int("SESSION_TTL_HOURS", 24)
-MAX_MESSAGES_PER_SESSION: int = _env_int("MAX_MESSAGES_PER_SESSION", 30)
+MAX_MESSAGES_PER_SESSION: int = _env_int("MAX_MESSAGES_PER_SESSION", 15)
 # How many recent turns from the current topic context feed the model's prompt
 # history (the full transcript is always persisted; this only bounds the prompt).
-HISTORY_MAX_TURNS: int = _env_int("HISTORY_MAX_TURNS", 20)
-MAX_INPUT_CHARS: int = _env_int("MAX_INPUT_CHARS", 2000)
+HISTORY_MAX_TURNS: int = _env_int("HISTORY_MAX_TURNS", 15)
+MAX_INPUT_CHARS: int = _env_int("MAX_INPUT_CHARS", 500)
 RATE_LIMIT_WINDOW_SEC: int = _env_int("RATE_LIMIT_WINDOW_SEC", 600)
 RATE_LIMIT_MAX_PER_IP: int = _env_int("RATE_LIMIT_MAX_PER_IP", 20)
 # The Telegram retention chat is a LIVELY human dialogue (short messages every
@@ -407,12 +407,12 @@ RETENTION_MAX_UPLOAD_BYTES: int = _env_int("RETENTION_MAX_UPLOAD_BYTES",
                                            10 * 1024 * 1024)
 # Photo-progression / proactivity knobs — env defaults for the `retention`
 # settings group (hot-reloadable per product from the admin panel).
-RETENTION_DAILY_PHOTO_CAP: int = _env_int("RETENTION_DAILY_PHOTO_CAP", 10)
+RETENTION_DAILY_PHOTO_CAP: int = _env_int("RETENTION_DAILY_PHOTO_CAP", 5)
 RETENTION_PROACTIVE_COOLDOWN_MSGS: int = _env_int(
-    "RETENTION_PROACTIVE_COOLDOWN_MSGS", 6)
-RETENTION_CANDIDATE_LIST_SIZE: int = _env_int("RETENTION_CANDIDATE_LIST_SIZE", 6)
+    "RETENTION_PROACTIVE_COOLDOWN_MSGS", 5)
+RETENTION_CANDIDATE_LIST_SIZE: int = _env_int("RETENTION_CANDIDATE_LIST_SIZE", 5)
 RETENTION_STAGE_ADVANCE_MIN_HOURS: int = _env_int(
-    "RETENTION_STAGE_ADVANCE_MIN_HOURS", 24)
+    "RETENTION_STAGE_ADVANCE_MIN_HOURS", 12)
 RETENTION_MAX_STAGE: int = _env_int("RETENTION_MAX_STAGE", 5)
 # Lazy profile-pull freshness: if the snapshot is older than this and the product
 # has a player_api_url + key, refresh it from the casino before a turn (§8 level 2).
@@ -522,9 +522,9 @@ RETENTION_MEDIA_NORMALIZE_ENABLED: bool = _env_bool(
 RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC: int = _env_int(
     "RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC", 3600)
 RETENTION_MEDIA_MAX_SIDE_PX: int = _env_int(
-    "RETENTION_MEDIA_MAX_SIDE_PX", 2048)
+    "RETENTION_MEDIA_MAX_SIDE_PX", 2560)
 RETENTION_MEDIA_WEBP_QUALITY: int = _env_int(
-    "RETENTION_MEDIA_WEBP_QUALITY", 82)
+    "RETENTION_MEDIA_WEBP_QUALITY", 90)
 # (The old RETENTION_V2_SHOW_TRIGGER raw-trigger chrome line was removed: an
 # event reaction now ALWAYS carries a localized human occasion phrase merged
 # into the header line — see retention_v2._proactive_header + the rtn_trig_*
