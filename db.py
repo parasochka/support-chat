@@ -1042,10 +1042,10 @@ def _row_to_topic(row: asyncpg.Record) -> dict[str, Any]:
 # brand name/URL may appear in it — {{PLACEHOLDER}} marks values that only
 # make sense once set per brand).
 _DEFAULT_KB_VARIABLES: tuple[tuple[str, str, str], ...] = (
-    ("deposit_methods", "Deposit methods (per market)", "USDT (crypto: TRC20/ERC20/BEP20), Visa/Mastercard, local LATAM methods"),
+    ("deposit_methods", "Deposit methods (per market)", "USDT (crypto: TRC20/ERC20/BEP20), Visa/Mastercard, local payment methods"),
     ("crypto_networks", "Supported crypto networks", "TRC20, ERC20, BEP20"),
     ("card_deposit", "Card availability by market", "Visa, Mastercard (availability depends on market)"),
-    ("local_methods_latam", "Local LATAM payment systems", "Rapipago, Pago Facil, Mercado Pago, PIX (by country) (test)"),
+    ("local_payment_methods", "Local payment systems (per market)", "{{LOCAL_PAYMENT_METHODS}} (set per brand/market)"),
     ("min_deposit", "Minimum deposit", "10 USDT"),
     ("max_deposit", "Maximum deposit", "1000 USDT"),
     ("deposit_fee", "Deposit fee", "0% (no deposit fee)"),
@@ -1093,9 +1093,9 @@ _DEFAULT_KB_VARIABLES: tuple[tuple[str, str, str], ...] = (
     ("vip_thresholds", "VIP class thresholds", "Player -> Bronze -> Silver -> Gold -> Platinum -> VIP by accumulated XP (50 levels / 6 classes)"),
     ("multi_bonus_policy", "Multiple-bonus policy", "one deposit bonus active at a time; Welcome has top priority"),
     ("daily_card_super_prize", "Bonus card super prize", "Reload 20% on next deposit"),
-    ("license_info", "License and regulator", "Curacao eGaming license (test)"),
-    ("restricted_countries", "Restricted countries", "US, UK, FR, NL, AU (test list)"),
-    ("locales", "Site languages", "es-AR (primary), es-419, pt-BR, es-CL, en"),
+    ("license_info", "License and regulator", "{{LICENSE_INFO}} (set per brand)"),
+    ("restricted_countries", "Restricted countries", "{{RESTRICTED_COUNTRIES}} (set per brand)"),
+    ("locales", "Site languages", "{{LOCALES}} (set per brand)"),
     ("support_languages", "Support languages", "Spanish, Portuguese, English"),
     ("support_channels", "Support channels", "24/7 on-site chat, Telegram bot"),
     ("app_platforms", "App platforms (PWA)", "iOS, Android (PWA)"),

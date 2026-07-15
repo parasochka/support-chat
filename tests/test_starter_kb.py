@@ -41,11 +41,34 @@ def test_starter_kb_carries_no_brand_data():
         assert "t.me/" not in blob, f"{slug}: social-handle leak"
 
 
-def test_starter_kb_has_no_variable_placeholders():
-    """Starter texts are self-contained: an accidental {key} would either render
-    another product's registry value or leak a literal brace to the player."""
+def test_starter_kb_placeholders_are_registered():
+    """Starter texts and the default kb_variables registry ship as a matched
+    pair (create_product seeds both), so every {key} in a starter text must
+    exist in db._DEFAULT_KB_VARIABLES — an unregistered placeholder would leak
+    a literal brace to the player."""
+    registry = {key for key, _desc, _value in db._DEFAULT_KB_VARIABLES}
     for slug, _titles, content in starter_kb.STARTER_TOPICS:
-        assert not re.search(r"\{[a-z0-9_]+\}", content), f"{slug}: stray placeholder"
+        used = set(re.findall(r"\{([a-z0-9_]+)\}", content))
+        unknown = used - registry
+        assert not unknown, f"{slug}: unregistered placeholders {sorted(unknown)}"
+
+
+def test_starter_kb_texts_are_valid_json_docs():
+    """The starter KB ships in the production Q&A format: a JSON array of
+    {id, sub, q[], a} entries. A malformed doc would still render (Layer 2 is
+    verbatim text) but would defeat the structure the prompt relies on."""
+    import json
+
+    for slug, _titles, content in starter_kb.STARTER_TOPICS:
+        doc = json.loads(content)
+        assert isinstance(doc, list) and doc, f"{slug}: not a JSON array"
+        ids = [entry["id"] for entry in doc]
+        assert len(ids) == len(set(ids)), f"{slug}: duplicate entry ids"
+        for entry in doc:
+            assert set(entry) <= {"id", "sub", "q", "a", "esc"}, (
+                f"{slug}/{entry.get('id')}: unexpected keys")
+            assert entry["q"] and entry["a"].strip(), (
+                f"{slug}/{entry.get('id')}: empty question/answer")
 
 
 def test_default_kb_variables_carry_no_brand_data():

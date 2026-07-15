@@ -148,8 +148,13 @@ async def test_match_rule_priority_tiers_and_cooldown(monkeypatch):
 
 
 def test_starter_idle_rules_are_brand_neutral_english():
-    assert len(retention_idle.STARTER_IDLE_RULES) == 3
+    # The production-tuned ladder: light check-ins early, photos as milestones,
+    # heartfelt pressure-free reaches as the silence grows.
     days = [r["inactivity_days"] for r in retention_idle.STARTER_IDLE_RULES]
-    assert days == sorted(days) == [7, 14, 30]
+    assert days == sorted(days) == [3, 5, 7, 10, 14, 21, 30, 45, 60]
     for rule in retention_idle.STARTER_IDLE_RULES:
         settings.ensure_english(rule["intent"], "intent")  # raises on non-Latin
+        assert "nika" not in (rule["name"] + rule["intent"]).lower()
+        # Cooldown must at least cover the gap to the rule's own re-fire so a
+        # player can't get the same rung twice in a row too quickly.
+        assert rule["cooldown_days"] >= rule["inactivity_days"]

@@ -40,7 +40,9 @@ def test_defaults_are_independent_of_support():
     # The retention persona ships its OWN defaults; the role must NOT read as a
     # support agent (the "customer-support assistant" leak that motivated the split).
     assert "support" not in resolved["retention_persona_role"].lower()
-    assert "bolder" in resolved["retention_tone_of_voice"]
+    # The retention tone is its own, bolder voice — it must explicitly reject
+    # the support-agent register rather than inherit it.
+    assert "Never sound like customer support" in resolved["retention_tone_of_voice"]
     # Registry defaults resolve verbatim when nothing is overridden.
     reg = {k: d for k, _desc, d, _r in prompts.RETENTION_PROMPT_VARIABLES}
     for key, default in reg.items():
