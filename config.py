@@ -499,7 +499,7 @@ RETENTION_V2_LOSS_HIGH_USD: float = _env_float("RETENTION_V2_LOSS_HIGH_USD", 100
 # while testing the pipeline (re-inject the same event and get a fresh
 # decision instead of a same_event_cooldown block).
 RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS: int = _env_int(
-    "RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS", 20)
+    "RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS", 5)
 # Humanizing send delay: a proactive reaction goes out a RANDOM 5–15 minutes
 # (by default) after the event arrived, per event — an instant thank-you three
 # seconds after a deposit reads as "the system is watching my transactions",

@@ -764,7 +764,7 @@ def test_retention_settings_resolve_v2_defaults():
     assert cfg["v2_dry_run"] is True        # shadow mode by default
     assert "v2_show_trigger" not in cfg     # replaced by rtn_trig_* phrases
     assert cfg["v2_daily_budget_usd"] > 0
-    assert cfg["v2_same_event_cooldown_hours"] == 20
+    assert cfg["v2_same_event_cooldown_hours"] == 5
     assert cfg["worker_interval_sec"] == 5  # near-realtime by default
     assert cfg["idle_pings_enabled"] is True
     assert cfg["v2_send_delay_min_sec"] == 300   # humanizing send delay 5–15m

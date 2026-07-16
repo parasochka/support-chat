@@ -145,7 +145,7 @@ def occasion_for(evt: dict[str, Any]) -> str:
 # player making five deposits in an evening gets ONE warm note, not five.
 # The default for the hot `retention.v2_same_event_cooldown_hours` knob
 # (0 = off, useful while testing the pipeline with repeated simulator events).
-_SAME_EVENT_COOLDOWN_HOURS = 20
+_SAME_EVENT_COOLDOWN_HOURS = 5
 
 _TONES = ("warm", "celebrate", "comfort", "neutral")
 

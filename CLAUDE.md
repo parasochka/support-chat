@@ -1354,7 +1354,7 @@ drainers pick up the same event.
   (`v2_daily_budget_usd`, read from
   the decision ledger), the **same-event cooldown** (one reaction per event
   TYPE per player per window — the hot `v2_same_event_cooldown_hours` knob,
-  default 20h, **0 = off**: the repeat-testing mode), and the **loss comfort
+  default 5h, **0 = off**: the repeat-testing mode), and the **loss comfort
   window** (`v2_loss_comfort_hours` after a loss signal or `v2_loss_high_usd`
   net loss in 24h: photo removed from the permitted actions, a hard comfort
   constraint injected)) → **agent decision** (one cheap strict-JSON call,
