@@ -3858,6 +3858,19 @@ async def record_retention_photo_view(rid: int, photo_id: int,
             )
 
 
+async def has_photo_views(rid: int) -> bool:
+    """Whether this player has EVER received a photo (any product session).
+
+    Drives the introduction-photo rule: only a player who has never seen a
+    photo qualifies, so the intro can't refire after a delivery (the view row
+    lands in the same transaction as the send)."""
+    row = await _pool.fetchrow(
+        "SELECT 1 FROM retention_photo_views WHERE retention_user_id = $1 "
+        "LIMIT 1", rid,
+    )
+    return row is not None
+
+
 async def set_photo_file_id(photo_id: int, file_id: str) -> None:
     await _pool.execute(
         "UPDATE retention_photos SET telegram_file_id = $2, updated_at = now() "

@@ -305,6 +305,27 @@ async def select_photo_candidates(product_id: int, ru: dict[str, Any],
     )
 
 
+async def intro_photo_due(ru: dict[str, Any]) -> bool:
+    """Is the introduction-photo rule due for this player on this turn?
+
+    A brand-new player should SEE that chatting with Nika comes with photos —
+    so within his first `intro_photo_within_msgs` meaningful messages, if he
+    has never received a photo, the turn carries an imperative Layer-3 block
+    ordering the model to send one with a "this is me - let's get to know each
+    other" caption (the caption itself stays model-written: localized and
+    grounded in the chosen photo's description). The candidate selection
+    bypasses the proactive cooldown for this turn; the daily cap and the
+    tier x stage gate still hold. Admin knobs: `retention.intro_photo_enabled`
+    / `intro_photo_within_msgs`.
+    """
+    cfg = settings.retention()
+    if not cfg["intro_photo_enabled"]:
+        return False
+    if int(ru.get("meaningful_msgs") or 0) > int(cfg["intro_photo_within_msgs"]):
+        return False
+    return not await db.has_photo_views(int(ru["id"]))
+
+
 def progression_context(ru: dict[str, Any]) -> dict[str, Any]:
     """The player's REAL progression state for the Layer-3 PROGRESSION block.
 
@@ -1001,7 +1022,14 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
     # just-pulled) profile snapshot without an extra DB write — the session's
     # stored user_context was fixed at creation.
     session["user_context"] = _user_context_from_ru(ru)
-    candidates = await select_photo_candidates(product["id"], ru, text)
+    # Introduction photo: a brand-new player (never received a photo, within
+    # his first meaningful messages) gets one proactively this turn — the
+    # cooldown is bypassed for the selection and Layer 3 carries the imperative
+    # intro block. Daily cap + tier x stage still gate the candidate set.
+    intro = await intro_photo_due(ru)
+    candidates = await select_photo_candidates(product["id"], ru, text,
+                                               bypass_cooldown=intro)
+    intro = intro and bool(candidates)
     # Appearance grounding is a best-effort nice-to-have: a failed fetch must
     # never drop the player's message (the model just gets no appearance block).
     try:
@@ -1019,7 +1047,8 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
             session, text, candidates, appearance=appearance,
             # The player's real closeness/VIP progress (Layer-3 PROGRESSION
             # block) so Nika can explain how photos unlock accurately.
-            progression=progression_context(ru))
+            progression=progression_context(ru),
+            intro_photo=intro)
 
     # Keep the retention_users row's sticky language in step with the answer
     # drift (chat_service persists it on the session; the ru copy drives the

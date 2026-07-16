@@ -605,12 +605,16 @@ async def handle_retention_message(
     photo_candidates: Optional[list[dict[str, Any]]] = None,
     appearance: Optional[dict[str, Any]] = None,
     progression: Optional[dict[str, Any]] = None,
+    intro_photo: bool = False,
 ) -> RetentionReply:
     """Process one retention (Telegram) turn for an already-linked session.
 
     `photo_candidates` is the pre-filtered allowed set (tier x stage x unseen x
     daily-cap x proactive-cooldown), computed by retention.py; the model may only
-    pick a [[PHOTO:id]] from it and we re-validate here. `appearance` grounds
+    pick a [[PHOTO:id]] from it and we re-validate here. `intro_photo` marks the
+    introduction-photo turn (a brand-new player who never received a photo):
+    Layer 3 then carries the imperative block ordering a photo with a
+    "this is me - let's get to know each other" caption. `appearance` grounds
     the persona's looks in the real photo library
     (db.retention_appearance_context) so self-descriptions never contradict the
     photos, even on turns where no photo is sendable.
@@ -660,6 +664,7 @@ async def handle_retention_message(
         photo_candidates=candidates,
         previous_history=previous_history or None,
         play_nudge=nudge,
+        intro_photo=intro_photo,
         appearance=appearance,
         progression=progression,
         # The audience clock (same offset the quiet hours run on) — without it
@@ -669,9 +674,9 @@ async def handle_retention_message(
     )
     log.info(
         "retention_prompt_built session_id=%s history=%s prev_carry=%s "
-        "candidates=%s kb_chars=%s play_nudge=%s",
+        "candidates=%s kb_chars=%s play_nudge=%s intro_photo=%s",
         session_id, len(history), len(previous_history), len(candidates),
-        len(kb_block or ""), nudge,
+        len(kb_block or ""), nudge, intro_photo,
     )
 
     # --- call model (product keys / env failover; client fetched above) -----

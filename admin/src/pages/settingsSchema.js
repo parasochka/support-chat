@@ -104,6 +104,8 @@ export const GROUP_FIELDS = {
   retention: [
     { name: 'daily_photo_cap', label: 'Daily photo cap', type: 'int', min: 0, max: 10000, help: 'Max photos sent to one player per day (hard, incl. requested).' },
     { name: 'proactive_photo_cooldown_msgs', label: 'Proactive photo cooldown (msgs)', type: 'int', min: 1, max: 10000, help: 'Messages between UNPROMPTED photos (a direct ask bypasses it).' },
+    { name: 'intro_photo_enabled', label: 'Introduction photo', type: 'bool', help: 'A brand-new player (never received a photo) gets one proactively in his first messages, with a "this is me — let\'s get to know each other" caption, so he learns early that chatting comes with photos.' },
+    { name: 'intro_photo_within_msgs', label: 'Introduction photo window (msgs)', type: 'int', min: 1, max: 100, help: 'How many of the player\'s first meaningful messages count as the acquaintance window for the introduction photo.' },
     { name: 'candidate_list_size', label: 'Photo candidate list size', type: 'int', min: 1, max: 50, help: 'How many photo candidates the model is offered to choose from.' },
     { name: 'stage_advance_min_hours', label: 'Stage advance min hours', type: 'int', min: 0, max: 8760, help: 'Minimum spacing between explicitness-stage advances.' },
     { name: 'nonce_ttl_sec', label: 'Deeplink nonce TTL (sec)', type: 'int', min: 10, max: 3600, help: 'Lifetime of a one-time deeplink nonce.' },

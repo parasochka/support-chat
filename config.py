@@ -436,6 +436,15 @@ RETENTION_STAGE_UP_NOTIFY: bool = _env_bool("RETENTION_STAGE_UP_NOTIFY", True)
 # model may still invite organically per the engagement directive.
 RETENTION_PLAY_REMINDER_EVERY_MSGS: int = _env_int(
     "RETENTION_PLAY_REMINDER_EVERY_MSGS", 5)
+# Introduction photo: a brand-new player (never received a photo) gets one
+# proactively within his first N meaningful messages — a "this is me, let's
+# get to know each other" opener so he learns from the start that chatting
+# comes with photos. The flag turns the rule off; the window is how many first
+# meaningful messages count as "the start of the acquaintance".
+RETENTION_INTRO_PHOTO_ENABLED: bool = _env_bool(
+    "RETENTION_INTRO_PHOTO_ENABLED", True)
+RETENTION_INTRO_PHOTO_WITHIN_MSGS: int = _env_int(
+    "RETENTION_INTRO_PHOTO_WITHIN_MSGS", 3)
 
 # --- Proactive-contact guard rails (shared per-player protection) ------------
 # Env defaults for the `retention` settings group's guard knobs (hot-reloadable

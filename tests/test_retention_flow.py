@@ -50,6 +50,12 @@ def _patch_common(monkeypatch, tg):
         pass
     monkeypatch.setattr(retention.db, "log_admin_event", _log_event)
 
+    # Default: the player has already received a photo, so the introduction-
+    # photo rule stays out of the way of the unrelated flow tests.
+    async def _has_views(rid):
+        return True
+    monkeypatch.setattr(retention.db, "has_photo_views", _has_views)
+
 
 PRODUCT = {"id": 1, "active": True, "retention_enabled": True,
            "telegram_bot_username": "nika_bot", "telegram_channel_id": None,
@@ -239,7 +245,7 @@ async def test_nika_turn_sends_photo(monkeypatch):
     monkeypatch.setattr(retention.db, "advance_retention_stage", _advance)
 
     # The model "sends" photo 55 with a caption.
-    async def _handle(session, text, candidates, appearance=None, progression=None):
+    async def _handle(session, text, candidates, appearance=None, progression=None, intro_photo=False):
         assert candidates and candidates[0]["id"] == 55
         return chat_service.RetentionReply(
             reply="here you go", lang="en", message_count=1, photo_id=55)
@@ -281,7 +287,7 @@ async def test_nika_handoff_retention_entry_routes_to_support(monkeypatch):
         pass
     monkeypatch.setattr(retention.db, "log_admin_event", _log)
 
-    async def _handle(session, text, candidates, appearance=None, progression=None):
+    async def _handle(session, text, candidates, appearance=None, progression=None, intro_photo=False):
         return chat_service.RetentionReply(
             reply="let me pass you along", lang="en", message_count=1, handoff=True)
     monkeypatch.setattr(chat_service, "handle_retention_message", _handle)
@@ -291,3 +297,114 @@ async def test_nika_handoff_retention_entry_routes_to_support(monkeypatch):
 
     texts = " ".join(m[1] for m in tg.messages).lower()
     assert "support" in texts or "поддержк" in texts
+
+
+async def test_nika_turn_intro_photo_for_new_player(monkeypatch):
+    """A brand-new player (never received a photo, first meaningful messages)
+    gets the introduction-photo turn: the proactive cooldown is bypassed for
+    the candidate selection and the model is flagged with intro_photo=True."""
+    tg = FakeTelegram()
+    _patch_common(monkeypatch, tg)
+
+    ru = {"id": 10, "tg_user_id": 7, "entry_type": "retention", "conv_lang": None,
+          "subscribed": True, "vip_level": "Gold", "unlocked_stage": 1,
+          "photos_sent_today": 0, "photos_day": None, "msgs_since_photo": 1,
+          "meaningful_msgs": 1, "player_id": "p9", "session_id": "sess-1"}
+
+    async def _get_ru(pid, tg_id):
+        return dict(ru)
+    monkeypatch.setattr(retention.db, "get_retention_user", _get_ru)
+
+    async def _get_session(sid):
+        return {"id": "sess-1", "product_id": 1, "user_context": {}, "lang": "en",
+                "conv_lang": None, "message_count": 0, "status": "open"}
+    monkeypatch.setattr(retention.db, "get_session", _get_session)
+
+    async def _bump(rid, *, meaningful):
+        return dict(ru)
+    monkeypatch.setattr(retention.db, "bump_retention_activity", _bump)
+
+    # Never received a photo -> the intro rule is due.
+    async def _no_views(rid):
+        return False
+    monkeypatch.setattr(retention.db, "has_photo_views", _no_views)
+
+    async def _candidates(pid, rid, **kw):
+        return [{"id": 55, "stage": 1, "description": "cafe", "tags": []}]
+    monkeypatch.setattr(retention.db, "candidate_photos", _candidates)
+
+    async def _get_photo(pid):
+        return {"id": 55, "active": True, "telegram_file_id": "cachedfile",
+                "storage_ref": "x.jpg"}
+    monkeypatch.setattr(retention.db, "get_retention_photo", _get_photo)
+
+    async def _record(rid, photo_id, product_id, session_id=None):
+        pass
+    monkeypatch.setattr(retention.db, "record_retention_photo_view", _record)
+
+    seen = {}
+
+    async def _handle(session, text, candidates, appearance=None,
+                      progression=None, intro_photo=False):
+        seen["intro_photo"] = intro_photo
+        seen["candidates"] = candidates
+        return chat_service.RetentionReply(
+            reply="это я, давай знакомиться", lang="ru", message_count=1,
+            photo_id=55)
+    monkeypatch.setattr(chat_service, "handle_retention_message", _handle)
+
+    # NOT a photo request and msgs_since_photo (1) is below the cooldown (5):
+    # without the intro rule the candidate list would be empty.
+    await retention.handle_update(PRODUCT, {"message": {
+        "from": {"id": 7}, "chat": {"id": 7}, "text": "решил отдохнуть"}})
+
+    assert seen["intro_photo"] is True
+    assert seen["candidates"] and seen["candidates"][0]["id"] == 55
+    assert tg.photos and tg.photos[0] == (7, "cachedfile", "это я, давай знакомиться")
+
+
+async def test_nika_turn_no_intro_flag_when_library_empty(monkeypatch):
+    """No candidates (empty library / gates) -> the intro order is NOT raised
+    (the model must never be ordered to send a photo it cannot send)."""
+    tg = FakeTelegram()
+    _patch_common(monkeypatch, tg)
+
+    ru = {"id": 10, "tg_user_id": 7, "entry_type": "retention", "conv_lang": None,
+          "subscribed": True, "vip_level": "Gold", "unlocked_stage": 1,
+          "photos_sent_today": 0, "photos_day": None, "msgs_since_photo": 1,
+          "meaningful_msgs": 1, "player_id": "p9", "session_id": "sess-1"}
+
+    async def _get_ru(pid, tg_id):
+        return dict(ru)
+    monkeypatch.setattr(retention.db, "get_retention_user", _get_ru)
+
+    async def _get_session(sid):
+        return {"id": "sess-1", "product_id": 1, "user_context": {}, "lang": "en",
+                "conv_lang": None, "message_count": 0, "status": "open"}
+    monkeypatch.setattr(retention.db, "get_session", _get_session)
+
+    async def _bump(rid, *, meaningful):
+        return dict(ru)
+    monkeypatch.setattr(retention.db, "bump_retention_activity", _bump)
+
+    async def _no_views(rid):
+        return False
+    monkeypatch.setattr(retention.db, "has_photo_views", _no_views)
+
+    async def _candidates(pid, rid, **kw):
+        return []
+    monkeypatch.setattr(retention.db, "candidate_photos", _candidates)
+
+    seen = {}
+
+    async def _handle(session, text, candidates, appearance=None,
+                      progression=None, intro_photo=False):
+        seen["intro_photo"] = intro_photo
+        return chat_service.RetentionReply(
+            reply="просто поболтаем", lang="ru", message_count=1)
+    monkeypatch.setattr(chat_service, "handle_retention_message", _handle)
+
+    await retention.handle_update(PRODUCT, {"message": {
+        "from": {"id": 7}, "chat": {"id": 7}, "text": "решил отдохнуть"}})
+
+    assert seen["intro_photo"] is False
