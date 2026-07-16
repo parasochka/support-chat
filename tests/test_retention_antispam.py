@@ -72,6 +72,12 @@ def _patch_common(monkeypatch, tg, events: list):
     monkeypatch.setattr(retention.db, "set_retention_conv_lang", _noop)
     monkeypatch.setattr(retention.db, "set_retention_subscribed", _noop)
 
+    # Default: the player has already received a photo, so the introduction-
+    # photo rule stays out of the way of the gate tests.
+    async def _has_views(rid):
+        return True
+    monkeypatch.setattr(retention.db, "has_photo_views", _has_views)
+
     async def _fail_model(*a, **k):
         raise AssertionError("the model must not be called on a gated turn")
     monkeypatch.setattr(chat_service, "handle_retention_message", _fail_model)
@@ -119,7 +125,7 @@ async def test_rate_limit_uses_telegram_allowance(monkeypatch):
 
     replied = []
 
-    async def _handle(session, text, candidates, appearance=None, progression=None):
+    async def _handle(session, text, candidates, appearance=None, progression=None, intro_photo=False):
         replied.append(text)
         return chat_service.RetentionReply(reply="hi", lang="en", message_count=1)
     monkeypatch.setattr(chat_service, "handle_retention_message", _handle)
@@ -258,7 +264,7 @@ async def test_photo_without_caption_gets_fallback(monkeypatch):
     monkeypatch.setattr(retention.db, "advance_retention_stage", _advance)
 
     # Model returns a photo with an EMPTY caption.
-    async def _handle(session, text, candidates, appearance=None, progression=None):
+    async def _handle(session, text, candidates, appearance=None, progression=None, intro_photo=False):
         return chat_service.RetentionReply(
             reply="", lang="en", message_count=1, photo_id=55)
     monkeypatch.setattr(chat_service, "handle_retention_message", _handle)
@@ -294,7 +300,7 @@ async def test_handoff_carries_contact_button_when_configured(monkeypatch):
         pass
     monkeypatch.setattr(retention.db, "log_admin_event", _log)
 
-    async def _handle(session, text, candidates, appearance=None, progression=None):
+    async def _handle(session, text, candidates, appearance=None, progression=None, intro_photo=False):
         return chat_service.RetentionReply(
             reply="", lang="en", message_count=1, handoff=True)
     monkeypatch.setattr(chat_service, "handle_retention_message", _handle)

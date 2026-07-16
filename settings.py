@@ -404,6 +404,13 @@ def retention() -> dict[str, Any]:
         "play_reminder_every_msgs": db_v.get(
             "play_reminder_every_msgs",
             config.RETENTION_PLAY_REMINDER_EVERY_MSGS),
+        # Introduction photo for a brand-new player: send one proactively
+        # within his first N meaningful messages (never-received-a-photo only),
+        # so he learns early that chatting comes with photos.
+        "intro_photo_enabled": db_v.get("intro_photo_enabled",
+                                        config.RETENTION_INTRO_PHOTO_ENABLED),
+        "intro_photo_within_msgs": db_v.get(
+            "intro_photo_within_msgs", config.RETENTION_INTRO_PHOTO_WITHIN_MSGS),
         # Max Telegram messages one model reply may be split into (blank-line
         # burst delivery); extra chunks collapse into the last part. 1 = never
         # split.
@@ -607,6 +614,8 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "session_idle_minutes", 0, 525_600)  # 0 = never close
         _require_int(value, "carry_context_turns", 0, 50)
         _require_int(value, "play_reminder_every_msgs", 0, 1_000)  # 0 = off
+        _require_bool(value, "intro_photo_enabled")
+        _require_int(value, "intro_photo_within_msgs", 1, 100)
         _require_int(value, "max_reply_parts", 1, 5)  # 1 = never split
         _require_int(value, "ping_daily_cap", 1, 24)
         _require_int(value, "ping_min_gap_hours", 0, 720)   # <= 30 days; 0 = off

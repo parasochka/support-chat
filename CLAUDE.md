@@ -1088,6 +1088,18 @@ checklist lives in the admin — the **Retention → How it works** page.
   explicitly asks — `is_photo_request`). Empty candidate set ⇒ the model is told to keep chatting
   with text and not promise a photo. The model's reply text becomes the photo **caption**, grounded
   on the candidate descriptions it was shown (one call — no separate caption round-trip).
+  **Introduction photo (`retention.intro_photo_due`)**: a BRAND-NEW player — never received a
+  photo (`db.has_photo_views`), within his first `intro_photo_within_msgs` meaningful messages
+  (default 3) — gets one proactively: the selection bypasses the proactive cooldown for that turn
+  (daily cap + tier×stage still gate) and, when candidates exist, Layer 3 carries the IMPERATIVE
+  `_INTRO_PHOTO_DIRECTIVE` ("you MUST send one photo from the candidates this turn" — imperative
+  on purpose, the greeting-hygiene lesson: a conditional permission loses to the static restraint
+  rules) with a model-written "this is me — let's get to know each other" caption (localized,
+  grounded in the chosen photo's description — never a canned string), so the player learns from
+  the very start that chatting comes with photos. Knobs `intro_photo_enabled` (ships ON) /
+  `intro_photo_within_msgs` in the hot `retention` group (Retention → Settings → Parameters; env
+  defaults `RETENTION_INTRO_PHOTO_*`). The view row lands in the same transaction as the send, so
+  the rule can never refire after a delivery.
 - **Progression is backend-decided** (`retention.maybe_advance_stage`): the model only hints;
   the actual `unlocked_stage` advance needs the engagement threshold (`stage_advance_msgs`) **and**
   the tier ceiling (`max_stage_by_tier`) **and** spacing (`stage_advance_min_hours`). VIP tier is

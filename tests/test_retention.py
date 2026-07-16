@@ -550,3 +550,77 @@ async def test_is_safe_outbound_url_rejects_private_and_bad_scheme():
     assert await retention.is_safe_outbound_url("http://192.168.1.1/") is False
     assert await retention.is_safe_outbound_url("ftp://example.com/") is False
     assert await retention.is_safe_outbound_url("not a url") is False
+
+
+# ---------------------------------------------------------------------------
+# Introduction photo (a brand-new player gets one proactively)
+# ---------------------------------------------------------------------------
+def test_intro_photo_block_rendered_when_flagged():
+    p = prompts.build_retention_dynamic_prompt(
+        user_context={"full_name": "Andrey Smith"}, resolved_lang="ru",
+        user_text="привет", first_turn=True, intro_photo=True,
+        photo_candidates=[{"id": 5, "stage": 1, "description": "cafe", "tags": []}])
+    assert "INTRODUCTION PHOTO" in p
+    assert "MUST send one photo" in p
+
+
+def test_intro_photo_block_absent_by_default():
+    p = prompts.build_retention_dynamic_prompt(
+        user_context={"full_name": "Andrey Smith"}, resolved_lang="ru",
+        user_text="привет", first_turn=True,
+        photo_candidates=[{"id": 5, "stage": 1, "description": "cafe", "tags": []}])
+    assert "INTRODUCTION PHOTO" not in p
+
+
+def test_intro_photo_stays_out_of_the_byte_stable_core():
+    # Per-request data must never enter Layer 1 (invariant §1).
+    assert "INTRODUCTION PHOTO" not in prompts.get_retention_system_core()
+
+
+async def test_intro_photo_due_for_new_player(monkeypatch):
+    async def _no_views(rid):
+        return False
+    monkeypatch.setattr(retention.db, "has_photo_views", _no_views)
+    ru = {"id": 1, "meaningful_msgs": 1}
+    assert await retention.intro_photo_due(ru) is True
+
+
+async def test_intro_photo_not_due_after_a_photo(monkeypatch):
+    async def _has_views(rid):
+        return True
+    monkeypatch.setattr(retention.db, "has_photo_views", _has_views)
+    ru = {"id": 1, "meaningful_msgs": 1}
+    assert await retention.intro_photo_due(ru) is False
+
+
+async def test_intro_photo_not_due_past_the_window(monkeypatch):
+    async def _boom(rid):
+        raise AssertionError("window check must short-circuit before the DB")
+    monkeypatch.setattr(retention.db, "has_photo_views", _boom)
+    ru = {"id": 1, "meaningful_msgs": 4}  # default window is 3
+    assert await retention.intro_photo_due(ru) is False
+
+
+async def test_intro_photo_disabled_by_the_knob(monkeypatch):
+    cfg = dict(settings.retention(), intro_photo_enabled=False)
+    monkeypatch.setattr(retention.settings, "retention", lambda: cfg)
+
+    async def _boom(rid):
+        raise AssertionError("disabled rule must not reach the DB")
+    monkeypatch.setattr(retention.db, "has_photo_views", _boom)
+    ru = {"id": 1, "meaningful_msgs": 1}
+    assert await retention.intro_photo_due(ru) is False
+
+
+def test_intro_photo_settings_defaults_and_validation():
+    import pytest
+    r = settings.retention()
+    assert r["intro_photo_enabled"] is True
+    assert r["intro_photo_within_msgs"] == 3
+    v = settings.validate_setting("retention", {
+        "intro_photo_enabled": False, "intro_photo_within_msgs": 5})
+    assert v["intro_photo_within_msgs"] == 5
+    with pytest.raises(ValueError):
+        settings.validate_setting("retention", {"intro_photo_within_msgs": 0})
+    with pytest.raises(ValueError):
+        settings.validate_setting("retention", {"intro_photo_enabled": "yes"})

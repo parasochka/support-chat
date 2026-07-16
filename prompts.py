@@ -1652,6 +1652,36 @@ _PLAY_NUDGE_DIRECTIVE = (
 )
 
 
+# Introduction-photo directive (Layer 3, per-request). retention.py raises it
+# for a BRAND-NEW player (never received a photo, within his first meaningful
+# messages — the `retention.intro_photo_enabled` / `intro_photo_within_msgs`
+# knobs) so he learns from the very start that chatting with Nika comes with
+# photos. Imperative on purpose: a conditional "you may send one" loses to the
+# static restraint rules exactly like the greeting directive used to (see the
+# greeting-hygiene lesson) — the model must be ORDERED to send on this turn.
+# Only raised when the candidate list is non-empty, so the order is always
+# satisfiable. The caption stays model-written (localized, grounded in the
+# chosen photo's description) — never a canned string.
+_INTRO_PHOTO_DIRECTIVE = (
+    "=== INTRODUCTION PHOTO (applies to THIS reply) ===\n"
+    "This player is new to you and has NEVER received a photo from you. In "
+    "THIS reply you MUST send one photo from the PHOTO CANDIDATES block - put "
+    "[[PHOTO:id]] on its own line. This is an order for this turn: the usual "
+    "\"when the moment fits\" judgment does NOT apply, and the brevity or "
+    "restraint rules must not drop the photo. Pick the friendliest, most "
+    "inviting candidate (a warm everyday shot over a daring one). First react "
+    "naturally to what the player just said (if it needs an answer), then "
+    "present the photo as your way of saying \"here I am\": a short, warm "
+    "caption in the player's language, in your own words, along the lines of "
+    "\"this is me - let's get to know each other and chat\", consistent with "
+    "the chosen photo's description. Let it hint that more photos come as you "
+    "two chat and grow closer - one light phrase, no mechanics. Never mention "
+    "rules, candidates or that you were asked to send it. Skip the photo ONLY "
+    "if the player's message is a complaint, a money problem or another "
+    "clearly wrong moment."
+)
+
+
 # How much of one carried-over message survives into the continuity block —
 # enough to recall what was discussed, bounded so the tail can't blow up the
 # first-turn prompt of a fresh chat.
@@ -1760,6 +1790,7 @@ def build_retention_dynamic_prompt(
     first_turn: bool = False,
     previous_history: Optional[list[dict[str, Any]]] = None,
     play_nudge: bool = False,
+    intro_photo: bool = False,
     appearance: Optional[dict[str, Any]] = None,
     tz_offset_hours: Optional[float] = None,
     progression: Optional[dict[str, Any]] = None,
@@ -1803,6 +1834,8 @@ def build_retention_dynamic_prompt(
     progression_block = _progression_directive(progression)
     if progression_block:
         parts += [progression_block, ""]
+    if intro_photo:
+        parts += [_INTRO_PHOTO_DIRECTIVE, ""]
     if play_nudge:
         parts += [_PLAY_NUDGE_DIRECTIVE, ""]
     parts += [
@@ -1857,6 +1890,7 @@ def build_retention_messages(
     history_window: int = 10,
     previous_history: Optional[list[dict[str, Any]]] = None,
     play_nudge: bool = False,
+    intro_photo: bool = False,
     appearance: Optional[dict[str, Any]] = None,
     tz_offset_hours: Optional[float] = None,
     progression: Optional[dict[str, Any]] = None,
@@ -1892,6 +1926,7 @@ def build_retention_messages(
             first_turn=first_turn,
             previous_history=previous_history if first_turn else None,
             play_nudge=play_nudge,
+            intro_photo=intro_photo,
             appearance=appearance,
             tz_offset_hours=tz_offset_hours,
             progression=progression,
