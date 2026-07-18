@@ -821,6 +821,16 @@ async def generate_retention_ping(
         await kb.render_variables(kb_text, product_id=product_id)
         if kb_text else None
     )
+    # Returning-player continuity, mirroring the dialogue path: a ping into a
+    # fresh session (the idle rollover just closed the old chat) carries the
+    # tail of the previous conversation — the ping task asks for concrete
+    # call-backs to what the player said, which needs something to call back to.
+    previous_history: list[dict[str, Any]] = []
+    prev_sid = session.get("prev_session_id")
+    if not history and prev_sid:
+        carry = int(settings.retention()["carry_context_turns"])
+        if carry > 0:
+            previous_history = await db.get_history(prev_sid, limit=carry)
     messages = prompts.build_retention_ping_messages(
         session=session,
         kb_block=kb_block,
@@ -833,6 +843,7 @@ async def generate_retention_ping(
         occasion=occasion,
         comfort=comfort,
         stage_up=stage_up,
+        previous_history=previous_history or None,
         # A proactive touch is where a wrong time-of-day flourish stings most
         # ("enjoy your evening" at 10:00) — give the model the audience clock.
         tz_offset_hours=settings.retention()["quiet_hours_utc_offset"],

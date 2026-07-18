@@ -96,10 +96,21 @@ def _validate_event(evt: dict[str, Any]) -> dict[str, Any]:
     if not player_id:
         raise EventError("player_id is required")
     ts = evt.get("timestamp") or evt.get("ts")
-    if ts is not None and db._as_ts(ts) is None:
-        raise EventError("timestamp must be ISO-8601")
+    now = _dt.datetime.now(_dt.timezone.utc)
     if ts is None:
-        ts = _dt.datetime.now(_dt.timezone.utc)
+        ts = now
+    else:
+        parsed = db._as_ts(ts)
+        if parsed is None:
+            raise EventError("timestamp must be ISO-8601")
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+        # Clamp a future timestamp to now: the activity bridge is forward-only
+        # (GREATEST), so a partner clock bug sending ts in the future would
+        # otherwise pin last_deposit_at/last_login_at ahead of reality FOREVER
+        # (never rewindable) — the player would look permanently active and
+        # the idle ladder would never fire for them.
+        ts = min(parsed, now)
     payload = evt.get("payload")
     if payload is None:
         payload = {}

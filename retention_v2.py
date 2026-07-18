@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
-import html
 import json
 import logging
 import re
@@ -40,14 +39,14 @@ from typing import Any, Optional
 import chat_service
 import config
 import db
+import delivery
 import openai_client
 import prompts
 import retention
 import settings
-import telegram_format
 import tenancy
 import translations
-from telegram_transport import TelegramClient, inline_keyboard
+from telegram_transport import inline_keyboard
 
 log = logging.getLogger(__name__)
 
@@ -147,6 +146,12 @@ def occasion_for(evt: dict[str, Any]) -> str:
 # (0 = off, useful while testing the pipeline with repeated simulator events).
 _SAME_EVENT_COOLDOWN_HOURS = 5
 
+# A reaction only makes sense while the occasion is FRESH: "thanks for the
+# deposit" a day later reads as surveillance, not warmth. Events older than
+# this (a long quiet-hours backlog, the agent re-enabled after days off) are
+# demoted to state food — processed silently, no ledger row, no model call.
+_MAX_REACTION_AGE_HOURS = 24
+
 _TONES = ("warm", "celebrate", "comfort", "neutral")
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -205,11 +210,11 @@ async def run_due_events() -> dict[str, Any]:
                                       "decided": 0, "sent": 0}
             for product in await db.list_retention_products():
                 stats = await run_product_events(product)
-                if stats.get("skipped"):
-                    continue
                 totals["products"] += 1
-                for k in ("events", "decided", "sent"):
-                    totals[k] += stats.get(k, 0)
+                for k in ("events", "decided", "sent", "idle_sent",
+                          "idle_failed"):
+                    if stats.get(k):
+                        totals[k] = totals.get(k, 0) + stats[k]
             return totals
         finally:
             await conn.execute("SELECT pg_advisory_unlock($1)",
@@ -253,34 +258,54 @@ async def run_product_events(product: dict[str, Any], *,
     per-event random `v2_send_delay_min_sec`..`v2_send_delay_max_sec` after it
     arrived — an instant reaction to a deposit reads as surveillance, not
     warmth); `ignore_send_delay` is the admin «Process queue now» override.
+
+    QUIET HOURS defer the pipeline instead of consuming events: the worker
+    simply does not CLAIM during the window, so a night-time deposit gets its
+    warm note in the morning (the freshness cap in `_is_decision_worthy`
+    bounds how stale a reaction may get). The old shape — process + guard-block
+    — burned the event forever: the reaction never happened at all, and in a
+    casino the night IS peak deposit time. The admin «Process queue now»
+    button (`ignore_send_delay`) claims regardless: the operator explicitly
+    asked for answers now.
+
+    The idle sweep at the tail runs on its OWN switch (`idle_pings_enabled`),
+    independent of `v2_enabled` — turning the event agent off must not
+    silently kill the idle ladder the admin sees as a separate toggle.
     """
     pid = int(product["id"])
     tenancy.set_current_product(pid)
     cfg = settings.retention()
+    stats: dict[str, Any] = {"events": 0, "decided": 0, "sent": 0}
     if not cfg.get("v2_enabled"):
-        return {"skipped": "agent_disabled"}
-    batch = int(limit or cfg["ping_batch_size"])
-    delay_min = 0 if ignore_send_delay else int(cfg.get("v2_send_delay_min_sec") or 0)
-    delay_max = 0 if ignore_send_delay else int(cfg.get("v2_send_delay_max_sec") or 0)
-    events = await db.claim_retention_events(
-        pid, limit=batch, delay_min_sec=delay_min,
-        delay_max_sec=max(delay_max, delay_min))
-    decided = sent = 0
-    for evt in events:
-        try:
-            outcome = await _process_event(product, evt, cfg)
-            if outcome:
-                decided += 1
-                if outcome == "sent":
-                    sent += 1
-        except Exception:  # noqa: BLE001 - one bad event must not wedge the queue
-            log.exception("retention_v2_event_failed product=%s event=%s",
-                          pid, evt.get("id"))
-    stats = {"events": len(events), "decided": decided, "sent": sent}
+        stats["agent"] = "disabled"
+    elif not ignore_send_delay and _in_quiet_hours(cfg):
+        stats["agent"] = "quiet_hours_deferred"
+    else:
+        batch = int(limit or cfg["ping_batch_size"])
+        delay_min = (0 if ignore_send_delay
+                     else int(cfg.get("v2_send_delay_min_sec") or 0))
+        delay_max = (0 if ignore_send_delay
+                     else int(cfg.get("v2_send_delay_max_sec") or 0))
+        events = await db.claim_retention_events(
+            pid, limit=batch, delay_min_sec=delay_min,
+            delay_max_sec=max(delay_max, delay_min))
+        decided = sent = 0
+        for evt in events:
+            try:
+                outcome = await _process_event(product, evt, cfg)
+                if outcome:
+                    decided += 1
+                    if outcome == "sent":
+                        sent += 1
+            except Exception:  # noqa: BLE001 - one bad event must not wedge the queue
+                log.exception("retention_v2_event_failed product=%s event=%s",
+                              pid, evt.get("id"))
+        stats.update(events=len(events), decided=decided, sent=sent)
     # The agent's INACTIVITY trigger: a quiet player produces no events, so the
     # idle rules ladder (retention_idle) runs from the same sweep — same lock,
-    # same guards, same dry-run. Self-paced (once per ~10 min per product), so
-    # a seconds-scale worker interval doesn't hammer it.
+    # same guards, same dry-run — gated by its OWN `idle_pings_enabled` switch.
+    # Self-paced (once per ~10 min per product), so a seconds-scale worker
+    # interval doesn't hammer it.
     try:
         import retention_idle  # late: retention_idle imports this module
         idle = await retention_idle.run_product_idle_pings(product, cfg)
@@ -407,8 +432,9 @@ async def guard_check(product_id: int, ru: dict[str, Any],
     if (pings_day is not None and str(pings_day)[:10] == today
             and int(ru.get("pings_sent_today") or 0) >= int(cfg["ping_daily_cap"])):
         reasons.append("daily_cap_reached")
-    if _in_quiet_hours(cfg):
-        reasons.append("quiet_hours")
+    # NB: quiet hours are NOT a guard reason — the worker defers CLAIMING
+    # during the window (run_product_events), so a night event is reacted to
+    # in the morning instead of being consumed as 'blocked'.
     budget = float(cfg.get("v2_daily_budget_usd") or 0)
     if budget > 0:
         spent = await db.retention_v2_cost_today(product_id)
@@ -418,10 +444,21 @@ async def guard_check(product_id: int, ru: dict[str, Any],
     cooldown_h = cfg.get("v2_same_event_cooldown_hours")
     cooldown_h = (_SAME_EVENT_COOLDOWN_HOURS if cooldown_h is None
                   else int(cooldown_h))
-    if cooldown_h > 0 and await db.recent_v2_decision_exists(
-            product_id, player_id, hours=cooldown_h,
-            event_name=evt.get("event_name"), exclude_silence=True):
-        reasons.append("same_event_cooldown")
+    if cooldown_h > 0:
+        # The cooldown counts real reactions only — a silence decision on a
+        # deposit must not suppress the reaction to the NEXT deposit. The one
+        # exception is bet_settled: above the loss threshold EVERY settled bet
+        # is decision-worthy, so without counting silence the agent re-ran a
+        # paid decision call per bet of a losing streak until the daily budget
+        # burned out on "stay quiet" verdicts. One look per window, whatever
+        # the agent chose.
+        include: tuple[str, ...] = ("message", "photo")
+        if evt.get("event_name") == "bet_settled":
+            include = ("message", "photo", "silence")
+        if await db.recent_v2_decision_exists(
+                product_id, player_id, hours=cooldown_h,
+                event_name=evt.get("event_name"), include_actions=include):
+            reasons.append("same_event_cooldown")
 
     # Loss comfort window: active high loss OR a recent loss signal.
     comfort = False
@@ -546,8 +583,24 @@ def effective_decision_events(cfg: dict[str, Any]) -> frozenset[str]:
     return frozenset(str(x) for x in v)
 
 
+def _fresh_enough(evt: dict[str, Any]) -> bool:
+    """Is the event recent enough to still deserve a reaction?
+
+    Keyed on the event's own `ts` (when the occasion actually happened; falls
+    back to arrival time). A quiet-hours backlog stays reactable in the
+    morning; a days-old queue (the agent re-enabled after time off) is not
+    congratulated retroactively."""
+    ts = db._as_ts(evt.get("ts") or evt.get("created_at"))
+    if ts is None:
+        return True
+    now = _dt.datetime.now(ts.tzinfo or _dt.timezone.utc)
+    return (now - ts).total_seconds() <= _MAX_REACTION_AGE_HOURS * 3600
+
+
 def _is_decision_worthy(evt: dict[str, Any], state: dict[str, Any],
                         cfg: dict[str, Any]) -> bool:
+    if not _fresh_enough(evt):
+        return False
     name = evt.get("event_name") or ""
     if name in effective_decision_events(cfg):
         return True
@@ -584,7 +637,8 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
 
     # Cheap pre-filters that need no model: unknown recipient / log-only event.
     if ru is None:
-        if evt.get("event_name") in effective_decision_events(cfg):
+        if (evt.get("event_name") in effective_decision_events(cfg)
+                and _fresh_enough(evt)):
             await db.insert_retention_v2_decision(
                 pid, retention_user_id=None, player_id=player_id,
                 trigger_kind="event", event_pk=evt["id"],
@@ -773,48 +827,32 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
     if draft.link_url and not comfort:
         markup = inline_keyboard([[{"text": draft.link_label or draft.link_url,
                                     "url": draft.link_url}]])
-    client = TelegramClient(token)
-    chat_id = int(ru["tg_user_id"])
     # Proactive touches may be delivered silently (no sound on the player's
-    # phone) — the hot per-product `retention.silent_notifications` knob.
-    silent = bool(cfg.get("silent_notifications"))
+    # phone) — the hot per-product `retention.silent_notifications` knob. The
+    # send mechanics live in the delivery seam (delivery.py) — the one place
+    # a proactive message leaves the service, shared with the idle ladder.
+    channel = delivery.channel_for_product(
+        product, token, silent=bool(cfg.get("silent_notifications")))
     delivered = False
     detail: Optional[str] = None
     if draft.photo_id is not None and not comfort:
         caption = draft.text or retention.fallback_photo_caption(draft.lang)
-        if header_line:
-            caption = f"{header_line}\n\n{caption}"
-        # Tri-state: "photo" | "text" (caption-only fallback DELIVERED — the
-        # player got a message, so it must be persisted/recorded as sent) |
-        # None (nothing reached the player).
-        photo_status = await retention._send_photo(
-            client, product, ru, chat_id, draft.photo_id, caption,
-            session_id=session["id"], reply_markup=markup, silent=silent)
-        delivered = photo_status is not None
+        outcome = await channel.send_photo(
+            ru, draft.photo_id, caption, header=header_line,
+            reply_markup=markup, session_id=session["id"])
+        delivered = outcome.delivered
         if not delivered:
-            detail = "photo_send_failed"
-        elif photo_status == "text":
+            detail = outcome.detail or "photo_send_failed"
+        elif outcome.kind == "text":
             detail = "photo_fallback_text"
     else:
-        text_html = telegram_format.to_html(draft.text)
-        text_plain = draft.text
-        if header_line:
-            text_html = f"<i>{html.escape(header_line)}</i>\n\n{text_html}"
-            text_plain = f"{header_line}\n\n{draft.text}"
-        result, err_code, err_desc = await client.send_message_verbose(
-            chat_id, text_html, parse_mode="HTML", reply_markup=markup,
-            disable_notification=silent)
-        if result is None and text_html != text_plain and err_code != 403:
-            result, err_code, err_desc = await client.send_message_verbose(
-                chat_id, text_plain, reply_markup=markup,
-                disable_notification=silent)
-        delivered = result is not None
+        outcome = await channel.send_text(ru, draft.text, header=header_line,
+                                          reply_markup=markup)
+        delivered = outcome.delivered
         if not delivered:
-            detail = f"{err_code}: {err_desc}" if err_desc else "send_failed"
+            detail = outcome.detail or "send_failed"
             log.warning("retention_v2_send_failed product=%s player=%s "
                         "detail=%s", pid, ru.get("player_id"), detail)
-            if err_code == 403:
-                await db.set_retention_unreachable(rid, True)
 
     if delivered:
         await db.persist_ping_turn(session["id"], draft.text or "[photo]",
