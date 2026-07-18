@@ -42,6 +42,7 @@ import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
 import TextStats from '../components/TextStats';
 import rich from '../components/Rich';
+import AlgorithmMapTab from './RetentionAlgorithmMap';
 import { t } from '../i18n';
 
 // ---------------------------------------------------------------------------
@@ -1653,6 +1654,7 @@ const AnalyticsTab = ({ productId }) => {
 // Proactive agent page — legacy ?tab= links redirect below.
 const COMPONENTS = {
   guide: GuideTab,
+  algorithm: AlgorithmMapTab,
   kb: KbTab,
   prompt: PromptTab,
   variables: VariablesTab,
@@ -1664,6 +1666,13 @@ const COMPONENTS = {
 const PROMPT_SUBTABS = [
   ['prompt', t('Prompt preview')],
   ['variables', t('Prompt variables')],
+];
+
+// The "How it works" section bundles the setup checklist and the interactive
+// algorithm map as a small internal 2-tab strip (same pattern as Prompt).
+const GUIDE_SUBTABS = [
+  ['guide', t('Setup guide')],
+  ['algorithm', t('Algorithm map')],
 ];
 
 // Tabs that used to live on this page and moved elsewhere (old bookmarks and
@@ -1692,7 +1701,12 @@ const Retention = () => {
   }
 
   const Component = COMPONENTS[tab];
-  const subtabs = tab === 'prompt' || tab === 'variables' ? PROMPT_SUBTABS : null;
+  const subtabs =
+    tab === 'prompt' || tab === 'variables'
+      ? PROMPT_SUBTABS
+      : tab === 'guide' || tab === 'algorithm'
+        ? GUIDE_SUBTABS
+        : null;
 
   return (
     <Box sx={{ p: 2 }}>

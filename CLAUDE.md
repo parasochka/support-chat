@@ -1286,8 +1286,18 @@ checklist lives in the admin — the **Retention → How it works** page.
   (the global dashboard's retention block), following the support dashboard's
   `resolve_scope_filter` convention.
 - **Admin**: the sidebar **Retention** section — one menu entry per surface, no
-  page-wide tab strip: **How it works** (the setup-guide checklist that replaced
-  `RETENTION_SETUP.md`; the section's landing page), **Knowledge base** — the
+  page-wide tab strip: **How it works** (the section's landing page, an in-page
+  2-tab strip: **Setup guide** — the checklist that replaced
+  `RETENTION_SETUP.md` — and the **Algorithm map**,
+  `admin/src/pages/RetentionAlgorithmMap.jsx` at `/retention?tab=algorithm` —
+  an interactive, hand-rolled block diagram of the WHOLE algorithm as four
+  flows (dialogue turn / casino data in / proactive agent / idle ladder):
+  clicking a block expands a plain-language explanation, the settings
+  governing exactly that step (deep-linked to their editors) and the
+  implementing module; the legend chips highlight all blocks of one kind
+  (gates / AI calls / sends / data). No diagram library on purpose — the
+  bundle stays code-split. The content mirrors the shipped pipeline, so a
+  pipeline change should update its block there), **Knowledge base** — the
   one-document text editor —, **Prompt** (Prompt preview + **Prompt variables**
   — the Telegram-persona editor, `GET/PUT /admin/retention/prompt-variables`;
   empty = the retention default — a SEPARATE prompt, no support inheritance,
