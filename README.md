@@ -203,7 +203,7 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `RETENTION_V2_DAILY_BUDGET_USD` | no | `5.0` | Default for `retention.v2_daily_budget_usd` — the per-product daily AI budget for agent decisions+sends; reached ⇒ the loop goes quiet until tomorrow (0 = no budget). |
 | `RETENTION_PING_DAILY_CAP` | no | `3` | Hard per-player cap: at most this many proactive messages a day, no matter how many events fire (also a `retention` settings knob, like every guard below). |
 | `RETENTION_PING_MIN_GAP_HOURS` | no | `2` | Minimum gap between any two proactive messages to the same player (0 = off). |
-| `RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS` | no | `20` | One reaction per event TYPE per player per window (a webhook retry or five deposits get one note). `0` = off, handy while testing the pipeline with repeated simulator events. |
+| `RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS` | no | `5` | One reaction per event TYPE per player per window (a webhook retry or five deposits get one note). `0` = off, handy while testing the pipeline with repeated simulator events. |
 | `RETENTION_QUIET_HOURS_START` / `RETENTION_QUIET_HOURS_END` | no | `22` / `9` | Local quiet hours — no proactive messages inside the window (equal values = no quiet hours). |
 | `RETENTION_QUIET_HOURS_UTC_OFFSET` | no | `0` | Shifts "local" from UTC for the product's audience when evaluating quiet hours (and the prompt's current-time block). |
 | `RETENTION_PING_BATCH_SIZE` | no | `30` | Max events processed per product per worker sweep (cost guard). |

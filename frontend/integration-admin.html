@@ -90,7 +90,8 @@
 <h2 id="login">2. Вход для людей — JWT</h2>
 <div class="endpoint"><span class="tag post">POST</span><code>/admin/login</code></div>
 <p><code>{ email, password }</code> → <code>{ token, role, memberships[] }</code>. Токен —
-bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию 480 мин), передаётся в каждом
+bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию 10080 мин — неделя; окно
+скользящее: у активного оператора токен продлевается автоматически), передаётся в каждом
 запросе заголовком <code>Authorization: Bearer &lt;token&gt;</code>. Аккаунт, активность и роль
 перепроверяются по БД на каждом запросе — деактивация/понижение применяются сразу, не дожидаясь
 истечения токена. Логин rate-limit'ится; неудачные попытки логируются.</p>
