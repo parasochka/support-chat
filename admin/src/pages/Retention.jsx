@@ -876,7 +876,7 @@ const PhotosTab = ({ productId }) => {
                   onClick={generate}
                   disabled={!selected.size || generating || readOnly}
                 >
-                  {generating ? t('Generating…') : t('Generate')}
+                  {generating ? t('Generating…') : t('Generate metadata')}
                   {selected.size ? ` (${selected.size})` : ''}
                 </Button>
               </span>

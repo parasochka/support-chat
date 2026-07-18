@@ -782,7 +782,7 @@ const GuideTab = ({ status }) => {
                 ['daily_cap_reached', `${g.ping_daily_cap ?? '—'} ${t('/ day')}`, t('«Max proactive messages per player per day» — the hard daily ceiling.')],
                 ['min_gap_not_elapsed', `${g.ping_min_gap_hours ?? '—'} ${t('h')}`, t('«Min gap between messages (hours)» — spacing between any two proactive messages to one player (0 = off). Lower it to react to several events per day.')],
                 ['same_event_cooldown', `${g.same_event_cooldown_hours ?? '—'} ${t('h')}`, t('«Same-event cooldown (hours)» — one reaction per event type per player per window. Set 0 while testing to re-run the same event.')],
-                ['quiet_hours', `${g.quiet_hours_start ?? '—'}–${g.quiet_hours_end ?? '—'} (UTC${(g.quiet_hours_utc_offset ?? 0) >= 0 ? '+' : ''}${g.quiet_hours_utc_offset ?? 0})`, t('«Quiet hours start/end/UTC offset» — no proactive contact at night.')],
+                ['quiet_hours', `${g.quiet_hours_start ?? '—'}–${g.quiet_hours_end ?? '—'} (UTC${(g.quiet_hours_utc_offset ?? 0) >= 0 ? '+' : ''}${g.quiet_hours_utc_offset ?? 0})`, t('«Quiet hours start/end/UTC offset» — enforced BEFORE a decision is made: night-time events are deferred and processed in the morning, so this never appears as a ledger guard reason.')],
                 ['daily_budget_reached', g.daily_budget_usd ? `$${g.daily_budget_usd} ${t('/ day')}` : t('no budget'), t('«Daily AI budget (USD)» — today’s ledger cost hit the budget.')],
                 ['comfort window', `${g.loss_comfort_hours ?? '—'} ${t('h')} / $${g.loss_high_usd ?? '—'}`, t('«Loss comfort window» + «High-loss threshold» — after a big loss: empathetic tone only, no photo, no link, no play talk.')],
               ].map(([k, cur, v]) => (

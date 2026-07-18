@@ -61,5 +61,5 @@ def test_control_only_escalation_gets_visible_handoff_copy(monkeypatch):
 
     assert reply.escalation["active"] is True
     assert reply.escalation["final"] is True  # a model hand-off closes the chat
-    assert reply.reply == "Я передам ваш вопрос в службу поддержки. Они помогут дальше."
+    assert reply.reply == "Я передам твой вопрос в службу поддержки. Дальше тебе помогут они."
     assert captured["assistant_text"] == reply.reply

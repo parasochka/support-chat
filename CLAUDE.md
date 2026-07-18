@@ -1063,7 +1063,7 @@ checklist lives in the admin — the **Retention → How it works** page.
   every photo to ~2560px anyway, so a periodic sweep (hourly by default; own asyncio task from
   `main.py` lifespan under the same `RETENTION_SCHEDULER_ENABLED` switch, own advisory lock)
   re-encodes every .jpg/.png (and any oversized .webp) to WebP at
-  `retention.media_max_side_px` (default 2048) × `media_webp_quality` (82), re-points the row
+  `retention.media_max_side_px` (default 2560) × `media_webp_quality` (90), re-points the row
   (`db.set_retention_photo_storage_ref`) and **deletes the heavy original** — GIFs are left alone
   (possibly animated), the cached `telegram_file_id` is KEPT (the already-uploaded copy stays
   valid), and the row is re-pointed BEFORE the delete so a crash can orphan a file but never break

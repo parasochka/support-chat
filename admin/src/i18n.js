@@ -101,7 +101,6 @@ const RU = {
   'Translations': 'Переводы',
   'Analytics': 'Аналитика',
   'Telegram config': 'Настройка Telegram',
-  'Retention KB': 'База знаний бота',
   'Media': 'Медиа',
   'Managers': 'Менеджеры',
   'Proactive agent': 'Проактивный агент',
@@ -110,7 +109,6 @@ const RU = {
   'Users': 'Пользователи',
   'API keys': 'API-ключи',
   'Chat settings': 'Настройки чата',
-  'Core settings': 'Настройки ядра',
 
   // ----- common chrome -----
   'Loading…': 'Загрузка…',
@@ -176,7 +174,6 @@ const RU = {
   'Proactive agent (event-driven)': 'Проактивный агент (по событиям)',
   'Send-frequency guards (per-player protection)': 'Ограничители частоты (защита игрока от спама)',
   'Delivery': 'Доставка сообщений',
-  'Subscription gate': 'Проверка подписки',
 
   // ----- field labels + helps (antispam) -----
   'Rate limit (max / IP)': 'Rate-лимит (макс. / IP)',
@@ -245,6 +242,12 @@ const RU = {
   'Proactive photo cooldown (msgs)': 'Кулдаун проактивных фото (сообщений)',
   'Messages between UNPROMPTED photos (a direct ask bypasses it).':
     'Сколько сообщений между фото БЕЗ запроса игрока (прямая просьба обходит кулдаун).',
+  'Introduction photo': 'Фото-знакомство',
+  'A brand-new player (never received a photo) gets one proactively in his first messages, with a "this is me — let\'s get to know each other" caption, so he learns early that chatting comes with photos.':
+    'Совсем новый игрок (ещё не получавший фото) проактивно получает одно в первых сообщениях с подписью «это я — давай знакомиться», чтобы с самого начала понять: общение идёт вместе с фото.',
+  'Introduction photo window (msgs)': 'Окно фото-знакомства (сообщений)',
+  'How many of the player\'s first meaningful messages count as the acquaintance window for the introduction photo.':
+    'Сколько первых значимых сообщений игрока считаются окном знакомства для вступительного фото.',
   'Photo candidate list size': 'Размер списка фото-кандидатов',
   'How many photo candidates the model is offered to choose from.':
     'Из скольких фото-кандидатов модель выбирает.',
@@ -261,9 +264,6 @@ const RU = {
   'Carry-over context turns': 'Ходов контекста при возврате',
   'Trailing turns of the previous chat shown to the model when a returning player starts a fresh one (0 = off).':
     'Сколько последних ходов прошлого чата модель видит, когда вернувшийся игрок начинает новый (0 = выкл).',
-  'Play reminder every N replies': 'Приглашение играть каждые N ответов',
-  'Every N-th of Nika’s Telegram replies weaves in a light in-context invitation to play, with a one-tap site button picked from the Site map by intent (0 = off).':
-    'Каждый N-й ответ Ники в Telegram содержит лёгкое приглашение поиграть с кнопкой сайта из Карты сайта (0 = выкл).',
   'Silent notifications (proactive)': 'Тихие уведомления (проактивные)',
   'Proactive messages arrive WITHOUT a sound/vibration on the player’s phone (Telegram silent delivery). Replies in a live dialogue always notify normally.':
     'Проактивные сообщения приходят БЕЗ звука/вибрации на телефоне игрока (тихая доставка Telegram). Ответы в живом диалоге всегда приходят со звуком.',
@@ -276,11 +276,7 @@ const RU = {
   'Dry-run (shadow mode)': 'Dry-run (теневой режим)',
   'ON: the agent decides and logs to the Decisions ledger but sends nothing. Turn off only after reviewing decisions.':
     'ВКЛ: агент принимает решения и пишет их в журнал, но ничего не отправляет. Выключайте только после проверки решений.',
-  'Adds an italic chrome line with the fired trigger ("⚡ Trigger: deposit_confirmed") to every proactive message. Great while testing; turn OFF for production players.':
-    'Добавляет курсивную строку с триггером («⚡ Trigger: deposit_confirmed») в каждое проактивное сообщение. Удобно при тестировании; для реальных игроков выключите.',
   'Worker interval (seconds)': 'Интервал воркера (сек)',
-  'How often the background worker drains the event queue. Applies live on the next tick (no redeploy). 5s = near-realtime reactions.':
-    'Как часто фоновый воркер разбирает очередь событий. Применяется сразу, без редеплоя. 5с = реакции почти в реальном времени.',
   'Events per sweep': 'Событий за проход',
   'Max events one worker sweep processes per product — bounds the burst on Telegram and OpenAI.':
     'Максимум событий за один проход воркера на продукт — ограничивает нагрузку на Telegram и OpenAI.',
@@ -337,10 +333,6 @@ const RU = {
   'default': 'по умолчанию',
 
   // ----- how-it-works blocks -----
-  'What lives here': 'Что здесь находится',
-  'Support module — how it works': 'Модуль поддержки — как это работает',
-  'Retention module — how it works': 'Модуль ретеншена — как это работает',
-  'Core — how it works': 'Ядро — как это работает',
   'The support widget answers players on the site from the per-topic Knowledge base. Before the model sees a message it passes the anti-spam gates below; the chat limits bound one session. Content is edited in the Support chat section (KB texts, prompt variables) and the Common section (translations, site map).':
     'Виджет поддержки отвечает игрокам на сайте по Базе знаний (по темам). До модели сообщение проходит антиспам-фильтры ниже; лимиты чата ограничивают одну сессию. Контент редактируется в разделах меню «Чат поддержки» (тексты БЗ, переменные промпта) и «Общее» (переводы, карта сайта).',
   'The Telegram bot re-engages players: it chats in persona, sends photos gated by Stage × VIP level, and the proactive agent reacts to casino events (deposits, level-ups, losses). The guards below are the dials for how often one player may be written to — the agent can never exceed them.':
@@ -547,7 +539,7 @@ const RU = {
   'Telegram config saved': 'Настройки Telegram сохранены',
   'Secrets saved': 'Секреты сохранены',
   'Retention bot enabled': 'Ретеншен-бот включён',
-  'Save config': 'Сохранить настройки',
+  'Save config': 'Сохранить конфигурацию',
   'Register Telegram webhook': 'Зарегистрировать вебхук Telegram',
   'Save secrets': 'Сохранить секреты',
   'Secrets': 'Секреты',
@@ -573,7 +565,6 @@ const RU = {
   'URL': 'URL',
   'Level min': 'Мин. Level',
   'Generate metadata': 'Сгенерировать метаданные',
-  'Select all shown': 'Выбрать все показанные',
   'Clear selection': 'Снять выбор',
   'Account & appearance': 'Аккаунт и оформление',
   'Account': 'Аккаунт',
@@ -899,7 +890,7 @@ const RU = {
   '**Guards (deterministic)** — decide whether contact is allowed at all and which actions are permitted (message / photo / silence). The model can never override a guard. See the table below.':
     '**Ограничители (детерминированные)** — решают, разрешён ли контакт вообще и какие действия допустимы (сообщение / фото / молчание). Модель не может обойти ограничитель. См. таблицу ниже.',
   '**Agent decision** — one cheap strict-JSON model call. Input: the state snapshot, the event, the player’s recent events, the tail of their Telegram conversation, and the guard constraints. Output: `action` (silence/message/photo), `tone` (warm/celebrate/comfort/neutral), and a short `intent` brief. Anything malformed degrades to silence.':
-    '**Решение агента** — один дешёвый вызов модели со строгим JSON. Вход: снимок состояния, событие, недавние события игрока, хвост его Telegram-диалога и ограничения от ограничителей. Выход: `action` (silence/message/photo), `tone` (warm/celebrate/comfort/neutral) и короткий бриф `intent`. Всё некорректное деградирует в молчание.',
+    '**Решение агента** — один дешёвый вызов модели со строгим JSON. Вход: снимок состояния, событие, недавние события игрока, хвост его Telegram-диалога и рамки ограничителей. Выход: `action` (silence/message/photo), `tone` (warm/celebrate/comfort/neutral) и короткий бриф `intent`. Всё некорректное деградирует в молчание.',
   '**Message generation** — the SAME persona stack that answers Telegram chats writes the text from the agent’s brief. Nothing here is agent-specific: persona, tone of voice, KB, language all come from the regular retention configuration (next section).':
     '**Генерация сообщения** — текст по брифу агента пишет ТОТ ЖЕ стек персонажа, что отвечает в Telegram-чатах. Здесь нет ничего специфичного для агента: персонаж, тон, база знаний и язык берутся из обычной конфигурации ретеншена (следующий раздел).',
   '**Ledger** — ONE row per decision, whatever the outcome (sent, silence, blocked, dry-run), with the state snapshot, guard verdict, the agent’s reasoning and the summed cost. “Why did/didn’t the bot write?” is always answerable from the Decisions tab.':
@@ -954,8 +945,8 @@ const RU = {
     '«Мин. интервал между сообщениями (часы)» — промежуток между любыми двумя проактивными сообщениями одному игроку (0 = выкл). Уменьшите, чтобы реагировать на несколько событий в день.',
   '«Same-event cooldown (hours)» — one reaction per event type per player per window. Set 0 while testing to re-run the same event.':
     '«Кулдаун одинаковых событий (часы)» — одна реакция на тип события на игрока за окно. Поставьте 0 на время тестирования, чтобы повторять одно и то же событие.',
-  '«Quiet hours start/end/UTC offset» — no proactive contact at night.':
-    '«Начало/конец тихих часов, смещение UTC» — никаких проактивных сообщений ночью.',
+  '«Quiet hours start/end/UTC offset» — enforced BEFORE a decision is made: night-time events are deferred and processed in the morning, so this never appears as a ledger guard reason.':
+    '«Начало/конец тихих часов, смещение UTC» — применяется ДО принятия решения: ночные события откладываются и обрабатываются утром, поэтому эта причина никогда не появляется в колонке «Ограничители» журнала.',
   '«Daily AI budget (USD)» — today’s ledger cost hit the budget.':
     '«Дневной AI-бюджет (USD)» — стоимость решений за сегодня достигла бюджета.',
   '«Loss comfort window» + «High-loss threshold» — after a big loss: empathetic tone only, no photo, no link, no play talk.':
@@ -1062,8 +1053,6 @@ const RU = {
   'Metadata: {ok} generated, {failed} failed': 'Метаданные: {ok} сгенерировано, {failed} с ошибкой',
   'Metadata generated for {n} photo(s)': 'Метаданные сгенерированы для {n} фото',
   'request failed': 'запрос не выполнен',
-  "AI (the product's own model + API key) fills the description, tags, stage and minimum VIP level for every selected photo.":
-    'AI (собственная модель и API-ключ продукта) заполняет описание, теги, стадию и минимальный VIP-уровень для каждого выбранного фото.',
   'No photos yet — upload the first ones above.': 'Фото пока нет — загрузите первые выше.',
   'stage': 'стадия',
   'level': 'уровень',
@@ -1159,12 +1148,8 @@ const RU = {
     'admin может редактировать в пределах области; manager — только чтение.',
 
   // ----- Media normalizer -----
-  'Normalize media now': 'Нормализовать медиа сейчас',
-  'Normalizing…': 'Нормализация…',
   'Media normalized: {n} converted, {f} failed, {mb} MB freed':
     'Медиа нормализовано: {n} сконвертировано, {f} с ошибкой, освобождено {mb} МБ',
-  'Re-encodes heavy uploads (multi-MB JPG/PNG) to Telegram-sized WebP and deletes the originals. Runs automatically on a schedule — the button is the immediate run.':
-    'Пережимает тяжёлые загрузки (многомегабайтные JPG/PNG) в WebP под размеры Telegram и удаляет оригиналы. Запускается автоматически по расписанию — кнопка выполняет проход немедленно.',
 
   // ----- API keys page -----
   'Global (everything)': 'Глобально (всё)',
@@ -1310,11 +1295,11 @@ const RU = {
   'How often the media sweep runs — ONE loop serves every product, so this is a deploy-wide (global) setting. Default 3600 (hourly). The «Normalize now» button on the Media tab runs one product immediately.':
     'Как часто выполняется проход нормализации — ОДИН цикл обслуживает все продукты, поэтому это общесистемная (глобальная) настройка. По умолчанию 3600 (раз в час). Кнопка «Нормализовать сейчас» на вкладке «Медиа» запускает один продукт немедленно.',
   'Max photo side (px)': 'Макс. сторона фото (px)',
-  'Longest side after normalization. Telegram re-compresses photos to ~2560 px anyway, so 2048 keeps full delivered quality at a fraction of the size.':
-    'Самая длинная сторона после нормализации. Telegram всё равно пережимает фото до ~2560 px, так что 2048 сохраняет полное качество доставки при меньшем размере.',
+  'Longest side after normalization. Telegram re-compresses photos to ~2560 px anyway, so the default 2560 keeps full delivered quality at a fraction of the original file size.':
+    'Самая длинная сторона после нормализации. Telegram всё равно пережимает фото до ~2560 px, так что значение по умолчанию 2560 сохраняет полное качество доставки при заметно меньшем размере файла.',
   'WebP quality (40–100)': 'Качество WebP (40–100)',
-  'Compression quality of the normalized WebP. 82 is visually lossless for chat photos; raise it only if you see artifacts.':
-    'Качество сжатия нормализованного WebP. 82 визуально без потерь для чат-фото; повышайте только если видите артефакты.',
+  'Compression quality of the normalized WebP. The default 90 is visually lossless for chat photos; lower it only to save more space, raise it only if you see artifacts.':
+    'Качество сжатия нормализованного WebP. Значение по умолчанию 90 визуально без потерь для чат-фото; понижайте, только чтобы сэкономить место, повышайте — только если видите артефакты.',
   'Idle re-engagement pings': 'Пинги возврата неактивных',
   'The agent’s inactivity trigger: the Idle pings rules ladder («quiet N days → Nika writes first», Retention → Idle pings tab). Off = the agent reacts to casino events only; a quiet player is never written to.':
     'Триггер неактивности агента: лестница правил пингов («тишина N дней → Ника пишет первой», Ретеншен → Пинги неактивности). Выкл = агент реагирует только на события казино; замолчавшему игроку никто не пишет.',
@@ -1334,7 +1319,6 @@ const RU = {
     'Как часто фоновый воркер разбирает очередь событий — ОДИН цикл обслуживает все продукты, поэтому это общесистемная (глобальная) настройка. Применяется сразу со следующего тика (без редеплоя).',
 
   // ----- retention algorithm map (How it works → Algorithm map) -----
-  'Setup guide': 'Настройка',
   'Algorithm map': 'Схема алгоритма',
   'webhook': 'вебхук',
   'Input / trigger': 'Вход / триггер',
@@ -1379,20 +1363,20 @@ const RU = {
   'Photo candidate selection': 'Отбор фото-кандидатов',
   'empty set → text-only turn': 'пустой набор → ход только текстом',
   "The allowed photo set for THIS turn: unseen photos within the player's VIP tier × unlocked closeness stage (+1 teaser step), bounded by the daily photo cap and the proactive cooldown. The cooldown is bypassed when the player explicitly asks for a photo — and for the introduction photo a brand-new player receives in his first messages.":
-    'Разрешённый набор фото для ЭТОГО хода: неувиденные фото в пределах VIP-уровня игрока × открытой стадии близости (+1 шаг-тизер), ограниченный дневным капом фото и проактивным кулдауном. Кулдаун обходится, когда игрок сам просит фото — и для фото-знакомства, которое новый игрок получает в первых сообщениях.',
+    'Разрешённый набор фото для ЭТОГО хода: ещё не показанные фото в пределах VIP-уровня игрока × открытой стадии близости (+1 шаг-тизер), ограниченный дневным капом фото и проактивным кулдауном. Кулдаун обходится, когда игрок сам просит фото — и для фото-знакомства, которое новый игрок получает в первых сообщениях.',
   'Daily photo cap / proactive cooldown / intro photo': 'Дневной кап фото / проактивный кулдаун / фото-знакомство',
   'Photo library (stages, VIP tiers)': 'Фото-библиотека (стадии, VIP-уровни)',
   "Nika's reply (model turn)": 'Ответ Ники (ход модели)',
   "One model call assembles: the retention persona core, the product's retention KB, the player profile, appearance grounding (the persona's looks come from the real photo library), the REAL progression state, the current player-local time and — every N-th reply, with drift — the one permitted play invitation. The reply may carry control sentinels: photo, site-link button, hand-off, language, stage-up.":
-    'Один вызов модели собирает: ядро retention-персоны, retention-базу знаний продукта, профиль игрока, заземление внешности (облик персоны берётся из реальной фото-библиотеки), РЕАЛЬНОЕ состояние прогрессии, текущее локальное время игрока и — каждый N-й ответ, с дрейфом — одно разрешённое приглашение поиграть. Ответ может нести управляющие сентинелы: фото, кнопка-ссылка на сайт, хендофф, язык, повышение стадии.',
-  'Retention KB (one document)': 'Retention-база знаний (один документ)',
+    'Один вызов модели собирает: ядро ретеншен-персоны, ретеншен-базу знаний продукта, профиль игрока, заземление внешности (облик персоны берётся из реальной фото-библиотеки), РЕАЛЬНОЕ состояние прогрессии, текущее локальное время игрока и — каждый N-й ответ, с дрейфом — одно разрешённое приглашение поиграть. Ответ может нести управляющие сентинелы: фото, кнопка-ссылка на сайт, хендофф, язык, повышение стадии.',
+  'Retention KB (one document)': 'Ретеншен-база знаний (один документ)',
   'Persona (prompt variables)': 'Персона (переменные промпта)',
   'Play-invitation cadence': 'Частота приглашений поиграть',
   'Model / reasoning (System → Settings)': 'Модель / reasoning (Система → Настройки)',
   'Sentinel validation + routing': 'Валидация сентинелов + маршрутизация',
   'the model proposes — the backend decides': 'модель предлагает — бэкенд решает',
   'Everything the model asked for is re-validated: a photo id must be in the offered candidate set, a link button must EXACTLY match a Site map page (an invented URL never becomes a button), [[HANDOFF]] replaces the reply with the manager / site-support choice card, [[LANG:xx]] drifts the sticky conversation language.':
-    'Всё, что запросила модель, перепроверяется: id фото должен входить в предложенный набор кандидатов, кнопка-ссылка должна ТОЧНО совпадать со страницей Карты сайта (выдуманный URL никогда не станет кнопкой), [[HANDOFF]] заменяет ответ карточкой выбора «менеджер / поддержка на сайте», [[LANG:xx]] сдвигает липкий язык беседы.',
+    'Всё, что запросила модель, перепроверяется: id фото должен входить в предложенный набор кандидатов, кнопка-ссылка должна ТОЧНО совпадать со страницей Карты сайта (выдуманный URL никогда не станет кнопкой), [[HANDOFF]] заменяет ответ карточкой выбора «менеджер / поддержка на сайте», [[LANG:xx]] сдвигает закреплённый язык беседы.',
   'Site map (allowed link targets)': 'Карта сайта (разрешённые ссылки)',
   'Managers (round-robin)': 'Менеджеры (round-robin)',
   'Hand-off texts (rtn_* keys)': 'Тексты хендоффа (ключи rtn_*)',
@@ -1444,7 +1428,7 @@ const RU = {
   'state food → marked processed silently': 'пища для состояния → тихо помечается обработанным',
   'Only the decision events wake the agent (deposit confirmed/failed, withdrawal, level/class up, KYC approved, bonus completed/expired). Everything else only feeds the player state. bet_settled is special: it wakes the agent only when the 24h loss window crosses the high-loss threshold — and then the reaction is comfort, never celebration.':
     'Агента будят только события-решения (депозит подтверждён/не прошёл, вывод, новый уровень/класс, KYC одобрен, бонус завершён/истёк). Всё остальное лишь питает состояние игрока. bet_settled — особый случай: он будит агента только когда 24-часовое окно проигрыша пересекает порог — и тогда реакция всегда утешение, никогда не поздравление.',
-  'Guards — the hard rails': 'Гарды — жёсткие рельсы',
+  'Guards — the hard rails': 'Ограничители — жёсткие рамки',
   'every block is ledgered with its reason': 'каждая блокировка ложится в журнал с причиной',
   'Deterministic and never overridable by the AI: subscribed, not /stop-muted, bot not blocked, min gap since the last touch, daily touch cap, daily AI budget, same-event cooldown (one reaction per event type per window; for bet_settled even a "stay silent" verdict latches it, so a losing streak doesn\'t re-run paid decisions per bet), and the loss comfort window — after real losses the photo action is removed and a hard empathy constraint is injected.':
     'Детерминированные, ИИ их не переопределяет: подписка, не заглушен /stop, бот не заблокирован, мин. интервал с последнего касания, дневной кап касаний, дневной бюджет ИИ, кулдаун одинаковых событий (одна реакция на тип события за окно; для bet_settled даже вердикт «молчать» взводит его, чтобы проигрышная серия не гоняла платные решения на каждую ставку) и комфортное окно после проигрыша — после реальных потерь действие «фото» убирается и вводится жёсткое требование эмпатии.',
