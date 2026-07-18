@@ -268,7 +268,10 @@ def verify_handshake(blob: str, secret: Optional[str] = None) -> dict[str, Any]:
 # (salt + hash base64url, no padding). Verification is constant-time.
 # ---------------------------------------------------------------------------
 _PBKDF2_ALG = "pbkdf2_sha256"
-_PBKDF2_ITERATIONS = 200_000
+# OWASP 2023 guidance for PBKDF2-HMAC-SHA256. The iteration count is stored in
+# every hash string, so raising it keeps older 200k hashes verifying unchanged;
+# only newly-set/changed passwords use the stronger factor.
+_PBKDF2_ITERATIONS = 600_000
 
 
 def hash_password(password: str, *, iterations: int = _PBKDF2_ITERATIONS,
