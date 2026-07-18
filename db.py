@@ -3320,6 +3320,34 @@ async def ping_rule_recently_fired(rid: int, rule_id: int,
     return bool(val)
 
 
+async def idle_rule_thresholds_fired_since(rid: int, since: Any
+                                           ) -> dict[str, int]:
+    """Max `inactivity_days` of the idle rules already fired ('sent') to this
+    player since `since` (their last activity), per trigger kind.
+
+    The anti-cascade guard: per-rule cooldowns alone let a long-quiet player
+    receive the ENTIRE ladder in reverse — after "quiet 60 days" fired, the
+    45/30/21/… rungs each matched on the next sweep (their own cooldowns were
+    clean) and cascaded out at min-gap pace. During ONE silence stretch only a
+    rung ABOVE the highest already-fired one may fire; the moment the player
+    writes again (`last_active_at` moves past the fired pings) every rung is
+    eligible again. `since` = the player's last activity; None counts every
+    fired ping."""
+    since_ts = _as_ts(since)
+    rows = await _pool.fetch(
+        "SELECT r.trigger_kind, MAX(r.inactivity_days) AS days "
+        "FROM retention_pings p "
+        "JOIN retention_rules r ON r.id = p.rule_id "
+        "WHERE p.retention_user_id = $1 AND p.status = 'sent' "
+        "  AND p.created_at > COALESCE($2::timestamptz, "
+        "                              '-infinity'::timestamptz) "
+        "GROUP BY r.trigger_kind",
+        rid, since_ts,
+    )
+    return {str(r["trigger_kind"]): int(r["days"]) for r in rows
+            if r["days"] is not None}
+
+
 # ---------------------------------------------------------------------------
 # Proactive-send ledger + the shared per-player anti-annoyance counters
 # ---------------------------------------------------------------------------
@@ -3488,16 +3516,25 @@ def _payload_num(field: str) -> str:
 async def player_net_loss_24h(product_id: int, player_id: str) -> float:
     """Net real-money loss over the last 24h from bet_settled events
     (bets minus wins; bonus-money rounds excluded) — the EPIC-5 loss window.
-    Negative = the player is up; clamped to 0 by the caller if needed."""
+    Negative = the player is up; clamped to 0 by the caller if needed.
+
+    Summed PER CURRENCY (payload->>'currency', absent = its own bucket) and
+    the worst bucket wins: a blind cross-currency sum added apples to oranges
+    (100 TRY + 50 EUR = "150") and compared it with the USD-denominated
+    threshold. A single-currency player — the normal case — is exact; a
+    mixed-currency player is judged by his worst single-currency loss."""
     val = await _pool.fetchval(
-        "SELECT COALESCE(SUM( "
-        f"  {_payload_num('amount')} - {_payload_num('win_amount')}), 0) "
-        "FROM retention_events "
-        "WHERE product_id = $1 AND player_id = $2 "
-        "  AND event_name = 'bet_settled' "
-        "  AND COALESCE((payload->>'bonus_money') IN ('true', 't', '1'), FALSE) "
-        "      = FALSE "
-        "  AND ts > now() - interval '24 hours'",
+        "SELECT MAX(loss) FROM ("
+        "  SELECT COALESCE(payload->>'currency', '') AS cur, "
+        f"         SUM({_payload_num('amount')} - {_payload_num('win_amount')})"
+        "          AS loss "
+        "  FROM retention_events "
+        "  WHERE product_id = $1 AND player_id = $2 "
+        "    AND event_name = 'bet_settled' "
+        "    AND COALESCE((payload->>'bonus_money') IN ('true', 't', '1'), "
+        "        FALSE) = FALSE "
+        "    AND ts > now() - interval '24 hours' "
+        "  GROUP BY 1) AS per_currency",
         product_id, player_id,
     )
     return float(val or 0)
@@ -3605,10 +3642,15 @@ async def list_retention_v2_decisions(product_id: int, page: int = 1,
 async def recent_v2_decision_exists(product_id: int, player_id: str, *,
                                     hours: int,
                                     event_name: Optional[str] = None,
-                                    exclude_silence: bool = False) -> bool:
+                                    include_actions: Optional[
+                                        tuple[str, ...]] = None) -> bool:
     """True when a v2 decision for this player exists within the window —
-    the same-event cooldown (one reaction per event type per window) and the
-    loss-comfort dedup read this."""
+    the same-event cooldown (one reaction per event type per window) reads
+    this. `include_actions` restricts which ledger actions count (None = any):
+    the normal cooldown counts real reactions ('message', 'photo'); for
+    bet_settled the caller also counts 'silence', so one considered-and-
+    declined look latches the window instead of re-running a paid decision
+    call on every settled bet of a losing streak."""
     q = ("SELECT EXISTS(SELECT 1 FROM retention_v2_decisions "
          "WHERE product_id = $1 AND player_id = $2 "
          "  AND created_at > now() - make_interval(hours => $3)")
@@ -3616,8 +3658,9 @@ async def recent_v2_decision_exists(product_id: int, player_id: str, *,
     if event_name is not None:
         args.append(event_name)
         q += f" AND event_name = ${len(args)}"
-    if exclude_silence:
-        q += " AND action NOT IN ('silence', 'blocked', 'skipped')"
+    if include_actions is not None:
+        args.append(list(include_actions))
+        q += f" AND action = ANY(${len(args)})"
     q += ")"
     val = await _pool.fetchval(q, *args)
     return bool(val)

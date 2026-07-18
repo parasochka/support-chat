@@ -892,7 +892,11 @@ checklist lives in the admin — the **Retention → How it works** page.
   into its own service later: `telegram_transport.py` (HTTP to the Bot API + update parsing,
   holds no logic), `retention.py` (the orchestration: nonce exchange, subscription gate, entry
   menu, photo selection/gating, manager round-robin, progression), `chat_service.handle_retention_message`
-  (the AI turn: build prompt → model → strip sentinels → persist).
+  (the AI turn: build prompt → model → strip sentinels → persist), and **`delivery.py`** — the
+  outbound delivery seam for messages the service INITIATES (the event agent + the idle ladder
+  send only through its channel objects; a future email/push/on-site channel plugs into
+  `channel_for_product()` without touching the proactive pipelines). The dialogue reply path
+  (`retention._send_ai_text` burst delivery + typing) stays Telegram-specific by design.
 - **Channel = the existing `consumer` column** (`'web'` → `'telegram'`), NOT a new `channel`; the
   mode is derived from it (telegram ⇒ retention). Support is never duplicated in Telegram.
   **Telegram chats are logged APART from support chats**: the support admin surfaces
@@ -930,8 +934,12 @@ checklist lives in the admin — the **Retention → How it works** page.
   (his plans, his mood, a game), ask warmly how it went (the short-term memory the player
   actually FEELS). It rides ONLY on the first turn (never as
   message history — it is a new chat); durable state (stage progression, seen photos, manager,
-  language, profile) lives on `retention_users` and survives rollover by construction. Tests:
-  `tests/test_retention_lifecycle.py`.
+  language, profile) lives on `retention_users` and survives rollover by construction.
+  **Proactive pings get the same continuity** (`chat_service.generate_retention_ping` →
+  `prompts.build_retention_ping_messages(previous_history=…)`): a ping is usually the FIRST
+  message of a fresh session (the idle rollover just closed the old chat), and the ping task
+  demands concrete call-backs to what the player said — which needs something to call back to.
+  Tests: `tests/test_retention_lifecycle.py`.
 - **Retention prompt mode (`prompts.py`)** is a SECOND Layer-1 assembly — `SYSTEM_CORE_RETENTION`
   + retention static directives (`get_retention_system_core()`), byte-stable per **product × mode**
   (a test asserts it, mirroring the support core). It shares the persona but swaps support
@@ -1100,9 +1108,12 @@ checklist lives in the admin — the **Retention → How it works** page.
   `intro_photo_within_msgs` in the hot `retention` group (Retention → Settings → Parameters; env
   defaults `RETENTION_INTRO_PHOTO_*`). The view row lands in the same transaction as the send, so
   the rule can never refire after a delivery.
-- **Progression is backend-decided** (`retention.maybe_advance_stage`): the model only hints;
-  the actual `unlocked_stage` advance needs the engagement threshold (`stage_advance_msgs`) **and**
-  the tier ceiling (`max_stage_by_tier`) **and** spacing (`stage_advance_min_hours`). VIP tier is
+- **Progression is FULLY backend-decided** (`retention.maybe_advance_stage`, evaluated on every
+  meaningful message): the `unlocked_stage` advance needs the engagement threshold
+  (`stage_advance_msgs`) **and**
+  the tier ceiling (`max_stage_by_tier`) **and** spacing (`stage_advance_min_hours`). The model's
+  `[[STAGE_UP]]` sentinel is stripped defensively but has NO say in the gate (an earlier version
+  took it as a parameter and ignored it, which read as if the model decided). VIP tier is
   mapped from the free-text `vip_level` via the ordered `vip_tiers` list. All knobs are in the
   **`retention` settings group** (`settings.retention()`, in `SETTING_KEYS` — per-product tunable).
   **Progression is player-visible now, on two sides.** (1) A REAL advance is **celebrated**:
@@ -1249,7 +1260,15 @@ checklist lives in the admin — the **Retention → How it works** page.
   Structure; the hand-off's "support on the site" button lands here), `retention_enabled`. Webhook
   auth is two-layer: the
   routing token in the path + the deploy-wide `TELEGRAM_WEBHOOK_SECRET` in the
-  `X-Telegram-Bot-Api-Secret-Token` header (NOT in the URL).
+  `X-Telegram-Bot-Api-Secret-Token` header (NOT in the URL). **Update processing
+  is hardened in `retention.handle_update`** (in-memory, single-instance Phase-1
+  state like the rate-limit caches): a bounded per-product `update_id` dedup
+  (Telegram redelivers when it thinks the webhook failed — without it the
+  player got the whole turn, model reply included, twice) and a per-(product,
+  player) asyncio lock that serializes turns in arrival order (updates run as
+  BackgroundTasks, so two quick messages used to process concurrently — the
+  second model turn didn't see the first in history and the replies
+  interleaved). Tests: `tests/test_webhook_hardening.py`.
 - **Retention analytics** (`db.retention_overview` / `retention_funnel` /
   `retention_timeseries`): the overview separates LIFETIME player-base numbers (`users` block:
   total/subscribed/muted/unreachable/avg stage) from RANGE activity (`range` block: active/new
@@ -1267,8 +1286,18 @@ checklist lives in the admin — the **Retention → How it works** page.
   (the global dashboard's retention block), following the support dashboard's
   `resolve_scope_filter` convention.
 - **Admin**: the sidebar **Retention** section — one menu entry per surface, no
-  page-wide tab strip: **How it works** (the setup-guide checklist that replaced
-  `RETENTION_SETUP.md`; the section's landing page), **Knowledge base** — the
+  page-wide tab strip: **How it works** (the section's landing page, an in-page
+  2-tab strip: **Setup guide** — the checklist that replaced
+  `RETENTION_SETUP.md` — and the **Algorithm map**,
+  `admin/src/pages/RetentionAlgorithmMap.jsx` at `/retention?tab=algorithm` —
+  an interactive, hand-rolled block diagram of the WHOLE algorithm as four
+  flows (dialogue turn / casino data in / proactive agent / idle ladder):
+  clicking a block expands a plain-language explanation, the settings
+  governing exactly that step (deep-linked to their editors) and the
+  implementing module; the legend chips highlight all blocks of one kind
+  (gates / AI calls / sends / data). No diagram library on purpose — the
+  bundle stays code-split. The content mirrors the shipped pipeline, so a
+  pipeline change should update its block there), **Knowledge base** — the
   one-document text editor —, **Prompt** (Prompt preview + **Prompt variables**
   — the Telegram-persona editor, `GET/PUT /admin/retention/prompt-variables`;
   empty = the retention default — a SEPARATE prompt, no support inheritance,
@@ -1302,8 +1331,10 @@ The ONE proactive regime (the old v1 "ping matrix" — `retention_pings.py`, the
 identifiers** — settings keys, `/admin/retention/v2/*` endpoint paths, the
 `retention_v2_*` tables/admin-event types and the module name — for stored-data
 compatibility. Every user-visible surface says "agent"). Per-product switch:
-`retention.v2_enabled` (hot, ships **ON**) — off means NO proactive messages at
-all (the dialogue bot still answers). `retention.v2_dry_run` ships **ON**: the
+`retention.v2_enabled` (hot, ships **ON**) — off means no EVENT reactions (the
+dialogue bot still answers, and the idle ladder keeps running on its OWN
+`idle_pings_enabled` switch — the two toggles are independent, matching what
+the admin sees). `retention.v2_dry_run` ships **ON**: the
 agent decides and logs but sends nothing until the owner flips it. The worker
 starts from `main.py` lifespan under the `RETENTION_SCHEDULER_ENABLED` deploy
 switch and wakes every **`retention.worker_interval_sec`** (hot, global-layer,
@@ -1343,28 +1374,50 @@ drainers pick up the same event.
   state resolver reads: `deposit_confirmed`→`last_deposit_at`,
   `session_started/ended`→`last_login_at`, `bet_settled`→`last_played_at`
   (forward-only via GREATEST — out-of-order delivery never rewinds a
-  timestamp), plus profile-ish payload fields into the snapshot.
+  timestamp; a FUTURE partner timestamp is clamped to now at validation,
+  since forward-only would otherwise pin the activity fields ahead of
+  reality forever), plus profile-ish payload fields into the snapshot. The
+  24h loss window (`db.player_net_loss_24h`) sums bets **per currency** and
+  takes the worst bucket — a blind cross-currency sum compared apples with
+  the USD-denominated `v2_loss_high_usd` threshold.
 - **The pipeline** (`retention_v2._process_event`): event → deterministic
   **state resolver** (`resolve_player_state`: user_status / risk_state /
   lifecycle_stage + the 24h net-loss window from `bet_settled` payloads) →
   deterministic **guards** (`guard_check`: the per-player anti-annoyance state
   on `retention_users` — daily cap `ping_daily_cap` (default 3) / min gap
-  `ping_min_gap_hours` (default 2h, 0 = off) / quiet hours / `/stop` /
+  `ping_min_gap_hours` (default 2h, 0 = off) / `/stop` /
   unreachable / subscription — plus the per-product **daily AI budget**
   (`v2_daily_budget_usd`, read from
   the decision ledger), the **same-event cooldown** (one reaction per event
   TYPE per player per window — the hot `v2_same_event_cooldown_hours` knob,
-  default 5h, **0 = off**: the repeat-testing mode), and the **loss comfort
+  default 5h, **0 = off**: the repeat-testing mode; it counts REAL reactions
+  only, except `bet_settled`, where a SILENCE decision also latches the
+  window — above the loss threshold every settled bet is decision-worthy, so
+  without the latch a losing streak re-ran a paid decision call per bet), and
+  the **loss comfort
   window** (`v2_loss_comfort_hours` after a loss signal or `v2_loss_high_usd`
   net loss in 24h: photo removed from the permitted actions, a hard comfort
-  constraint injected)) → **agent decision** (one cheap strict-JSON call,
+  constraint injected)). **Quiet hours are NOT a guard**: the worker DEFERS
+  claiming during the window (`run_product_events`), so a night-time deposit
+  gets its warm note in the morning instead of being consumed as 'blocked' —
+  in a casino the night is peak deposit time; the admin «Process queue now»
+  button claims regardless. A **freshness cap** bounds the deferral
+  (`retention_v2._MAX_REACTION_AGE_HOURS`, 24h on the event's own ts): older
+  events — a days-long backlog after the agent was off — demote to state
+  food, never a retroactive congratulation. Then → **agent decision** (one cheap strict-JSON call,
   `prompts.build_retention_v2_decision_messages`; urgency tactics banned,
   silence explicitly first-class; `parse_decision` clamps — anything malformed
   or non-permitted degrades to silence, the guard verdict always wins) →
   **send** via the normal persona stack (`chat_service.generate_retention_ping`
   with `occasion=`/`comfort=`: the `_RETENTION_V2_TOUCH_TASK` event-reaction
-  wording + `_RETENTION_COMFORT_BLOCK`; delivery = `rtn_ping_header`, HTML +
-  plain fallback, 403 ⇒ unreachable — and `db.record_retention_ping` bumps the
+  wording + `_RETENTION_COMFORT_BLOCK`; delivery goes through the **outbound
+  delivery seam `delivery.py`** — the ONE place a proactive message leaves the
+  service, shared with the idle ladder: `channel_for_product()` returns the
+  product's channel (today `TelegramChannel`; a future email/push/on-site
+  channel plugs in there), whose `send_text`/`send_photo` own the
+  `rtn_ping_header` chrome, HTML + plain fallback, 403 ⇒ unreachable and the
+  photo caption-fallback tri-state — the senders never touch a transport
+  client directly — and `db.record_retention_ping` bumps the
   per-player counters the guards read). The touch task demands the message
   NAME the occasion in natural words (never a vague congratulation, still
   never amounts); `retention_v2.occasion_for` folds whitelisted non-money
@@ -1415,12 +1468,19 @@ drainers pick up the same event.
   `casino_inactivity` / `no_deposit`, per-rule action message|photo, English
   `intent` hint (ensure_english-guarded), VIP-tier filter, per-player
   `cooldown_days`, priority). Swept from the SAME worker loop (called at the
-  end of `run_product_events`, self-paced per product by the hot
+  end of `run_product_events` — on its OWN `idle_pings_enabled` switch, so it
+  runs even with the event agent off; self-paced per product by the hot
   `retention.idle_sweep_interval_sec` knob — default 600s), bounded by the
   SAME machinery: `db.eligible_ping_users` prefilters (subscribed / not muted
   / not unreachable / `ping_min_gap_hours` / `ping_daily_cap`), quiet hours,
   the daily AI budget, and **`v2_dry_run`** (a matched rule logs a
-  `trigger_kind='idle'` ledger row and sends nothing). A delivered idle ping
+  `trigger_kind='idle'` ledger row and sends nothing). **Anti-cascade**
+  (`_match_rule` + `db.idle_rule_thresholds_fired_since`): during ONE silence
+  stretch only a rung ABOVE the highest already-fired one may fire (per
+  trigger kind; the memory resets when the player writes again) — per-rule
+  cooldowns alone let a 60-days-quiet player receive the ENTIRE ladder in
+  reverse at min-gap pace. The same rung may re-fire after its own
+  `cooldown_days`. A delivered idle ping
   persists via `db.persist_ping_turn` with an `idle_reengagement: …`
   ping_context, lands in BOTH ledgers (`retention_pings` with `rule_id` — the
   per-rule cooldown reads it — and `retention_v2_decisions`), and the message
@@ -1434,7 +1494,10 @@ drainers pick up the same event.
   the legacy `/retention?tab=idle` link redirects — rules
   CRUD, enable switches, a «Run now» test sweep that skips quiet hours/pacing,
   and the send ledger) over `GET/POST/PUT/DELETE /admin/retention/idle/rules*`,
-  `GET /admin/retention/idle/ledger`, `POST /admin/retention/idle/run`.
+  `GET /admin/retention/idle/ledger`, `POST /admin/retention/idle/run` — the
+  run endpoint uses `run_product_idle_pings_locked` (the worker's advisory
+  lock), so the button never races the sweep into double sends (the same
+  guard-race class the v2 «Process queue now» button is locked against).
   Tests: `tests/test_naturalness.py`.
 - **The decision ledger (`retention_v2_decisions`)** is the audit trail: ONE
   row per decision whatever the outcome — state snapshot, guard verdict +

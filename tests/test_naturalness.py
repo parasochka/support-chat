@@ -128,7 +128,11 @@ async def test_match_rule_priority_tiers_and_cooldown(monkeypatch):
 
     async def _recently(rid, rule_id, cooldown_days):
         return (rid, rule_id) in fired
+
+    async def _thresholds(rid, since):
+        return {}
     monkeypatch.setattr(_db, "ping_rule_recently_fired", _recently)
+    monkeypatch.setattr(_db, "idle_rule_thresholds_fired_since", _thresholds)
 
     ru = {"id": 1, "vip_level": "Gold",
           "last_active_at": _iso_days_ago(15)}
@@ -145,6 +149,54 @@ async def test_match_rule_priority_tiers_and_cooldown(monkeypatch):
     # A rule inside its per-player cooldown is skipped.
     fired.append((1, 3))
     assert await retention_idle._match_rule(ru, rules) is None
+
+
+async def test_match_rule_never_cascades_down_the_ladder(monkeypatch):
+    """Anti-cascade: after the highest rung fired for this silence stretch,
+    LOWER rungs must not fire on the next sweeps — per-rule cooldowns alone
+    let a 60-days-quiet player receive the whole ladder in reverse (45, 30,
+    21, … at min-gap pace). The SAME rung stays re-fireable (its own cooldown
+    governs), and the memory resets with the player's next activity (the DB
+    helper is keyed on last_active_at)."""
+    import db as _db
+
+    async def _recently(rid, rule_id, cooldown_days):
+        return False  # per-rule cooldowns all clean — the cascade's precondition
+
+    fired_thresholds: dict[str, int] = {"bot_inactivity": 30}
+
+    async def _thresholds(rid, since):
+        return fired_thresholds
+    monkeypatch.setattr(_db, "ping_rule_recently_fired", _recently)
+    monkeypatch.setattr(_db, "idle_rule_thresholds_fired_since", _thresholds)
+
+    ru = {"id": 1, "vip_level": "", "last_active_at": _iso_days_ago(60)}
+    rules = [  # priority DESC — the deepest rung first
+        {"id": 10, "trigger_kind": "bot_inactivity", "inactivity_days": 30,
+         "vip_tiers": [], "cooldown_days": 45, "priority": 50},
+        {"id": 11, "trigger_kind": "bot_inactivity", "inactivity_days": 14,
+         "vip_tiers": [], "cooldown_days": 30, "priority": 30},
+        {"id": 12, "trigger_kind": "bot_inactivity", "inactivity_days": 7,
+         "vip_tiers": [], "cooldown_days": 14, "priority": 20},
+    ]
+    # The 30-day rung already fired this stretch: 14/7 are suppressed, the
+    # 30-day rung itself may re-fire (its own cooldown said it's clean).
+    matched = await retention_idle._match_rule(ru, rules)
+    assert matched is not None and matched[0]["id"] == 10
+
+    # Another trigger kind is judged on its own ladder, not this one's.
+    rules_other = [{"id": 13, "trigger_kind": "no_deposit",
+                    "inactivity_days": 7, "vip_tiers": [],
+                    "cooldown_days": 14, "priority": 10}]
+    ru2 = dict(ru, last_deposit_at=_iso_days_ago(20))
+    matched = await retention_idle._match_rule(ru2, rules_other)
+    assert matched is not None and matched[0]["id"] == 13
+
+    # Player wrote again (helper returns nothing for the new stretch) — the
+    # whole ladder is eligible from the bottom again.
+    fired_thresholds.clear()
+    matched = await retention_idle._match_rule(ru, rules)
+    assert matched is not None and matched[0]["id"] == 10
 
 
 def test_starter_idle_rules_are_brand_neutral_english():

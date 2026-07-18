@@ -1140,7 +1140,10 @@ async def run_idle_pings_now(product_id: int,
         raise HTTPException(status_code=409,
                             detail="Retention is not enabled for this product.")
     tenancy.set_current_product(product_id)
-    stats = await retention_idle.run_product_idle_pings(
+    # Locked variant: shares the worker's advisory lock so the button and the
+    # sweep never evaluate the same player's send-frequency guards in parallel
+    # (the same race the v2 «Process queue now» button is locked against).
+    stats = await retention_idle.run_product_idle_pings_locked(
         product, settings_mod.retention(), force=True)
     await db.log_admin_event(None, "retention_ping_run_manual",
                              {"stats": stats, "by": admin.get("email")},

@@ -1333,6 +1333,160 @@ const RU = {
   'How often the background worker drains the event queue — ONE loop serves every product, so this is a deploy-wide (global) setting. Applies live on the next tick (no redeploy).':
     'Как часто фоновый воркер разбирает очередь событий — ОДИН цикл обслуживает все продукты, поэтому это общесистемная (глобальная) настройка. Применяется сразу со следующего тика (без редеплоя).',
 
+  // ----- retention algorithm map (How it works → Algorithm map) -----
+  'Setup guide': 'Настройка',
+  'Algorithm map': 'Схема алгоритма',
+  'webhook': 'вебхук',
+  'Input / trigger': 'Вход / триггер',
+  'Gate / filter': 'Гейт / фильтр',
+  'AI call (costs money)': 'Вызов ИИ (стоит денег)',
+  'Send / action': 'Отправка / действие',
+  'Data / ledger': 'Данные / журнал',
+  'Settings for this step:': 'Настройки этого шага:',
+  'The whole retention algorithm as four flows. **Click any block** for a plain-language explanation, the settings that govern exactly that step, and the module implementing it. Click a legend chip to highlight all blocks of that kind.':
+    'Весь retention-алгоритм в виде четырёх потоков. **Нажмите на любой блок** — появится объяснение простым языком, настройки, управляющие именно этим шагом, и модуль, который его реализует. Нажмите на чип легенды, чтобы подсветить все блоки этого типа.',
+  'Deeper operator material: the [Proactive agent guide](#/retention-agent) (testing checklist, guard-reason table with your current values, cost model) and the numeric knobs on [Retention → Settings → Parameters](#/retention-settings?tab=params).':
+    'Более глубокие материалы для оператора: [гайд Проактивного агента](#/retention-agent) (чеклист тестирования, таблица причин блокировок с вашими текущими значениями, модель затрат) и числовые настройки на [Retention → Настройки → Параметры](#/retention-settings?tab=params).',
+
+  '1 · Player dialogue — a message in Telegram': '1 · Диалог с игроком — сообщение в Telegram',
+  'What happens on every message the player writes to the bot.': 'Что происходит на каждом сообщении, которое игрок пишет боту.',
+  '2 · Casino data in — what feeds the algorithm': '2 · Данные казино — что питает алгоритм',
+  'Every piece of casino data enters through one seam (player_sync).': 'Все данные казино входят через один шов (player_sync).',
+  '3 · Proactive agent — an event becomes a touch': '3 · Проактивный агент — событие становится касанием',
+  'The one place the bot writes FIRST. Deterministic guards decide whether contact is allowed; the AI only picks among what they permit.':
+    'Единственное место, где бот пишет ПЕРВЫМ. Детерминированные гарды решают, разрешён ли контакт вообще; ИИ лишь выбирает из того, что они позволили.',
+  '4 · Idle re-engagement — silence becomes a ping': '4 · Возврат неактивных — тишина становится пингом',
+  'A quiet player produces no events, so the rules ladder writes first.': 'Молчащий игрок не создаёт событий, поэтому первой пишет лестница правил.',
+
+  'Telegram update': 'Апдейт Telegram',
+  "Telegram delivers the player's message to the product's webhook (two-layer auth: routing token in the path + secret header). Duplicate deliveries of the same update are dropped, and one player's turns are processed strictly one at a time, in arrival order — two quick messages can never produce interleaved replies.":
+    'Telegram доставляет сообщение игрока на вебхук продукта (двухслойная авторизация: маршрутный токен в пути + секретный заголовок). Повторные доставки одного апдейта отбрасываются, а ходы одного игрока обрабатываются строго по одному, в порядке прихода — два быстрых сообщения не могут дать перемешанные ответы.',
+  'Anti-spam gates': 'Антиспам-гейты',
+  'junk never reaches the model': 'мусор никогда не доходит до модели',
+  'Per-player rate limit (the first blocked message gets a one-time in-persona "give me a second" notice), low-content filter (one-character mashing gets a canned nudge) and the injection scan (a jailbreak attempt gets an in-persona deflection). Overlong input is truncated, not rejected — chats are human.':
+    'Рейт-лимит на игрока (первое заблокированное сообщение получает разовый ответ в персоне «дай мне секунду»), фильтр пустого контента (долбёжка одним символом получает заготовленную реплику) и сканер инъекций (попытка джейлбрейка получает уклончивый ответ в персоне). Слишком длинный ввод обрезается, а не отклоняется — чаты ведут живые люди.',
+  'Telegram rate limit / low-content / injection': 'Telegram рейт-лимит / пустой контент / инъекции',
+  'Deeplink entry + subscription gate': 'Вход по диплинку + гейт подписки',
+  'no deeplink → refused; unsubscribed → subscribe prompt': 'без диплинка → отказ; не подписан → предложение подписаться',
+  'Only players who entered via a one-time deeplink from the site are served (no organic entry — the bot always knows WHO it talks to). Every turn re-checks the channel subscription (positive checks are cached briefly); an unsubscribed player gets the subscribe prompt with a re-check button instead of a reply.':
+    'Обслуживаются только игроки, вошедшие по одноразовому диплинку с сайта (органического входа нет — бот всегда знает, С КЕМ говорит). Каждый ход заново проверяется подписка на канал (положительные проверки ненадолго кешируются); неподписанный игрок вместо ответа получает предложение подписаться с кнопкой перепроверки.',
+  'Subscription cache TTL': 'TTL кеша подписки',
+  'Channel id + URL (Telegram config)': 'ID и URL канала (Telegram-конфиг)',
+  'Profile refresh (lazy pull)': 'Обновление профиля (ленивый pull)',
+  'If the profile snapshot is stale and the casino exposes a Player API, a fresh profile (balance, VIP, activity timestamps) is pulled before the turn — best-effort and SSRF-guarded, a failure never drops the message.':
+    'Если снапшот профиля устарел и у казино есть Player API, перед ходом подтягивается свежий профиль (баланс, VIP, таймстемпы активности) — best-effort и с SSRF-защитой; сбой никогда не роняет сообщение.',
+  'Profile pull TTL': 'TTL профильного pull',
+  'Photo candidate selection': 'Отбор фото-кандидатов',
+  'empty set → text-only turn': 'пустой набор → ход только текстом',
+  "The allowed photo set for THIS turn: unseen photos within the player's VIP tier × unlocked closeness stage (+1 teaser step), bounded by the daily photo cap and the proactive cooldown. The cooldown is bypassed when the player explicitly asks for a photo — and for the introduction photo a brand-new player receives in his first messages.":
+    'Разрешённый набор фото для ЭТОГО хода: неувиденные фото в пределах VIP-уровня игрока × открытой стадии близости (+1 шаг-тизер), ограниченный дневным капом фото и проактивным кулдауном. Кулдаун обходится, когда игрок сам просит фото — и для фото-знакомства, которое новый игрок получает в первых сообщениях.',
+  'Daily photo cap / proactive cooldown / intro photo': 'Дневной кап фото / проактивный кулдаун / фото-знакомство',
+  'Photo library (stages, VIP tiers)': 'Фото-библиотека (стадии, VIP-уровни)',
+  "Nika's reply (model turn)": 'Ответ Ники (ход модели)',
+  "One model call assembles: the retention persona core, the product's retention KB, the player profile, appearance grounding (the persona's looks come from the real photo library), the REAL progression state, the current player-local time and — every N-th reply, with drift — the one permitted play invitation. The reply may carry control sentinels: photo, site-link button, hand-off, language, stage-up.":
+    'Один вызов модели собирает: ядро retention-персоны, retention-базу знаний продукта, профиль игрока, заземление внешности (облик персоны берётся из реальной фото-библиотеки), РЕАЛЬНОЕ состояние прогрессии, текущее локальное время игрока и — каждый N-й ответ, с дрейфом — одно разрешённое приглашение поиграть. Ответ может нести управляющие сентинелы: фото, кнопка-ссылка на сайт, хендофф, язык, повышение стадии.',
+  'Retention KB (one document)': 'Retention-база знаний (один документ)',
+  'Persona (prompt variables)': 'Персона (переменные промпта)',
+  'Play-invitation cadence': 'Частота приглашений поиграть',
+  'Model / reasoning (System → Settings)': 'Модель / reasoning (Система → Настройки)',
+  'Sentinel validation + routing': 'Валидация сентинелов + маршрутизация',
+  'the model proposes — the backend decides': 'модель предлагает — бэкенд решает',
+  'Everything the model asked for is re-validated: a photo id must be in the offered candidate set, a link button must EXACTLY match a Site map page (an invented URL never becomes a button), [[HANDOFF]] replaces the reply with the manager / site-support choice card, [[LANG:xx]] drifts the sticky conversation language.':
+    'Всё, что запросила модель, перепроверяется: id фото должен входить в предложенный набор кандидатов, кнопка-ссылка должна ТОЧНО совпадать со страницей Карты сайта (выдуманный URL никогда не станет кнопкой), [[HANDOFF]] заменяет ответ карточкой выбора «менеджер / поддержка на сайте», [[LANG:xx]] сдвигает липкий язык беседы.',
+  'Site map (allowed link targets)': 'Карта сайта (разрешённые ссылки)',
+  'Managers (round-robin)': 'Менеджеры (round-robin)',
+  'Hand-off texts (rtn_* keys)': 'Тексты хендоффа (ключи rtn_*)',
+  'Delivery to the player': 'Доставка игроку',
+  'A typing indicator runs while the model thinks; a reply with blank lines goes out as a burst of short consecutive messages (human rhythm); photos send via the cached Telegram file_id (uploaded once, then free). Formatting is a light HTML subset with a plain-text fallback.':
+    'Пока модель думает, идёт индикатор «печатает…»; ответ с пустыми строками уходит серией коротких последовательных сообщений (человеческий ритм); фото отправляются через закешированный Telegram file_id (загрузка один раз, дальше бесплатно). Форматирование — лёгкое подмножество HTML с фолбэком в plain text.',
+  'Max messages per burst': 'Макс. сообщений в серии',
+  'Progression gate': 'Гейт прогрессии',
+  'fully backend-decided': 'решает только бэкенд',
+  'On every meaningful message the backend checks: enough engagement for the next stage, under the VIP-tier ceiling, enough hours since the last advance. The model has no say. A real advance is celebrated with a follow-up persona note, so the player knows he unlocked more daring photos.':
+    'На каждом содержательном сообщении бэкенд проверяет: достаточно ли вовлечённости для следующей стадии, не превышен ли потолок VIP-уровня, прошло ли достаточно часов с прошлого повышения. Модель голоса не имеет. Реальное повышение отмечается follow-up-сообщением персоны, чтобы игрок знал, что открыл более смелые фото.',
+  'Stage thresholds / tier ceilings / spacing / stage-up note': 'Пороги стадий / потолки уровней / интервал / сообщение о повышении',
+  'Transcript + session lifecycle': 'Транскрипт + жизненный цикл сессии',
+  'The turn persists atomically (both messages + the AI cost log + counters). A chat idle past the threshold closes lazily; the next message starts a FRESH session that carries a short continuity tail from the previous one — Nika greets back like someone who remembers.':
+    'Ход сохраняется атомарно (оба сообщения + журнал затрат ИИ + счётчики). Чат, простоявший дольше порога, лениво закрывается; следующее сообщение начинает НОВУЮ сессию с коротким хвостом преемственности из предыдущей — Ника встречает как тот, кто помнит.',
+  'Session idle timeout / continuity tail': 'Таймаут простоя сессии / хвост преемственности',
+  'Conversations (transcripts)': 'Диалоги (транскрипты)',
+
+  'Partner events': 'События партнёра',
+  '22 canonical event names (deposits, bets, bonuses, KYC, levels…), idempotent by event id (a retried webhook never duplicates), batches up to 500. A future timestamp from a broken partner clock is clamped to now. Events land in the append-only event log.':
+    '22 канонических имени событий (депозиты, ставки, бонусы, KYC, уровни…), идемпотентность по id события (повтор вебхука никогда не дублирует), батчи до 500. Таймстемп из будущего от сломанных часов партнёра прижимается к «сейчас». События ложатся в append-only журнал.',
+  'Profile push / pull / handshake': 'Профиль: push / pull / хендшейк',
+  'Three ways the profile snapshot stays fresh: the casino CRM pushes partial updates, the bot lazily pulls from the Player API before a turn, and the deeplink handshake seeds the snapshot on entry. A product with none of these simply lives on the handshake snapshot — degrades, never breaks.':
+    'Три способа держать снапшот профиля свежим: CRM казино пушит частичные обновления, бот лениво подтягивает Player API перед ходом, а хендшейк диплинка заполняет снапшот при входе. Продукт без всего этого просто живёт на хендшейк-снапшоте — деградирует, но не ломается.',
+  'Activity bridge': 'Мост активности',
+  'Events bump the activity timestamps the state resolver and the idle ladder read: deposit → last deposit, session → last login, bet → last played. Forward-only — out-of-order delivery never rewinds a timestamp.':
+    'События двигают таймстемпы активности, которые читают резолвер состояния и idle-лестница: депозит → последний депозит, сессия → последний вход, ставка → последняя игра. Только вперёд — доставка не по порядку никогда не откатывает таймстемп.',
+  'Event log + 24h loss window': 'Журнал событий + окно проигрыша 24ч',
+  'The event log feeds the deterministic player state (active / at-risk / dormant, lifecycle stage) and the 24-hour net-loss window — summed per currency, worst bucket — that drives the comfort mode and the bet_settled trigger.':
+    'Журнал событий питает детерминированное состояние игрока (активен / в зоне риска / уснул, этап жизненного цикла) и 24-часовое окно чистого проигрыша — суммируется по валютам, берётся худшая корзина — которое управляет комфорт-режимом и триггером bet_settled.',
+  'High-loss threshold': 'Порог крупного проигрыша',
+
+  'Worker tick': 'Тик воркера',
+  'A background worker sweeps every product on a hot cadence under an advisory lock (several instances never double-process). The deploy switch RETENTION_SCHEDULER_ENABLED must be on; the agent switch and dry-run mode are per product. Dry-run ships ON: the agent decides and logs but sends nothing until you flip it.':
+    'Фоновый воркер обходит все продукты с горячей периодичностью под advisory-локом (несколько инстансов никогда не обработают дважды). Деплой-переключатель RETENTION_SCHEDULER_ENABLED должен быть включён; переключатель агента и dry-run — на продукт. Dry-run включён из коробки: агент решает и логирует, но ничего не отправляет, пока вы его не выключите.',
+  'Worker interval / agent on / dry-run': 'Интервал воркера / агент вкл / dry-run',
+  'Agent status header': 'Статус агента (шапка)',
+  'Quiet hours?': 'Тихие часы?',
+  'night event → deferred till morning, not lost': 'ночное событие → отложено до утра, не потеряно',
+  'During quiet hours the worker does not pick events up AT ALL — they stay queued and get their reaction in the morning (a night-time deposit still earns its thank-you). The admin «Process queue now» button processes regardless: you asked, it answers.':
+    'В тихие часы воркер ВООБЩЕ не разбирает события — они остаются в очереди и получают реакцию утром (ночной депозит всё равно получает своё «спасибо»). Кнопка «Обработать очередь сейчас» обрабатывает в любом случае: вы попросили — он отвечает.',
+  'Quiet hours start / end / UTC offset': 'Тихие часы: начало / конец / смещение UTC',
+  'Atomic claim + humanizing delay': 'Атомарный забор + очеловечивающая задержка',
+  'events older than 24h → state food only': 'события старше 24ч → только пища для состояния',
+  'Events are claimed atomically — the worker, the admin button and a second instance can run together and an event is still processed exactly once. Each event first waits a per-event random delay (an instant thank-you three seconds after a deposit reads as surveillance). Events whose occasion is older than 24 hours are demoted to state food — no retroactive congratulations.':
+    'События забираются атомарно — воркер, админ-кнопка и второй инстанс могут работать одновременно, и событие всё равно обработается ровно один раз. Каждое событие сначала выжидает случайную задержку (мгновенное «спасибо» через три секунды после депозита читается как слежка). События, чей повод старше 24 часов, понижаются до пищи для состояния — никаких запоздалых поздравлений.',
+  'Send delay min / max': 'Задержка отправки: мин / макс',
+  'Decision-worthy?': 'Достойно решения?',
+  'state food → marked processed silently': 'пища для состояния → тихо помечается обработанным',
+  'Only the decision events wake the agent (deposit confirmed/failed, withdrawal, level/class up, KYC approved, bonus completed/expired). Everything else only feeds the player state. bet_settled is special: it wakes the agent only when the 24h loss window crosses the high-loss threshold — and then the reaction is comfort, never celebration.':
+    'Агента будят только события-решения (депозит подтверждён/не прошёл, вывод, новый уровень/класс, KYC одобрен, бонус завершён/истёк). Всё остальное лишь питает состояние игрока. bet_settled — особый случай: он будит агента только когда 24-часовое окно проигрыша пересекает порог — и тогда реакция всегда утешение, никогда не поздравление.',
+  'Guards — the hard rails': 'Гарды — жёсткие рельсы',
+  'every block is ledgered with its reason': 'каждая блокировка ложится в журнал с причиной',
+  'Deterministic and never overridable by the AI: subscribed, not /stop-muted, bot not blocked, min gap since the last touch, daily touch cap, daily AI budget, same-event cooldown (one reaction per event type per window; for bet_settled even a "stay silent" verdict latches it, so a losing streak doesn\'t re-run paid decisions per bet), and the loss comfort window — after real losses the photo action is removed and a hard empathy constraint is injected.':
+    'Детерминированные, ИИ их не переопределяет: подписка, не заглушен /stop, бот не заблокирован, мин. интервал с последнего касания, дневной кап касаний, дневной бюджет ИИ, кулдаун одинаковых событий (одна реакция на тип события за окно; для bet_settled даже вердикт «молчать» взводит его, чтобы проигрышная серия не гоняла платные решения на каждую ставку) и комфортное окно после проигрыша — после реальных потерь действие «фото» убирается и вводится жёсткое требование эмпатии.',
+  'Daily cap / min gap / budget / cooldown / comfort window': 'Дневной кап / мин. интервал / бюджет / кулдаун / комфортное окно',
+  'Agent decision': 'Решение агента',
+  'silence is first-class': 'молчание — полноправный выбор',
+  'One cheap strict-JSON model call sees the player state, the triggering event, recent events and the conversation tail — and picks among the PERMITTED actions only: silence (very often the right answer), message, or photo, plus tone and a one-line intent. Anything malformed degrades to silence. In dry-run the decision is logged and nothing is sent.':
+    'Один дешёвый strict-JSON вызов модели видит состояние игрока, событие-триггер, недавние события и хвост беседы — и выбирает только из РАЗРЕШЁННЫХ действий: молчание (очень часто это правильный ответ), сообщение или фото, плюс тон и интент одной строкой. Всё некорректное деградирует в молчание. В dry-run решение логируется, и ничего не отправляется.',
+  'Decisions ledger': 'Журнал решений',
+  'Persona writes the message': 'Персона пишет сообщение',
+  'The normal persona stack writes the actual text: the occasion named in natural words (never a vague congratulation, never amounts in the model text), comfort wording after losses, the continuity tail of the previous chat, an optional photo from the gated candidates.':
+    'Обычный стек персоны пишет сам текст: повод назван естественными словами (никогда не размытое поздравление и никаких сумм в тексте модели), утешающие формулировки после проигрышей, хвост преемственности прошлого чата, опциональное фото из отгейченных кандидатов.',
+  'Header + occasion phrases (rtn_* keys)': 'Шапка + фразы повода (ключи rtn_*)',
+  'Delivery channel': 'Канал доставки',
+  'The message leaves through the shared delivery seam (one code path for the agent AND the idle ladder): persona header line, HTML with a plain fallback, a blocked bot flips the player to unreachable, optionally silent (no notification sound).':
+    'Сообщение уходит через общий шов доставки (один код и для агента, И для idle-лестницы): строка-шапка персоны, HTML с фолбэком в plain text, заблокированный бот помечает игрока недостижимым, опционально тихая доставка (без звука уведомления).',
+  'Silent notifications': 'Тихие уведомления',
+  'Ledger + per-player counters': 'Журнал + счётчики игрока',
+  'ONE ledger row per decision whatever the outcome — state snapshot, guard verdict with reasons, the agent\'s choice, cost, delivery — so "why did/didn\'t the bot write?" is always answerable. Sending also bumps the per-player counters the guards read next time.':
+    'ОДНА строка журнала на решение при любом исходе — снапшот состояния, вердикт гардов с причинами, выбор агента, стоимость, доставка — так что «почему бот написал/не написал?» всегда имеет ответ. Отправка также двигает счётчики игрока, которые гарды прочитают в следующий раз.',
+
+  'Idle sweep': 'Idle-проход',
+  'Runs from the same worker on its own pacing and its OWN switch — it keeps working even when the event agent is off. Quiet hours skip the sweep; dry-run logs what WOULD have gone out and sends nothing. The «Run now» button runs one bounded sweep immediately (under the same lock as the worker).':
+    'Работает из того же воркера со своей периодичностью и СВОИМ переключателем — продолжает работать, даже когда событийный агент выключен. Тихие часы пропускают проход; dry-run логирует, что БЫ ушло, и ничего не отправляет. Кнопка «Запустить сейчас» немедленно выполняет один ограниченный проход (под тем же локом, что и воркер).',
+  'Idle pings on / sweep interval': 'Idle-пинги вкл / интервал прохода',
+  'Idle rules editor': 'Редактор idle-правил',
+  'Player eligibility': 'Отбор игроков',
+  'Prefilter before any rule is looked at: subscribed, not /stop-muted, bot not blocked, past the min gap, under the daily touch cap — most-idle players first.':
+    'Предфильтр до просмотра правил: подписан, не заглушен /stop, бот не заблокирован, прошёл мин. интервал, не выбран дневной кап касаний — сначала самые давно молчащие.',
+  'Min gap / daily cap': 'Мин. интервал / дневной кап',
+  'Rule ladder (anti-cascade)': 'Лестница правил (антикаскад)',
+  'one rung per silence stretch, not the whole ladder': 'одна ступень за период тишины, а не вся лестница',
+  'The highest-priority matching rule fires: trigger kind (quiet in the bot / not playing / no deposit), N days of silence, VIP filter, per-rule cooldown. Anti-cascade: within ONE silence stretch only a rung ABOVE the last fired one may fire — a 60-days-quiet player gets one message, not the 45/30/21-day rungs cascading after it. The memory resets when the player writes again.':
+    'Срабатывает подходящее правило с наивысшим приоритетом: тип триггера (молчит в боте / не играет / нет депозита), N дней тишины, VIP-фильтр, кулдаун правила. Антикаскад: в рамках ОДНОГО периода тишины может сработать только ступень ВЫШЕ последней сработавшей — игрок, молчащий 60 дней, получает одно сообщение, а не каскад ступеней 45/30/21 следом. Память сбрасывается, когда игрок снова пишет.',
+  'Generate + deliver': 'Генерация + доставка',
+  "The same persona stack and the same delivery channel as an event touch: the rule's intent steers the message, a photo-action rule attaches a photo when the photo gates allow (otherwise it gracefully sends text only).":
+    'Тот же стек персоны и тот же канал доставки, что у событийного касания: интент правила направляет сообщение, правило с действием «фото» прикладывает фото, когда позволяют фото-гейты (иначе аккуратно уходит только текст).',
+  'Both ledgers': 'Оба журнала',
+  'Every fired rule lands in the ping ledger (feeds the per-rule cooldown) AND the decisions ledger, and bumps the same per-player counters the guards read — caps and gaps hold across the agent and the ladder together.':
+    'Каждое сработавшее правило ложится в журнал пингов (питает кулдаун правила) И в журнал решений, и двигает те же счётчики игрока, которые читают гарды — капы и интервалы действуют на агента и лестницу вместе.',
+  'Idle send ledger': 'Журнал idle-отправок',
+
   // ----- scope switcher -----
   'All products': 'Все продукты',
   'all products': 'все продукты',

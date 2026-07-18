@@ -21,6 +21,7 @@ import secrets
 import time
 import unicodedata
 import uuid
+from collections import OrderedDict
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
@@ -353,11 +354,15 @@ def progression_context(ru: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def maybe_advance_stage(ru: dict[str, Any], stage_up_hint: bool) -> Optional[int]:
+async def maybe_advance_stage(ru: dict[str, Any]) -> Optional[int]:
     """Apply the backend stage-advance gate. Returns the new stage or None.
 
-    The model only HINTS; the backend decides on threshold + tier ceiling +
-    spacing. `ru` must be the freshly-bumped row.
+    Progression is FULLY backend-decided: engagement threshold + tier ceiling
+    + spacing, evaluated on every meaningful message. The model's [[STAGE_UP]]
+    sentinel is stripped defensively (chat_service) but deliberately does NOT
+    gate the advance — an earlier version accepted it as a parameter and then
+    ignored it, which read as if the model had a say. `ru` must be the
+    freshly-bumped row.
     """
     cfg = settings.retention()
     unlocked = int(ru.get("unlocked_stage") or 1)
@@ -570,9 +575,12 @@ async def check_subscription(client: TelegramClient, product: dict[str, Any],
 
 
 def reset_state() -> None:
-    """Test helper: clear the in-memory subscription + rate-notice caches."""
+    """Test helper: clear the in-memory subscription + rate-notice caches,
+    the webhook update dedup and the per-chat locks."""
     _sub_cache.clear()
     _rl_notified.clear()
+    _seen_updates.clear()
+    _chat_locks.clear()
 
 
 def _persona_name() -> str:
@@ -767,9 +775,52 @@ async def _route_to_manager(client: TelegramClient, product: dict[str, Any],
 # ---------------------------------------------------------------------------
 # The webhook entry point
 # ---------------------------------------------------------------------------
+# Update dedup + per-chat serialization (in-memory, like the rate-limit and
+# subscription caches — single-instance Phase-1 state):
+#   - Telegram redelivers an update when it believes the webhook did not
+#     handle it (a restart mid-processing, a slow 200); without dedup the
+#     player got the whole turn — including the model reply — twice.
+#   - Updates run as BackgroundTasks, so two quick messages from one player
+#     used to process CONCURRENTLY: the second model turn didn't see the
+#     first in history, replies interleaved, and _ensure_session raced.
+#     A per-(product, player) lock serializes them in arrival order.
+_SEEN_UPDATES_MAX = 512
+_seen_updates: dict[int, "OrderedDict[int, None]"] = {}
+_CHAT_LOCKS_PRUNE_THRESHOLD = 10_000
+_chat_locks: dict[tuple[int, int], asyncio.Lock] = {}
+
+
+def _is_duplicate_update(product_id: int, update: dict[str, Any]) -> bool:
+    uid = update.get("update_id")
+    if not isinstance(uid, int):
+        return False
+    seen = _seen_updates.setdefault(int(product_id), OrderedDict())
+    if uid in seen:
+        return True
+    seen[uid] = None
+    while len(seen) > _SEEN_UPDATES_MAX:
+        seen.popitem(last=False)
+    return False
+
+
+def _chat_lock(product_id: int, tg_user_id: int) -> asyncio.Lock:
+    key = (int(product_id), int(tg_user_id))
+    lock = _chat_locks.get(key)
+    if lock is None:
+        if len(_chat_locks) > _CHAT_LOCKS_PRUNE_THRESHOLD:
+            for k in [k for k, lk in _chat_locks.items() if not lk.locked()]:
+                _chat_locks.pop(k, None)
+        lock = _chat_locks[key] = asyncio.Lock()
+    return lock
+
+
 async def handle_update(product: dict[str, Any], update: dict[str, Any]) -> None:
     """Process one Telegram update for a product. Never raises into the webhook."""
     tenancy.set_current_product(product["id"])
+    if _is_duplicate_update(product["id"], update):
+        log.info("retention_duplicate_update product_id=%s update_id=%s",
+                 product["id"], update.get("update_id"))
+        return
     token = await db.get_product_telegram_token(product["id"])
     if not token:
         log.warning("retention_no_bot_token product_id=%s", product["id"])
@@ -779,10 +830,11 @@ async def handle_update(product: dict[str, Any], update: dict[str, Any]) -> None
     if pu.tg_user_id is None or pu.chat_id is None:
         return
     try:
-        if pu.kind == "callback":
-            await _handle_callback(client, product, pu)
-        elif pu.kind == "message":
-            await _handle_message(client, product, pu)
+        async with _chat_lock(product["id"], pu.tg_user_id):
+            if pu.kind == "callback":
+                await _handle_callback(client, product, pu)
+            elif pu.kind == "message":
+                await _handle_message(client, product, pu)
     except Exception:  # noqa: BLE001 - a handler error must not 500 the webhook
         log.exception("retention_handle_update_failed product_id=%s", product["id"])
 
@@ -1097,7 +1149,7 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
     # celebrated with a follow-up persona note (settings-gated) so the player
     # KNOWS he leveled up and what keeps the progression going.
     if meaningful:
-        new_stage = await maybe_advance_stage(ru, reply.stage_up_hint)
+        new_stage = await maybe_advance_stage(ru)
         if new_stage is not None and settings.retention()["stage_up_notify"]:
             await _send_stage_up_note(client, product, ru, session,
                                       pu.chat_id, reply.lang, new_stage)

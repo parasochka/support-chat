@@ -254,8 +254,9 @@ async def test_guard_same_event_cooldown_knob(monkeypatch):
     seen: dict = {}
 
     async def _recent(product_id, player_id, *, hours, event_name=None,
-                      exclude_silence=False):
+                      include_actions=None):
         seen["hours"] = hours
+        seen["include"] = include_actions
         return True
 
     _patch_guard_env(monkeypatch, recent=True)
@@ -266,16 +267,39 @@ async def test_guard_same_event_cooldown_knob(monkeypatch):
         1, _ru(), _evt(), st, _cfg(v2_same_event_cooldown_hours=0))
     assert "same_event_cooldown" not in g["reasons"] and "hours" not in seen
 
-    # A custom window is passed through.
+    # A custom window is passed through; ordinary events count only real
+    # reactions (a silence on one deposit must not mute the next deposit).
     g = await retention_v2.guard_check(
         1, _ru(), _evt(), st, _cfg(v2_same_event_cooldown_hours=4))
     assert "same_event_cooldown" in g["reasons"] and seen["hours"] == 4
+    assert set(seen["include"]) == {"message", "photo"}
+
+    # bet_settled counts SILENCE too: above the loss threshold every settled
+    # bet is decision-worthy, so without the latch the agent re-ran a paid
+    # decision call per bet of a losing streak.
+    g = await retention_v2.guard_check(
+        1, _ru(), _evt(event_name="bet_settled"), st,
+        _cfg(v2_same_event_cooldown_hours=4))
+    assert "same_event_cooldown" in g["reasons"]
+    assert "silence" in seen["include"]
 
     # A cfg without the key (older override sets) falls back to the default.
     cfg = _cfg()
     del cfg["v2_same_event_cooldown_hours"]
     g = await retention_v2.guard_check(1, _ru(), _evt(), st, cfg)
     assert seen["hours"] == retention_v2._SAME_EVENT_COOLDOWN_HOURS
+
+
+async def test_guard_has_no_quiet_hours_reason(monkeypatch):
+    """Quiet hours are NOT a guard block anymore — the worker defers CLAIMING
+    during the window (run_product_events), so a night-time deposit gets its
+    reaction in the morning instead of being consumed as 'blocked' forever."""
+    _patch_guard_env(monkeypatch)
+    monkeypatch.setattr(retention_v2, "_in_quiet_hours", lambda cfg: True)
+    st = {"net_loss_24h_usd": 0}
+    g = await retention_v2.guard_check(1, _ru(), _evt(), st, _cfg())
+    assert g["allow"] is True
+    assert "quiet_hours" not in g["reasons"]
 
 
 async def test_guard_comfort_window_blocks_photo_and_constrains(monkeypatch):
@@ -371,6 +395,25 @@ def test_validate_event_tg_target_rejects(bad):
             "player_id": "p1", "tg_user_id": bad})
 
 
+def test_validate_event_clamps_future_timestamp():
+    """A future partner timestamp is clamped to now: the activity bridge is
+    forward-only (GREATEST), so an un-clamped future ts would pin
+    last_deposit_at ahead of reality FOREVER — the player would look
+    permanently active and the idle ladder would never fire."""
+    now = _dt.datetime.now(_dt.timezone.utc)
+    v = player_sync._validate_event({
+        "event_id": "e1", "event_name": "deposit_confirmed",
+        "player_id": "p1",
+        "timestamp": (now + _dt.timedelta(days=30)).isoformat()})
+    assert v["ts"] <= _dt.datetime.now(_dt.timezone.utc)
+    # A sane past timestamp passes through unchanged.
+    past = now - _dt.timedelta(hours=3)
+    v = player_sync._validate_event({
+        "event_id": "e2", "event_name": "deposit_confirmed",
+        "player_id": "p1", "timestamp": past.isoformat()})
+    assert v["ts"] == past
+
+
 async def test_process_event_explicit_tg_target_pins_recipient(monkeypatch):
     _capture_ledger(monkeypatch)
     _patch_guard_env(monkeypatch)
@@ -440,6 +483,36 @@ async def test_process_event_log_only_is_silent(monkeypatch):
     out = await retention_v2._process_event(
         {"id": 1}, _evt(event_name="bet_settled"), _cfg())
     assert out is None and rows == []
+
+
+async def test_process_event_stale_event_is_state_food(monkeypatch):
+    """A reaction only makes sense while the occasion is fresh: an event older
+    than the freshness cap (a days-old backlog after the agent was off) is
+    processed silently — no decision call, no ledger row — instead of a
+    retroactive congratulation. The linked/unlinked branches both honour it."""
+    rows = _capture_ledger(monkeypatch)
+
+    async def _ru_get(product_id, player_id):
+        return _ru()
+
+    async def _loss(product_id, player_id):
+        return 0.0
+    monkeypatch.setattr(db, "get_retention_user_by_player", _ru_get)
+    monkeypatch.setattr(db, "player_net_loss_24h", _loss)
+
+    stale = _evt(ts=_iso_days_ago(2))  # deposit_confirmed, 2 days old
+    out = await retention_v2._process_event({"id": 1}, stale, _cfg())
+    assert out is None and rows == []
+
+    async def _none(product_id, player_id):
+        return None
+    monkeypatch.setattr(db, "get_retention_user_by_player", _none)
+    out = await retention_v2._process_event({"id": 1}, stale, _cfg())
+    assert out is None and rows == []
+
+    # A fresh event still reacts (the freshness cap boundary).
+    assert retention_v2._fresh_enough(_evt())
+    assert not retention_v2._fresh_enough(stale)
 
 
 async def test_process_event_guard_block_is_ledgered(monkeypatch):
@@ -544,6 +617,7 @@ def test_occasion_for_safe_details_only():
 
 def _patch_send_env(monkeypatch, sent, persisted):
     import chat_service
+    import delivery
     import retention
 
     async def _token(pid):
@@ -579,7 +653,8 @@ def _patch_send_env(monkeypatch, sent, persisted):
     monkeypatch.setattr(retention, "_ensure_session", _sess)
     monkeypatch.setattr(retention, "_user_context_from_ru", lambda ru: {})
     monkeypatch.setattr(chat_service, "generate_retention_ping", _gen)
-    monkeypatch.setattr(retention_v2, "TelegramClient", _TG)
+    # The send mechanics live in the delivery seam now — patch its transport.
+    monkeypatch.setattr(delivery, "TelegramClient", _TG)
     monkeypatch.setattr(db, "persist_ping_turn", _persist)
     monkeypatch.setattr(db, "record_retention_ping", _record)
 
@@ -677,8 +752,58 @@ def test_proactive_header_merges_on_one_line():
 async def test_sweep_skips_disabled_products(monkeypatch):
     monkeypatch.setattr(settings, "retention", lambda: _cfg(v2_enabled=False))
     monkeypatch.setattr(tenancy, "set_current_product", lambda pid: None)
+
+    async def _claim_boom(*a, **kw):
+        raise AssertionError("a disabled agent must not claim events")
+    monkeypatch.setattr(db, "claim_retention_events", _claim_boom)
     stats = await retention_v2.run_product_events({"id": 1})
-    assert stats == {"skipped": "agent_disabled"}
+    assert stats["agent"] == "disabled"
+    assert stats["events"] == 0 and stats["sent"] == 0
+
+
+async def test_idle_sweep_runs_even_with_agent_disabled(monkeypatch):
+    """`idle_pings_enabled` is its OWN switch: turning the event agent off
+    (v2_enabled=False) must not silently kill the idle ladder — the admin
+    sees two independent toggles."""
+    import retention_idle
+    called = {}
+    monkeypatch.setattr(settings, "retention",
+                        lambda: _cfg(v2_enabled=False, idle_pings_enabled=True))
+    monkeypatch.setattr(tenancy, "set_current_product", lambda pid: None)
+
+    async def _idle(product, cfg, **kw):
+        called["ran"] = True
+        return {"sent": 2, "failed": 1}
+    monkeypatch.setattr(retention_idle, "run_product_idle_pings", _idle)
+    stats = await retention_v2.run_product_events({"id": 1})
+    assert called == {"ran": True}
+    assert stats["agent"] == "disabled"
+    assert stats["idle_sent"] == 2 and stats["idle_failed"] == 1
+
+
+async def test_sweep_defers_during_quiet_hours(monkeypatch):
+    """Quiet hours defer the event pipeline (events stay queued, reacted to in
+    the morning) instead of processing + guard-blocking them (which consumed
+    the event forever — and in a casino the night is peak deposit time). The
+    admin «Process queue now» button claims regardless."""
+    monkeypatch.setattr(settings, "retention", lambda: _cfg(v2_enabled=True))
+    monkeypatch.setattr(tenancy, "set_current_product", lambda pid: None)
+    monkeypatch.setattr(retention_v2, "_in_quiet_hours", lambda cfg: True)
+
+    async def _claim_boom(*a, **kw):
+        raise AssertionError("must not claim during quiet hours")
+    monkeypatch.setattr(db, "claim_retention_events", _claim_boom)
+    stats = await retention_v2.run_product_events({"id": 1})
+    assert stats["agent"] == "quiet_hours_deferred" and stats["events"] == 0
+
+    claimed = []
+
+    async def _claim(pid, limit, delay_min_sec=0, delay_max_sec=0):
+        claimed.append(pid)
+        return []
+    monkeypatch.setattr(db, "claim_retention_events", _claim)
+    await retention_v2.run_product_events({"id": 1}, ignore_send_delay=True)
+    assert claimed == [1]
 
 
 async def test_sweep_claims_events_atomically(monkeypatch):
@@ -693,6 +818,9 @@ async def test_sweep_claims_events_atomically(monkeypatch):
         return []
     monkeypatch.setattr(settings, "retention", lambda: _cfg(v2_enabled=True))
     monkeypatch.setattr(tenancy, "set_current_product", lambda pid: None)
+    # Neutralize the wall clock: _cfg's 22–9 window would make this test
+    # night-flaky now that the sweep defers during quiet hours.
+    monkeypatch.setattr(retention_v2, "_in_quiet_hours", lambda cfg: False)
     monkeypatch.setattr(db, "claim_retention_events", _claim)
     stats = await retention_v2.run_product_events({"id": 1})
     assert stats == {"events": 0, "decided": 0, "sent": 0}
@@ -852,6 +980,23 @@ def test_retention_history_marks_proactive_turns():
     # And the returning-player continuity block labels the proactive turn too.
     prev = prompts._previous_context_directive(history)
     assert "proactive message, trigger: deposit_confirmed" in prev
+
+
+def test_ping_messages_carry_previous_session_tail():
+    """A ping into a fresh session (the idle rollover just closed the old
+    chat) carries the previous conversation's tail — the ping task asks for
+    concrete call-backs to what the player said, which needs something to
+    call back to. Without the tail the prompt is unchanged."""
+    prev = [{"role": "user", "content": "завтра сдаю экзамен по вождению",
+             "created_at": None}]
+    base = dict(session={"user_context": {}}, kb_block=None, history=[],
+                resolved_lang="ru", idle_days=3, reason="quiet", intent="")
+    msgs = prompts.build_retention_ping_messages(**base,
+                                                 previous_history=prev)
+    user = msgs[-1]["content"]
+    assert "RETURNING PLAYER" in user and "экзамен" in user
+    plain = prompts.build_retention_ping_messages(**base)
+    assert "RETURNING PLAYER" not in plain[-1]["content"]
 
 
 def test_current_time_directive_rides_layer3():

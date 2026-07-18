@@ -297,19 +297,19 @@ async def test_maybe_advance_stage_gated(monkeypatch):
     # Below threshold -> no advance even with a hint.
     ru = {"id": 1, "unlocked_stage": 1, "vip_level": "gold",
           "meaningful_msgs": 5, "last_stage_advance_at": None}
-    assert await retention.maybe_advance_stage(ru, True) is None
+    assert await retention.maybe_advance_stage(ru) is None
     assert calls == []
 
     # At threshold (20 for stage 2) -> advance.
     ru2 = {"id": 2, "unlocked_stage": 1, "vip_level": "gold",
            "meaningful_msgs": 25, "last_stage_advance_at": None}
-    new_stage = await retention.maybe_advance_stage(ru2, True)
+    new_stage = await retention.maybe_advance_stage(ru2)
     assert new_stage == 2 and calls == [(2, 2)]
 
 
 async def test_stage_advance_requires_configured_threshold(monkeypatch):
-    """No stage_advance_msgs entry for the stage ⇒ no advance, even on a model
-    [[STAGE_UP]] hint — the hint must never unlock unpaced explicitness."""
+    """No stage_advance_msgs entry for the stage ⇒ no advance — the pacing is
+    entirely the admin's; a model [[STAGE_UP]] hint has no say (stripped only)."""
     calls = []
 
     async def _fake_advance(rid, new_stage):
@@ -323,8 +323,7 @@ async def test_stage_advance_requires_configured_threshold(monkeypatch):
     )
     ru = {"id": 9, "unlocked_stage": 1, "vip_level": "gold",
           "meaningful_msgs": 999, "last_stage_advance_at": None}
-    assert await retention.maybe_advance_stage(ru, True) is None
-    assert await retention.maybe_advance_stage(ru, False) is None
+    assert await retention.maybe_advance_stage(ru) is None
     assert calls == []
 
 
@@ -338,7 +337,7 @@ async def test_stage_advance_respects_tier_ceiling(monkeypatch):
     # "none" tier ceiling is 3; already at the ceiling, can't advance to stage 4.
     ru = {"id": 3, "unlocked_stage": 3, "vip_level": "none",
           "meaningful_msgs": 200, "last_stage_advance_at": None}
-    assert await retention.maybe_advance_stage(ru, True) is None
+    assert await retention.maybe_advance_stage(ru) is None
     assert calls == []
 
 

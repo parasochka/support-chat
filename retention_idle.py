@@ -25,16 +25,15 @@ chrome line — same voice, same language stickiness, same photo machinery.
 from __future__ import annotations
 
 import datetime as _dt
-import html
 import logging
 import time
 from typing import Any, Optional
 
 import chat_service
 import db
+import delivery
 import retention
-import telegram_format
-from telegram_transport import TelegramClient, inline_keyboard
+from telegram_transport import inline_keyboard
 
 log = logging.getLogger(__name__)
 
@@ -78,12 +77,29 @@ def _idle_days_for(ru: dict[str, Any], trigger_kind: str,
 
 async def _match_rule(ru: dict[str, Any], rules: list[dict[str, Any]]
                       ) -> Optional[tuple[dict[str, Any], int]]:
-    """The highest-priority rule that fires for this player right now."""
+    """The highest-priority rule that fires for this player right now.
+
+    Anti-cascade: during ONE silence stretch only a rung ABOVE the highest
+    already-fired one may fire (per trigger kind). Per-rule cooldowns alone
+    let a 60-days-quiet player receive the ENTIRE ladder in reverse — after
+    "quiet 60 days" fired, the 45/30/21/… rungs each matched on the next
+    sweeps (their own cooldowns were clean) and cascaded out at min-gap pace,
+    3 messages a day to the most-churned player. The fired-rung memory resets
+    the moment the player writes again (`last_active_at` moves past the fired
+    pings), so a returning-then-quiet-again player restarts the ladder from
+    the bottom. The SAME rung may re-fire after its own `cooldown_days` (a
+    single periodic rule keeps working)."""
     now = _dt.datetime.now(_dt.timezone.utc)
     vip = (ru.get("vip_level") or "").strip().lower()
+    fired = await db.idle_rule_thresholds_fired_since(
+        int(ru["id"]), ru.get("last_active_at"))
     for rule in rules:  # already ordered priority DESC
         idle = _idle_days_for(ru, rule.get("trigger_kind", ""), now)
         if idle is None or idle < int(rule.get("inactivity_days") or 0):
+            continue
+        max_fired = fired.get(str(rule.get("trigger_kind") or ""))
+        if (max_fired is not None
+                and int(rule.get("inactivity_days") or 0) < max_fired):
             continue
         tiers = [str(t).strip().lower() for t in (rule.get("vip_tiers") or [])]
         if tiers and vip not in tiers:
@@ -94,6 +110,32 @@ async def _match_rule(ru: dict[str, Any], rules: list[dict[str, Any]]
             continue
         return rule, int(idle)
     return None
+
+
+async def run_product_idle_pings_locked(product: dict[str, Any],
+                                        cfg: dict[str, Any], *,
+                                        force: bool = False,
+                                        limit: Optional[int] = None
+                                        ) -> dict[str, Any]:
+    """run_product_idle_pings under the SAME advisory lock the worker holds.
+
+    The admin «Run now» button used to call the sweep directly: it could run
+    concurrently with the worker's idle sweep (or a second instance), both
+    read a player's guard counters before either write, and both sent — the
+    same guard-race class the v2 «Process queue now» button was given
+    run_product_events_locked for. Blocking lock (not try-lock): the button
+    should run right after the worker finishes, not silently no-op."""
+    import retention_v2  # late: retention_v2 imports this module
+    pool = db.pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT pg_advisory_lock($1)",
+                           retention_v2._ADVISORY_LOCK_KEY)
+        try:
+            return await run_product_idle_pings(product, cfg, force=force,
+                                                limit=limit)
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock($1)",
+                               retention_v2._ADVISORY_LOCK_KEY)
 
 
 async def run_product_idle_pings(product: dict[str, Any],
@@ -141,7 +183,10 @@ async def run_product_idle_pings(product: dict[str, Any],
     if not users:
         return {"sent": 0, "failed": 0, "considered": 0}
 
-    client = TelegramClient(token)
+    # The send mechanics live in the delivery seam (delivery.py) — shared
+    # with the event agent; future channels plug in there.
+    channel = delivery.channel_for_product(
+        product, token, silent=bool(cfg.get("silent_notifications")))
     sent = failed = 0
     for ru in users:
         if sent + failed >= batch:
@@ -150,7 +195,7 @@ async def run_product_idle_pings(product: dict[str, Any],
         if matched is None:
             continue
         rule, idle_days = matched
-        ok = await _send_idle_ping(client, product, ru, rule, idle_days, cfg)
+        ok = await _send_idle_ping(channel, product, ru, rule, idle_days, cfg)
         if ok:
             sent += 1
         else:
@@ -158,7 +203,8 @@ async def run_product_idle_pings(product: dict[str, Any],
     return {"sent": sent, "failed": failed, "considered": len(users)}
 
 
-async def _send_idle_ping(client: TelegramClient, product: dict[str, Any],
+async def _send_idle_ping(channel: delivery.TelegramChannel,
+                          product: dict[str, Any],
                           ru: dict[str, Any], rule: dict[str, Any],
                           idle_days: int, cfg: dict[str, Any]) -> bool:
     """One idle touch: generate -> (dry-run?) -> send -> persist/ledgers."""
@@ -168,7 +214,6 @@ async def _send_idle_ping(client: TelegramClient, product: dict[str, Any],
     action = rule.get("action") or "message"
     dry_run = bool(cfg.get("v2_dry_run"))
     lang = retention.resolve_user_lang(ru)
-    chat_id = int(ru["tg_user_id"])  # a private chat's id IS the user id
 
     session = await retention._ensure_session(pid, ru, lang)
     if session is None:
@@ -219,41 +264,26 @@ async def _send_idle_ping(client: TelegramClient, product: dict[str, Any],
         markup = inline_keyboard([[{"text": draft.link_label or draft.link_url,
                                     "url": draft.link_url}]])
 
-    silent = bool(cfg.get("silent_notifications"))
+    header = retention._rtn_text("rtn_ping_header", draft.lang).strip()
     delivered = False
     detail: Optional[str] = None
     if draft.photo_id is not None:
         caption = draft.text or retention.fallback_photo_caption(draft.lang)
-        header = retention._rtn_text("rtn_ping_header", draft.lang).strip()
-        if header:
-            caption = f"{header}\n\n{caption}"
-        photo_status = await retention._send_photo(
-            client, product, ru, chat_id, draft.photo_id, caption,
-            session_id=session["id"], reply_markup=markup, silent=silent)
-        delivered = photo_status is not None
+        outcome = await channel.send_photo(
+            ru, draft.photo_id, caption, header=header or None,
+            reply_markup=markup, session_id=session["id"])
+        delivered = outcome.delivered
         if not delivered:
-            detail = "photo_send_failed"
+            detail = outcome.detail or "photo_send_failed"
     else:
-        header = retention._rtn_text("rtn_ping_header", draft.lang).strip()
-        ping_html = telegram_format.to_html(draft.text)
-        ping_plain = draft.text
-        if header:
-            ping_html = f"<i>{html.escape(header)}</i>\n\n{ping_html}"
-            ping_plain = f"{header}\n\n{draft.text}"
-        result, err_code, err_desc = await client.send_message_verbose(
-            chat_id, ping_html, parse_mode="HTML", reply_markup=markup,
-            disable_notification=silent)
-        if result is None and ping_html != ping_plain and err_code != 403:
-            # Bad HTML (never a block) — retry once as plain text.
-            result, err_code, err_desc = await client.send_message_verbose(
-                chat_id, ping_plain, reply_markup=markup,
-                disable_notification=silent)
-        delivered = result is not None
+        # HTML render, plain fallback and the 403 → unreachable bookkeeping
+        # all live in the delivery channel.
+        outcome = await channel.send_text(ru, draft.text,
+                                          header=header or None,
+                                          reply_markup=markup)
+        delivered = outcome.delivered
         if not delivered:
-            detail = f"{err_code}: {err_desc}" if err_desc else "send_failed"
-            if err_code == 403:
-                # The player blocked the bot — stop trying until they write.
-                await db.set_retention_unreachable(rid, True)
+            detail = outcome.detail or "send_failed"
 
     cost = float(draft.ai_meta.get("cost_usd") or 0)
     ping_context = (f"idle_reengagement: the player has been away about "
@@ -380,5 +410,6 @@ async def seed_starter_idle_rules(product_id: int) -> None:
                                        updated_by="starter")
 
 
-__all__ = ["run_product_idle_pings", "seed_starter_idle_rules",
+__all__ = ["run_product_idle_pings", "run_product_idle_pings_locked",
+           "seed_starter_idle_rules",
            "STARTER_IDLE_RULES"]

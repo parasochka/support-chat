@@ -2118,12 +2118,19 @@ def build_retention_ping_messages(
     comfort: bool = False,
     tz_offset_hours: Optional[float] = None,
     stage_up: Optional[dict[str, Any]] = None,
+    previous_history: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, str]]:
     """The OpenAI `messages` array for a proactive retention ping.
 
     Same Layer 1 (+ retention-KB Layer 2) and recent history as a reactive turn
     — the prefix cache stays warm and the tone stays grounded — but the final
     user message is the ping TASK block instead of a player message.
+
+    `previous_history` is the continuity tail of the player's PREVIOUS (closed)
+    chat session, mirroring the dialogue path: a ping is usually the FIRST
+    message of a fresh session (the idle rollover just closed the old chat),
+    so without the tail the persona had nothing to "remember" — while the ping
+    task explicitly asks for concrete call-backs to what the player said.
     """
     messages: list[dict[str, str]] = [
         {"role": "system", "content": build_retention_system_message(kb_block)}
@@ -2134,21 +2141,22 @@ def build_retention_ping_messages(
     for m in convo:
         messages.append({"role": m["role"],
                          "content": _retention_history_content(m)})
-    messages.append({
-        "role": "user",
-        "content": build_retention_ping_prompt(
-            user_context=session.get("user_context", {}),
-            resolved_lang=resolved_lang,
-            idle_days=idle_days,
-            reason=reason,
-            intent=intent,
-            photo_candidates=photo_candidates,
-            occasion=occasion,
-            comfort=comfort,
-            tz_offset_hours=tz_offset_hours,
-            stage_up=stage_up,
-        ),
-    })
+    content = build_retention_ping_prompt(
+        user_context=session.get("user_context", {}),
+        resolved_lang=resolved_lang,
+        idle_days=idle_days,
+        reason=reason,
+        intent=intent,
+        photo_candidates=photo_candidates,
+        occasion=occasion,
+        comfort=comfort,
+        tz_offset_hours=tz_offset_hours,
+        stage_up=stage_up,
+    )
+    prev_block = _previous_context_directive(previous_history or [])
+    if prev_block:
+        content = f"{prev_block}\n\n{content}"
+    messages.append({"role": "user", "content": content})
     return messages
 
 
