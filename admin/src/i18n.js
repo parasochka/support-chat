@@ -954,8 +954,8 @@ const RU = {
     '«Мин. интервал между сообщениями (часы)» — промежуток между любыми двумя проактивными сообщениями одному игроку (0 = выкл). Уменьшите, чтобы реагировать на несколько событий в день.',
   '«Same-event cooldown (hours)» — one reaction per event type per player per window. Set 0 while testing to re-run the same event.':
     '«Кулдаун одинаковых событий (часы)» — одна реакция на тип события на игрока за окно. Поставьте 0 на время тестирования, чтобы повторять одно и то же событие.',
-  '«Quiet hours start/end/UTC offset» — no proactive contact at night.':
-    '«Начало/конец тихих часов, смещение UTC» — никаких проактивных сообщений ночью.',
+  '«Quiet hours start/end/UTC offset» — enforced BEFORE a decision is made: night-time events are deferred and processed in the morning, so this never appears as a ledger guard reason.':
+    '«Начало/конец тихих часов, смещение UTC» — применяется ДО принятия решения: ночные события откладываются и обрабатываются утром, поэтому эта причина никогда не появляется в колонке «Ограничители» журнала.',
   '«Daily AI budget (USD)» — today’s ledger cost hit the budget.':
     '«Дневной AI-бюджет (USD)» — стоимость решений за сегодня достигла бюджета.',
   '«Loss comfort window» + «High-loss threshold» — after a big loss: empathetic tone only, no photo, no link, no play talk.':
@@ -1310,11 +1310,11 @@ const RU = {
   'How often the media sweep runs — ONE loop serves every product, so this is a deploy-wide (global) setting. Default 3600 (hourly). The «Normalize now» button on the Media tab runs one product immediately.':
     'Как часто выполняется проход нормализации — ОДИН цикл обслуживает все продукты, поэтому это общесистемная (глобальная) настройка. По умолчанию 3600 (раз в час). Кнопка «Нормализовать сейчас» на вкладке «Медиа» запускает один продукт немедленно.',
   'Max photo side (px)': 'Макс. сторона фото (px)',
-  'Longest side after normalization. Telegram re-compresses photos to ~2560 px anyway, so 2048 keeps full delivered quality at a fraction of the size.':
-    'Самая длинная сторона после нормализации. Telegram всё равно пережимает фото до ~2560 px, так что 2048 сохраняет полное качество доставки при меньшем размере.',
+  'Longest side after normalization. Telegram re-compresses photos to ~2560 px anyway, so the default 2560 keeps full delivered quality at a fraction of the original file size.':
+    'Самая длинная сторона после нормализации. Telegram всё равно пережимает фото до ~2560 px, так что значение по умолчанию 2560 сохраняет полное качество доставки при заметно меньшем размере файла.',
   'WebP quality (40–100)': 'Качество WebP (40–100)',
-  'Compression quality of the normalized WebP. 82 is visually lossless for chat photos; raise it only if you see artifacts.':
-    'Качество сжатия нормализованного WebP. 82 визуально без потерь для чат-фото; повышайте только если видите артефакты.',
+  'Compression quality of the normalized WebP. The default 90 is visually lossless for chat photos; lower it only to save more space, raise it only if you see artifacts.':
+    'Качество сжатия нормализованного WebP. Значение по умолчанию 90 визуально без потерь для чат-фото; понижайте, только чтобы сэкономить место, повышайте — только если видите артефакты.',
   'Idle re-engagement pings': 'Пинги возврата неактивных',
   'The agent’s inactivity trigger: the Idle pings rules ladder («quiet N days → Nika writes first», Retention → Idle pings tab). Off = the agent reacts to casino events only; a quiet player is never written to.':
     'Триггер неактивности агента: лестница правил пингов («тишина N дней → Ника пишет первой», Ретеншен → Пинги неактивности). Выкл = агент реагирует только на события казино; замолчавшему игроку никто не пишет.',
