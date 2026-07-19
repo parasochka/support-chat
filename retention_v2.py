@@ -46,7 +46,6 @@ import retention
 import settings
 import tenancy
 import translations
-from telegram_transport import inline_keyboard
 
 log = logging.getLogger(__name__)
 
@@ -83,8 +82,8 @@ _OCCASIONS: dict[str, str] = {
                        "received the payout",
     "bonus_expired": "one of the player's bonuses just expired unused",
     "bet_settled": "the player has had a rough, losing day",
-    # Non-default triggers (toggleable from the agent's Triggers tab) — every
-    # canonical event the owner may enable ships its own occasion wording.
+    # Non-default triggers (enabled only via the `retention.v2_decision_events`
+    # setting) — every enableable canonical event ships its own occasion wording.
     "session_started": "the player just came online and started a session",
     "session_ended": "the player just wrapped up a play session",
     "deposit_initiated": "the player just started making a deposit (it is "
@@ -142,9 +141,10 @@ def occasion_for(evt: dict[str, Any]) -> str:
 
 # One reaction per event type per window — a partner retrying webhooks or a
 # player making five deposits in an evening gets ONE warm note, not five.
-# The default for the hot `retention.v2_same_event_cooldown_hours` knob
-# (0 = off, useful while testing the pipeline with repeated simulator events).
-_SAME_EVENT_COOLDOWN_HOURS = 5
+# Fallback for the hot `retention.v2_same_event_cooldown_hours` knob
+# (0 = off, useful while testing with repeated simulator events) — the config
+# default, so a hand-built cfg dict resolves the same value as the settings
+# layer.
 
 # A reaction only makes sense while the occasion is FRESH: "thanks for the
 # deposit" a day later reads as surveillance, not warmth. Events older than
@@ -158,7 +158,7 @@ _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 # ---------------------------------------------------------------------------
-# Scheduler loop (started from main.py lifespan, next to the v1 loop)
+# Scheduler loop (started from main.py lifespan)
 # ---------------------------------------------------------------------------
 def worker_interval_sec() -> int:
     """The hot worker cadence (`retention.worker_interval_sec`, global layer).
@@ -167,18 +167,11 @@ def worker_interval_sec() -> int:
     tick without a redeploy. Clamped to 5s..1h — a sweep is a couple of cheap
     SELECTs when the queues are empty, so a short cadence is fine.
     """
-    # The loop is global: read the GLOBAL layer, never a per-product override
-    # (settings.GLOBAL_ONLY_FIELDS also keeps the product layer out of this
-    # key). Save/restore the ContextVar — this helper is also called from admin
-    # requests (the /v2/status header), whose product scope must survive.
-    token = tenancy.set_current_product(None)
-    try:
-        v = int(settings.retention().get("worker_interval_sec") or 0)
-    except Exception:  # noqa: BLE001 - a bad stored value must not kill the loop
-        v = 0
-    finally:
-        tenancy.reset_current_product(token)
-    return min(max(v or config.RETENTION_WORKER_INTERVAL_SEC, 5), 3600)
+    # Global-layer read (settings.GLOBAL_ONLY_FIELDS keeps the product layer
+    # out of this key); also called from admin requests, whose product scope
+    # must survive — settings.global_retention_int handles both.
+    return settings.global_retention_int(
+        "worker_interval_sec", config.RETENTION_WORKER_INTERVAL_SEC, 5, 3600)
 
 
 async def scheduler_loop() -> None:
@@ -226,13 +219,11 @@ async def run_product_events_locked(product: dict[str, Any], *,
                                     ) -> dict[str, Any]:
     """run_product_events under the SAME advisory lock the worker sweep holds.
 
-    The admin «Process queue now» button used to call the pipeline directly:
-    event CLAIMING stayed atomic, but two different events for the same player
-    processed concurrently (button + worker) both read the per-player guard
-    counters before either write — both passed the min-gap/daily-cap guards and
-    both sent. Blocking lock (not try-lock): the button should run right after
-    the worker finishes, not silently no-op. The manual run also bypasses the
-    humanizing send delay — the operator pressing the button wants answers now."""
+    Required: without the lock a button-run and the worker can both read the
+    per-player guard counters before either writes — double send. Blocking
+    lock (not try-lock): the button should run right after the worker
+    finishes, not silently no-op. The manual run also bypasses the humanizing
+    send delay — the operator pressing the button wants answers now."""
     pool = db.pool()
     async with pool.acquire() as conn:
         await conn.execute("SELECT pg_advisory_lock($1)", _ADVISORY_LOCK_KEY)
@@ -261,12 +252,10 @@ async def run_product_events(product: dict[str, Any], *,
 
     QUIET HOURS defer the pipeline instead of consuming events: the worker
     simply does not CLAIM during the window, so a night-time deposit gets its
-    warm note in the morning (the freshness cap in `_is_decision_worthy`
-    bounds how stale a reaction may get). The old shape — process + guard-block
-    — burned the event forever: the reaction never happened at all, and in a
-    casino the night IS peak deposit time. The admin «Process queue now»
-    button (`ignore_send_delay`) claims regardless: the operator explicitly
-    asked for answers now.
+    warm note in the morning (in a casino the night IS peak deposit time; the
+    freshness cap in `_is_decision_worthy` bounds how stale a reaction may
+    get). The admin «Process queue now» button (`ignore_send_delay`) claims
+    regardless: the operator explicitly asked for answers now.
 
     The idle sweep at the tail runs on its OWN switch (`idle_pings_enabled`),
     independent of `v2_enabled` — turning the event agent off must not
@@ -320,11 +309,14 @@ async def run_product_events(product: dict[str, Any], *,
 # ---------------------------------------------------------------------------
 # State resolver (deterministic, from the event log + the profile snapshot)
 # ---------------------------------------------------------------------------
-def _days_since(value: Any) -> Optional[float]:
+def days_since(value: Any, now: Optional[_dt.datetime] = None
+               ) -> Optional[float]:
+    """Days since a timestamp-ish value (db._as_ts parses; None = unknown).
+    Shared with retention_idle (its sweep passes one `now` per batch)."""
     dt = db._as_ts(value)
     if dt is None:
         return None
-    now = _dt.datetime.now(dt.tzinfo or _dt.timezone.utc)
+    now = now or _dt.datetime.now(dt.tzinfo or _dt.timezone.utc)
     return max((now - dt).total_seconds() / 86400.0, 0.0)
 
 
@@ -336,9 +328,9 @@ async def resolve_player_state(product_id: int, ru: dict[str, Any],
     spec's thresholds, plus the 24h loss window — computed from the profile
     snapshot and the event log, no extra infrastructure.
     """
-    login_days = _days_since(ru.get("last_login_at"))
-    played_days = _days_since(ru.get("last_played_at"))
-    deposit_days = _days_since(ru.get("last_deposit_at"))
+    login_days = days_since(ru.get("last_login_at"))
+    played_days = days_since(ru.get("last_played_at"))
+    deposit_days = days_since(ru.get("last_deposit_at"))
     idle_candidates = [d for d in (login_days, played_days) if d is not None]
     idle_days = min(idle_candidates) if idle_candidates else None
 
@@ -362,7 +354,7 @@ async def resolve_player_state(product_id: int, ru: dict[str, Any],
             loss_high > 0 and net_loss >= loss_high):
         risk_state = "critical"
 
-    reg_days = _days_since(ru.get("registration_date"))
+    reg_days = days_since(ru.get("registration_date"))
     if reg_days is None:
         lifecycle = "unknown"
     elif reg_days <= 1:
@@ -421,9 +413,9 @@ async def guard_check(product_id: int, ru: dict[str, Any],
         reasons.append("player_opted_out")
     if ru.get("unreachable"):
         reasons.append("bot_blocked_by_player")
-    # Shared anti-annoyance state (same fields the v1 matrix maintains).
+    # Shared anti-annoyance state (the per-player ping counters/gaps).
     gap_h = int(cfg["ping_min_gap_hours"])
-    last_ping_days = _days_since(ru.get("last_ping_at"))
+    last_ping_days = days_since(ru.get("last_ping_at"))
     if last_ping_days is not None and last_ping_days * 24 < gap_h:
         reasons.append("min_gap_not_elapsed")
     pings_day = ru.get("pings_day")
@@ -442,8 +434,8 @@ async def guard_check(product_id: int, ru: dict[str, Any],
             reasons.append("daily_budget_reached")
     player_id = ru.get("player_id") or ""
     cooldown_h = cfg.get("v2_same_event_cooldown_hours")
-    cooldown_h = (_SAME_EVENT_COOLDOWN_HOURS if cooldown_h is None
-                  else int(cooldown_h))
+    cooldown_h = (config.RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS
+                  if cooldown_h is None else int(cooldown_h))
     if cooldown_h > 0:
         # The cooldown counts real reactions only — a silence decision on a
         # deposit must not suppress the reaction to the NEXT deposit. The one
@@ -469,7 +461,7 @@ async def guard_check(product_id: int, ru: dict[str, Any],
             comfort = True
         else:
             last_loss = await db.last_loss_signal_at(product_id, player_id)
-            loss_days = _days_since(last_loss) if last_loss else None
+            loss_days = days_since(last_loss) if last_loss else None
             if (loss_days is not None and loss_days * 24 < comfort_h
                     and state.get("net_loss_24h_usd", 0) > 0):
                 comfort = True
@@ -573,8 +565,8 @@ async def _history_tail(ru: dict[str, Any]) -> list[dict[str, Any]]:
 def effective_decision_events(cfg: dict[str, Any]) -> frozenset[str]:
     """The event names allowed to wake the agent for this product.
 
-    Admin-tunable (`retention.v2_decision_events`, the agent's Events tab);
-    absent/None resolves to the built-in DECISION_EVENTS. bet_settled is never
+    Tunable only via the `retention.v2_decision_events` setting (deliberately
+    not panel-editable); absent/None resolves to the built-in DECISION_EVENTS. bet_settled is never
     in the set — it stays special-cased on the loss threshold below.
     """
     v = cfg.get("v2_decision_events")
@@ -709,7 +701,7 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
 
 
 # ---------------------------------------------------------------------------
-# Sending (the persona writes; mechanics mirror the v1 ping send)
+# Sending (the persona writes; delivery via the delivery.py seam)
 # ---------------------------------------------------------------------------
 # Chrome detail per event for the header occasion phrase — unlike the
 # model-facing occasion line, the CHROME may name the amount (the player just
@@ -823,44 +815,28 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
     ping_context = f"{event_name}: {occasion}" if event_name else occasion
     header_line = _proactive_header(draft.lang, evt, comfort=comfort)
 
-    markup = None
-    if draft.link_url and not comfort:
-        markup = inline_keyboard([[{"text": draft.link_label or draft.link_url,
-                                    "url": draft.link_url}]])
     # Proactive touches may be delivered silently (no sound on the player's
     # phone) — the hot per-product `retention.silent_notifications` knob. The
     # send mechanics live in the delivery seam (delivery.py) — the one place
     # a proactive message leaves the service, shared with the idle ladder.
     channel = delivery.channel_for_product(
         product, token, silent=bool(cfg.get("silent_notifications")))
-    delivered = False
-    detail: Optional[str] = None
-    if draft.photo_id is not None and not comfort:
-        caption = draft.text or retention.fallback_photo_caption(draft.lang)
-        outcome = await channel.send_photo(
-            ru, draft.photo_id, caption, header=header_line,
-            reply_markup=markup, session_id=session["id"])
-        delivered = outcome.delivered
-        if not delivered:
-            detail = outcome.detail or "photo_send_failed"
-        elif outcome.kind == "text":
-            detail = "photo_fallback_text"
-    else:
-        outcome = await channel.send_text(ru, draft.text, header=header_line,
-                                          reply_markup=markup)
-        delivered = outcome.delivered
-        if not delivered:
-            detail = outcome.detail or "send_failed"
-            log.warning("retention_v2_send_failed product=%s player=%s "
-                        "detail=%s", pid, ru.get("player_id"), detail)
+    # A comfort touch never carries a photo or a play-CTA button.
+    delivered, detail, link_attached = await delivery.deliver_draft(
+        channel, ru, draft, header=header_line, session_id=session["id"],
+        photo_fallback_caption=retention.fallback_photo_caption(draft.lang),
+        allow_photo=not comfort, allow_link=not comfort)
+    if not delivered:
+        log.warning("retention_v2_send_failed product=%s player=%s detail=%s",
+                    pid, ru.get("player_id"), detail)
 
     if delivered:
         await db.persist_ping_turn(session["id"], draft.text or "[photo]",
                                    ai_meta=draft.ai_meta, product_id=pid,
                                    ping_context=ping_context,
-                                   link_url=draft.link_url if markup else None)
-        # Shared anti-annoyance state: the SAME ledger/counters the v1 matrix
-        # uses, so caps and min-gap hold across regimes.
+                                   link_url=draft.link_url if link_attached else None)
+        # Shared anti-annoyance state: the same ledger/counters the idle
+        # ladder uses, so caps and min-gap hold across regimes.
         sent_detail = f"v2:{evt.get('event_name')}"
         if detail == "photo_fallback_text":
             sent_detail += " (photo fallback: text)"
@@ -869,14 +845,10 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
             detail=sent_detail, cost_usd=gen_cost)
         return True, gen_cost, None
 
-    # The generation call happened but nothing reached the player: account the
-    # cost (invariant §4 — every OpenAI call gets an ai_interaction_logs row).
-    meta = draft.ai_meta
-    await db.log_ai_interaction(
-        session["id"], meta.get("model"), meta.get("key_used"),
-        meta.get("tokens_in"), meta.get("tokens_out"), meta.get("cached_in"),
-        gen_cost, meta.get("latency_ms"), False,
-        f"v2_touch_undelivered {detail}", product_id=pid)
+    # Generated but undelivered: the cost still lands in ai_interaction_logs.
+    await delivery.account_undelivered_generation(
+        session["id"], draft, detail, product_id=pid,
+        label="v2_touch_undelivered")
     await db.record_retention_ping(pid, rid, None, decision["action"],
                                    "failed", detail=f"v2:{detail}",
                                    cost_usd=gen_cost)

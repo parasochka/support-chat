@@ -40,17 +40,15 @@ async def connect() -> asyncpg.Pool:
     return _pool
 
 
-def _acquire(*, timeout: Optional[float] = None):
+def _acquire():
     """Acquire a pooled connection with a bounded wait (use as `async with`).
 
     The convenience helpers (`_pool.fetch/execute/...`) block on acquire with no
     ceiling, so under pool exhaustion a request would hang forever. Explicit
     acquire sites on the hot request paths use this so exhaustion surfaces as a
-    retryable error rather than an unbounded hang (default DB_ACQUIRE_TIMEOUT_SEC).
+    retryable error rather than an unbounded hang (DB_ACQUIRE_TIMEOUT_SEC).
     """
-    if timeout is None:
-        timeout = config.DB_ACQUIRE_TIMEOUT_SEC
-    return _pool.acquire(timeout=timeout)
+    return _pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT_SEC)
 
 
 async def close() -> None:
@@ -600,9 +598,7 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
 
     `CREATE TABLE IF NOT EXISTS` never alters an existing table, so any new
     column on an already-deployed table must be added here. Each statement is
-    idempotent via `ADD COLUMN IF NOT EXISTS`. (None needed yet — Phase 1
-    baseline — but the seam is here so the rule from the brief is honoured.)
-    """
+    idempotent via `ADD COLUMN IF NOT EXISTS`. """
     alters: list[str] = [
         # Prompt-history boundary bumped on each topic switch (loop fix); only
         # messages newer than this id are sent to the model.
@@ -1573,11 +1569,6 @@ async def get_all_settings() -> dict[str, Any]:
     return {r["key"]: _json_value(r["value"]) for r in rows}
 
 
-async def get_setting(key: str) -> Optional[Any]:
-    row = await _pool.fetchrow("SELECT value FROM app_settings WHERE key = $1", key)
-    return _json_value(row["value"]) if row else None
-
-
 async def set_setting(key: str, value: Any, updated_by: Optional[str] = None) -> None:
     await _pool.execute(
         "INSERT INTO app_settings (key, value, updated_at, updated_by) "
@@ -1628,6 +1619,22 @@ async def set_product_setting(product_id: int, key: str, value: Any,
 # ---------------------------------------------------------------------------
 def _iso(value: Any) -> Any:
     return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def _iso_fields(d: dict[str, Any], *names: str) -> dict[str, Any]:
+    """Normalize timestamp fields to isoformat strings in place (JSON-safe)."""
+    for ts in names:
+        if ts in d:
+            d[ts] = _iso(d[ts])
+    return d
+
+
+def _affected(result: Optional[str]) -> int:
+    """Rows affected from an asyncpg command tag ("UPDATE 3" / "DELETE 0")."""
+    try:
+        return int((result or "").split()[-1])
+    except (ValueError, IndexError):
+        return 0
 
 
 def _row_to_partner(row: asyncpg.Record) -> dict[str, Any]:
@@ -1719,17 +1726,12 @@ async def update_partner(partner_id: int, *, name: Optional[str] = None,
     return _row_to_partner(row) if row else None
 
 
-async def list_products(partner_id: Optional[int] = None,
-                        product_ids: Optional[list[int]] = None
+async def list_products(product_ids: Optional[list[int]] = None
                         ) -> list[dict[str, Any]]:
-    where, args = [], []
-    if partner_id is not None:
-        args.append(partner_id)
-        where.append(f"partner_id = ${len(args)}")
+    where_sql, args = "", []
     if product_ids is not None:
         args.append(product_ids)
-        where.append(f"id = ANY(${len(args)}::int[])")
-    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        where_sql = f"WHERE id = ANY(${len(args)}::int[])"
     rows = await _pool.fetch(
         f"SELECT {_PRODUCT_COLS} FROM products {where_sql} ORDER BY id", *args
     )
@@ -2139,7 +2141,7 @@ async def delete_membership(membership_id: int) -> bool:
     res = await _pool.execute(
         "DELETE FROM admin_memberships WHERE id = $1", membership_id
     )
-    return res.upper().startswith("DELETE") and not res.endswith(" 0")
+    return _affected(res) > 0
 
 
 async def product_ids_for_partners(partner_ids: list[int]) -> list[int]:
@@ -2162,9 +2164,7 @@ _API_KEY_COLS = ("id, name, token_hint, role, scope_type, partner_id, "
 def _row_to_api_key(row: asyncpg.Record) -> dict[str, Any]:
     d = dict(row)
     d["id"] = int(d["id"])
-    for ts in ("created_at", "last_used_at"):
-        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
-            d[ts] = d[ts].isoformat()
+    _iso_fields(d, "created_at", "last_used_at")
     return d
 
 
@@ -2256,9 +2256,7 @@ def _row_to_admin_user(row: asyncpg.Record, *, include_hash: bool = False) -> di
     d = dict(row)
     if not include_hash:
         d.pop("password_hash", None)
-    for ts in ("created_at", "updated_at"):
-        if d.get(ts) is not None and not isinstance(d[ts], str):
-            d[ts] = d[ts].isoformat()
+    _iso_fields(d, "created_at", "updated_at")
     return d
 
 
@@ -2315,7 +2313,7 @@ async def delete_admin_user(email: str) -> bool:
     res = await _pool.execute(
         "DELETE FROM admin_users WHERE email = $1", email.strip().lower()
     )
-    return res.upper().startswith("DELETE") and not res.endswith(" 0")
+    return _affected(res) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -2336,22 +2334,6 @@ async def list_topics_with_counts(product_id: int) -> list[dict[str, Any]]:
         topic["entry_count"] = r["entry_count"]
         out.append(topic)
     return out
-
-
-async def update_topic(topic_id: int, title: Optional[dict[str, str]],
-                       display_order: Optional[int],
-                       active: Optional[bool]) -> Optional[dict[str, Any]]:
-    await _pool.execute(
-        "UPDATE kb_topics SET "
-        "title = COALESCE($2::jsonb, title), "
-        "display_order = COALESCE($3, display_order), "
-        "active = COALESCE($4, active) WHERE id = $1",
-        topic_id,
-        json.dumps(title) if title is not None else None,
-        display_order, active,
-    )
-    _invalidate_kb_cache()
-    return await get_topic_by_id(topic_id)
 
 
 async def get_kb_entry(topic_id: int) -> Optional[dict[str, Any]]:
@@ -2399,19 +2381,14 @@ async def clear_kb_content(topic_id: int) -> bool:
         topic_id,
     )
     _invalidate_kb_cache()
-    return not res.endswith(" 0")
+    return _affected(res) > 0
 
 
 # ---------------------------------------------------------------------------
 # Metrics / dashboard aggregation (raw rows; derived rates computed in metrics.py)
 # ---------------------------------------------------------------------------
-def _range_clause(col: str, idx_from: int, idx_to: int) -> str:
-    return f"({col} >= ${idx_from} AND {col} < ${idx_to})"
-
-
-def _product_clause(product_ids: Optional[list[int]], args: list[Any],
-                    col: str = "product_id") -> str:
-    """Append an `AND <col> = ANY($n)` filter when a product scope is set.
+def _product_clause(product_ids: Optional[list[int]], args: list[Any]) -> str:
+    """Append an `AND product_id = ANY($n)` filter when a product scope is set.
 
     `None` means no scope (global view — all products); an empty list means an
     admin with no accessible products, which must match nothing.
@@ -2419,7 +2396,7 @@ def _product_clause(product_ids: Optional[list[int]], args: list[Any],
     if product_ids is None:
         return ""
     args.append(product_ids)
-    return f" AND {col} = ANY(${len(args)}::int[])"
+    return f" AND product_id = ANY(${len(args)}::int[])"
 
 
 def _scope_clauses(product_ids: Optional[list[int]],
@@ -2588,24 +2565,35 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
             for r in rows]
 
 
+def _cost_cte(scope_cte: str, *, support_only: bool = True) -> str:
+    """`costs AS (...)` — the windowed, product-scoped per-session cost CTE.
+
+    Scoped to the same window+product as the outer query (via a join to
+    chat_sessions) instead of aggregating the entire, unbounded
+    ai_interaction_logs table on every dashboard load: per-session totals are
+    identical (the outer LEFT JOIN only uses in-window sessions anyway), the
+    scan is O(sessions in window) and uses the created_at/product indexes.
+    `support_only` adds the dashboard's telegram exclusion.
+    """
+    telegram = "    AND cs.consumer <> 'telegram' " if support_only else ""
+    return (
+        "costs AS ("
+        "  SELECT l.session_id, SUM(l.cost_usd) AS cost_usd_total "
+        "  FROM ai_interaction_logs l "
+        "  JOIN chat_sessions cs ON cs.id = l.session_id "
+        f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
+        f"{telegram}"
+        "  GROUP BY l.session_id"
+        ")"
+    )
+
+
 async def by_topic(dt_from: Any, dt_to: Any,
                    product_ids: Optional[list[int]] = None) -> list[dict[str, Any]]:
     args: list[Any] = [dt_from, dt_to]
     scope, scope_cte = _scope_clauses(product_ids, args)
     rows = await _pool.fetch(
-        # The cost CTE is SCOPED to the same window+product as the outer query (via
-        # a join to chat_sessions) instead of aggregating the entire, unbounded
-        # ai_interaction_logs table on every dashboard load. Per-session totals are
-        # identical (the outer LEFT JOIN only uses in-window sessions anyway); the
-        # scan is now O(sessions in window) and uses the created_at/product indexes.
-        "WITH costs AS ("
-        "  SELECT l.session_id, SUM(l.cost_usd) AS cost_usd_total "
-        "  FROM ai_interaction_logs l "
-        "  JOIN chat_sessions cs ON cs.id = l.session_id "
-        f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
-        "    AND cs.consumer <> 'telegram' "
-        "  GROUP BY l.session_id"
-        ") "
+        f"WITH {_cost_cte(scope_cte)} "
         "SELECT t.slug, t.title, "
         # Count only engaged sessions (>= 1 message): greeting-only "zero" sessions
         # had no OpenAI call and must not dilute the per-topic counts or rates.
@@ -2641,16 +2629,7 @@ async def by_language(dt_from: Any, dt_to: Any,
     args: list[Any] = [dt_from, dt_to]
     scope, scope_cte = _scope_clauses(product_ids, args)
     rows = await _pool.fetch(
-        # Cost CTE scoped to the same window+product (see by_topic) — no full-table
-        # scan of the unbounded ai_interaction_logs on every dashboard load.
-        "WITH costs AS ("
-        "  SELECT l.session_id, SUM(l.cost_usd) AS cost_usd_total "
-        "  FROM ai_interaction_logs l "
-        "  JOIN chat_sessions cs ON cs.id = l.session_id "
-        f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
-        "    AND cs.consumer <> 'telegram' "
-        "  GROUP BY l.session_id"
-        ") "
+        f"WITH {_cost_cte(scope_cte)} "
         "SELECT COALESCE(s.lang, 'unknown') AS lang, "
         # Engaged sessions only — exclude greeting-only "zero" sessions (no OpenAI
         # call) so the per-language counts and escalation rates aren't diluted.
@@ -2676,7 +2655,7 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
                         escalated: Optional[bool] = None, q: Optional[str] = None,
                         min_messages: Optional[int] = None,
                         product_ids: Optional[list[int]] = None,
-                        page: int = 1, page_size: int = 25) -> dict[str, Any]:
+                        page: int = 1) -> dict[str, Any]:
     # Telegram (retention-bot) chats live in the Retention section of the admin
     # (list_retention_sessions) — the support Conversations list never mixes
     # them in.
@@ -2708,6 +2687,7 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
         *args,
     )
     page = max(page, 1)
+    page_size = 25
     args2 = args + [page_size, (page - 1) * page_size]
     rows = await _pool.fetch(
         f"SELECT s.id, s.lang, s.status, s.escalated, s.message_count, "
@@ -2875,7 +2855,7 @@ async def delete_session(session_id: str) -> bool:
     just one facade over a durable player, and leaving the player behind made a
     deleted conversation keep showing up in analytics.
     """
-    async with _pool.acquire() as conn:
+    async with _acquire() as conn:
         async with conn.transaction():
             srow = await conn.fetchrow(
                 "SELECT consumer, product_id, tg_user_id "
@@ -2934,15 +2914,8 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any,
     args: list[Any] = [dt_from, dt_to]
     scope, scope_cte = _scope_clauses(product_ids, args)
     rows = await _pool.fetch(
-        # Cost CTE scoped to the same window+product (see by_topic) — no full-table
-        # scan of the unbounded ai_interaction_logs on every load.
-        "WITH costs AS ("
-        "  SELECT l.session_id, SUM(l.cost_usd) AS cost_usd_total "
-        "  FROM ai_interaction_logs l "
-        "  JOIN chat_sessions cs ON cs.id = l.session_id "
-        f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
-        "  GROUP BY l.session_id"
-        "), unresolved AS ("
+        f"WITH {_cost_cte(scope_cte, support_only=False)}"
+        ", unresolved AS ("
         "  SELECT COALESCE(t.slug, 'unknown') AS topic, "
         "    COALESCE(t.title, '{}'::jsonb) AS title, "
         "    s.id AS session_id, s.lang, s.status, s.escalated, s.message_count, "
@@ -3005,11 +2978,9 @@ def _row_to_retention_user(row: asyncpg.Record) -> dict[str, Any]:
         d["id"] = int(d["id"])
     if d.get("session_id") is not None:
         d["session_id"] = str(d["session_id"])
-    for ts in ("profile_updated_at", "last_stage_advance_at", "last_active_at",
+    _iso_fields(d, "profile_updated_at", "last_stage_advance_at", "last_active_at",
                "created_at", "updated_at", "photos_day", "last_login_at",
-               "last_played_at", "last_deposit_at", "last_ping_at", "pings_day"):
-        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
-            d[ts] = d[ts].isoformat()
+               "last_played_at", "last_deposit_at", "last_ping_at", "pings_day")
     return d
 
 
@@ -3051,12 +3022,6 @@ async def get_retention_user(product_id: int, tg_user_id: int
         f"WHERE product_id = $1 AND tg_user_id = $2",
         product_id, tg_user_id,
     )
-    return _row_to_retention_user(row) if row else None
-
-
-async def get_retention_user_by_id(rid: int) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
-        f"SELECT {_RU_COLS} FROM retention_users WHERE id = $1", rid)
     return _row_to_retention_user(row) if row else None
 
 
@@ -3158,11 +3123,7 @@ async def update_retention_profile(product_id: int, player_id: str,
         f"WHERE product_id = $1 AND player_id = $2",
         *args,
     )
-    # asyncpg returns "UPDATE <n>"
-    try:
-        return int(result.split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    return _affected(result)  # asyncpg returns "UPDATE <n>"
 
 
 async def set_retention_subscribed(rid: int, subscribed: bool) -> None:
@@ -3224,9 +3185,7 @@ def _row_to_rule(row: asyncpg.Record) -> dict[str, Any]:
             d["vip_tiers"] = json.loads(tiers)
         except ValueError:
             d["vip_tiers"] = []
-    for ts in ("created_at", "updated_at"):
-        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
-            d[ts] = d[ts].isoformat()
+    _iso_fields(d, "created_at", "updated_at")
     return d
 
 
@@ -3568,10 +3527,7 @@ async def prune_retention_events(keep_days: int = 90) -> int:
                 "WHERE processed_at IS NOT NULL "
                 "  AND processed_at < now() - make_interval(days => $1)",
                 int(keep_days))
-    try:
-        return int(result.split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    return _affected(result)
 
 
 async def list_retention_events(product_id: int, page: int = 1,
@@ -3671,10 +3627,7 @@ async def touch_retention_activity(product_id: int, player_id: str,
         "WHERE product_id = $1 AND player_id = $2",
         product_id, player_id, parsed,
     )
-    try:
-        return int(result.split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    return _affected(result)
 
 
 async def get_retention_user_by_player(product_id: int, player_id: str
@@ -3774,7 +3727,7 @@ async def delete_retention_event(product_id: int, event_pk: int) -> bool:
     hand — the column has no ON DELETE clause). NB: the event log also feeds
     the state resolver (loss window / recent activity), so deleting real
     partner events rewrites history — this exists for wiping simulator rows."""
-    async with _pool.acquire() as conn:
+    async with _acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 "UPDATE retention_v2_decisions SET event_pk = NULL "
@@ -3783,13 +3736,13 @@ async def delete_retention_event(product_id: int, event_pk: int) -> bool:
             result = await conn.execute(
                 "DELETE FROM retention_events WHERE product_id = $1 AND id = $2",
                 product_id, int(event_pk))
-    return result.split()[-1] == "1"
+    return _affected(result) == 1
 
 
 async def clear_retention_events(product_id: int) -> int:
     """Delete ALL of one product's canonical events (admin test-cleanup).
     Returns the number of rows removed."""
-    async with _pool.acquire() as conn:
+    async with _acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 "UPDATE retention_v2_decisions SET event_pk = NULL "
@@ -3798,10 +3751,7 @@ async def clear_retention_events(product_id: int) -> int:
             result = await conn.execute(
                 "DELETE FROM retention_events WHERE product_id = $1",
                 product_id)
-    try:
-        return int(result.split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    return _affected(result)
 
 
 async def delete_retention_v2_decision(product_id: int,
@@ -3812,7 +3762,7 @@ async def delete_retention_v2_decision(product_id: int,
     result = await _pool.execute(
         "DELETE FROM retention_v2_decisions WHERE product_id = $1 AND id = $2",
         product_id, int(decision_pk))
-    return result.split()[-1] == "1"
+    return _affected(result) == 1
 
 
 async def clear_retention_v2_decisions(product_id: int) -> int:
@@ -3821,10 +3771,7 @@ async def clear_retention_v2_decisions(product_id: int) -> int:
     result = await _pool.execute(
         "DELETE FROM retention_v2_decisions WHERE product_id = $1",
         product_id)
-    try:
-        return int(result.split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    return _affected(result)
 
 
 async def retention_v2_activity(product_id: int) -> dict[str, Any]:
@@ -4048,9 +3995,7 @@ def _row_to_photo(row: asyncpg.Record) -> dict[str, Any]:
     if d.get("id") is not None:
         d["id"] = int(d["id"])
     d["tags"] = _json_value(d.get("tags")) if d.get("tags") is not None else []
-    for ts in ("created_at", "updated_at"):
-        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
-            d[ts] = d[ts].isoformat()
+    _iso_fields(d, "created_at", "updated_at")
     return d
 
 
@@ -4138,8 +4083,7 @@ async def candidate_photos(product_id: int, retention_user_id: int, *,
     return [_row_to_photo(r) for r in rows]
 
 
-async def retention_appearance_context(product_id: int, retention_user_id: int,
-                                        *, base_limit: int = 3
+async def retention_appearance_context(product_id: int, retention_user_id: int
                                         ) -> dict[str, Any]:
     """The persona-appearance grounding for the retention Layer-3 block.
 
@@ -4154,8 +4098,8 @@ async def retention_appearance_context(product_id: int, retention_user_id: int,
     base_rows = await _pool.fetch(
         "SELECT description FROM retention_photos "
         "WHERE product_id = $1 AND active AND description <> '' "
-        "ORDER BY stage, sort_order, id LIMIT $2",
-        product_id, base_limit,
+        "ORDER BY stage, sort_order, id LIMIT 3",
+        product_id,
     )
     last_row = await _pool.fetchrow(
         "SELECT p.description FROM retention_photo_views v "
@@ -4176,9 +4120,7 @@ def _row_to_retention_kb(row: asyncpg.Record) -> dict[str, Any]:
     if d.get("id") is not None:
         d["id"] = int(d["id"])
     d["links"] = _json_value(d.get("links")) if d.get("links") is not None else []
-    for ts in ("created_at", "updated_at"):
-        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
-            d[ts] = d[ts].isoformat()
+    _iso_fields(d, "created_at", "updated_at")
     return d
 
 
@@ -4205,13 +4147,15 @@ async def get_retention_kb_entry(entry_id: int) -> Optional[dict[str, Any]]:
 async def create_retention_kb(product_id: int, *, title: str,
                               trigger_when: Optional[str], body: str,
                               links: list[str], sort_order: int,
+                              active: bool = True,
                               updated_by: Optional[str]) -> dict[str, Any]:
     row = await _pool.fetchrow(
         "INSERT INTO retention_kb "
-        "(product_id, title, trigger_when, body, links, sort_order, updated_by) "
-        "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7) RETURNING " + _RKB_COLS,
+        "(product_id, title, trigger_when, body, links, sort_order, active, "
+        " updated_by) "
+        "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8) RETURNING " + _RKB_COLS,
         product_id, title, trigger_when, body, json.dumps(links or []),
-        sort_order, updated_by,
+        sort_order, active, updated_by,
     )
     return _row_to_retention_kb(row)
 
@@ -4322,9 +4266,7 @@ def _row_to_manager(row: asyncpg.Record) -> dict[str, Any]:
     d = dict(row)
     if d.get("id") is not None:
         d["id"] = int(d["id"])
-    for ts in ("created_at", "updated_at"):
-        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
-            d[ts] = d[ts].isoformat()
+    _iso_fields(d, "created_at", "updated_at")
     return d
 
 

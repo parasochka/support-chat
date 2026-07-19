@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Title, useNotify, usePermissions } from 'react-admin';
+import { Title, useNotify } from 'react-admin';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -14,6 +14,8 @@ import { withProduct } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
 import rich from '../components/Rich';
 import { t } from '../i18n';
+import { notifyError } from '../lib/notifyError';
+import { useReadOnly } from '../lib/useReadOnly';
 
 const PROFILE_FIELDS = [
   'id',
@@ -35,8 +37,7 @@ const PROFILE_FIELDS = [
  */
 const TestProfileInner = () => {
   const notify = useNotify();
-  const { permissions } = usePermissions();
-  const readOnly = permissions !== 'admin';
+  const readOnly = useReadOnly();
 
   const [profile, setProfile] = useState(null);
   const [profileActive, setProfileActive] = useState(true);
@@ -60,7 +61,7 @@ const TestProfileInner = () => {
       });
       notify(t('Test profile saved'), { type: 'success' });
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     } finally {
       setSaving(false);
     }

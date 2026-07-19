@@ -46,10 +46,6 @@ class AdminLogin(BaseModel):
     email: Optional[str] = None
 
 
-def _client_ip(request: Request) -> str:
-    return client_ip(request)
-
-
 def _stash_actor(request: Optional[Request], email: str, role: Optional[str]) -> None:
     """Record the acting account on the request so the audit middleware
     (main.py) can attribute a mutating action to it after the handler runs."""
@@ -265,7 +261,7 @@ async def resolve_scope_filter(admin: dict, product_id: Optional[int] = None,
 
 @router.post("/login")
 async def login(req: Request, body: AdminLogin) -> JSONResponse:
-    ip = _client_ip(req)
+    ip = client_ip(req)
     # Sliding-window brute-force throttle on a dedicated key + a dedicated, tight
     # allowance (config.ADMIN_LOGIN_RATE_LIMIT) — NOT the hot widget knob, so an
     # operator widening the widget limit can't widen the unauthenticated
@@ -331,6 +327,5 @@ async def login(req: Request, body: AdminLogin) -> JSONResponse:
                                    pwv=auth.password_version(password_hash))
     return JSONResponse(status_code=200,
                         content={"token": token,
-                                 "ttl_min": config.ADMIN_TOKEN_TTL_MIN,
                                  "role": role, "email": email,
                                  "memberships": memberships})

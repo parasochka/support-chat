@@ -47,8 +47,7 @@ def _wire(monkeypatch, *, captured):
         async def complete(self, messages, session_id=None, on_failover=None):
             captured["messages"] = messages
             return openai_client.ChatResult(
-                text="Чтобы вывести средства, ...", lang="ru",
-                tokens_in=10, tokens_out=5, cached_in=0,
+                text="Чтобы вывести средства, ...", tokens_in=10, tokens_out=5, cached_in=0,
                 model="gpt-test", key_used="primary", latency_ms=1,
             )
 

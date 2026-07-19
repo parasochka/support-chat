@@ -1,7 +1,8 @@
 """KB load helpers + topic catalogue access (product-scoped).
 
 Thin layer over db.* so chat_service / api never reach into tables directly.
-KB content is stored in Russian (source language) and injected as Layer 2.
+KB content is English-guarded on admin write (settings.ensure_english) and
+injected as Layer 2; the Layer-3 language directive localizes the answers.
 Every helper resolves the PRODUCT from the request's tenancy scope (set by the
 API layer from the widget key / session / admin selection) unless the caller
 passes `product_id` explicitly, so each casino sees only its own topics, KB
@@ -105,7 +106,3 @@ async def suggestable_topics(
             continue
         out.append({"slug": t["slug"], "title": _pick_title(t["title"], lang)})
     return out
-
-
-def is_other(slug: str) -> bool:
-    return slug == OTHER_SLUG

@@ -13,7 +13,7 @@ let metaCached = null;
 let metaPending = null;
 
 /** The raw /admin/meta payload, cached for the page lifetime (null on failure). */
-export const fetchMeta = () => {
+const fetchMeta = () => {
   if (metaCached) return Promise.resolve(metaCached);
   if (!metaPending) {
     metaPending = httpClient(withProduct(`${API_URL}/admin/meta`))
@@ -47,7 +47,7 @@ export const useModelPricing = () => {
   return mp;
 };
 
-export const fetchLanguages = () => {
+const fetchLanguages = () => {
   if (cached) return Promise.resolve(cached);
   if (!pending) {
     pending = fetchMeta()

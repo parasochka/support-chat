@@ -22,6 +22,7 @@ import { API_URL, httpClient } from '../httpClient';
 import { scopeParams } from '../productScope';
 import { getScopeName } from '../productScope';
 import { t } from '../i18n';
+import { fmtDateTime } from '../lib/fmt';
 
 const LEVEL_COLOR = {
   ERROR: 'error',
@@ -31,14 +32,7 @@ const LEVEL_COLOR = {
   DEBUG: 'default',
 };
 
-const fmt = (iso) => {
-  if (!iso) return '';
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-};
+const fmt = (iso) => fmtDateTime(iso);
 
 const buildQuery = (params) => {
   const q = new URLSearchParams();

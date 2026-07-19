@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
@@ -47,15 +47,13 @@ class ParsedUpdate:
     start_param: Optional[str] = None      # payload after /start
     callback_data: Optional[str] = None
     callback_id: Optional[str] = None
-    message_id: Optional[int] = None
     language_code: Optional[str] = None
-    raw: dict[str, Any] = field(default_factory=dict)
 
 
 def parse_update(update: dict[str, Any]) -> ParsedUpdate:
     """Turn a raw Telegram update dict into a ParsedUpdate."""
     if not isinstance(update, dict):
-        return ParsedUpdate(kind="other", raw={})
+        return ParsedUpdate(kind="other")
     if "callback_query" in update:
         cq = update["callback_query"] or {}
         frm = cq.get("from") or {}
@@ -68,9 +66,7 @@ def parse_update(update: dict[str, Any]) -> ParsedUpdate:
             chat_id=chat.get("id") or frm.get("id"),
             callback_data=cq.get("data"),
             callback_id=cq.get("id"),
-            message_id=msg.get("message_id"),
             language_code=frm.get("language_code"),
-            raw=update,
         )
     msg = update.get("message") or update.get("edited_message") or {}
     if msg:
@@ -88,11 +84,9 @@ def parse_update(update: dict[str, Any]) -> ParsedUpdate:
             chat_id=chat.get("id") or frm.get("id"),
             text=text,
             start_param=start_param,
-            message_id=msg.get("message_id"),
             language_code=frm.get("language_code"),
-            raw=update,
         )
-    return ParsedUpdate(kind="other", raw=update)
+    return ParsedUpdate(kind="other")
 
 
 # ---------------------------------------------------------------------------
@@ -245,18 +239,6 @@ class TelegramClient:
             payload["disable_notification"] = True
         return await self._call_verbose("sendPhoto", payload)
 
-    async def send_photo_file_id(self, chat_id: int, file_id: str, *,
-                                 caption: Optional[str] = None,
-                                 parse_mode: Optional[str] = None,
-                                 reply_markup: Optional[dict[str, Any]] = None,
-                                 disable_notification: bool = False
-                                 ) -> Optional[dict[str, Any]]:
-        """Send an already-uploaded photo by its cached file_id (no re-upload)."""
-        result, _code, _desc = await self.send_photo_file_id_verbose(
-            chat_id, file_id, caption=caption, parse_mode=parse_mode,
-            reply_markup=reply_markup, disable_notification=disable_notification)
-        return result
-
     async def send_photo_bytes_verbose(
             self, chat_id: int, content: bytes, filename: str, *,
             caption: Optional[str] = None, parse_mode: Optional[str] = None,
@@ -283,19 +265,6 @@ class TelegramClient:
             log.warning("telegram_send_photo_error desc=%s", j.get("description"))
             return None, j.get("error_code"), j.get("description")
         return j.get("result"), None, None
-
-    async def send_photo_bytes(self, chat_id: int, content: bytes, filename: str,
-                               *, caption: Optional[str] = None,
-                               parse_mode: Optional[str] = None,
-                               reply_markup: Optional[dict[str, Any]] = None,
-                               disable_notification: bool = False
-                               ) -> Optional[dict[str, Any]]:
-        """Upload a photo from bytes (first send). Returns the result so the
-        caller can cache the returned file_id for later sends."""
-        result, _code, _desc = await self.send_photo_bytes_verbose(
-            chat_id, content, filename, caption=caption, parse_mode=parse_mode,
-            reply_markup=reply_markup, disable_notification=disable_notification)
-        return result
 
     @staticmethod
     def extract_photo_file_id(send_photo_result: Optional[dict[str, Any]]
@@ -327,15 +296,6 @@ class TelegramClient:
             payload["text"] = text
         await self._call("answerCallbackQuery", payload)
 
-    async def get_chat_member_status(self, chat_id: Any, user_id: int
-                                     ) -> Optional[str]:
-        """Return the member status of `user_id` in `chat_id`, or None on error."""
-        result = await self._call("getChatMember",
-                                  {"chat_id": chat_id, "user_id": user_id})
-        if not result:
-            return None
-        return result.get("status")
-
     async def subscription_state(self, chat_id: Any, user_id: int
                                  ) -> Optional[bool]:
         """Tri-state membership check: True = member, False = definitively NOT a
@@ -356,11 +316,6 @@ class TelegramClient:
             return bool(result.get("is_member"))
         return status in _SUBSCRIBED_STATUSES
 
-    async def is_subscribed(self, chat_id: Any, user_id: int) -> bool:
-        """Boolean membership (an error/unknown collapses to False). Prefer
-        subscription_state where an outage must not look like 'not subscribed'."""
-        return bool(await self.subscription_state(chat_id, user_id))
-
     async def set_webhook(self, url: str, secret_token: str,
                           drop_pending: bool = True) -> Optional[dict[str, Any]]:
         payload = {
@@ -371,8 +326,6 @@ class TelegramClient:
         }
         return await self._call("setWebhook", payload)
 
-    async def delete_webhook(self) -> Optional[dict[str, Any]]:
-        return await self._call("deleteWebhook", {"drop_pending_updates": True})
 
     async def get_me(self) -> Optional[dict[str, Any]]:
         return await self._call("getMe", {})

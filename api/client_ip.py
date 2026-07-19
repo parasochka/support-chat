@@ -11,15 +11,25 @@ def _peer_host(request: Any) -> str:
     return request.client.host if getattr(request, "client", None) else "unknown"
 
 
+# client_ip runs on every chat turn; parsing the CIDR list per call is wasted
+# work, so cache it keyed on the (env-static, but test-monkeypatched) value.
+_nets_cache: tuple[tuple[str, ...], list[ipaddress._BaseNetwork]] = ((), [])
+
+
 def _trusted_proxy_nets() -> list[ipaddress._BaseNetwork]:
+    global _nets_cache
+    raw_list = tuple(getattr(config, "TRUSTED_PROXY_IPS", []))
+    if raw_list == _nets_cache[0]:
+        return _nets_cache[1]
     nets: list[ipaddress._BaseNetwork] = []
-    for raw in getattr(config, "TRUSTED_PROXY_IPS", []):
+    for raw in raw_list:
         try:
             nets.append(ipaddress.ip_network(raw, strict=False))
         except ValueError:
             # Config parsing is intentionally fail-soft here so a bad optional
             # proxy entry cannot make the app trust XFF from everyone.
             continue
+    _nets_cache = (raw_list, nets)
     return nets
 
 

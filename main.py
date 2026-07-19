@@ -31,11 +31,9 @@ logging.basicConfig(
 )
 log = logging.getLogger(config.SERVICE_NAME)
 
-# Mirror the application's runtime logs into the in-process buffer so the admin
-# panel's System-logs view can show them (the flush loop below drains it into the
-# bounded app_logs table). Attaches to the ROOT logger so every app module is
-# captured (they log under their own __name__), with a denylist that keeps out
-# uvicorn's access log / third-party noise — see logcapture.py.
+# Mirror runtime logs into the in-process buffer for the admin System-logs view
+# (the flush loop below drains it into the bounded app_logs table) — see
+# logcapture.py for the root-logger/denylist rationale.
 import logcapture  # noqa: E402
 logcapture.install()
 
@@ -338,7 +336,10 @@ app.include_router(retention_api.admin_router)    # /admin/retention/* (guarded)
 # --- static frontend --------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def index() -> FileResponse:
-    return FileResponse(_TEST_PAGE, media_type="text/html")
+    # Same no-cache header as /test.html — the two serve the same page and must
+    # revalidate identically.
+    return FileResponse(_TEST_PAGE, media_type="text/html",
+                        headers=_WIDGET_CACHE)
 
 
 if os.path.isdir(_FRONTEND_DIR):
@@ -402,37 +403,14 @@ async def test_html() -> FileResponse:
 # vars, docs index); the siblings cover the widget embed, player data transfer
 # & sync, the public Chat API / custom UI contract, the Telegram retention bot,
 # and the external "master" admin panel integration.
-@app.get("/integration", response_class=HTMLResponse)
-async def integration_docs() -> FileResponse:
-    return FileResponse(os.path.join(_FRONTEND_DIR, "integration.html"),
-                        media_type="text/html", headers=_WIDGET_CACHE)
+def _register_doc_page(path: str, filename: str) -> None:
+    async def _serve() -> FileResponse:
+        return FileResponse(os.path.join(_FRONTEND_DIR, filename),
+                            media_type="text/html", headers=_WIDGET_CACHE)
+    app.get(path, response_class=HTMLResponse, name=f"docs_{filename}")(_serve)
 
 
-@app.get("/integration-widget", response_class=HTMLResponse)
-async def integration_widget_docs() -> FileResponse:
-    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-widget.html"),
-                        media_type="text/html", headers=_WIDGET_CACHE)
-
-
-@app.get("/integration-data", response_class=HTMLResponse)
-async def integration_data_docs() -> FileResponse:
-    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-data.html"),
-                        media_type="text/html", headers=_WIDGET_CACHE)
-
-
-@app.get("/integration-chat-api", response_class=HTMLResponse)
-async def integration_chat_api_docs() -> FileResponse:
-    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-chat-api.html"),
-                        media_type="text/html", headers=_WIDGET_CACHE)
-
-
-@app.get("/integration-telegram", response_class=HTMLResponse)
-async def integration_telegram_docs() -> FileResponse:
-    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-telegram.html"),
-                        media_type="text/html", headers=_WIDGET_CACHE)
-
-
-@app.get("/integration-admin", response_class=HTMLResponse)
-async def integration_admin_docs() -> FileResponse:
-    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-admin.html"),
-                        media_type="text/html", headers=_WIDGET_CACHE)
+for _doc_path in ("integration", "integration-widget", "integration-data",
+                  "integration-chat-api", "integration-telegram",
+                  "integration-admin"):
+    _register_doc_page(f"/{_doc_path}", f"{_doc_path}.html")

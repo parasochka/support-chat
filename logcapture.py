@@ -92,13 +92,9 @@ class _AppOnlyFilter(logging.Filter):
 def install(level: int = logging.INFO) -> None:
     """Attach the buffer handler to the ROOT logger (idempotent).
 
-    Root, not `config.SERVICE_NAME`: every app module logs via
-    `logging.getLogger(__name__)` (sibling loggers under root, NOT descendants of
-    the service logger), so attaching only to the service logger — the previous
-    behaviour — captured just main.py / health.py and silently dropped every
-    escalation / failover / retention decision / model error / rate-limit block
-    the System-logs view is meant to surface. On root all those records are seen;
-    a denylist filter keeps out framework noise (uvicorn access log, httpx, …).
+    Must be root, not `config.SERVICE_NAME` — see the module docstring: app
+    modules log as siblings of the service logger, so a narrower attach point
+    silently drops them.
     """
     global _installed
     if _installed:

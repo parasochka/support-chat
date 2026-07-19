@@ -1,4 +1,4 @@
-"""Language resolution precedence: browser locale > session lang > AUTO/default."""
+"""Language resolution: browser locale > AUTO (service default downstream)."""
 from __future__ import annotations
 
 import pytest
@@ -20,21 +20,8 @@ def test_locale_mapping():
     assert language.resolve(locale="ru") == "ru"
 
 
-def test_unsupported_locale_falls_to_session_then_auto():
-    # Unsupported locale, no session lang -> AUTO (service default downstream).
+def test_unsupported_locale_falls_to_auto():
     assert language.resolve(locale="de-DE") == language.AUTO
-    # …but a persisted session language is used before AUTO.
-    assert language.resolve(locale="de-DE", session_lang="ru") == "ru"
-
-
-def test_session_lang_used_when_no_locale():
-    assert language.resolve(session_lang="ru") == "ru"
-
-
-def test_locale_beats_session():
-    # The browser locale is the single source of truth, so it outranks a stale
-    # persisted session language if the two ever disagree.
-    assert language.resolve(locale="es-MX", session_lang="ru") == "es"
 
 
 def test_nothing_resolves_to_auto():

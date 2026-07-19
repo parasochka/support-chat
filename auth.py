@@ -39,14 +39,10 @@ def _sign(signing_input: bytes) -> bytes:
     ).digest()
 
 
-def issue_session_token(session_id: str, ttl_hours: Optional[int] = None,
-                        extra: Optional[dict[str, Any]] = None) -> str:
+def issue_session_token(session_id: str) -> str:
     """Mint an HS256 JWT for the given session id."""
-    if ttl_hours is None:
-        import settings  # lazy: avoid an import cycle (settings is built atop db)
-        ttl = settings.general()["session_ttl_hours"]
-    else:
-        ttl = ttl_hours
+    import settings  # lazy: avoid an import cycle (settings is built atop db)
+    ttl = settings.general()["session_ttl_hours"]
     now = int(time.time())
     header = {"alg": _ALG, "typ": "JWT"}
     payload: dict[str, Any] = {
@@ -54,9 +50,6 @@ def issue_session_token(session_id: str, ttl_hours: Optional[int] = None,
         "iat": now,
         "exp": now + ttl * 3600,
     }
-    if extra:
-        payload.update(extra)
-
     header_b64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
     payload_b64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
     signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
@@ -112,28 +105,24 @@ def _sign_with(secret: str, signing_input: bytes) -> bytes:
 
 
 def issue_admin_token(role: str = "admin",
-                      ttl_min: Optional[int] = None,
-                      email: Optional[str] = None,
+                      email: str = "",
                       pwv: Optional[str] = None) -> str:
     """Mint an admin JWT signed with ADMIN_JWT_SECRET (distinct from sessions).
 
     `role` drives authorization (admin may write; manager is read-only).
     `email` identifies the named user and rides in the token so the audit trail
-    (`updated_by`) records who acted. `pwv` is a short fingerprint of the current
-    password hash (see password_version); require_admin rejects a token whose pwv
-    no longer matches, so changing an account's password revokes its outstanding
-    tokens on their next request.
+    (`updated_by`) records who acted — require_admin rejects a token without an
+    email claim, so every caller passes it. `pwv` is a short fingerprint of the
+    current password hash (see password_version); require_admin rejects a token
+    whose pwv no longer matches, so changing an account's password revokes its
+    outstanding tokens on their next request.
     """
-    if ttl_min is None:
-        import settings  # lazy: avoid an import cycle (settings is built atop db)
-        ttl = settings.general()["admin_token_ttl_min"]
-    else:
-        ttl = ttl_min
+    import settings  # lazy: avoid an import cycle (settings is built atop db)
+    ttl = settings.general()["admin_token_ttl_min"]
     now = int(time.time())
     header = {"alg": _ALG, "typ": "JWT"}
-    payload = {"sub": email or "admin", "role": role, "iat": now, "exp": now + ttl * 60}
-    if email:
-        payload["email"] = email
+    payload = {"sub": email, "role": role, "iat": now, "exp": now + ttl * 60,
+               "email": email}
     if pwv:
         payload["pwv"] = pwv
     header_b64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())

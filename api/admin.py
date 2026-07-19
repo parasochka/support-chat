@@ -202,11 +202,15 @@ async def sessions(from_: Optional[str] = Query(default=None, alias="from"),
     return JSONResponse(content=res)
 
 
-@router.get("/session/{session_id}")
-async def session(session_id: str, admin=Depends(require_admin)) -> JSONResponse:
-    # Validate up front: a non-UUID path segment would otherwise hit the UUID
-    # column and bubble out of asyncpg as a 500 (the chat API never gets here
-    # because its session tokens only ever carry real UUIDs).
+async def _load_scoped_session(session_id: str, admin, *,
+                               write: bool) -> dict:
+    """Fetch a session's detail after UUID validation + product scope check.
+
+    A non-UUID path segment would otherwise hit the UUID column and bubble out
+    of asyncpg as a 500 (the chat API never gets here because its session
+    tokens only ever carry real UUIDs). A session with no product (legacy rows)
+    is visible only to global viewers, writable only by global admins.
+    """
     try:
         _uuid.UUID(session_id)
     except ValueError:
@@ -214,13 +218,22 @@ async def session(session_id: str, admin=Depends(require_admin)) -> JSONResponse
     detail = await db.session_detail(session_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="Session not found.")
-    # Scope check: a session belongs to a product; only accounts with reach
-    # over that product may open its transcript.
     sess_product = (detail.get("session") or {}).get("product_id")
     if sess_product is not None:
-        await admin_auth.require_product_read(admin, sess_product)
+        if write:
+            await admin_auth.require_product_write(admin, sess_product)
+        else:
+            await admin_auth.require_product_read(admin, sess_product)
+    elif write:
+        admin_auth.require_global_write(admin)
     elif admin_auth.global_role(admin) is None:
         raise HTTPException(status_code=403, detail="No access to this session.")
+    return detail
+
+
+@router.get("/session/{session_id}")
+async def session(session_id: str, admin=Depends(require_admin)) -> JSONResponse:
+    detail = await _load_scoped_session(session_id, admin, write=False)
     return JSONResponse(content=detail)
 
 
@@ -234,18 +247,7 @@ async def delete_session(session_id: str,
     product, is refused. Used by the Conversations / Unresolved / Telegram-chats
     delete controls.
     """
-    try:
-        _uuid.UUID(session_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    detail = await db.session_detail(session_id)
-    if detail is None:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    sess_product = (detail.get("session") or {}).get("product_id")
-    if sess_product is not None:
-        await admin_auth.require_product_write(admin, sess_product)
-    else:
-        admin_auth.require_global_write(admin)
+    await _load_scoped_session(session_id, admin, write=True)
     await db.delete_session(session_id)
     await db.log_admin_event(None, "session_deleted", {"session_id": session_id})
     return JSONResponse(content={"ok": True, "id": session_id})
@@ -431,16 +433,21 @@ class SiteMapWrite(BaseModel):
     value: Any = Field(...)
 
 
+def _prompt_vars_payload() -> dict:
+    """The registry + currently-resolved values (shared by GET and PUT)."""
+    resolved = settings_mod.prompt_variables()
+    return {"variables": [
+        {"key": key, "description": desc, "default": default,
+         "value": resolved.get(key, default)}
+        for key, desc, default in prompts.PROMPT_VARIABLES
+    ]}
+
+
 @router.get("/prompt-variables")
 async def get_prompt_variables(product_id: Optional[int] = None,
                                admin=Depends(require_admin)) -> JSONResponse:
     await _resolve_admin_product(admin, product_id, write=False)
-    resolved = settings_mod.prompt_variables()
-    return JSONResponse(content={"variables": [
-        {"key": key, "description": desc, "default": default,
-         "value": resolved.get(key, default)}
-        for key, desc, default in prompts.PROMPT_VARIABLES
-    ]})
+    return JSONResponse(content=_prompt_vars_payload())
 
 
 @router.put("/prompt-variables")
@@ -461,11 +468,7 @@ async def put_prompt_variables(body: PromptVariablesWrite,
     await settings_mod.reload()  # hot: the next prompt build renders new values
     await db.log_admin_event(None, "prompt_variables_updated",
                              {"keys": sorted(validated)})
-    return JSONResponse(content={"variables": [
-        {"key": key, "description": desc, "default": default,
-         "value": settings_mod.prompt_variables().get(key, default)}
-        for key, desc, default in prompts.PROMPT_VARIABLES
-    ]})
+    return JSONResponse(content=_prompt_vars_payload())
 
 
 # ---------------------------------------------------------------------------
@@ -1412,9 +1415,8 @@ async def rotate_widget_key(product_id: int,
 # forbidden topics) + the player context in the user message. We assemble the
 # exact messages chat_service would send for the SAME example player the chat
 # would actually use: the admin "Test sandbox" profile (the single source of the
-# test player). There is NO separate hard-coded preview player — that diverged
-# from the sandbox and showed one user in the prompt while the sandbox defined
-# another. When the sandbox is disabled (or its fields are blank) the preview
+# test player — never a separate hard-coded preview player, so the preview and
+# the sandbox can't disagree). When the sandbox is disabled (or blank) the preview
 # renders an anonymous session, so no invented player data appears anywhere.
 # Nothing here is sent to the model — it's a faithful rendering of the live
 # assembly so "how is the prompt formed?" has one answer in one place.

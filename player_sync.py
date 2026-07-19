@@ -66,11 +66,12 @@ _ACTIVITY_BRIDGE: dict[str, str] = {
     "deposit_confirmed": "last_deposit_at",
 }
 
-# Profile-ish payload fields an event may carry (rare, but a partner may ride
-# a fresh balance/vip on deposit_confirmed); routed into the snapshot.
-_PROFILE_PAYLOAD_FIELDS = ("full_name", "email", "activation_status",
-                           "country", "balance", "vip_level",
-                           "registration_date")
+# The whitelisted profile-snapshot fields (mirrors prompts._CONTEXT_FIELDS
+# minus `id`). ONE definition — the event payload router, the Player-API pull
+# and retention's handshake snapshot all read this, so a new field lands
+# everywhere at once.
+PROFILE_FIELDS = ("full_name", "email", "activation_status", "country",
+                  "balance", "vip_level", "registration_date")
 
 _MAX_EVENT_ID_LEN = 64
 _MAX_PAYLOAD_BYTES = 8192
@@ -164,7 +165,7 @@ async def ingest_event(product_id: int, evt: dict[str, Any],
         if field:
             await db.touch_retention_activity(product_id, v["player_id"],
                                               field, v["ts"])
-        profile = {k: v["payload"][k] for k in _PROFILE_PAYLOAD_FIELDS
+        profile = {k: v["payload"][k] for k in PROFILE_FIELDS
                    if v["payload"].get(k) is not None}
         if profile:
             await db.update_retention_profile(product_id, v["player_id"],
@@ -206,13 +207,9 @@ async def apply_profile_push(product_id: int, player_id: str,
 # ---------------------------------------------------------------------------
 # Lazy Player-API pull (moved here from retention.py; retention delegates)
 # ---------------------------------------------------------------------------
-_PROFILE_FIELDS = ("full_name", "email", "activation_status", "country",
-                   "balance", "vip_level", "registration_date")
-
-
-def _profile_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Extract the whitelisted profile fields (_CONTEXT_FIELDS snapshot)."""
-    return {f: payload.get(f) for f in _PROFILE_FIELDS
+def profile_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extract the whitelisted profile fields (PROFILE_FIELDS snapshot)."""
+    return {f: payload.get(f) for f in PROFILE_FIELDS
             if payload.get(f) is not None}
 
 
@@ -359,7 +356,7 @@ async def maybe_pull_profile(product: dict[str, Any], ru: dict[str, Any],
         log.warning("retention_profile_pull_failed error=%s", exc)
         return ru
     payload = data if isinstance(data, dict) else {}
-    profile = _profile_from_payload(payload)
+    profile = profile_from_payload(payload)
     # The Player API may also report casino activity (the state resolver keys on
     # these); pass the timestamps through — db parses/validates them.
     for f in ("last_login_at", "last_played_at", "last_deposit_at"):

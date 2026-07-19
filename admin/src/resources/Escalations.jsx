@@ -17,6 +17,7 @@ import MobileList from '../components/MobileList';
 import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
 import { t } from '../i18n';
+import { fmtDateTime } from '../lib/fmt';
 
 const filters = [
   <TextInput key="topic" source="topic" label={t('Topic slug')} alwaysOn />,
@@ -56,7 +57,7 @@ export const EscalationList = () => {
             secondaryText={(r) => r.first_message || ''}
             tertiaryText={(r) =>
               `${r.message_count ?? 0} ${t('msgs')} · $${(r.cost_usd_total ?? 0).toFixed(4)} · ${
-                r.created_at ? new Date(r.created_at).toLocaleString() : ''
+                fmtDateTime(r.created_at)
               }`
             }
             onRowClick={(id) => redirect('show', 'sessions', id)}

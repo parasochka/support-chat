@@ -55,15 +55,9 @@ def interval_sec() -> int:
 
     Global-layer read (one loop serves every product), clamped 300s..24h.
     """
-    token = tenancy.set_current_product(None)
-    try:
-        v = int(settings.retention().get("media_normalize_interval_sec") or 0)
-    except Exception:  # noqa: BLE001 - a bad stored value must not kill the loop
-        v = 0
-    finally:
-        tenancy.reset_current_product(token)
-    return min(max(v or config.RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC,
-                   300), 86_400)
+    return settings.global_retention_int(
+        "media_normalize_interval_sec",
+        config.RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC, 300, 86_400)
 
 
 def _probe(path: str) -> Optional[tuple[str, int, int]]:

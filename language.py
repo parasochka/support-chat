@@ -1,18 +1,13 @@
-"""Language resolution — one source of truth: the browser language.
+"""Language resolution — the STARTING language comes from the browser.
 
-The widget and the AI answers both use a single language, derived from the
-browser locale (`navigator.language`) the front-end sends, mapped to a
-supported base code. There is no per-message mirroring, no account-language
-input, and no manual switcher — the chrome and the answers always speak the
-browser's language for the whole session.
-
-Priority (for the answer language):
-  1. `locale` mapped to a base code (e.g. es-MX -> es), if supported — this is
-     where the browser language (navigator.language) lands
-  2. persisted `session_lang` from session create (the resolved locale)
-  3. AUTO -> fall back to DEFAULT_LANGUAGE
-
-The source prompt + KB stay Russian; only the answer language varies.
+`resolve()` maps the browser locale (`navigator.language`) to a supported base
+code (es-MX -> es), else AUTO (-> DEFAULT_LANGUAGE downstream). That resolved
+code is stored on the session (`chat_sessions.lang`) and is only the STARTING
+point: the conversation then FOLLOWS the player — each turn the model answers
+in the language of the player's current message and reports it via [[LANG:xx]],
+which chat_service persists as the sticky `conv_lang` (see the CLAUDE.md
+"Language resolution" section). The model-facing prompt stays English; the KB
+may be in any language; user-facing copy is multilingual via translations.py.
 """
 from __future__ import annotations
 
@@ -143,23 +138,24 @@ def locale_to_lang(locale: Optional[str]) -> Optional[str]:
     return _supported(base)
 
 
-def resolve(locale: Optional[str] = None,
-            session_lang: Optional[str] = None) -> str:
+def resolve(locale: Optional[str] = None) -> str:
     """Resolve the answer language from the browser locale, else AUTO.
 
-    Priority: browser `locale` -> persisted `session_lang` (the locale resolved
-    at session create) -> AUTO. `locale` accepts either a base code ('ru') or a
-    locale ('ru-RU'). Pure priority chain so it is easy to unit-test.
+    `locale` accepts either a base code ('ru') or a locale ('ru-RU').
     """
-    chosen = locale_to_lang(locale)
-    if chosen:
-        return chosen
+    return locale_to_lang(locale) or AUTO
 
-    normalized = _supported(session_lang)
-    if normalized:
-        return normalized
 
-    return AUTO
+def session_base_lang(session: dict) -> str:
+    """A turn's base/fallback language: sticky conv_lang, else the session's
+    browser language, else the default. The AUTO branch defends against legacy
+    rows only — current create paths never store the literal AUTO sentinel."""
+    base = (
+        session.get("conv_lang")
+        or session.get("lang")
+        or default_code()
+    )
+    return default_code() if base == AUTO else base
 
 
 def language_name(resolved: str) -> str:

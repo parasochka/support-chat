@@ -45,8 +45,7 @@ def test_topic_suggestion_is_routing_only_and_suppresses_answer(monkeypatch):
                     "[[TOPIC:deposits]]\n"
                     "Похоже, ваш вопрос относится к теме «Депозиты».\n"
                     "[[SUGGEST: Как пополнить картой | Как пополнить крипто | Всё ясно, спасибо]]"
-                ),
-                lang="ru", tokens_in=10, tokens_out=5, cached_in=0,
+                ), tokens_in=10, tokens_out=5, cached_in=0,
                 model="gpt-test", key_used="primary", latency_ms=1,
             )
 
@@ -110,8 +109,7 @@ def test_normal_turn_appends_system_closing_suggestion(monkeypatch):
                 text=(
                     "Пополнить можно картой или криптой.\n"
                     "[[SUGGEST: Какой минимальный депозит? | Есть ли комиссия? | Всё понятно, спасибо.]]"
-                ),
-                lang="ru", tokens_in=10, tokens_out=5, cached_in=0,
+                ), tokens_in=10, tokens_out=5, cached_in=0,
                 model="gpt-test", key_used="primary", latency_ms=1,
             )
 

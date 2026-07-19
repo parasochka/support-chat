@@ -31,6 +31,8 @@ import RequireProduct from '../components/RequireProduct';
 import IdlePingsTab from './IdlePings';
 import { t } from '../i18n';
 import rich from '../components/Rich';
+import { notifyError } from '../lib/notifyError';
+import { fmtDateTime } from '../lib/fmt';
 
 /**
  * The proactive agent (event-driven) — the one regime that writes to players
@@ -60,7 +62,7 @@ const WRAP_CHIPS_SX = {
   },
 };
 
-const fmtDT = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
+const fmtDT = (iso) => fmtDateTime(iso) || '—';
 const fmtCost = (v) =>
   v == null ? '—' : `$${Number(v).toFixed(4)}`;
 
@@ -300,7 +302,7 @@ const Simulator = ({ status, onDone, canWrite }) => {
       notify(t('Event injected'), { type: 'success' });
       onDone();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Simulation failed'), { type: 'error' });
+      notifyError(notify, e, t('Simulation failed'));
     } finally {
       setBusy(false);
     }
@@ -884,7 +886,7 @@ const RetentionAgentInner = () => {
       );
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Run failed'), { type: 'error' });
+      notifyError(notify, e, t('Run failed'));
     } finally {
       setRunning(false);
     }
@@ -897,7 +899,7 @@ const RetentionAgentInner = () => {
       notify(t('Deleted'), { type: 'success' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Delete failed'), { type: 'error' });
+      notifyError(notify, e, t('Delete failed'));
     }
   };
 

@@ -31,6 +31,7 @@ import config
 import db
 import kb
 import language
+import openai_client
 import player_sync
 import prompts
 import retention as retention_mod
@@ -163,10 +164,10 @@ async def create_deeplink(req: Request, body: DeeplinkReq) -> JSONResponse:
     else:
         tp = settings_mod.test_profile()
         if tp.get("enabled"):
-            context = {k: tp.get(k) for k in (
-                "id", "full_name", "email", "activation_status",
-                "country", "balance", "vip_level", "registration_date")
-                if tp.get(k)}
+            # The model-visible whitelist — one source (prompts._CONTEXT_FIELDS),
+            # so a new context field automatically reaches this branch too.
+            context = {k: tp.get(k) for k in prompts._CONTEXT_FIELDS
+                       if tp.get(k)}
         else:
             context = body.user_context or {}
 
@@ -590,7 +591,8 @@ async def create_kb(product_id: int, body: RetentionKBWrite,
         product_id, title=body.title.strip(),
         trigger_when=(body.trigger_when or "").strip() or None,
         body=body.body.strip(), links=[l.strip() for l in body.links if l.strip()],
-        sort_order=body.sort_order, updated_by=admin.get("email"))
+        sort_order=body.sort_order, active=body.active,
+        updated_by=admin.get("email"))
     await db.log_admin_event(None, "retention_kb_created", {"id": entry["id"]},
                              product_id=product_id)
     return JSONResponse(content={"entry": entry})
@@ -796,10 +798,9 @@ def _parse_photo_meta(text: str, *, vip_tiers: list[str],
         level_min = int(data.get("level_min"))
     except (TypeError, ValueError):
         raise ValueError("stage/level_min must be integers")
-    stage = min(max(stage, 1), max(int(max_stage), 1))
-    level_min = min(max(level_min, 0), max(len(vip_tiers or ["none"]) - 1, 0))
-    return {"description": description[:1000], "tags": tags,
-            "stage": stage, "level_min": level_min}
+    clamped = _clamp_photo_gate(stage=stage, level_min=level_min,
+                                vip_tiers=vip_tiers, max_stage=max_stage)
+    return {"description": description[:1000], "tags": tags, **clamped}
 
 
 async def _generate_photo_meta(client: Any, photo: dict[str, Any],
@@ -834,8 +835,7 @@ async def _generate_photo_meta(client: Any, photo: dict[str, Any],
                                     error=f"photo_meta: {exc.__class__.__name__}",
                                     product_id=product_id)
         return {"id": photo["id"], "ok": False, "error": "model call failed"}
-    import openai_client as oc
-    cost = oc.compute_cost(result.model, result.tokens_in, result.tokens_out,
+    cost = openai_client.compute_cost(result.model, result.tokens_in, result.tokens_out,
                            result.cached_in)
     await db.log_ai_interaction(None, result.model, result.key_used,
                                 result.tokens_in, result.tokens_out,
@@ -858,9 +858,6 @@ async def generate_photo_metadata(product_id: int, body: GeneratePhotoMetaReq,
                                   admin=Depends(require_admin_write)
                                   ) -> JSONResponse:
     """Fill description/tags/stage/level_min for the selected photos with AI."""
-    import asyncio
-
-    import openai_client
     await admin_auth.require_product_write(admin, product_id)
     # Bind the scope so the `model` and `retention` groups resolve per product.
     tenancy.set_current_product(product_id)
@@ -872,9 +869,7 @@ async def generate_photo_metadata(product_id: int, body: GeneratePhotoMetaReq,
             raise HTTPException(status_code=404,
                                 detail=f"Photo {pid_} not found in this product.")
         photos.append(photo)
-    rt = settings_mod.retention()
-    vip_tiers = [str(t) for t in rt.get("vip_tiers") or ["none"]]
-    max_stage = int(rt.get("max_stage") or 1)
+    vip_tiers, max_stage = _photo_gate_bounds(product_id)
     client = await openai_client.client_for_product(product_id)
     # Library distribution for the balancing block: the model rates each photo
     # independently, so without seeing the current spread everything clusters
@@ -1213,10 +1208,9 @@ async def v2_status(product_id: int,
         "sweep_interval_sec": retention_v2.worker_interval_sec(),
         "activity": activity,
         "canonical_events": sorted(player_sync.CANONICAL_EVENTS),
-        # The EFFECTIVE decision set (admin-tunable per product) + the built-in
-        # default, so the Events tab can render toggles with a reset baseline.
+        # The EFFECTIVE decision set (retention.v2_decision_events, API-tunable;
+        # the SPA uses it for the simulator chip + the agent guide).
         "decision_events": sorted(retention_v2.effective_decision_events(cfg)),
-        "decision_events_default": sorted(retention_v2.DECISION_EVENTS),
         "photo_events": sorted(retention_v2._PHOTO_EVENTS),
         "idle_pings_enabled": bool(cfg.get("idle_pings_enabled")),
         "send_delay_min_sec": int(cfg.get("v2_send_delay_min_sec") or 0),
@@ -1380,15 +1374,6 @@ async def v2_run_now(product_id: int,
 # ===========================================================================
 # Admin: analytics
 # ===========================================================================
-async def _analytics_scope(admin: dict, product_id: Optional[int],
-                           partner_id: Optional[int]) -> Optional[list[int]]:
-    """Product scope for a retention analytics read — the support dashboard's
-    resolve_scope_filter convention verbatim (explicit product read-checked;
-    nothing selected = the caller's whole accessible scope; None = all,
-    [] = none). One authorization choke point, no forked copy."""
-    return await admin_auth.resolve_scope_filter(admin, product_id, partner_id)
-
-
 @admin_router.get("/overview")
 async def overview(product_id: Optional[int] = None,
                    partner_id: Optional[int] = None,
@@ -1396,7 +1381,10 @@ async def overview(product_id: Optional[int] = None,
                    to: Optional[str] = None,
                    admin=Depends(require_admin)) -> JSONResponse:
     from api.admin import _range  # reuse the shared date-range parser
-    scope = await _analytics_scope(admin, product_id, partner_id)
+    # Support-dashboard scope convention (resolve_scope_filter): explicit
+    # product read-checked; nothing selected = the caller's whole accessible
+    # scope; None = all, [] = none.
+    scope = await admin_auth.resolve_scope_filter(admin, product_id, partner_id)
     dt_from, dt_to = _range(from_, to)
     return JSONResponse(content=await db.retention_overview(scope, dt_from, dt_to))
 
@@ -1410,7 +1398,7 @@ async def funnel(product_id: Optional[int] = None,
     """Entry funnel: deeplinks -> starts -> linked -> subscribed -> engaged ->
     photos -> handoffs, for the range."""
     from api.admin import _range
-    scope = await _analytics_scope(admin, product_id, partner_id)
+    scope = await admin_auth.resolve_scope_filter(admin, product_id, partner_id)
     dt_from, dt_to = _range(from_, to)
     return JSONResponse(content=await db.retention_funnel(scope, dt_from, dt_to))
 
@@ -1423,7 +1411,7 @@ async def timeseries(product_id: Optional[int] = None,
                      admin=Depends(require_admin)) -> JSONResponse:
     """Daily retention activity (messages, active players, photos, pings, cost)."""
     from api.admin import _range
-    scope = await _analytics_scope(admin, product_id, partner_id)
+    scope = await admin_auth.resolve_scope_filter(admin, product_id, partner_id)
     dt_from, dt_to = _range(from_, to)
     return JSONResponse(content={
         "series": await db.retention_timeseries(scope, dt_from, dt_to)})

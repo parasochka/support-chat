@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNotify, usePermissions } from 'react-admin';
+import { useNotify } from 'react-admin';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -12,6 +12,8 @@ import { withProduct } from '../productScope';
 import TextStats from '../components/TextStats';
 import rich from '../components/Rich';
 import { t } from '../i18n';
+import { notifyError } from '../lib/notifyError';
+import { useReadOnly } from '../lib/useReadOnly';
 
 /**
  * The Prompt → variables surface: the brand prompt variables substituted into
@@ -25,8 +27,7 @@ const PromptVariables = () => {
   const notify = useNotify();
   // Managers are read-only server-side (403 on PUT) — pre-disable the editors
   // instead of letting them type and lose the edit, matching SiteMap.
-  const { permissions } = usePermissions();
-  const readOnly = permissions !== 'admin';
+  const readOnly = useReadOnly();
 
   const [vars, setVars] = useState([]);
   const [values, setValues] = useState({});
@@ -54,7 +55,7 @@ const PromptVariables = () => {
       });
       notify(t('Prompt variables saved'), { type: 'success' });
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     } finally {
       setSavingVars(false);
     }

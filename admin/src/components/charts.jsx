@@ -20,7 +20,7 @@ import {
 import { t } from '../i18n';
 
 // Fractional-dollar formatter for cost axes/tooltips (spend is cents, not units).
-const usd = (v) => (v == null ? '—' : `$${Number(v).toFixed(4)}`);
+export const usd = (v) => (v == null ? '—' : `$${Number(v).toFixed(4)}`);
 
 /**
  * Theme-aware recharts wrappers shared by the dashboard and the retention
@@ -33,7 +33,7 @@ export const CHART_COLORS = {
   dark: ['#3987e5', '#199e70', '#c98500', '#008300'],
 };
 
-export const useChartColors = () => {
+const useChartColors = () => {
   const theme = useTheme();
   return CHART_COLORS[theme.palette.mode] || CHART_COLORS.dark;
 };
@@ -80,6 +80,7 @@ export const SeriesLineChart = ({
   xKey = 'date',
   height = 220,
   valueFormatter,
+  colorOffset = 0,
 }) => {
   const colors = useChartColors();
   const chrome = useChartChrome();
@@ -117,7 +118,7 @@ export const SeriesLineChart = ({
             type="monotone"
             dataKey={s.key}
             name={s.label}
-            stroke={colors[i % colors.length]}
+            stroke={colors[(i + colorOffset) % colors.length]}
             strokeWidth={2}
             dot={false}
             activeDot={{ r: 4 }}
@@ -134,7 +135,7 @@ export const SeriesLineChart = ({
  * composition stays visible. `series` = [{ key, label }] in palette order.
  * `valueFormatter` formats the Y axis + tooltip (and implies decimals).
  */
-export const StackedBarChart = ({
+const StackedBarChart = ({
   data,
   series,
   xKey = 'date',

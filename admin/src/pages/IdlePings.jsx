@@ -23,6 +23,9 @@ import { API_URL, httpClient } from '../httpClient';
 import useIsMobile from '../lib/useIsMobile';
 import rich from '../components/Rich';
 import { t } from '../i18n';
+import GridPagination from '../components/GridPagination';
+import { notifyError } from '../lib/notifyError';
+import { fmtDateTime } from '../lib/fmt';
 
 // ---------------------------------------------------------------------------
 // Idle pings — the agent's INACTIVITY ladder ("player quiet N days -> Nika
@@ -125,7 +128,7 @@ const IdlePingsTab = ({ productId }) => {
       setEditing(null);
       loadRules();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     }
   };
 
@@ -137,7 +140,7 @@ const IdlePingsTab = ({ productId }) => {
       );
       loadRules();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     }
   };
 
@@ -150,7 +153,7 @@ const IdlePingsTab = ({ productId }) => {
       );
       loadRules();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Delete failed'), { type: 'error' });
+      notifyError(notify, e, t('Delete failed'));
     }
   };
 
@@ -172,7 +175,7 @@ const IdlePingsTab = ({ productId }) => {
       }
       loadLedger();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Run failed'), { type: 'error' });
+      notifyError(notify, e, t('Run failed'));
     } finally {
       setRunning(false);
     }
@@ -323,7 +326,7 @@ const IdlePingsTab = ({ productId }) => {
           <TableBody>
             {ledger.items.map((p) => (
               <TableRow key={p.id} hover>
-                <TableCell>{new Date(p.created_at).toLocaleString()}</TableCell>
+                <TableCell>{fmtDateTime(p.created_at)}</TableCell>
                 <TableCell>
                   {p.full_name ||
                     (p.tg_username ? `@${p.tg_username}` : p.player_id) ||
@@ -358,17 +361,8 @@ const IdlePingsTab = ({ productId }) => {
         </Table>
       </Box>
       {pages > 1 && (
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }}>
-          <Button size="small" disabled={page <= 1} onClick={() => setPage(page - 1)}>
-            {t('Prev')}
-          </Button>
-          <Typography variant="body2">
-            {page} / {pages} · {ledger.total}
-          </Typography>
-          <Button size="small" disabled={page >= pages} onClick={() => setPage(page + 1)}>
-            {t('Next')}
-          </Button>
-        </Stack>
+        <GridPagination count={ledger.total || 0} page={page} perPage={pageSize}
+                        onPage={setPage} />
       )}
 
       <Dialog open={!!editing} onClose={() => setEditing(null)} maxWidth="sm" fullWidth fullScreen={isMobile}>

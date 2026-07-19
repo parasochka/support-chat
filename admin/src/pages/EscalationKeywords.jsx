@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Title, useNotify, usePermissions } from 'react-admin';
+import { Title, useNotify } from 'react-admin';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
@@ -10,6 +10,8 @@ import { API_URL, httpClient } from '../httpClient';
 import { withProduct } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
 import { t } from '../i18n';
+import { notifyError } from '../lib/notifyError';
+import { useReadOnly } from '../lib/useReadOnly';
 
 /**
  * The escalation keyword lists (the `escalation` settings group — content
@@ -20,8 +22,7 @@ import { t } from '../i18n';
  */
 const EscalationKeywordsInner = () => {
   const notify = useNotify();
-  const { permissions } = usePermissions();
-  const readOnly = permissions !== 'admin';
+  const readOnly = useReadOnly();
 
   const [highRisk, setHighRisk] = useState('');
   const [humanReq, setHumanReq] = useState('');
@@ -59,7 +60,7 @@ const EscalationKeywordsInner = () => {
       });
       notify(t('Escalation keywords saved'), { type: 'success' });
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     } finally {
       setSaving(false);
     }

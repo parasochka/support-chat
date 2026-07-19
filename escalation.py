@@ -272,5 +272,20 @@ async def build_payload_for_session(session: dict, lang: str,
     return payload
 
 
+async def apply_hard_escalation(session: dict, reason: str) -> None:
+    """Set the HARD escalated state + the admin event (the one shared idiom).
+
+    Always closes (idempotent): a session soft-escalated earlier already has
+    escalated=TRUE but must still be CLOSED when a hard trigger fires. The
+    duplicate admin_events row is guarded on the session's STATUS (not the
+    escalated flag), so a soft->hard upgrade still logs its hard reason once.
+    """
+    import db  # noqa: PLC0415 — lazy, mirrors build_payload_for_session
+
+    await db.mark_escalated(session["id"])
+    if session.get("status") != "escalated":
+        await db.log_admin_event(session["id"], "escalation", {"reason": reason})
+
+
 def inactive_payload() -> dict:
     return {"active": False}

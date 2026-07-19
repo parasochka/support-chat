@@ -82,10 +82,6 @@ class ResolveReq(BaseModel):
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-def _client_ip(request: Request) -> str:
-    return client_ip(request)
-
-
 def _err(status: int, code: str, detail: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": code, "detail": detail})
 
@@ -147,7 +143,7 @@ async def _resolve_product(widget_key: Optional[str]
 # ---------------------------------------------------------------------------
 @router.post("/session")
 async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
-    ip = _client_ip(req)
+    ip = client_ip(req)
 
     # IP rate-limit session creation too (separate budget from /message) so a
     # bot can't mint unlimited sessions/tokens/DB rows when Turnstile is unset.
@@ -318,7 +314,7 @@ async def list_catalogue(req: Request,
     `widget_key` picks the product whose catalogue (and language set) to serve;
     it is part of the URL, so the browser cache stays per product.
     """
-    ip = _client_ip(req)
+    ip = client_ip(req)
     try:
         antispam.check_rate_limit(f"catalogue:{ip}", _CATALOGUE_RATE_LIMIT)
     except antispam.AntiSpamError as exc:
@@ -360,7 +356,7 @@ async def widget_i18n(req: Request,
     chrome without a widget redeploy. Session-free and cacheable like /topics.
     `widget_key` scopes the copy (and the language set) to the product.
     """
-    ip = _client_ip(req)
+    ip = client_ip(req)
     try:
         antispam.check_rate_limit(f"catalogue:{ip}", _CATALOGUE_RATE_LIMIT)
     except antispam.AntiSpamError as exc:
@@ -416,13 +412,13 @@ async def select_topic(body: TopicSelect,
 @router.post("/message")
 async def send_message(req: Request, body: MessageSend,
                        authorization: Optional[str] = Header(default=None)) -> JSONResponse:
-    ip = _client_ip(req)
+    ip = client_ip(req)
     log.info(
         "chat_message_received session_id=%s ip=%s chars=%s",
         body.session_id, ip, len(body.text or ""),
     )
 
-    # 1. verify session token -> 401
+    # verify session token -> 401
     session, err = await _auth_session(authorization, body.session_id)
     if err:
         log.warning("chat_message_auth_failed session_id=%s", body.session_id)
@@ -440,7 +436,7 @@ async def send_message(req: Request, body: MessageSend,
         )
         return closed
 
-    # 2. rate-limit (IP) -> 429 + log
+    # rate-limit (IP) -> 429 + log
     try:
         antispam.check_rate_limit(ip)
     except antispam.AntiSpamError as exc:
@@ -451,7 +447,7 @@ async def send_message(req: Request, body: MessageSend,
         await db.log_admin_event_sampled(body.session_id, "rate_limited", {"ip": ip})
         return _err(exc.status, exc.code, exc.detail)
 
-    # 3. cooldown -> 429
+    # cooldown -> 429
     try:
         antispam.check_cooldown(body.session_id)
     except antispam.AntiSpamError as exc:
@@ -461,7 +457,7 @@ async def send_message(req: Request, body: MessageSend,
         )
         return _err(exc.status, exc.code, exc.detail)
 
-    # 4. body/input caps -> 413/400  (body cap handled by middleware; input here)
+    # body/input caps -> 413/400  (body cap handled by middleware; input here)
     try:
         antispam.check_input_length(body.text)
     except antispam.AntiSpamError as exc:
@@ -471,15 +467,14 @@ async def send_message(req: Request, body: MessageSend,
         )
         return _err(exc.status, exc.code, exc.detail)
 
-    # 4b. low-content guard: lone characters, symbol/emoji-only spam, or one
+    # low-content guard: lone characters, symbol/emoji-only spam, or one
     # character mashed repeatedly carry nothing to answer, so we never call the
     # model (no tokens burned). Return a localized nudge as a normal 200 turn
     # rather than a hard error; don't persist or count it toward the cap.
     try:
         antispam.check_low_content(body.text)
     except antispam.AntiSpamError:
-        ans_lang = (session.get("conv_lang") or session.get("lang")
-                    or language.default_code())
+        ans_lang = language.session_base_lang(session)
         log.info(
             "chat_message_low_content_blocked session_id=%s chars=%s",
             body.session_id, len(body.text or ""),
@@ -496,7 +491,7 @@ async def send_message(req: Request, body: MessageSend,
             },
         )
 
-    # 8. injection scan: always audit; optionally hard-block (settings-gated).
+    # injection scan: always audit; optionally hard-block (settings-gated).
     if antispam.scan_injection(body.text):
         hard_block = settings.antispam()["injection_hard_block"]
         # A genuine complaint / fraud report / ask-for-a-human can share wording
@@ -524,14 +519,13 @@ async def send_message(req: Request, body: MessageSend,
     # cooldown clock now (a rejected message must not throttle its own fix-up).
     antispam.arm_cooldown(body.session_id)
 
-    # 5. message cap reached -> force escalation response (no model call)
+    # message cap reached -> force escalation response (no model call)
     if session.get("message_count", 0) >= settings.general()["max_messages_per_session"]:
         log.info(
             "chat_message_cap_reached session_id=%s count=%s",
             body.session_id, session.get("message_count", 0),
         )
-        ans_lang = (session.get("conv_lang") or session.get("lang")
-                    or language.default_code())
+        ans_lang = language.session_base_lang(session)
         esc_payload = await escalation.build_payload_for_session(session, ans_lang)
         new_count = await db.persist_turn(
             session_id=body.session_id,
@@ -542,12 +536,7 @@ async def send_message(req: Request, body: MessageSend,
             ai_meta=None,
             product_id=session.get("product_id"),
         )
-        # Always close (idempotent): a session soft-escalated earlier already
-        # has escalated=TRUE but must still be CLOSED when the cap fires.
-        await db.mark_escalated(body.session_id)
-        if session.get("status") != "escalated":
-            await db.log_admin_event(body.session_id, "escalation",
-                                     {"reason": "message_cap"})
+        await escalation.apply_hard_escalation(session, "message_cap")
         return JSONResponse(
             status_code=200,
             content={
@@ -639,13 +628,10 @@ async def escalate(body: EscalateReq,
     if closed:
         return closed
 
-    ans_lang = (session.get("conv_lang") or session.get("lang")
-                or language.default_code())
-    # Always close (idempotent) — an earlier SOFT keyword escalation left the
-    # session open with escalated=TRUE; the explicit tap is a HARD hand-off.
-    await db.mark_escalated(body.session_id)
-    if session.get("status") != "escalated":
-        await db.log_admin_event(body.session_id, "escalation", {"reason": "explicit"})
+    ans_lang = language.session_base_lang(session)
+    # The explicit tap is a HARD hand-off (an earlier SOFT keyword escalation
+    # left the session open).
+    await escalation.apply_hard_escalation(session, "explicit")
     esc_payload = await escalation.build_payload_for_session(session, ans_lang)
 
     return JSONResponse(

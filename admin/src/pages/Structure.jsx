@@ -18,6 +18,7 @@ import { API_URL, httpClient } from '../httpClient';
 import SecretField from '../components/SecretField';
 import { t } from '../i18n';
 import SetBadge from '../components/SetBadge';
+import { notifyError } from '../lib/notifyError';
 
 const embedSnippet = (widgetKey) =>
   `<link rel="stylesheet" href="${API_URL}/widget.css">\n` +
@@ -55,7 +56,7 @@ const ProductCard = ({ product, onChanged }) => {
       notify(t('Product saved'), { type: 'success' });
       onChanged();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     }
   };
 
@@ -69,7 +70,7 @@ const ProductCard = ({ product, onChanged }) => {
       notify(t('Widget key rotated'), { type: 'success' });
       onChanged();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Rotate failed'), { type: 'error' });
+      notifyError(notify, e, t('Rotate failed'));
     }
   };
 
@@ -97,12 +98,12 @@ const ProductCard = ({ product, onChanged }) => {
       setSecrets({});
       onChanged();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     }
   };
 
   const clearSecret = async (field, label) => {
-    if (!window.confirm(`${t('Clear')} ${label}? ${t('It falls back to the deploy env value.')}`)) return;
+    if (!window.confirm(t('Clear {label}? It falls back to the deploy env value.').replace('{label}', label))) return;
     try {
       await httpClient(`${API_URL}/admin/products/${product.id}/secrets`, {
         method: 'PUT',
@@ -112,7 +113,7 @@ const ProductCard = ({ product, onChanged }) => {
       setSecrets((s) => ({ ...s, [field]: '' }));
       onChanged();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Clear failed'), { type: 'error' });
+      notifyError(notify, e, t('Clear failed'));
     }
   };
 
@@ -339,7 +340,7 @@ const NewProductForm = ({ partnerId, onChanged }) => {
       setName('');
       onChanged();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Create failed'), { type: 'error' });
+      notifyError(notify, e, t('Create failed'));
     }
   };
 
@@ -392,7 +393,7 @@ const PartnerCard = ({ partner, onChanged }) => {
       notify(t('Partner saved'), { type: 'success' });
       onChanged();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     }
   };
 
@@ -473,7 +474,7 @@ const Structure = () => {
       setNewPartner({ slug: '', name: '' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Create failed'), { type: 'error' });
+      notifyError(notify, e, t('Create failed'));
     }
   };
 

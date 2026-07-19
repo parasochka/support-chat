@@ -11,7 +11,6 @@ import {
   TextField,
   TextInput,
   required,
-  usePermissions,
   useRedirect,
 } from 'react-admin';
 import { useWatch } from 'react-hook-form';
@@ -24,6 +23,7 @@ import RouteTabs from '../components/RouteTabs';
 import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
 import { KB_TABS } from './kbTabs';
+import { useReadOnly } from '../lib/useReadOnly';
 
 /**
  * Topic titles are single-sourced: the per-language names live in the
@@ -42,8 +42,7 @@ const KbContentStats = () => {
 // Managers are read-only server-side (403 on write) — drop the save toolbar
 // for them instead of letting them edit and lose the change on Save.
 const TopicForm = ({ isCreate = false }) => {
-  const { permissions } = usePermissions();
-  const readOnly = permissions !== 'admin';
+  const readOnly = useReadOnly();
   return (
   <SimpleForm toolbar={readOnly ? false : undefined}>
     <TextInput

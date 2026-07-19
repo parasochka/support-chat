@@ -6,7 +6,6 @@ import {
   SimpleForm,
   TextField,
   TextInput,
-  usePermissions,
   useRedirect,
 } from 'react-admin';
 import MobileList from '../components/MobileList';
@@ -15,6 +14,7 @@ import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
 import { KB_TABS } from './kbTabs';
 import { t } from '../i18n';
+import { useReadOnly } from '../lib/useReadOnly';
 
 /**
  * The admin-managed {placeholder} registry substituted into KB texts. It is
@@ -52,8 +52,7 @@ export const KbVariableList = () => {
 // Managers are read-only server-side (403 on write) — drop the save toolbar
 // for them instead of letting them edit and lose the change on Save.
 export const KbVariableEdit = () => {
-  const { permissions } = usePermissions();
-  const readOnly = permissions !== 'admin';
+  const readOnly = useReadOnly();
   return (
     <RequireProduct title={t('Knowledge base · variables')}>
       <Edit mutationMode="pessimistic" title={t('Edit KB variable')}>
