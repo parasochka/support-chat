@@ -150,7 +150,6 @@ def _is_truncated_empty(resp: Any) -> bool:
 @dataclass
 class ChatResult:
     text: str
-    lang: Optional[str]
     tokens_in: int
     tokens_out: int
     cached_in: int
@@ -553,7 +552,6 @@ class OpenAIClient:
         latency_ms = int((time.monotonic() - started) * 1000)
         return ChatResult(
             text=text,
-            lang=None,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             cached_in=cached_in,

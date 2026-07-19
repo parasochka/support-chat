@@ -264,12 +264,9 @@
   border-radius: 8px;
   font-weight: 600;
 }
-.npchat-esc-note { color: #92400e; font-size: 12px; }
-
-
-/* Automatic cross-topic hand-off notice. Unlike the old switch button this is
-   informational only (no action) — a soft, centred system line that stays in the
-   transcript as the record of why the topic changed while the new answer loads. */
+/* Automatic cross-topic hand-off notice: informational only (no action) — a
+   soft, centred system line that stays in the transcript as the record of why
+   the topic changed while the new answer loads. */
 .npchat-switch-note {
   align-self: stretch;
   margin: 8px 0;

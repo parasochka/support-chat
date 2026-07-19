@@ -40,17 +40,15 @@ async def connect() -> asyncpg.Pool:
     return _pool
 
 
-def _acquire(*, timeout: Optional[float] = None):
+def _acquire():
     """Acquire a pooled connection with a bounded wait (use as `async with`).
 
     The convenience helpers (`_pool.fetch/execute/...`) block on acquire with no
     ceiling, so under pool exhaustion a request would hang forever. Explicit
     acquire sites on the hot request paths use this so exhaustion surfaces as a
-    retryable error rather than an unbounded hang (default DB_ACQUIRE_TIMEOUT_SEC).
+    retryable error rather than an unbounded hang (DB_ACQUIRE_TIMEOUT_SEC).
     """
-    if timeout is None:
-        timeout = config.DB_ACQUIRE_TIMEOUT_SEC
-    return _pool.acquire(timeout=timeout)
+    return _pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT_SEC)
 
 
 async def close() -> None:
@@ -1573,11 +1571,6 @@ async def get_all_settings() -> dict[str, Any]:
     return {r["key"]: _json_value(r["value"]) for r in rows}
 
 
-async def get_setting(key: str) -> Optional[Any]:
-    row = await _pool.fetchrow("SELECT value FROM app_settings WHERE key = $1", key)
-    return _json_value(row["value"]) if row else None
-
-
 async def set_setting(key: str, value: Any, updated_by: Optional[str] = None) -> None:
     await _pool.execute(
         "INSERT INTO app_settings (key, value, updated_at, updated_by) "
@@ -1719,17 +1712,12 @@ async def update_partner(partner_id: int, *, name: Optional[str] = None,
     return _row_to_partner(row) if row else None
 
 
-async def list_products(partner_id: Optional[int] = None,
-                        product_ids: Optional[list[int]] = None
+async def list_products(product_ids: Optional[list[int]] = None
                         ) -> list[dict[str, Any]]:
-    where, args = [], []
-    if partner_id is not None:
-        args.append(partner_id)
-        where.append(f"partner_id = ${len(args)}")
+    where_sql, args = "", []
     if product_ids is not None:
         args.append(product_ids)
-        where.append(f"id = ANY(${len(args)}::int[])")
-    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        where_sql = f"WHERE id = ANY(${len(args)}::int[])"
     rows = await _pool.fetch(
         f"SELECT {_PRODUCT_COLS} FROM products {where_sql} ORDER BY id", *args
     )
@@ -2338,22 +2326,6 @@ async def list_topics_with_counts(product_id: int) -> list[dict[str, Any]]:
     return out
 
 
-async def update_topic(topic_id: int, title: Optional[dict[str, str]],
-                       display_order: Optional[int],
-                       active: Optional[bool]) -> Optional[dict[str, Any]]:
-    await _pool.execute(
-        "UPDATE kb_topics SET "
-        "title = COALESCE($2::jsonb, title), "
-        "display_order = COALESCE($3, display_order), "
-        "active = COALESCE($4, active) WHERE id = $1",
-        topic_id,
-        json.dumps(title) if title is not None else None,
-        display_order, active,
-    )
-    _invalidate_kb_cache()
-    return await get_topic_by_id(topic_id)
-
-
 async def get_kb_entry(topic_id: int) -> Optional[dict[str, Any]]:
     """The topic's single active KB entry, or None. One entry per topic."""
     row = await _pool.fetchrow(
@@ -2405,13 +2377,8 @@ async def clear_kb_content(topic_id: int) -> bool:
 # ---------------------------------------------------------------------------
 # Metrics / dashboard aggregation (raw rows; derived rates computed in metrics.py)
 # ---------------------------------------------------------------------------
-def _range_clause(col: str, idx_from: int, idx_to: int) -> str:
-    return f"({col} >= ${idx_from} AND {col} < ${idx_to})"
-
-
-def _product_clause(product_ids: Optional[list[int]], args: list[Any],
-                    col: str = "product_id") -> str:
-    """Append an `AND <col> = ANY($n)` filter when a product scope is set.
+def _product_clause(product_ids: Optional[list[int]], args: list[Any]) -> str:
+    """Append an `AND product_id = ANY($n)` filter when a product scope is set.
 
     `None` means no scope (global view — all products); an empty list means an
     admin with no accessible products, which must match nothing.
@@ -2419,7 +2386,7 @@ def _product_clause(product_ids: Optional[list[int]], args: list[Any],
     if product_ids is None:
         return ""
     args.append(product_ids)
-    return f" AND {col} = ANY(${len(args)}::int[])"
+    return f" AND product_id = ANY(${len(args)}::int[])"
 
 
 def _scope_clauses(product_ids: Optional[list[int]],
@@ -2676,7 +2643,7 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
                         escalated: Optional[bool] = None, q: Optional[str] = None,
                         min_messages: Optional[int] = None,
                         product_ids: Optional[list[int]] = None,
-                        page: int = 1, page_size: int = 25) -> dict[str, Any]:
+                        page: int = 1) -> dict[str, Any]:
     # Telegram (retention-bot) chats live in the Retention section of the admin
     # (list_retention_sessions) — the support Conversations list never mixes
     # them in.
@@ -2708,6 +2675,7 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
         *args,
     )
     page = max(page, 1)
+    page_size = 25
     args2 = args + [page_size, (page - 1) * page_size]
     rows = await _pool.fetch(
         f"SELECT s.id, s.lang, s.status, s.escalated, s.message_count, "
@@ -2875,7 +2843,7 @@ async def delete_session(session_id: str) -> bool:
     just one facade over a durable player, and leaving the player behind made a
     deleted conversation keep showing up in analytics.
     """
-    async with _pool.acquire() as conn:
+    async with _acquire() as conn:
         async with conn.transaction():
             srow = await conn.fetchrow(
                 "SELECT consumer, product_id, tg_user_id "
@@ -3051,12 +3019,6 @@ async def get_retention_user(product_id: int, tg_user_id: int
         f"WHERE product_id = $1 AND tg_user_id = $2",
         product_id, tg_user_id,
     )
-    return _row_to_retention_user(row) if row else None
-
-
-async def get_retention_user_by_id(rid: int) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
-        f"SELECT {_RU_COLS} FROM retention_users WHERE id = $1", rid)
     return _row_to_retention_user(row) if row else None
 
 
@@ -3774,7 +3736,7 @@ async def delete_retention_event(product_id: int, event_pk: int) -> bool:
     hand — the column has no ON DELETE clause). NB: the event log also feeds
     the state resolver (loss window / recent activity), so deleting real
     partner events rewrites history — this exists for wiping simulator rows."""
-    async with _pool.acquire() as conn:
+    async with _acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 "UPDATE retention_v2_decisions SET event_pk = NULL "
@@ -3789,7 +3751,7 @@ async def delete_retention_event(product_id: int, event_pk: int) -> bool:
 async def clear_retention_events(product_id: int) -> int:
     """Delete ALL of one product's canonical events (admin test-cleanup).
     Returns the number of rows removed."""
-    async with _pool.acquire() as conn:
+    async with _acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 "UPDATE retention_v2_decisions SET event_pk = NULL "
@@ -4138,8 +4100,7 @@ async def candidate_photos(product_id: int, retention_user_id: int, *,
     return [_row_to_photo(r) for r in rows]
 
 
-async def retention_appearance_context(product_id: int, retention_user_id: int,
-                                        *, base_limit: int = 3
+async def retention_appearance_context(product_id: int, retention_user_id: int
                                         ) -> dict[str, Any]:
     """The persona-appearance grounding for the retention Layer-3 block.
 
@@ -4154,8 +4115,8 @@ async def retention_appearance_context(product_id: int, retention_user_id: int,
     base_rows = await _pool.fetch(
         "SELECT description FROM retention_photos "
         "WHERE product_id = $1 AND active AND description <> '' "
-        "ORDER BY stage, sort_order, id LIMIT $2",
-        product_id, base_limit,
+        "ORDER BY stage, sort_order, id LIMIT 3",
+        product_id,
     )
     last_row = await _pool.fetchrow(
         "SELECT p.description FROM retention_photo_views v "
@@ -4205,13 +4166,15 @@ async def get_retention_kb_entry(entry_id: int) -> Optional[dict[str, Any]]:
 async def create_retention_kb(product_id: int, *, title: str,
                               trigger_when: Optional[str], body: str,
                               links: list[str], sort_order: int,
+                              active: bool = True,
                               updated_by: Optional[str]) -> dict[str, Any]:
     row = await _pool.fetchrow(
         "INSERT INTO retention_kb "
-        "(product_id, title, trigger_when, body, links, sort_order, updated_by) "
-        "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7) RETURNING " + _RKB_COLS,
+        "(product_id, title, trigger_when, body, links, sort_order, active, "
+        " updated_by) "
+        "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8) RETURNING " + _RKB_COLS,
         product_id, title, trigger_when, body, json.dumps(links or []),
-        sort_order, updated_by,
+        sort_order, active, updated_by,
     )
     return _row_to_retention_kb(row)
 

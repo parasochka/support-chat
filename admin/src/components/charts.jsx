@@ -33,7 +33,7 @@ export const CHART_COLORS = {
   dark: ['#3987e5', '#199e70', '#c98500', '#008300'],
 };
 
-export const useChartColors = () => {
+const useChartColors = () => {
   const theme = useTheme();
   return CHART_COLORS[theme.palette.mode] || CHART_COLORS.dark;
 };
@@ -134,7 +134,7 @@ export const SeriesLineChart = ({
  * composition stays visible. `series` = [{ key, label }] in palette order.
  * `valueFormatter` formats the Y axis + tooltip (and implies decimals).
  */
-export const StackedBarChart = ({
+const StackedBarChart = ({
   data,
   series,
   xKey = 'date',

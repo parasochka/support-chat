@@ -82,10 +82,6 @@ class ResolveReq(BaseModel):
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-def _client_ip(request: Request) -> str:
-    return client_ip(request)
-
-
 def _err(status: int, code: str, detail: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": code, "detail": detail})
 
@@ -147,7 +143,7 @@ async def _resolve_product(widget_key: Optional[str]
 # ---------------------------------------------------------------------------
 @router.post("/session")
 async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
-    ip = _client_ip(req)
+    ip = client_ip(req)
 
     # IP rate-limit session creation too (separate budget from /message) so a
     # bot can't mint unlimited sessions/tokens/DB rows when Turnstile is unset.
@@ -318,7 +314,7 @@ async def list_catalogue(req: Request,
     `widget_key` picks the product whose catalogue (and language set) to serve;
     it is part of the URL, so the browser cache stays per product.
     """
-    ip = _client_ip(req)
+    ip = client_ip(req)
     try:
         antispam.check_rate_limit(f"catalogue:{ip}", _CATALOGUE_RATE_LIMIT)
     except antispam.AntiSpamError as exc:
@@ -360,7 +356,7 @@ async def widget_i18n(req: Request,
     chrome without a widget redeploy. Session-free and cacheable like /topics.
     `widget_key` scopes the copy (and the language set) to the product.
     """
-    ip = _client_ip(req)
+    ip = client_ip(req)
     try:
         antispam.check_rate_limit(f"catalogue:{ip}", _CATALOGUE_RATE_LIMIT)
     except antispam.AntiSpamError as exc:
@@ -416,7 +412,7 @@ async def select_topic(body: TopicSelect,
 @router.post("/message")
 async def send_message(req: Request, body: MessageSend,
                        authorization: Optional[str] = Header(default=None)) -> JSONResponse:
-    ip = _client_ip(req)
+    ip = client_ip(req)
     log.info(
         "chat_message_received session_id=%s ip=%s chars=%s",
         body.session_id, ip, len(body.text or ""),

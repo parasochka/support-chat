@@ -105,7 +105,3 @@ async def suggestable_topics(
             continue
         out.append({"slug": t["slug"], "title": _pick_title(t["title"], lang)})
     return out
-
-
-def is_other(slug: str) -> bool:
-    return slug == OTHER_SLUG

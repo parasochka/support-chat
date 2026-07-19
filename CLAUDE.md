@@ -610,11 +610,11 @@ Russian, start typing English, and the answers move to English — and the widge
 (buttons, labels, the canned greeting, topic titles) re-localizes to match, so the whole
 widget moves together.
 
-The browser locale is still the **starting** answer language. Deterministic priority for the
+The browser locale is still the **starting** answer language. Deterministic resolution for the
 session's base/UI code: `locale` (e.g. `es-MX`→`es`; this is where the browser's
-`navigator.language` lands) → persisted `session_lang` (the locale resolved at session
-create) → `AUTO` (→ `DEFAULT_LANGUAGE`). `create_session` resolves it and stores it on
-`chat_sessions.lang` (the browser/UI language — never overwritten by the drift below).
+`navigator.language` lands) → `AUTO` (→ `DEFAULT_LANGUAGE`). `create_session` resolves it and
+stores it on `chat_sessions.lang` (the browser/UI language — never overwritten by the drift
+below).
 
 **Answer-language drift (`chat_service` + the Layer-3 directive).** Each turn the base/fallback
 language is the session's sticky `conv_lang` (the language the player last switched to) if set,

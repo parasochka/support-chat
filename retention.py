@@ -252,8 +252,7 @@ def is_photo_request(text: str) -> bool:
 
 def is_meaningful(text: str) -> bool:
     """A message worth counting toward engagement/progression (>= 2 alnum)."""
-    alnum = [c for c in (text or "") if c.isalnum()]
-    return len(set(alnum)) >= 2 or len(alnum) >= 2
+    return sum(1 for c in (text or "") if c.isalnum()) >= 2
 
 
 # ---------------------------------------------------------------------------
@@ -457,8 +456,7 @@ def _overlay_test_profile(ctx: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def session_expired(session: dict[str, Any], *,
-                    now: Optional[Any] = None) -> bool:
+def session_expired(session: dict[str, Any]) -> bool:
     """True when the Telegram chat has sat idle past `session_idle_minutes`.
 
     Idleness is measured from the session's `updated_at` (bumped on every
@@ -478,7 +476,7 @@ def session_expired(session: dict[str, Any], *,
                    else _dt.datetime.fromisoformat(str(last)))
     except (ValueError, TypeError):
         return False
-    now_dt = now or _dt.datetime.now(last_dt.tzinfo)
+    now_dt = _dt.datetime.now(last_dt.tzinfo)
     return (now_dt - last_dt).total_seconds() >= idle_min * 60
 
 
@@ -597,9 +595,9 @@ def reset_state() -> None:
 def _persona_name() -> str:
     """The product's TELEGRAM persona name (product scope is already set).
 
-    Resolves through the retention prompt variables (retention_persona_name
-    override > the inherited support persona_name), so the bot chrome always
-    matches the persona the retention prompt actually runs.
+    Resolves through the retention prompt variables (retention override > the
+    retention registry default — support values are never consulted), so the
+    bot chrome always matches the persona the retention prompt actually runs.
     """
     return (settings.retention_prompt_variables().get("retention_persona_name")
             or "Nika")

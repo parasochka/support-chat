@@ -338,7 +338,10 @@ app.include_router(retention_api.admin_router)    # /admin/retention/* (guarded)
 # --- static frontend --------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def index() -> FileResponse:
-    return FileResponse(_TEST_PAGE, media_type="text/html")
+    # Same no-cache header as /test.html — the two serve the same page and must
+    # revalidate identically.
+    return FileResponse(_TEST_PAGE, media_type="text/html",
+                        headers=_WIDGET_CACHE)
 
 
 if os.path.isdir(_FRONTEND_DIR):

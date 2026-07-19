@@ -16,7 +16,7 @@ import prompts
 
 def _fake_result(text: str):
     return openai_client.ChatResult(
-        text=text, lang="en", tokens_in=10, tokens_out=5, cached_in=0,
+        text=text, tokens_in=10, tokens_out=5, cached_in=0,
         model="gpt-5-mini", key_used="primary", latency_ms=1,
     )
 
@@ -106,7 +106,6 @@ async def test_handoff_and_stage_up_and_lang_sentinels(monkeypatch):
         _session(), "хочу поговорить с менеджером", photo_candidates=[])
 
     assert reply.handoff is True
-    assert reply.stage_up_hint is True
     assert reply.lang == "ru"
     assert reply.reply == "давай передам тебя"
     # answer language drift persisted

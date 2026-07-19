@@ -590,7 +590,8 @@ async def create_kb(product_id: int, body: RetentionKBWrite,
         product_id, title=body.title.strip(),
         trigger_when=(body.trigger_when or "").strip() or None,
         body=body.body.strip(), links=[l.strip() for l in body.links if l.strip()],
-        sort_order=body.sort_order, updated_by=admin.get("email"))
+        sort_order=body.sort_order, active=body.active,
+        updated_by=admin.get("email"))
     await db.log_admin_event(None, "retention_kb_created", {"id": entry["id"]},
                              product_id=product_id)
     return JSONResponse(content={"entry": entry})
@@ -1213,10 +1214,9 @@ async def v2_status(product_id: int,
         "sweep_interval_sec": retention_v2.worker_interval_sec(),
         "activity": activity,
         "canonical_events": sorted(player_sync.CANONICAL_EVENTS),
-        # The EFFECTIVE decision set (admin-tunable per product) + the built-in
-        # default, so the Events tab can render toggles with a reset baseline.
+        # The EFFECTIVE decision set (retention.v2_decision_events, API-tunable;
+        # the SPA uses it for the simulator chip + the agent guide).
         "decision_events": sorted(retention_v2.effective_decision_events(cfg)),
-        "decision_events_default": sorted(retention_v2.DECISION_EVENTS),
         "photo_events": sorted(retention_v2._PHOTO_EVENTS),
         "idle_pings_enabled": bool(cfg.get("idle_pings_enabled")),
         "send_delay_min_sec": int(cfg.get("v2_send_delay_min_sec") or 0),

@@ -29,13 +29,8 @@ from typing import Any, Optional
 
 import language
 
-# Machine-readable sentinel the model prepends (own line) when it cannot help.
-# The canonical form is upper-case (the prompt instructs `[[ESCALATE]]`), but the
-# strip/detect is case-INSENSITIVE like every other sentinel below: a reasoning
-# model that emits `[[escalate]]` must still hand off (and never leak the literal
-# tag). This is the most safety-relevant sentinel (responsible-gaming /
-# complaints), so it must not be the one lenient-cased matcher.
-ESCALATE_TAG = "[[ESCALATE]]"
+# Machine-readable sentinel the model prepends (own line) when it cannot help
+# (the prompt text instructs the literal `[[ESCALATE]]`).
 # Lenient matching: tolerate inner whitespace (`[[ ESCALATE ]]`) as well as case.
 # A reasoning model occasionally spaces or wraps a tag; the strip must still fire
 # — most critically for [[ESCALATE]], where a leaked/dropped tag means the raw
@@ -733,17 +728,6 @@ _LEAD_FORWARD_DIRECTIVE = (
     "yet the core question is already resolved, you may output both. The only "
     "exception is an ongoing escalation ([[ESCALATE]]): then output neither."
 )
-
-
-# Slug of the general "other" topic. Mirrors kb.OTHER_SLUG; duplicated here so
-# this pure prompt-assembly module needs no DB-touching import. "other" is a
-# normal, player-selectable topic with its own knowledge base (it is the
-# always-available escape hatch in the picker for players who didn't find their
-# question among the six specialized topics) and is routed EXACTLY like them:
-# answer from its loaded KB, switch only on a genuine mismatch. This constant is
-# only used to label the `from` side of a topic-switch event when a session has
-# no topic set yet.
-OTHER_TOPIC_SLUG = "other"
 
 
 def _topic_routing_directive(

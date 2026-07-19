@@ -50,8 +50,6 @@ class SendOutcome:
 class TelegramChannel:
     """Proactive delivery over the product's Telegram bot."""
 
-    name = "telegram"
-
     def __init__(self, product: dict[str, Any], token: str, *,
                  silent: bool = False) -> None:
         self.product = product

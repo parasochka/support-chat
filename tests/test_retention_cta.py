@@ -126,7 +126,7 @@ def test_ping_task_mentions_link_button():
 # --- end-to-end decode ------------------------------------------------------
 def _fake_result(text: str):
     return openai_client.ChatResult(
-        text=text, lang="en", tokens_in=10, tokens_out=5, cached_in=0,
+        text=text, tokens_in=10, tokens_out=5, cached_in=0,
         model="gpt-5-mini", key_used="primary", latency_ms=1,
     )
 

@@ -85,9 +85,9 @@ async def _none() -> None:
 
 def _session_base_lang(session: dict) -> str:
     """The turn's base/fallback language: sticky conv_lang, else the session's
-    browser language, else the default. A session created from an unsupported
-    locale stores the literal AUTO sentinel — normalize it to the default so it
-    never becomes an answer_lang / persisted assistant_lang value."""
+    browser language, else the default. The AUTO branch defends against legacy
+    rows only — current create paths never store the literal AUTO sentinel —
+    so it never becomes an answer_lang / persisted assistant_lang value."""
     base = (
         session.get("conv_lang")
         or session.get("lang")
@@ -128,7 +128,6 @@ async def handle_message(
     # reports the language it used via a [[LANG:xx]] tag we strip below. The
     # widget chrome is untouched (it keeps the browser language client-side).
     base_lang = _session_base_lang(session)
-    resolved = base_lang
 
     # --- pre-model keyword escalation (SOFT, saves the model call) ----------
     # High-risk (fraud/legal) stems and explicit asks for a human don't depend
@@ -183,9 +182,9 @@ async def handle_message(
     context_reset_id = session.get("context_reset_id", 0) or 0
     # The other support topics (current one + 'other' excluded) are offered to
     # the model in Layer 3 so it can route a mismatched question via [[TOPIC:slug]].
-    # Localize their titles with the resolved default (the UI re-localizes if the
-    # player switches anyway); fall back to the service default for AUTO.
-    title_lang = resolved if resolved != language.AUTO else language.default_code()
+    # Localize their titles with the base language (the UI re-localizes if the
+    # player switches anyway).
+    title_lang = base_lang
 
     # Current topic, routing catalogue, KB block, history and the OpenAI client
     # are independent, so fetch them concurrently rather than as a chain of
@@ -222,7 +221,7 @@ async def handle_message(
         kb_block=kb_block,
         history=history,
         user_text=user_text,
-        resolved_lang=resolved,
+        resolved_lang=base_lang,
         available_topics=suggestable,
         current_topic=current_topic,
         # The player tapped the "Issue solved." closing bubble: this turn is a
@@ -246,13 +245,11 @@ async def handle_message(
 
     # --- call model (two-key failover; the product's own keys when set) ------
     # `client` was resolved above, concurrently with the prompt inputs.
-    error: Optional[str] = None
     try:
         result = await client.complete(
             messages, session_id=session_id, on_failover=_on_failover
         )
         raw_text = result.text
-        ok = True
         log.info(
             "chat_model_completed session_id=%s model=%s key=%s latency_ms=%s tokens_in=%s tokens_out=%s cached_in=%s raw_chars=%s",
             session_id, result.model, result.key_used, result.latency_ms,
@@ -291,7 +288,6 @@ async def handle_message(
     suggested_slug: Optional[str] = None
     detected_lang: Optional[str] = None
     suggestions: list = []
-    closing_suggestion: Optional[str] = None
     resolved = False
     clean_text = raw_text
     if raw_text:
@@ -387,7 +383,7 @@ async def handle_message(
         await db.log_ai_interaction(
             session_id, result.model, result.key_used,
             result.tokens_in, result.tokens_out, result.cached_in,
-            cost, result.latency_ms, ok, error, product_id=product_id,
+            cost, result.latency_ms, True, None, product_id=product_id,
         )
         # Record the switch itself so the admin session view can trace the whole
         # path: this detect call belongs to NO chat_messages turn (the answer was
@@ -398,7 +394,7 @@ async def handle_message(
             session_id,
             "topic_switch",
             {
-                "from": topic_slug or prompts.OTHER_TOPIC_SLUG,
+                "from": topic_slug or kb.OTHER_SLUG,
                 "to": suggested_topic["slug"],
                 "from_title": (current_topic or {}).get("title"),
                 "to_title": suggested_topic.get("title"),
@@ -435,8 +431,8 @@ async def handle_message(
 
     if not clean_text:
         log.warning(
-            "chat_empty_model_reply session_id=%s ok=%s escalation_active=%s raw_chars=%s",
-            session_id, ok, decision.active, len(raw_text or ""),
+            "chat_empty_model_reply session_id=%s escalation_active=%s raw_chars=%s",
+            session_id, decision.active, len(raw_text or ""),
         )
 
     if not clean_text and decision.active:
@@ -488,8 +484,8 @@ async def handle_message(
     # CURRENT message, so it is a faithful proxy for the user turn's language too;
     # None when the model emitted no tag (kept null rather than guessed).
     log.info(
-        "chat_persisting_turn session_id=%s ok=%s answer_lang=%s clean_chars=%s escalation_active=%s suggested_topic=%s suggestions=%s resolved=%s",
-        session_id, ok, answer_lang, len(clean_text or ""), decision.active,
+        "chat_persisting_turn session_id=%s answer_lang=%s clean_chars=%s escalation_active=%s suggested_topic=%s suggestions=%s resolved=%s",
+        session_id, answer_lang, len(clean_text or ""), decision.active,
         suggested_topic["slug"] if suggested_topic else None, len(suggestions or []), resolved,
     )
     new_count = await db.persist_turn(
@@ -507,8 +503,8 @@ async def handle_message(
             "cached_in": result.cached_in,
             "cost_usd": cost,
             "latency_ms": result.latency_ms,
-            "ok": ok,
-            "error": error,
+            "ok": True,
+            "error": None,
         },
     )
 
@@ -524,8 +520,8 @@ async def handle_message(
             )
 
     log.info(
-        "chat_generation_finished session_id=%s ok=%s message_count=%s elapsed_ms=%s",
-        session_id, ok, new_count, int((time.monotonic() - started) * 1000),
+        "chat_generation_finished session_id=%s message_count=%s elapsed_ms=%s",
+        session_id, new_count, int((time.monotonic() - started) * 1000),
     )
 
     return ChatReply(
@@ -554,7 +550,6 @@ class RetentionReply:
     message_count: int
     photo_id: Optional[int] = None   # validated id to send, or None
     handoff: bool = False            # route the player OUT (support/manager)
-    stage_up_hint: bool = False      # the model proposed advancing the stage
     ok: bool = True                  # False on a transient model failure
     link_url: Optional[str] = None   # validated site-map CTA button url, or None
     link_label: Optional[str] = None  # the site-map page title for the button
@@ -784,7 +779,7 @@ async def handle_retention_message(
     )
     return RetentionReply(
         reply=clean_text, lang=answer_lang, message_count=new_count,
-        photo_id=photo_id, handoff=handoff, stage_up_hint=stage_up,
+        photo_id=photo_id, handoff=handoff,
         link_url=link_url, link_label=link_label,
     )
 
