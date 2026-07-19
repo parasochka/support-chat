@@ -92,11 +92,37 @@ async def test_success(monkeypatch):
 # ---------------------------------------------------------------------------
 async def test_product_secret_activates_verification(monkeypatch):
     """With no env secret at all, a PRODUCT secret still turns verification on:
-    a bad token is rejected instead of dev-mode-skipping."""
+    an invalid-TOKEN verdict is rejected instead of dev-mode-skipping."""
     monkeypatch.setattr(config, "TURNSTILE_SECRET", "")
-    _patch_httpx(monkeypatch, data={"success": False, "error-codes": []})
+    _patch_httpx(monkeypatch, data={"success": False,
+                                    "error-codes": ["invalid-input-response"]})
     out = await antispam.verify_turnstile(token="tok", secret="product-secret")
     assert out["ok"] is False and out["reason"].startswith("turnstile_failed")
+
+
+async def test_config_error_codes_fail_open(monkeypatch):
+    """A mistyped/absent secret or a Cloudflare internal-error yields
+    success:false WITHOUT an invalid-token verdict — that is a config/outage
+    problem, not a bot, so the advisory check must SKIP (fail-open), never 403
+    the whole product's chat. Only invalid-input-response / timeout-or-duplicate
+    are definitive bad-token blocks."""
+    monkeypatch.setattr(config, "TURNSTILE_SECRET", "secret")
+    for codes in (["invalid-input-secret"], ["internal-error"],
+                  ["missing-input-secret"], []):
+        _patch_httpx(monkeypatch, data={"success": False, "error-codes": codes})
+        out = await antispam.verify_turnstile(token="tok")
+        assert out["ok"] is True and out["skipped"] is True, codes
+        assert out["reason"].startswith("turnstile_nonblocking")
+
+
+async def test_timeout_or_duplicate_token_blocks(monkeypatch):
+    """A replayed/expired token (timeout-or-duplicate) is a definitive bad-token
+    signal and still blocks."""
+    monkeypatch.setattr(config, "TURNSTILE_SECRET", "secret")
+    _patch_httpx(monkeypatch, data={"success": False,
+                                    "error-codes": ["timeout-or-duplicate"]})
+    out = await antispam.verify_turnstile(token="tok")
+    assert out["ok"] is False and out["skipped"] is False
 
 
 async def test_product_secret_wins_over_env(monkeypatch):
