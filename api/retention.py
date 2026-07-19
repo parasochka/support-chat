@@ -245,6 +245,12 @@ class PlayerEventsReq(BaseModel):
     event_name: Optional[str] = None
     player_id: Optional[str] = None
     user_id: Optional[str] = None
+    # Explicit Telegram recipient for a player_id linked to several TG accounts
+    # (multi-tester setups). Declared so the FLAT single-event form doesn't drop
+    # it — pydantic's extra='ignore' silently discarded a top-level tg_user_id
+    # before player_sync._validate_event (which supports it) ever saw it, so the
+    # documented flat shape misrouted the reaction to another account.
+    tg_user_id: Optional[int] = None
     timestamp: Optional[str] = None
     event_version: Optional[str] = None
     payload: Optional[dict[str, Any]] = None
