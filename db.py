@@ -954,6 +954,16 @@ def _invalidate_kb_cache() -> None:
     _kb_vars_cache.clear()
 
 
+def clear_kb_caches() -> None:
+    """Public cache-drop for the periodic refresh loop. The KB caches are
+    invalidated only by writes routed through THIS process, so on a multi-instance
+    deployment an edit on instance A left instance B serving stale topics/KB/vars
+    forever. main._settings_refresh_loop calls this every 60s (the same cadence
+    the settings cache re-pulls at), bounding cross-instance KB staleness to ~60s
+    instead of "until restart"."""
+    _invalidate_kb_cache()
+
+
 async def upsert_topic(product_id: int, slug: str, title: dict[str, str],
                        display_order: int, active: bool = True) -> int:
     row = await _pool.fetchrow(
@@ -3529,6 +3539,35 @@ async def count_unprocessed_retention_events(product_id: int) -> int:
         product_id,
     )
     return int(val or 0)
+
+
+async def prune_retention_events(keep_days: int = 90) -> int:
+    """Delete PROCESSED canonical events older than keep_days (all products).
+
+    The event log is append-only and can grow by millions of rows/month (partners
+    stream bet_settled per settled bet), while the state resolver only reads recent
+    events (the 24h loss window + recent activity), so old processed rows are dead
+    weight with no reaper — unlike app_logs, which is capped. Only PROCESSED rows
+    are removed (an unclaimed event is never dropped). Decision-ledger rows that
+    referenced a pruned event keep their event_name snapshot and drop the FK link
+    (there is no ON DELETE clause, so the link must be nulled first)."""
+    async with _acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE retention_v2_decisions SET event_pk = NULL "
+                "WHERE event_pk IN (SELECT id FROM retention_events "
+                "  WHERE processed_at IS NOT NULL "
+                "    AND processed_at < now() - make_interval(days => $1))",
+                int(keep_days))
+            result = await conn.execute(
+                "DELETE FROM retention_events "
+                "WHERE processed_at IS NOT NULL "
+                "  AND processed_at < now() - make_interval(days => $1)",
+                int(keep_days))
+    try:
+        return int(result.split()[-1])
+    except (ValueError, IndexError):
+        return 0
 
 
 async def list_retention_events(product_id: int, page: int = 1,

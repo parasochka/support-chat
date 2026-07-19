@@ -230,8 +230,13 @@ async def handle_message(
         closing=closing,
         # After a topic switch the prompt history is cut at the reset boundary,
         # so the model would otherwise treat the next turn as a brand-new chat
-        # and greet again mid-conversation.
-        ongoing=context_reset_id > 0,
+        # and greet again mid-conversation. This only matters on the FIRST turn
+        # after the switch (when the post-boundary `history` is still empty); once
+        # the post-switch history is non-empty the model has context and won't
+        # re-greet, and keeping the "already in progress" block on every later turn
+        # made its "do not use the player's name" clause permanently override the
+        # personalization directive's complaint-reassurance allowance.
+        ongoing=context_reset_id > 0 and not history,
         history_window=int(settings.general()["history_max_turns"]),
     )
     log.info(

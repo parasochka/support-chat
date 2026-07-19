@@ -87,6 +87,11 @@ async def _settings_refresh_loop() -> None:
         await asyncio.sleep(_SETTINGS_REFRESH_SEC)
         try:
             await settings.reload()
+            # Drop the per-process KB caches on the same cadence: they are only
+            # invalidated by writes on THIS instance, so without this a KB/topic/
+            # variable edit on another instance stayed invisible here until
+            # restart. Cheap — the next request re-fetches the small KB rows.
+            db.clear_kb_caches()
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - a transient DB error must not kill the loop
@@ -96,6 +101,10 @@ async def _settings_refresh_loop() -> None:
 _LOG_FLUSH_SEC = 3
 _LOG_KEEP_ROWS = 5000
 _LOG_PRUNE_EVERY = 20  # prune once every N flushes (~1 min)
+# The append-only retention_events log has no size cap; reap processed rows older
+# than this on a coarse cadence (~hourly) from the same loop.
+_RETENTION_EVENTS_PRUNE_EVERY = 1200  # ~1h at _LOG_FLUSH_SEC
+_RETENTION_EVENTS_KEEP_DAYS = 90
 
 
 async def _log_flush_loop() -> None:
@@ -114,6 +123,10 @@ async def _log_flush_loop() -> None:
             ticks += 1
             if ticks % _LOG_PRUNE_EVERY == 0:
                 await db.prune_app_logs(_LOG_KEEP_ROWS)
+            if ticks % _RETENTION_EVENTS_PRUNE_EVERY == 0:
+                removed = await db.prune_retention_events(_RETENTION_EVENTS_KEEP_DAYS)
+                if removed:
+                    log.info("retention_events_pruned rows=%s", removed)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - never let a DB hiccup kill the loop
