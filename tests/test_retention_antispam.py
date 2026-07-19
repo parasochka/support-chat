@@ -32,6 +32,12 @@ class FakeTelegram:
         self.photos.append((chat_id, "uploaded", caption))
         return {"photo": [{"file_id": "newid"}]}
 
+    async def send_photo_file_id_verbose(self, chat_id, file_id, **kwargs):
+        return await self.send_photo_file_id(chat_id, file_id, **kwargs), None, None
+
+    async def send_photo_bytes_verbose(self, chat_id, content, filename, **kwargs):
+        return await self.send_photo_bytes(chat_id, content, filename, **kwargs), None, None
+
     async def answer_callback(self, cb_id, text=None):
         pass
 

@@ -130,6 +130,24 @@ class TelegramClient:
             log.warning("telegram_api_call_failed method=%s error=%s", method, exc)
             return None
 
+    async def _call_verbose(self, method: str, payload: dict[str, Any]
+                            ) -> tuple[Optional[dict[str, Any]],
+                                       Optional[int], Optional[str]]:
+        """Like _call but returns (result, error_code, description) so callers can
+        act on the specific error (e.g. 403 -> the player blocked the bot)."""
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.post(self._url(method), json=payload)
+            data = resp.json()
+        except Exception as exc:  # noqa: BLE001 - a send must never break the webhook
+            log.warning("telegram_api_call_failed method=%s error=%s", method, exc)
+            return None, None, str(exc)
+        if not data.get("ok"):
+            log.warning("telegram_api_error method=%s desc=%s",
+                        method, data.get("description"))
+            return None, data.get("error_code"), data.get("description")
+        return data.get("result"), None, None
+
     async def send_message(self, chat_id: int, text: str, *,
                            reply_markup: Optional[dict[str, Any]] = None,
                            parse_mode: Optional[str] = None,
@@ -174,13 +192,15 @@ class TelegramClient:
             return None, data.get("error_code"), data.get("description")
         return data.get("result"), None, None
 
-    async def send_photo_file_id(self, chat_id: int, file_id: str, *,
-                                 caption: Optional[str] = None,
-                                 parse_mode: Optional[str] = None,
-                                 reply_markup: Optional[dict[str, Any]] = None,
-                                 disable_notification: bool = False
-                                 ) -> Optional[dict[str, Any]]:
-        """Send an already-uploaded photo by its cached file_id (no re-upload)."""
+    async def send_photo_file_id_verbose(
+            self, chat_id: int, file_id: str, *,
+            caption: Optional[str] = None, parse_mode: Optional[str] = None,
+            reply_markup: Optional[dict[str, Any]] = None,
+            disable_notification: bool = False
+            ) -> tuple[Optional[dict[str, Any]], Optional[int], Optional[str]]:
+        """sendPhoto by cached file_id, surfacing (error_code, description) so the
+        caller can tell a 403 (player blocked the bot -> unreachable) from a stale
+        file_id (retry via re-upload)."""
         payload: dict[str, Any] = {"chat_id": chat_id, "photo": file_id}
         if caption:
             payload["caption"] = caption
@@ -190,16 +210,28 @@ class TelegramClient:
             payload["reply_markup"] = reply_markup
         if disable_notification:
             payload["disable_notification"] = True
-        return await self._call("sendPhoto", payload)
+        return await self._call_verbose("sendPhoto", payload)
 
-    async def send_photo_bytes(self, chat_id: int, content: bytes, filename: str,
-                               *, caption: Optional[str] = None,
-                               parse_mode: Optional[str] = None,
-                               reply_markup: Optional[dict[str, Any]] = None,
-                               disable_notification: bool = False
-                               ) -> Optional[dict[str, Any]]:
-        """Upload a photo from bytes (first send). Returns the result so the
-        caller can cache the returned file_id for later sends."""
+    async def send_photo_file_id(self, chat_id: int, file_id: str, *,
+                                 caption: Optional[str] = None,
+                                 parse_mode: Optional[str] = None,
+                                 reply_markup: Optional[dict[str, Any]] = None,
+                                 disable_notification: bool = False
+                                 ) -> Optional[dict[str, Any]]:
+        """Send an already-uploaded photo by its cached file_id (no re-upload)."""
+        result, _code, _desc = await self.send_photo_file_id_verbose(
+            chat_id, file_id, caption=caption, parse_mode=parse_mode,
+            reply_markup=reply_markup, disable_notification=disable_notification)
+        return result
+
+    async def send_photo_bytes_verbose(
+            self, chat_id: int, content: bytes, filename: str, *,
+            caption: Optional[str] = None, parse_mode: Optional[str] = None,
+            reply_markup: Optional[dict[str, Any]] = None,
+            disable_notification: bool = False
+            ) -> tuple[Optional[dict[str, Any]], Optional[int], Optional[str]]:
+        """Upload a photo from bytes (first send), surfacing (error_code,
+        description). Returns the result so the caller can cache the file_id."""
         data: dict[str, Any] = {"chat_id": str(chat_id)}
         if caption:
             data["caption"] = caption
@@ -216,13 +248,26 @@ class TelegramClient:
                 resp = await client.post(self._url("sendPhoto"), data=data,
                                          files=files)
             j = resp.json()
-            if not j.get("ok"):
-                log.warning("telegram_send_photo_error desc=%s", j.get("description"))
-                return None
-            return j.get("result")
         except Exception as exc:  # noqa: BLE001
             log.warning("telegram_send_photo_failed error=%s", exc)
-            return None
+            return None, None, str(exc)
+        if not j.get("ok"):
+            log.warning("telegram_send_photo_error desc=%s", j.get("description"))
+            return None, j.get("error_code"), j.get("description")
+        return j.get("result"), None, None
+
+    async def send_photo_bytes(self, chat_id: int, content: bytes, filename: str,
+                               *, caption: Optional[str] = None,
+                               parse_mode: Optional[str] = None,
+                               reply_markup: Optional[dict[str, Any]] = None,
+                               disable_notification: bool = False
+                               ) -> Optional[dict[str, Any]]:
+        """Upload a photo from bytes (first send). Returns the result so the
+        caller can cache the returned file_id for later sends."""
+        result, _code, _desc = await self.send_photo_bytes_verbose(
+            chat_id, content, filename, caption=caption, parse_mode=parse_mode,
+            reply_markup=reply_markup, disable_notification=disable_notification)
+        return result
 
     @staticmethod
     def extract_photo_file_id(send_photo_result: Optional[dict[str, Any]]
