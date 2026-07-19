@@ -3116,7 +3116,16 @@ async def update_retention_profile(product_id: int, player_id: str,
         sets.append(f"{f} = ${len(args)}")
     for f in act_cols:
         args.append(_as_ts(profile.get(f)))
-        sets.append(f"{f} = ${len(args)}")
+        n = len(args)
+        # Activity timestamps are forward-only + future-clamped, matching the
+        # event bridge (touch_retention_activity's GREATEST + _validate_event's
+        # future clamp). Without this the lazy Player-API pull / push webhook could
+        # REWIND a fresher event-set value with a stale snapshot (a no_deposit rule
+        # then pings a player who deposited today) or PIN a future timestamp from a
+        # skewed partner clock. now() clamps the future; GREATEST keeps forward-only.
+        sets.append(
+            f"{f} = GREATEST(COALESCE({f}, LEAST(${n}::timestamptz, now())), "
+            f"LEAST(${n}::timestamptz, now()))")
     result = await _pool.execute(
         f"UPDATE retention_users SET {', '.join(sets)} "
         f"WHERE product_id = $1 AND player_id = $2",
