@@ -764,11 +764,20 @@ async def audit_log(product_id: Optional[int] = None, partner_id: Optional[int] 
     product_ids = await admin_auth.resolve_scope_filter(admin, product_id, partner_id)
     if product_id is not None:
         role = await admin_auth.role_for_product(admin, product_id)
+        include_admins = role == "admin"
     elif partner_id is not None:
         role = admin_auth.role_for_partner(admin, partner_id)
+        include_admins = role == "admin"
     else:
+        # No selection: product_ids spans the account's WHOLE accessible set,
+        # which can mix scopes where it is admin with scopes where it is only a
+        # manager. The coarse admin.get("role") is 'admin' if the account is admin
+        # ANYWHERE, so using it here would leak admin-authored rows for the
+        # manager-only products too. Only a GLOBAL admin may see admin-authored
+        # actions across the whole reach; a mixed-scope viewer must select the
+        # specific product to see its admin rows (handled by the branch above).
         role = admin_auth.global_role(admin) or admin.get("role")
-    include_admins = role == "admin"
+        include_admins = admin_auth.global_role(admin) == "admin"
     include_global = (product_id is None and partner_id is None
                       and admin_auth.global_role(admin) is not None)
     rows = await db.list_audit(product_ids, include_admins=include_admins,
