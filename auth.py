@@ -266,8 +266,19 @@ def verify_handshake(blob: str, secret: Optional[str] = None) -> dict[str, Any]:
     if exp is None or now >= int(exp):
         raise TokenError("handshake expired")
     iat = payload.get("iat")
-    if iat is not None and now - int(iat) > config.WIDGET_HANDSHAKE_MAX_AGE_SEC:
-        raise TokenError("handshake too old")
+    max_age = config.WIDGET_HANDSHAKE_MAX_AGE_SEC
+    if iat is not None:
+        if now - int(iat) > max_age:
+            raise TokenError("handshake too old")
+    elif int(exp) - now > max_age:
+        # No iat to bound the token's age against. A partner CMS that signs its
+        # own blob (the integration docs allow direct signing) could omit iat and
+        # set a far-future exp, and the max-age anti-replay window — documented as
+        # defence-in-depth alongside exp — would then be silently skipped, so a
+        # captured blob stays replayable (opening sessions / minting deeplinks as
+        # the victim) for the whole exp lifetime. Bound the window against exp
+        # instead: a token valid for longer than the max-age window is rejected.
+        raise TokenError("handshake exp exceeds max age")
     return payload
 
 

@@ -275,8 +275,16 @@ def _is_transient(exc: Exception) -> bool:
     if _openai_mod is None:
         return True  # be lenient if SDK introspection unavailable
     transient = []
+    # Deliberately NOT the SDK base class APIError: in openai-python v1.x it is
+    # the parent of essentially every error, including deterministic 4xx
+    # (BadRequestError/UnprocessableEntityError/context_length_exceeded). Listing
+    # it here made a permanent 400 (e.g. a model rejecting a `reasoning_effort`/
+    # `verbosity` value, or a context overflow) look transient, so it was retried
+    # max_attempts times AND failed over to the 2nd key — ~2*max_attempts wasted
+    # calls plus a spurious key_failover event per turn. Only the genuinely
+    # retryable classes belong here.
     for attr in ("RateLimitError", "APITimeoutError", "APIConnectionError",
-                 "InternalServerError", "APIError"):
+                 "InternalServerError"):
         t = getattr(_openai_mod, attr, None)
         if t is not None:
             transient.append(t)
@@ -498,6 +506,13 @@ class OpenAIClient:
                     winner = self.primary if task is primary_task else self.fallback
                     loser = fallback_task if task is primary_task else primary_task
                     loser.cancel()
+                    # If the loser had ALREADY finished with an exception (both
+                    # in this same wait() wakeup), cancel() is a no-op and the
+                    # exception is otherwise never retrieved -> asyncio logs a
+                    # spurious "Task exception was never retrieved" at GC, which
+                    # pollutes the mirrored logs. Consume it harmlessly.
+                    loser.add_done_callback(
+                        lambda t: t.cancelled() or t.exception())
                     # NB: if the losing request had already been processed
                     # server-side, its tokens are billed by OpenAI but cannot be
                     # accounted here — the usage rides in a response we never

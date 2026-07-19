@@ -79,18 +79,26 @@ def check_translation_completeness() -> None:
 
 
 def check_prompt_core_byte_stable() -> None:
-    """Layer-1 support core must be byte-identical across calls (prefix cache)."""
+    """Layer-1 cores must be byte-identical across calls (prefix cache).
+
+    Both cores are byte-stability invariants (CLAUDE.md §1): the support core AND
+    the retention (Telegram) core. The retention one was previously only guarded
+    by a pytest test, so a per-request leak into the retention Layer-1 slipped the
+    static gate the /preflight skill leans on.
+    """
     import prompts
 
-    a = prompts.get_system_core()
-    b = prompts.get_system_core()
-    if a != b:
-        _fail("prompt-core", "get_system_core() is not byte-stable across calls")
-        return
-    if not a.strip():
-        _fail("prompt-core", "get_system_core() returned empty")
-        return
-    _ok("prompt-core (Layer-1 byte-stable)")
+    for name, fn in (("support", prompts.get_system_core),
+                     ("retention", prompts.get_retention_system_core)):
+        a = fn()
+        b = fn()
+        if a != b:
+            _fail("prompt-core", f"{name} core ({fn.__name__}) is not byte-stable across calls")
+            return
+        if not a.strip():
+            _fail("prompt-core", f"{name} core ({fn.__name__}) returned empty")
+            return
+    _ok("prompt-core (support + retention Layer-1 byte-stable)")
 
 
 def check_settings_groups_have_ui() -> None:

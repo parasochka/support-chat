@@ -55,6 +55,21 @@ def _err(status: int, code: str, detail: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": code, "detail": detail})
 
 
+def _ct_eq(a: str, b: str) -> bool:
+    """Constant-time string compare that tolerates non-ASCII input.
+
+    hmac.compare_digest raises TypeError on a str containing a non-ASCII char,
+    and Starlette decodes header bytes as latin-1, so an attacker-supplied
+    Authorization / secret-token header with any byte > 0x7F would crash the
+    compare -> HTTP 500. On the per-product partner path that 500-vs-401 split
+    is a tenant-enumeration oracle (500 => the product exists AND has a secret).
+    Comparing UTF-8 bytes makes any malformed token an ordinary auth failure."""
+    try:
+        return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+    except (AttributeError, TypeError):
+        return False
+
+
 # ===========================================================================
 # Telegram webhook
 # ===========================================================================
@@ -72,8 +87,8 @@ async def telegram_webhook(secret: str, request: Request,
     forge updates. We always return 200 fast (Telegram retries on non-200); the
     AI turn runs after the response.
     """
-    if not hmac.compare_digest(x_telegram_bot_api_secret_token or "",
-                               config.TELEGRAM_WEBHOOK_SECRET):
+    if not _ct_eq(x_telegram_bot_api_secret_token or "",
+                  config.TELEGRAM_WEBHOOK_SECRET):
         return _err(403, "bad_secret_token", "Invalid webhook secret token.")
     product = await db.get_product_by_telegram_webhook_secret(secret)
     if product is None or not product.get("active") or not product.get("retention_enabled"):
@@ -204,7 +219,7 @@ async def _partner_auth(product_id: int,
     except auth.TokenError:
         pass
     if (product is None or not secret or token is None
-            or not hmac.compare_digest(token, secret)):
+            or not _ct_eq(token, secret)):
         if product is None:
             reason = "unknown_product"
         elif not secret:
@@ -218,12 +233,19 @@ async def _partner_auth(product_id: int,
 
 
 @public_router.post("/partner/{product_id}/player-update")
-async def player_update(product_id: int, body: PlayerUpdateReq,
+async def player_update(product_id: int, body: PlayerUpdateReq, req: Request,
                         authorization: Optional[str] = Header(default=None)
                         ) -> JSONResponse:
     """CRM pushes a (partial) profile change. Authorized with the product's
     handshake secret as a shared partner secret (Bearer). Fields left null are
     not touched (partial update)."""
+    # Per-IP rate limit BEFORE the auth work: _partner_auth does a DB lookup + a
+    # secretbox decrypt on every call, so an unauthenticated flood would otherwise
+    # drive unbounded DB + crypto load (every other public POST is throttled).
+    try:
+        antispam.check_rate_limit(f"partner:{client_ip(req)}")
+    except antispam.AntiSpamError as exc:
+        return _err(exc.status, exc.code, exc.detail)
     _product, err = await _partner_auth(product_id, authorization)
     if err is not None:
         return err
@@ -260,7 +282,7 @@ _MAX_EVENT_BATCH = 500
 
 
 @public_router.post("/partner/{product_id}/event")
-async def player_event(product_id: int, body: PlayerEventsReq,
+async def player_event(product_id: int, body: PlayerEventsReq, req: Request,
                        authorization: Optional[str] = Header(default=None)
                        ) -> JSONResponse:
     """Canonical casino events (the EPIC-1 taxonomy), single or batch.
@@ -270,6 +292,12 @@ async def player_event(product_id: int, body: PlayerEventsReq,
     stored event also bumps the matching v1 activity timestamps (the legacy
     bridge), so this ONE feed powers both retention regimes.
     """
+    # Per-IP rate limit before the auth DB lookup + secretbox decrypt (see
+    # player_update — the partner POSTs are the one public family that lacked it).
+    try:
+        antispam.check_rate_limit(f"partner:{client_ip(req)}")
+    except antispam.AntiSpamError as exc:
+        return _err(exc.status, exc.code, exc.detail)
     _product, err = await _partner_auth(product_id, authorization)
     if err is not None:
         return err

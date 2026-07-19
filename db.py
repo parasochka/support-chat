@@ -1506,7 +1506,11 @@ async def log_admin_event(session_id: Optional[str], type_: str,
 # limiter itself — per instance, reset on restart, which is fine for sampling.
 _EVENT_SAMPLE_WINDOW_SEC = 300.0
 _EVENT_SAMPLE_MAX_PER_WINDOW = 20
-_event_sample_hits: dict[str, "_deque[float]"] = {}
+# Keyed by (type_, product_id): the budget is now PER TENANT, so one product's
+# flood can't exhaust the shared per-type budget and blank out another product's
+# abuse audit during a simultaneous attack (product_id=None keeps a global bucket
+# for scope-less callers).
+_event_sample_hits: dict[tuple[str, Optional[int]], "_deque[float]"] = {}
 
 
 async def log_admin_event_sampled(session_id: Optional[str], type_: str,
@@ -1521,7 +1525,7 @@ async def log_admin_event_sampled(session_id: Optional[str], type_: str,
     can omit it (log_admin_event falls back to the tenancy ContextVar)."""
     import time as _time
     now = _time.monotonic()
-    hits = _event_sample_hits.setdefault(type_, _deque())
+    hits = _event_sample_hits.setdefault((type_, product_id), _deque())
     while hits and now - hits[0] > _EVENT_SAMPLE_WINDOW_SEC:
         hits.popleft()
     if len(hits) >= _EVENT_SAMPLE_MAX_PER_WINDOW:
