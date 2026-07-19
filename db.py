@@ -840,12 +840,23 @@ async def _migrate_tenancy(conn: asyncpg.Connection) -> int:
         "FROM chat_sessions s "
         "WHERE e.product_id IS NULL AND e.session_id = s.id"
     )
-    await conn.execute(
-        "INSERT INTO admin_memberships (email, scope_type, role) "
-        "SELECT u.email, 'global', u.role FROM admin_users u "
-        "WHERE NOT EXISTS "
-        "  (SELECT 1 FROM admin_memberships m WHERE m.email = u.email)"
-    )
+    # Adopt legacy PRE-tenancy admin_users into a global membership — but ONLY on
+    # the very first boot after tenancy was introduced, detected by an entirely
+    # empty memberships table. On every LATER boot a zero-membership account is a
+    # DELIBERATE "no access" state (its last membership was revoked, a legitimate
+    # state per _can_manage_user), and re-granting it a global membership would
+    # silently resurrect — and ESCALATE — access on the next restart, with no
+    # audit trail. Once any membership exists the feature is in use, so this
+    # backfill must never run again.
+    has_memberships = await conn.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM admin_memberships)")
+    if not has_memberships:
+        await conn.execute(
+            "INSERT INTO admin_memberships (email, scope_type, role) "
+            "SELECT u.email, 'global', u.role FROM admin_users u "
+            "WHERE NOT EXISTS "
+            "  (SELECT 1 FROM admin_memberships m WHERE m.email = u.email)"
+        )
     return product_id
 
 
@@ -3243,11 +3254,17 @@ async def update_retention_rule(rule_id: int, product_id: int,
 
 async def delete_retention_rule(rule_id: int, product_id: int) -> bool:
     # The ledger keeps history: detach its rows instead of failing on the FK.
+    # BOTH statements are scoped by product_id: rule_id is globally unique, so an
+    # unscoped UPDATE would let a product-P admin NULL another tenant's ping->rule
+    # links (corrupting that tenant's per-rule cooldown) while the scoped DELETE
+    # matched nothing and returned 404 — a cross-tenant write. Mirrors
+    # delete_retention_event, which already scopes both statements.
     async with _acquire() as conn:
         async with conn.transaction():
             await conn.execute(
-                "UPDATE retention_pings SET rule_id = NULL WHERE rule_id = $1",
-                rule_id)
+                "UPDATE retention_pings SET rule_id = NULL "
+                "WHERE rule_id = $1 AND product_id = $2",
+                rule_id, product_id)
             result = await conn.execute(
                 "DELETE FROM retention_rules WHERE id = $1 AND product_id = $2",
                 rule_id, product_id)
@@ -3320,29 +3337,44 @@ async def ping_rule_recently_fired(rid: int, rule_id: int,
     return bool(val)
 
 
-async def idle_rule_thresholds_fired_since(rid: int, since: Any
+async def idle_rule_thresholds_fired_since(rid: int, since: Any,
+                                           trigger_kind: Optional[str] = None
                                            ) -> dict[str, int]:
     """Max `inactivity_days` of the idle rules already fired ('sent') to this
-    player since `since` (their last activity), per trigger kind.
+    player since `since`, per trigger kind.
 
     The anti-cascade guard: per-rule cooldowns alone let a long-quiet player
     receive the ENTIRE ladder in reverse — after "quiet 60 days" fired, the
     45/30/21/… rungs each matched on the next sweep (their own cooldowns were
     clean) and cascaded out at min-gap pace. During ONE silence stretch only a
-    rung ABOVE the highest already-fired one may fire; the moment the player
-    writes again (`last_active_at` moves past the fired pings) every rung is
-    eligible again. `since` = the player's last activity; None counts every
-    fired ping."""
+    rung ABOVE the highest already-fired one may fire; the moment the current
+    silence stretch is broken every rung is eligible again.
+
+    `since` MUST be the start of the current silence stretch for `trigger_kind`
+    (see retention_idle._idle_anchor_for) — the SAME clock the rung measures
+    idleness on: `last_active_at` for bot_inactivity, but the casino
+    login/played/deposit timestamps for casino_inactivity/no_deposit. Anchoring
+    every kind on `last_active_at` (which a bot reply bumps) wrongly wiped the
+    fired memory of casino-anchored ladders while the casino silence continued,
+    re-opening the reverse-cascade for players who reply to pings. Pass
+    `trigger_kind` so the caller can query per-kind with the matching anchor;
+    None counts every fired ping across kinds."""
     since_ts = _as_ts(since)
+    args: list[Any] = [rid, since_ts]
+    kind_sql = ""
+    if trigger_kind is not None:
+        args.append(trigger_kind)
+        kind_sql = f" AND r.trigger_kind = ${len(args)}"
     rows = await _pool.fetch(
         "SELECT r.trigger_kind, MAX(r.inactivity_days) AS days "
         "FROM retention_pings p "
         "JOIN retention_rules r ON r.id = p.rule_id "
         "WHERE p.retention_user_id = $1 AND p.status = 'sent' "
         "  AND p.created_at > COALESCE($2::timestamptz, "
-        "                              '-infinity'::timestamptz) "
-        "GROUP BY r.trigger_kind",
-        rid, since_ts,
+        "                              '-infinity'::timestamptz)"
+        + kind_sql +
+        " GROUP BY r.trigger_kind",
+        *args,
     )
     return {str(r["trigger_kind"]): int(r["days"]) for r in rows
             if r["days"] is not None}
@@ -4869,7 +4901,10 @@ async def list_audit(product_ids: Optional[list[int]], *, include_admins: bool,
                      f"OR path ILIKE ${len(args)})")
     if before_id:
         args.append(before_id)
-        conds.append(f"id < ${len(args)}")
+        # Qualify with the alias: the query LEFT JOINs products (which also has an
+        # `id`), so a bare `id` is an ambiguous column reference (42702) and 500s
+        # every "load more" page.
+        conds.append(f"a.id < ${len(args)}")
     args.append(max(1, min(limit, 500)))
     where_sql = " AND ".join(f"({c})" for c in conds)
     rows = await _pool.fetch(
