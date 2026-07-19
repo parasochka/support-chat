@@ -36,12 +36,16 @@ import language
 # tag). This is the most safety-relevant sentinel (responsible-gaming /
 # complaints), so it must not be the one lenient-cased matcher.
 ESCALATE_TAG = "[[ESCALATE]]"
-_ESCALATE_TAG_RE = re.compile(r"\[\[ESCALATE\]\]", re.IGNORECASE)
+# Lenient matching: tolerate inner whitespace (`[[ ESCALATE ]]`) as well as case.
+# A reasoning model occasionally spaces or wraps a tag; the strip must still fire
+# — most critically for [[ESCALATE]], where a leaked/dropped tag means the raw
+# machine syntax shows to the player AND the safety hand-off silently never fires.
+_ESCALATE_TAG_RE = re.compile(r"\[\[\s*ESCALATE\s*\]\]", re.IGNORECASE)
 
 # Machine-readable sentinel the model prepends (own line) when the player's
 # question clearly belongs to a DIFFERENT support topic than the one currently
 # loaded — so the front-end can offer a one-tap topic switch. Captures the slug.
-_TOPIC_TAG_RE = re.compile(r"\[\[TOPIC:([a-z0-9_\-]+)\]\]", re.IGNORECASE)
+_TOPIC_TAG_RE = re.compile(r"\[\[\s*TOPIC\s*:\s*([a-z0-9_\-]+)\s*\]\]", re.IGNORECASE)
 
 # Machine-readable sentinel the model prepends (own first line) reporting the
 # language it answered in. The conversation language FOLLOWS the player: the
@@ -53,7 +57,7 @@ _TOPIC_TAG_RE = re.compile(r"\[\[TOPIC:([a-z0-9_\-]+)\]\]", re.IGNORECASE)
 # `pt-BR` or `por` must still have the tag REMOVED from the visible reply);
 # strip_language_tag narrows the captured value to a clean 2-letter code and
 # chat_service validates it against the supported set.
-_LANG_TAG_RE = re.compile(r"\[\[LANG:([a-zA-Z-]{0,8})\]\]", re.IGNORECASE)
+_LANG_TAG_RE = re.compile(r"\[\[\s*LANG\s*:\s*([a-zA-Z-]{0,20})\s*\]\]", re.IGNORECASE)
 
 # Machine-readable sentinel the model appends (own LAST line) carrying up to a
 # few short follow-up/clarifying questions phrased from the player's point of
@@ -61,7 +65,7 @@ _LANG_TAG_RE = re.compile(r"\[\[LANG:([a-zA-Z-]{0,8})\]\]", re.IGNORECASE)
 # closest to; the widget renders them as one-tap "bubbles" by the input field.
 # Questions are pipe-separated inside the tag; chat_service strips it and returns
 # the parsed list. Mirrors the [[TOPIC:slug]] strip pattern.
-_SUGGEST_TAG_RE = re.compile(r"\[\[SUGGEST:(.*?)\]\]", re.IGNORECASE)
+_SUGGEST_TAG_RE = re.compile(r"\[\[\s*SUGGEST\s*:(.*?)\]\]", re.IGNORECASE)
 
 # Cap on how many suggested questions we surface (extra ones the model emits are
 # dropped). The model contributes ONLY the guiding questions — the third,
@@ -69,33 +73,40 @@ _SUGGEST_TAG_RE = re.compile(r"\[\[SUGGEST:(.*?)\]\]", re.IGNORECASE)
 # generated, so its wording is always exact and localized.
 _MAX_SUGGESTIONS = 2
 
+# Only QUESTIONS become guiding bubbles. The directive tells the model to end each
+# with a question mark IN THE REPLY LANGUAGE, so accept the non-ASCII marks too —
+# fullwidth ？ (zh/ja), Arabic ؟, Armenian ՞ — or a compliant question in an
+# admin-added language would be silently dropped, taking the closing bubble with
+# it (chat_service appends the closing option only when guiding bubbles exist).
+_QUESTION_MARKS = ("?", "？", "؟", "՞")
+
 # Machine-readable sentinel the model emits (own line) once the player's question
 # looks fully resolved (they confirmed/thanked, nothing left to do). chat_service
 # strips it and flags the turn so the widget can offer a "finish chat" button —
 # nudging the satisfied player toward closing the chat. Mirrors [[ESCALATE]].
-_RESOLVED_TAG_RE = re.compile(r"\[\[RESOLVED\]\]", re.IGNORECASE)
+_RESOLVED_TAG_RE = re.compile(r"\[\[\s*RESOLVED\s*\]\]", re.IGNORECASE)
 
 # --- RETENTION-mode sentinels (Telegram bot) --------------------------------
 # [[PHOTO:id]] — the model asks to send a specific photo from the candidate list
 # it was shown in Layer 3. The backend validates the id against the allowed set,
 # sends the photo, records the view, and uses the model's reply text as caption.
-_PHOTO_TAG_RE = re.compile(r"\[\[PHOTO:(\d+)\]\]", re.IGNORECASE)
+_PHOTO_TAG_RE = re.compile(r"\[\[\s*PHOTO\s*:\s*(\d+)\s*\]\]", re.IGNORECASE)
 # [[STAGE_UP]] — a hint that the player looks ready for the next explicitness
 # stage. The backend gate (threshold + spacing + tier ceiling) decides; the model
 # only proposes.
-_STAGE_UP_TAG_RE = re.compile(r"\[\[STAGE_UP\]\]", re.IGNORECASE)
+_STAGE_UP_TAG_RE = re.compile(r"\[\[\s*STAGE_UP\s*\]\]", re.IGNORECASE)
 # [[HANDOFF]] — support/complaint/account/deposit-withdrawal/responsible-gaming
 # or an explicit ask for a human surfaced: Nika drops the flirt and routes OUT
 # (to a manager on escalation entry, back to site support on retention entry).
 # She never tries to resolve such questions herself.
-_HANDOFF_TAG_RE = re.compile(r"\[\[HANDOFF\]\]", re.IGNORECASE)
+_HANDOFF_TAG_RE = re.compile(r"\[\[\s*HANDOFF\s*\]\]", re.IGNORECASE)
 # [[LINK:url]] — retention-only CTA: the model picks ONE official page from the
 # SITE MAP block whose intent matches the message (come play -> games, deposit
 # -> cashier, balance -> account) and the backend renders it as an inline
 # Telegram button UNDER the message (never as a raw link in the text). The
 # backend re-validates the URL against the product's site map; anything not in
 # the list is dropped, so the model can never button-ify an invented address.
-_LINK_TAG_RE = re.compile(r"\[\[LINK:([^\]\s]+)\]\]", re.IGNORECASE)
+_LINK_TAG_RE = re.compile(r"\[\[\s*LINK\s*:\s*([^\]\s]+)\s*\]\]", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # PROMPT VARIABLES — the brand-uniquification registry
@@ -1124,7 +1135,7 @@ def strip_suggestions(text: str) -> tuple[str, list[str]]:
                 captured = True
                 for part in m.group(1).split("|"):
                     q = part.strip()
-                    if (q and q.endswith("?")
+                    if (q and q.endswith(_QUESTION_MARKS)
                             and len(suggestions) < _MAX_SUGGESTIONS):
                         suggestions.append(q)
             remainder = _SUGGEST_TAG_RE.sub("", line).strip()
@@ -1153,6 +1164,29 @@ def strip_resolved_tag(text: str) -> tuple[str, bool]:
             continue
         cleaned.append(line)
     return "\n".join(cleaned).strip(), resolved
+
+
+# Backstop scrub for any control-sentinel fragment the per-tag strips missed —
+# most importantly a tag TRUNCATED mid-write when the model hit its token budget
+# (e.g. "[[SUGGEST: how do I..." with no closing "]]", which no strict regex
+# matches) or an odd variant. Without it the literal machine syntax leaks into
+# the player's chat bubble. Only the KNOWN control-tag names are matched, so an
+# ordinary "[[note]]" a reply might contain is left intact.
+_CONTROL_TAG_NAMES = ("ESCALATE", "RESOLVED", "TOPIC", "LANG", "SUGGEST",
+                      "PHOTO", "STAGE_UP", "HANDOFF", "LINK")
+_CONTROL_SCRUB_RE = re.compile(
+    r"\[\[\s*(?:" + "|".join(_CONTROL_TAG_NAMES) + r")\b[^\]]*\]{0,2}",
+    re.IGNORECASE)
+
+
+def scrub_control_sentinels(text: str) -> str:
+    """Remove any residual/truncated control-sentinel fragment from a reply that
+    already went through the per-tag strips, so no raw machine syntax reaches the
+    player. Runs last, as a safety net for malformed or budget-truncated tags."""
+    if "[[" not in text:
+        return text
+    cleaned = _CONTROL_SCRUB_RE.sub("", text)
+    return "\n".join(ln.rstrip() for ln in cleaned.splitlines()).strip()
 
 
 # ===========================================================================
@@ -1428,9 +1462,13 @@ def get_retention_system_core() -> str:
         "\n\n".join([SYSTEM_CORE_RETENTION, *_retention_static_directives()])
     )
     # Same per-product site map as the support core, brand-resolved from the
-    # RETENTION variable set (the Telegram persona's own brand naming).
-    import settings  # lazy: avoid an import cycle at module load
-    block = _site_map_block(settings.retention_prompt_variables().get("brand_name", ""))
+    # RETENTION variable set. The retention store is keyed by the retention
+    # registry names (retention_brand_name, …), so a raw .get("brand_name") always
+    # missed and the block rendered the literal "the brand". Resolve it the same
+    # way the core does — render the {brand_name} placeholder through the retention
+    # variables — so the Telegram persona's own brand names its official pages.
+    brand = render_retention_prompt_variables("{brand_name}").strip()
+    block = _site_map_block(brand)
     return core + ("\n\n" + block if block else "")
 
 

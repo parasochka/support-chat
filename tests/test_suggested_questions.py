@@ -127,3 +127,34 @@ def test_lead_forward_directive_ties_suggest_and_resolved():
     core = prompts.get_system_core()
     assert "lead the player forward" in core.lower()
     assert "[[SUGGEST" in core and "[[RESOLVED]]" in core
+
+
+# ---------------------------------------------------------------------------
+# Sentinel robustness (native question marks, lenient spacing, backstop scrub)
+# ---------------------------------------------------------------------------
+def test_strip_suggestions_accepts_native_question_marks():
+    """A compliant model answering in zh/ar ends its questions with the native
+    mark; the parser must keep them (else the bubbles AND the closing option
+    silently vanish for that language)."""
+    clean, sugg = prompts.strip_suggestions("Ответ.\n[[SUGGEST: 如何存款？ | أين مكافأتي؟]]")
+    assert sugg == ["如何存款？", "أين مكافأتي؟"]
+    assert "[[" not in clean
+
+
+def test_strip_escalation_tolerates_inner_spaces():
+    """`[[ ESCALATE ]]` (spaced) must still fire the hand-off and never leak the
+    raw tag — the safety-critical sentinel."""
+    clean, escalated = prompts.strip_escalation_tag("[[ ESCALATE ]]\nПишу оператору.")
+    assert escalated is True
+    assert "[[" not in clean and "ESCALATE" not in clean
+
+
+def test_scrub_removes_truncated_control_tag():
+    """A tag truncated mid-write when the model hit its token budget has no closing
+    ']]' so no strict strip matches it — the backstop scrub removes the fragment so
+    raw machine syntax never reaches the player."""
+    leaked = "Вот ответ на твой вопрос.\n[[SUGGEST: как поднять лимит? | где"
+    assert "[[" in prompts.strip_suggestions(leaked)[0]  # strict strip leaves it
+    assert "[[" not in prompts.scrub_control_sentinels(leaked)
+    # An ordinary bracketed phrase is left intact.
+    assert prompts.scrub_control_sentinels("см. [[заметку]] ниже") == "см. [[заметку]] ниже"
