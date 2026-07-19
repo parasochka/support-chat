@@ -14,6 +14,7 @@ the whole update).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -26,6 +27,10 @@ log = logging.getLogger(__name__)
 _API_BASE = "https://api.telegram.org"
 # Telegram getChatMember statuses that count as "subscribed" to the channel.
 _SUBSCRIBED_STATUSES = {"member", "administrator", "creator", "restricted"}
+# Upper bound on how long a single 429 retry will wait. Telegram's retry_after
+# is usually 1-5s; cap it so a pathological value can't park a send (and, on the
+# webhook path, a background task) for minutes.
+_MAX_RETRY_AFTER_SEC = 10
 
 
 # ---------------------------------------------------------------------------
@@ -114,34 +119,66 @@ class TelegramClient:
     def _url(self, method: str) -> str:
         return f"{_API_BASE}/bot{self._token}/{method}"
 
+    async def _post(self, method: str, *,
+                    json_body: Optional[dict[str, Any]] = None,
+                    form_data: Optional[dict[str, Any]] = None,
+                    files: Optional[dict[str, Any]] = None
+                    ) -> Optional[dict[str, Any]]:
+        """POST a Bot API method once and return the parsed JSON envelope, or
+        None on a transport exception (a send must never break the webhook).
+
+        The ONE HTTP choke point for every Bot API call, so the single 429
+        rate-limit retry lives here: Telegram answers a rate-limited send with
+        `ok=false, error_code=429, parameters.retry_after=<sec>`. Left unhandled
+        the message is silently dropped, which bites hardest exactly when the
+        proactive-agent sweep fans a burst of pings and trips the per-second
+        limit. We honour retry_after ONCE (capped), then give up to the caller's
+        normal failure handling — never an unbounded retry loop."""
+        for attempt in (0, 1):
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    resp = await client.post(self._url(method), json=json_body,
+                                             data=form_data, files=files)
+                data = resp.json()
+            except Exception as exc:  # noqa: BLE001 - a send must never break the webhook
+                log.warning("telegram_api_call_failed method=%s error=%s",
+                            method, exc)
+                return None
+            if (attempt == 0 and not data.get("ok")
+                    and data.get("error_code") == 429):
+                params = data.get("parameters") or {}
+                try:
+                    retry_after = int(params.get("retry_after") or 0)
+                except (TypeError, ValueError):
+                    retry_after = 0
+                wait = min(max(retry_after, 1), _MAX_RETRY_AFTER_SEC)
+                log.warning("telegram_rate_limited method=%s retry_after=%s wait=%s",
+                            method, retry_after, wait)
+                await asyncio.sleep(wait)
+                continue
+            return data
+        return data  # pragma: no cover - loop always returns inside
+
     async def _call(self, method: str, payload: dict[str, Any]
                     ) -> Optional[dict[str, Any]]:
         """POST a Bot API method; return the `result` dict or None on failure."""
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(self._url(method), json=payload)
-            data = resp.json()
-            if not data.get("ok"):
-                log.warning("telegram_api_error method=%s desc=%s",
-                            method, data.get("description"))
-                return None
-            return data.get("result")
-        except Exception as exc:  # noqa: BLE001 - a send must never break the webhook
-            log.warning("telegram_api_call_failed method=%s error=%s", method, exc)
+        data = await self._post(method, json_body=payload)
+        if data is None:
             return None
+        if not data.get("ok"):
+            log.warning("telegram_api_error method=%s desc=%s",
+                        method, data.get("description"))
+            return None
+        return data.get("result")
 
     async def _call_verbose(self, method: str, payload: dict[str, Any]
                             ) -> tuple[Optional[dict[str, Any]],
                                        Optional[int], Optional[str]]:
         """Like _call but returns (result, error_code, description) so callers can
         act on the specific error (e.g. 403 -> the player blocked the bot)."""
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(self._url(method), json=payload)
-            data = resp.json()
-        except Exception as exc:  # noqa: BLE001 - a send must never break the webhook
-            log.warning("telegram_api_call_failed method=%s error=%s", method, exc)
-            return None, None, str(exc)
+        data = await self._post(method, json_body=payload)
+        if data is None:
+            return None, None, "request_failed"
         if not data.get("ok"):
             log.warning("telegram_api_error method=%s desc=%s",
                         method, data.get("description"))
@@ -179,13 +216,9 @@ class TelegramClient:
             payload["parse_mode"] = parse_mode
         if disable_notification:
             payload["disable_notification"] = True
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(self._url("sendMessage"), json=payload)
-            data = resp.json()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("telegram_api_call_failed method=sendMessage error=%s", exc)
-            return None, None, str(exc)
+        data = await self._post("sendMessage", json_body=payload)
+        if data is None:
+            return None, None, "request_failed"
         if not data.get("ok"):
             log.warning("telegram_api_error method=sendMessage desc=%s",
                         data.get("description"))
@@ -243,14 +276,9 @@ class TelegramClient:
             # multipart form fields must be strings — serialize the keyboard.
             data["reply_markup"] = json.dumps(reply_markup)
         files = {"photo": (filename, content)}
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(self._url("sendPhoto"), data=data,
-                                         files=files)
-            j = resp.json()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("telegram_send_photo_failed error=%s", exc)
-            return None, None, str(exc)
+        j = await self._post("sendPhoto", form_data=data, files=files)
+        if j is None:
+            return None, None, "request_failed"
         if not j.get("ok"):
             log.warning("telegram_send_photo_error desc=%s", j.get("description"))
             return None, j.get("error_code"), j.get("description")
