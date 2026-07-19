@@ -67,3 +67,15 @@ def test_to_html_link_url_underscores_and_emphasis_survive():
 def test_to_html_link_label_html_escaped():
     out = tf.to_html("[a<b>](https://x.io)")
     assert '<a href="https://x.io">a&lt;b&gt;</a>' in out
+
+
+# --- to_html defensive sentinel sanitisation --------------------------------
+def test_to_html_strips_preexisting_stash_sentinels():
+    """A model reply that echoes the private-use stash sentinels must not crash
+    the unstash pass (stash[int(idx)] IndexError) — the whole turn would be lost
+    after it was already persisted. The sentinels are stripped defensively."""
+    import telegram_format as _tf
+    poisoned = f"echo {_tf._SENT_OPEN}42{_tf._SENT_CLOSE} back"
+    out = _tf.to_html(poisoned)  # must not raise
+    assert _tf._SENT_OPEN not in out and _tf._SENT_CLOSE not in out
+    assert "echo" in out and "back" in out
