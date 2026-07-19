@@ -146,6 +146,18 @@ def resolve(locale: Optional[str] = None) -> str:
     return locale_to_lang(locale) or AUTO
 
 
+def session_base_lang(session: dict) -> str:
+    """A turn's base/fallback language: sticky conv_lang, else the session's
+    browser language, else the default. The AUTO branch defends against legacy
+    rows only — current create paths never store the literal AUTO sentinel."""
+    base = (
+        session.get("conv_lang")
+        or session.get("lang")
+        or default_code()
+    )
+    return default_code() if base == AUTO else base
+
+
 def language_name(resolved: str) -> str:
     """Human name of the language to answer in. AUTO -> the service default."""
     default = default_code()

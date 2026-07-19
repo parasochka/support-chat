@@ -30,19 +30,19 @@ import time
 from typing import Any, Optional
 
 import chat_service
+import config
 import db
 import delivery
 import retention
-from telegram_transport import inline_keyboard
+import retention_v2
 
 log = logging.getLogger(__name__)
 
 # The idle ladder moves on a scale of DAYS, so sweeping it on the worker's
 # seconds-scale cadence is pure waste. In-process pacing: one idle sweep per
 # product at most every `retention.idle_sweep_interval_sec` (hot per-product
-# knob; the event pipeline still runs every tick). 600s is the fallback when
-# the knob is missing from an older stored override.
-_IDLE_SWEEP_INTERVAL_SEC = 600
+# knob; the event pipeline still runs every tick). The config default is the
+# fallback when the knob is missing from an older stored override.
 _last_sweep: dict[int, float] = {}
 
 _TRIGGER_REASONS = {
@@ -52,26 +52,19 @@ _TRIGGER_REASONS = {
 }
 
 
-def _days_since(value: Any, now: _dt.datetime) -> Optional[float]:
-    dt = db._as_ts(value)  # one shared "maybe ISO string" parser (Z-suffix safe)
-    if dt is None:
-        return None
-    return max((now - dt).total_seconds() / 86400.0, 0.0)
-
-
 def _idle_days_for(ru: dict[str, Any], trigger_kind: str,
                    now: _dt.datetime) -> Optional[float]:
     """Days of idleness for this trigger, or None when the signal is absent
     (a rule on casino data never fires for a player the casino hasn't fed)."""
     if trigger_kind == "bot_inactivity":
-        return _days_since(ru.get("last_active_at"), now)
+        return retention_v2.days_since(ru.get("last_active_at"), now)
     if trigger_kind == "casino_inactivity":
-        candidates = [d for d in (_days_since(ru.get("last_login_at"), now),
-                                  _days_since(ru.get("last_played_at"), now))
+        candidates = [d for d in (retention_v2.days_since(ru.get("last_login_at"), now),
+                                  retention_v2.days_since(ru.get("last_played_at"), now))
                       if d is not None]
         return min(candidates) if candidates else None
     if trigger_kind == "no_deposit":
-        return _days_since(ru.get("last_deposit_at"), now)
+        return retention_v2.days_since(ru.get("last_deposit_at"), now)
     return None
 
 
@@ -154,7 +147,6 @@ async def run_product_idle_pings_locked(product: dict[str, Any],
     same guard-race class the v2 «Process queue now» button was given
     run_product_events_locked for. Blocking lock (not try-lock): the button
     should run right after the worker finishes, not silently no-op."""
-    import retention_v2  # late: retention_v2 imports this module
     pool = db.pool()
     async with pool.acquire() as conn:
         await conn.execute("SELECT pg_advisory_lock($1)",
@@ -183,14 +175,13 @@ async def run_product_idle_pings(product: dict[str, Any],
         return {"skipped": "idle_pings_disabled"}
     now = time.monotonic()
     interval = int(cfg.get("idle_sweep_interval_sec")
-                   or _IDLE_SWEEP_INTERVAL_SEC)
+                   or config.RETENTION_IDLE_SWEEP_INTERVAL_SEC)
     if not force and now - _last_sweep.get(pid, 0.0) < interval:
         return {"skipped": "paced"}
     _last_sweep[pid] = now
     token = await db.get_product_telegram_token(pid)
     if not token:
         return {"skipped": "no_bot_token"}
-    import retention_v2  # late: retention_v2 imports this module
     if not force and retention_v2._in_quiet_hours(cfg):
         return {"skipped": "quiet_hours"}
     rules = await db.list_retention_rules(pid, only_enabled=True)
@@ -244,6 +235,18 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
     dry_run = bool(cfg.get("v2_dry_run"))
     lang = retention.resolve_user_lang(ru)
 
+    async def _ledger(**overrides: Any) -> None:
+        """One decisions-ledger row per attempt; only the outcome fields vary."""
+        await db.insert_retention_v2_decision(
+            pid, retention_user_id=rid, player_id=ru.get("player_id"),
+            trigger_kind="idle", event_pk=None,
+            event_name=f"idle:{rule.get('trigger_kind')}",
+            state={"idle_days": idle_days},
+            guard={"allow": True, "reasons": []},
+            action=action, intent=rule.get("intent") or "",
+            reason=f"idle rule '{rule.get('name')}' matched ({idle_days}d)",
+            **overrides)
+
     session = await retention._ensure_session(pid, ru, lang)
     if session is None:
         await db.record_retention_ping(pid, rid, rule_id, action, "skipped",
@@ -263,15 +266,7 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
         # Same shadow mode as the event agent: the ledger shows exactly what
         # WOULD have gone out, nothing is generated or sent (a dry idle rule
         # must not burn model calls on every sweep).
-        await db.insert_retention_v2_decision(
-            pid, retention_user_id=rid, player_id=ru.get("player_id"),
-            trigger_kind="idle", event_pk=None,
-            event_name=f"idle:{rule.get('trigger_kind')}",
-            state={"idle_days": idle_days},
-            guard={"allow": True, "reasons": []},
-            action=action, intent=rule.get("intent") or "",
-            reason=f"idle rule '{rule.get('name')}' matched ({idle_days}d)",
-            dry_run=True)
+        await _ledger(dry_run=True)
         await db.record_retention_ping(pid, rid, rule_id, action, "skipped",
                                        detail="dry_run")
         return True
@@ -284,44 +279,16 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
         photo_candidates=candidates,
     )
     if draft is None:
-        await db.insert_retention_v2_decision(
-            pid, retention_user_id=rid, player_id=ru.get("player_id"),
-            trigger_kind="idle", event_pk=None,
-            event_name=f"idle:{rule.get('trigger_kind')}",
-            state={"idle_days": idle_days},
-            guard={"allow": True, "reasons": []},
-            action=action, intent=rule.get("intent") or "",
-            reason=f"idle rule '{rule.get('name')}' matched ({idle_days}d)",
-            dry_run=False, delivered=False, detail="model_error", cost_usd=0.0)
+        await _ledger(dry_run=False, delivered=False, detail="model_error",
+                      cost_usd=0.0)
         await db.record_retention_ping(pid, rid, rule_id, action, "failed",
                                        detail="model_error")
         return False
 
-    markup = None
-    if draft.link_url:
-        markup = inline_keyboard([[{"text": draft.link_label or draft.link_url,
-                                    "url": draft.link_url}]])
-
     header = retention._rtn_text("rtn_ping_header", draft.lang).strip()
-    delivered = False
-    detail: Optional[str] = None
-    if draft.photo_id is not None:
-        caption = draft.text or retention.fallback_photo_caption(draft.lang)
-        outcome = await channel.send_photo(
-            ru, draft.photo_id, caption, header=header or None,
-            reply_markup=markup, session_id=session["id"])
-        delivered = outcome.delivered
-        if not delivered:
-            detail = outcome.detail or "photo_send_failed"
-    else:
-        # HTML render, plain fallback and the 403 → unreachable bookkeeping
-        # all live in the delivery channel.
-        outcome = await channel.send_text(ru, draft.text,
-                                          header=header or None,
-                                          reply_markup=markup)
-        delivered = outcome.delivered
-        if not delivered:
-            detail = outcome.detail or "send_failed"
+    delivered, detail, link_attached = await delivery.deliver_draft(
+        channel, ru, draft, header=header or None, session_id=session["id"],
+        photo_fallback_caption=retention.fallback_photo_caption(draft.lang))
 
     cost = float(draft.ai_meta.get("cost_usd") or 0)
     ping_context = (f"idle_reengagement: the player has been away about "
@@ -330,19 +297,11 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
         await db.persist_ping_turn(session["id"], draft.text or "[photo]",
                                    ai_meta=draft.ai_meta, product_id=pid,
                                    ping_context=ping_context,
-                                   link_url=draft.link_url if markup else None)
+                                   link_url=draft.link_url if link_attached else None)
         await db.record_retention_ping(pid, rid, rule_id, action, "sent",
                                        detail=rule.get("name"), cost_usd=cost)
-        await db.insert_retention_v2_decision(
-            pid, retention_user_id=rid, player_id=ru.get("player_id"),
-            trigger_kind="idle", event_pk=None,
-            event_name=f"idle:{rule.get('trigger_kind')}",
-            state={"idle_days": idle_days},
-            guard={"allow": True, "reasons": []},
-            action=action, intent=rule.get("intent") or "",
-            reason=f"idle rule '{rule.get('name')}' matched ({idle_days}d)",
-            dry_run=False, delivered=True, detail=rule.get("name"),
-            cost_usd=cost)
+        await _ledger(dry_run=False, delivered=True, detail=rule.get("name"),
+                      cost_usd=cost)
         await db.log_admin_event(
             session["id"], "retention_ping",
             {"rule_id": rule_id, "rule": rule.get("name"), "action": action,
@@ -358,21 +317,9 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
     # (revoked token, blocked players) would be invisible to the budget — it could
     # keep generating past the daily stop-switch — and the Decisions audit would
     # be missing every failed idle attempt.
-    meta = draft.ai_meta
-    await db.log_ai_interaction(
-        session["id"], meta.get("model"), meta.get("key_used"),
-        meta.get("tokens_in"), meta.get("tokens_out"), meta.get("cached_in"),
-        cost, meta.get("latency_ms"), False, f"ping_undelivered {detail}",
-        product_id=pid)
-    await db.insert_retention_v2_decision(
-        pid, retention_user_id=rid, player_id=ru.get("player_id"),
-        trigger_kind="idle", event_pk=None,
-        event_name=f"idle:{rule.get('trigger_kind')}",
-        state={"idle_days": idle_days},
-        guard={"allow": True, "reasons": []},
-        action=action, intent=rule.get("intent") or "",
-        reason=f"idle rule '{rule.get('name')}' matched ({idle_days}d)",
-        dry_run=False, delivered=False, detail=detail, cost_usd=cost)
+    await delivery.account_undelivered_generation(
+        session["id"], draft, detail, product_id=pid, label="ping_undelivered")
+    await _ledger(dry_run=False, delivered=False, detail=detail, cost_usd=cost)
     await db.record_retention_ping(pid, rid, rule_id, action, "failed",
                                    detail=detail, cost_usd=cost)
     log.warning("retention_idle_ping_failed product=%s player=%s detail=%s",

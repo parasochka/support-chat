@@ -17,6 +17,7 @@ import html
 import logging
 import random
 import re
+import datetime as _dt
 import secrets
 import time
 import unicodedata
@@ -165,11 +166,6 @@ _PHOTO_REQUEST_RE = re.compile(
 # ---------------------------------------------------------------------------
 # Deeplink / nonce
 # ---------------------------------------------------------------------------
-def new_nonce() -> str:
-    """A short, URL-safe, unguessable one-time deeplink token (<= 64 chars)."""
-    return secrets.token_urlsafe(15)  # ~20 chars
-
-
 async def create_deeplink(product: dict[str, Any], handshake_context: dict[str, Any],
                           escalation: bool,
                           lang: Optional[str] = None) -> dict[str, str]:
@@ -184,7 +180,8 @@ async def create_deeplink(product: dict[str, Any], handshake_context: dict[str, 
     on redemption becomes the bot's conversation language — so a player who
     chatted in Russian lands in a Russian bot, not the service default.
     """
-    nonce = new_nonce()
+    # A short, URL-safe, unguessable one-time deeplink token (~20 chars).
+    nonce = secrets.token_urlsafe(15)
     ttl = settings.retention()["nonce_ttl_sec"]
     payload = dict(handshake_context or {})
     if lang and lang in language.supported_codes():
@@ -202,15 +199,8 @@ async def create_deeplink(product: dict[str, Any], handshake_context: dict[str, 
 
 
 # ---------------------------------------------------------------------------
-# Profile / tier helpers
+# Profile / tier helpers (the whitelist lives in player_sync.PROFILE_FIELDS)
 # ---------------------------------------------------------------------------
-_PROFILE_FIELDS = ("full_name", "email", "activation_status", "country",
-                   "balance", "vip_level", "registration_date")
-
-
-def _profile_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Extract the whitelisted profile fields (_CONTEXT_FIELDS snapshot)."""
-    return {f: payload.get(f) for f in _PROFILE_FIELDS if payload.get(f) is not None}
 
 
 async def maybe_pull_profile(product: dict[str, Any], ru: dict[str, Any]
@@ -277,7 +267,6 @@ async def select_photo_candidates(product_id: int, ru: dict[str, Any],
     sent_today = int(ru.get("photos_sent_today") or 0)
     photos_day = ru.get("photos_day")
     # The stored counter only counts if it belongs to today; a stale day means 0.
-    import datetime as _dt
     # UTC on purpose: the DB counters roll over on the UTC day, so both sides
     # must read the same clock or the cap stops enforcing around midnight.
     today = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
@@ -381,7 +370,6 @@ async def maybe_advance_stage(ru: dict[str, Any]) -> Optional[int]:
     if meaningful < threshold:
         return None
     # spacing: at most one advance per stage_advance_min_hours.
-    import datetime as _dt
     last = ru.get("last_stage_advance_at")
     if last:
         try:
@@ -429,7 +417,7 @@ def _user_context_from_ru(ru: dict[str, Any]) -> dict[str, Any]:
     secret (the host site is authoritative), so real players always keep their
     own snapshot.
     """
-    ctx = {k: ru.get(k) for k in _PROFILE_FIELDS if ru.get(k)}
+    ctx = {k: ru.get(k) for k in player_sync.PROFILE_FIELDS if ru.get(k)}
     if ru.get("player_id"):
         ctx["id"] = ru.get("player_id")
     return _overlay_test_profile(ctx)
@@ -464,7 +452,6 @@ def session_expired(session: dict[str, Any]) -> bool:
     the pre-lifecycle behaviour). A session with no messages yet never expires
     (there is nothing to close).
     """
-    import datetime as _dt
     idle_min = int(settings.retention()["session_idle_minutes"])
     if idle_min <= 0 or not session.get("message_count"):
         return False
@@ -642,24 +629,26 @@ def _menu_markup(entry_type: str, lang: str) -> dict[str, Any]:
     return inline_keyboard(rows)
 
 
-def _menu_text(ru: dict[str, Any], lang: str) -> str:
-    """The first message after /start: a warm greeting FROM the persona (by the
-    player's first name when the profile snapshot has one) + the menu prompt."""
+def _menu_parts(ru: dict[str, Any], lang: str) -> tuple[str, str]:
+    """(greeting, prompt) for the first message after /start: a warm greeting
+    FROM the persona (by the player's first name when the profile snapshot has
+    one) + the menu prompt."""
     full_name = str(ru.get("full_name") or "").strip()
     first_name = full_name.split()[0] if full_name else ""
     key = "rtn_menu_greeting" if first_name else "rtn_menu_greeting_noname"
     greeting = _rtn_text(key, lang).replace("{name}", first_name)
-    return f"{greeting}\n\n{_rtn_text('rtn_menu_prompt', lang)}"
+    return greeting, _rtn_text("rtn_menu_prompt", lang)
+
+
+def _menu_text(ru: dict[str, Any], lang: str) -> str:
+    greeting, prompt = _menu_parts(ru, lang)
+    return f"{greeting}\n\n{prompt}"
 
 
 def _menu_html(ru: dict[str, Any], lang: str) -> str:
     """The menu message with light HTML structure: a bold greeting line above
     the plain menu prompt, both HTML-escaped (the copy is admin-edited text)."""
-    full_name = str(ru.get("full_name") or "").strip()
-    first_name = full_name.split()[0] if full_name else ""
-    key = "rtn_menu_greeting" if first_name else "rtn_menu_greeting_noname"
-    greeting = _rtn_text(key, lang).replace("{name}", first_name)
-    prompt = _rtn_text("rtn_menu_prompt", lang)
+    greeting, prompt = _menu_parts(ru, lang)
     return f"<b>{html.escape(greeting)}</b>\n\n{html.escape(prompt)}"
 
 
@@ -702,6 +691,18 @@ def _site_support_url(lang: str, product: Optional[dict[str, Any]] = None) -> st
             if parts.scheme and parts.netloc:
                 return f"{parts.scheme}://{parts.netloc}/"
     return ""
+
+
+async def _send_manager_intro(client: TelegramClient, chat_id: int,
+                              lang: str, manager: dict[str, Any]) -> None:
+    """The single-manager hand-off message: intro line + one manager button."""
+    link = f"https://t.me/{manager['username']}"
+    intro = _rtn_text("rtn_manager_intro", lang).replace(
+        "{manager}", f"{manager['display_name']} ({link})")
+    await client.send_message(chat_id, intro,
+                              reply_markup=inline_keyboard([[{
+                                  "text": f"👤 {manager['display_name']}",
+                                  "url": link}]]))
 
 
 async def _send_handoff_choice(client: TelegramClient, product: dict[str, Any],
@@ -750,11 +751,7 @@ async def _send_handoff_choice(client: TelegramClient, product: dict[str, Any],
                                       reply_markup=markup)
         return "manager+site"
     if manager:
-        link = f"https://t.me/{manager['username']}"
-        intro = _rtn_text("rtn_manager_intro", lang).replace(
-            "{manager}", f"{manager['display_name']} ({link})")
-        await client.send_message(chat_id, intro,
-                                  reply_markup=inline_keyboard(rows))
+        await _send_manager_intro(client, chat_id, lang, manager)
         return "manager"
     await client.send_message(chat_id, _rtn_text("rtn_handoff_support", lang),
                               reply_markup=inline_keyboard(rows) if rows else None)
@@ -762,23 +759,16 @@ async def _send_handoff_choice(client: TelegramClient, product: dict[str, Any],
 
 
 async def _route_to_manager(client: TelegramClient, product: dict[str, Any],
-                            ru: dict[str, Any], chat_id: int, lang: str,
-                            reason: str = "menu") -> None:
+                            ru: dict[str, Any], chat_id: int, lang: str) -> None:
     manager = await db.assign_round_robin_manager(product["id"], int(ru["id"]))
     if manager is None:
         await client.send_message(chat_id, _rtn_text("rtn_manager_none", lang))
         return
-    link = f"https://t.me/{manager['username']}"
-    intro = _rtn_text("rtn_manager_intro", lang).replace(
-        "{manager}", f"{manager['display_name']} ({link})")
-    await client.send_message(chat_id, intro,
-                              reply_markup=inline_keyboard([[{
-                                  "text": f"👤 {manager['display_name']}",
-                                  "url": link}]]))
+    await _send_manager_intro(client, chat_id, lang, manager)
     await db.log_admin_event(
         None, "retention_manager_handoff",
         {"tg_user_id": ru.get("tg_user_id"), "manager_id": manager["id"],
-         "from_reason": reason}, product_id=product["id"])
+         "from_reason": "menu"}, product_id=product["id"])
 
 
 # ---------------------------------------------------------------------------
@@ -1007,7 +997,7 @@ async def _handle_start(client: TelegramClient, product: dict[str, Any],
         tg_username=pu.tg_username,
         player_id=payload.get("id") or payload.get("player_id"),
         entry_type=entry_type,
-        profile=_profile_from_payload(payload),
+        profile=player_sync.profile_from_payload(payload),
         profile_source="handshake",
     )
     # The deeplink carries the language the player's site conversation was
@@ -1067,7 +1057,7 @@ async def _handle_callback(client: TelegramClient, product: dict[str, Any],
                                   reply_markup=_subscribe_markup(product, lang))
         return
     if pu.callback_data == CB_MENU_MANAGER and ru.get("entry_type") == "escalation":
-        await _route_to_manager(client, product, ru, pu.chat_id, lang, reason="menu")
+        await _route_to_manager(client, product, ru, pu.chat_id, lang)
     elif pu.callback_data == CB_MENU_NIKA:
         await client.send_message(pu.chat_id,
                                   _rtn_text("rtn_nika_start", lang))

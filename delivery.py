@@ -35,7 +35,7 @@ from typing import Any, Optional
 
 import db
 import telegram_format
-from telegram_transport import TelegramClient
+from telegram_transport import TelegramClient, inline_keyboard
 
 log = logging.getLogger(__name__)
 
@@ -115,3 +115,51 @@ def channel_for_product(product: dict[str, Any], token: Optional[str], *,
     if not token:
         return None
     return TelegramChannel(product, token, silent=silent)
+
+
+async def deliver_draft(channel, ru: dict[str, Any], draft, *,
+                        header: Optional[str], session_id,
+                        photo_fallback_caption: str,
+                        allow_photo: bool = True,
+                        allow_link: bool = True
+                        ) -> tuple[bool, Optional[str], bool]:
+    """Send a generated PingDraft through a channel (the v2 agent + the idle
+    ladder share this half): photo when the draft carries one (and the caller
+    allows it), else text; the validated site-map link rides as ONE inline
+    button. Returns (delivered, detail, link_attached) — `detail` is the
+    failure reason, or "photo_fallback_text" when the photo degraded to text.
+    """
+    markup = None
+    if draft.link_url and allow_link:
+        markup = inline_keyboard([[{"text": draft.link_label or draft.link_url,
+                                    "url": draft.link_url}]])
+    if draft.photo_id is not None and allow_photo:
+        caption = draft.text or photo_fallback_caption
+        outcome = await channel.send_photo(ru, draft.photo_id, caption,
+                                           header=header, reply_markup=markup,
+                                           session_id=session_id)
+        if not outcome.delivered:
+            return False, outcome.detail or "photo_send_failed", markup is not None
+        return True, ("photo_fallback_text" if outcome.kind == "text" else None), markup is not None
+    outcome = await channel.send_text(ru, draft.text, header=header,
+                                      reply_markup=markup)
+    if not outcome.delivered:
+        return False, outcome.detail or "send_failed", markup is not None
+    return True, None, markup is not None
+
+
+async def account_undelivered_generation(session_id, draft, detail, *,
+                                         product_id: int, label: str) -> float:
+    """Invariant §4 for a generated-but-undelivered proactive message: the
+    OpenAI call happened, so its cost must land in ai_interaction_logs even
+    though no chat turn was persisted. Returns the generation cost."""
+    import db  # noqa: PLC0415 — lazy, keeps the seam import-light
+
+    meta = draft.ai_meta
+    cost = float(meta.get("cost_usd") or 0)
+    await db.log_ai_interaction(
+        session_id, meta.get("model"), meta.get("key_used"),
+        meta.get("tokens_in"), meta.get("tokens_out"), meta.get("cached_in"),
+        cost, meta.get("latency_ms"), False, f"{label} {detail}",
+        product_id=product_id)
+    return cost

@@ -1623,6 +1623,22 @@ def _iso(value: Any) -> Any:
     return value.isoformat() if hasattr(value, "isoformat") else value
 
 
+def _iso_fields(d: dict[str, Any], *names: str) -> dict[str, Any]:
+    """Normalize timestamp fields to isoformat strings in place (JSON-safe)."""
+    for ts in names:
+        if ts in d:
+            d[ts] = _iso(d[ts])
+    return d
+
+
+def _affected(result: Optional[str]) -> int:
+    """Rows affected from an asyncpg command tag ("UPDATE 3" / "DELETE 0")."""
+    try:
+        return int((result or "").split()[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
 def _row_to_partner(row: asyncpg.Record) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -2127,7 +2143,7 @@ async def delete_membership(membership_id: int) -> bool:
     res = await _pool.execute(
         "DELETE FROM admin_memberships WHERE id = $1", membership_id
     )
-    return res.upper().startswith("DELETE") and not res.endswith(" 0")
+    return _affected(res) > 0
 
 
 async def product_ids_for_partners(partner_ids: list[int]) -> list[int]:
@@ -2150,9 +2166,7 @@ _API_KEY_COLS = ("id, name, token_hint, role, scope_type, partner_id, "
 def _row_to_api_key(row: asyncpg.Record) -> dict[str, Any]:
     d = dict(row)
     d["id"] = int(d["id"])
-    for ts in ("created_at", "last_used_at"):
-        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
-            d[ts] = d[ts].isoformat()
+    _iso_fields(d, "created_at", "last_used_at")
     return d
 
 
@@ -2244,9 +2258,7 @@ def _row_to_admin_user(row: asyncpg.Record, *, include_hash: bool = False) -> di
     d = dict(row)
     if not include_hash:
         d.pop("password_hash", None)
-    for ts in ("created_at", "updated_at"):
-        if d.get(ts) is not None and not isinstance(d[ts], str):
-            d[ts] = d[ts].isoformat()
+    _iso_fields(d, "created_at", "updated_at")
     return d
 
 
@@ -2303,7 +2315,7 @@ async def delete_admin_user(email: str) -> bool:
     res = await _pool.execute(
         "DELETE FROM admin_users WHERE email = $1", email.strip().lower()
     )
-    return res.upper().startswith("DELETE") and not res.endswith(" 0")
+    return _affected(res) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -2371,7 +2383,7 @@ async def clear_kb_content(topic_id: int) -> bool:
         topic_id,
     )
     _invalidate_kb_cache()
-    return not res.endswith(" 0")
+    return _affected(res) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -2555,24 +2567,35 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
             for r in rows]
 
 
+def _cost_cte(scope_cte: str, *, support_only: bool = True) -> str:
+    """`costs AS (...)` — the windowed, product-scoped per-session cost CTE.
+
+    Scoped to the same window+product as the outer query (via a join to
+    chat_sessions) instead of aggregating the entire, unbounded
+    ai_interaction_logs table on every dashboard load: per-session totals are
+    identical (the outer LEFT JOIN only uses in-window sessions anyway), the
+    scan is O(sessions in window) and uses the created_at/product indexes.
+    `support_only` adds the dashboard's telegram exclusion.
+    """
+    telegram = "    AND cs.consumer <> 'telegram' " if support_only else ""
+    return (
+        "costs AS ("
+        "  SELECT l.session_id, SUM(l.cost_usd) AS cost_usd_total "
+        "  FROM ai_interaction_logs l "
+        "  JOIN chat_sessions cs ON cs.id = l.session_id "
+        f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
+        f"{telegram}"
+        "  GROUP BY l.session_id"
+        ")"
+    )
+
+
 async def by_topic(dt_from: Any, dt_to: Any,
                    product_ids: Optional[list[int]] = None) -> list[dict[str, Any]]:
     args: list[Any] = [dt_from, dt_to]
     scope, scope_cte = _scope_clauses(product_ids, args)
     rows = await _pool.fetch(
-        # The cost CTE is SCOPED to the same window+product as the outer query (via
-        # a join to chat_sessions) instead of aggregating the entire, unbounded
-        # ai_interaction_logs table on every dashboard load. Per-session totals are
-        # identical (the outer LEFT JOIN only uses in-window sessions anyway); the
-        # scan is now O(sessions in window) and uses the created_at/product indexes.
-        "WITH costs AS ("
-        "  SELECT l.session_id, SUM(l.cost_usd) AS cost_usd_total "
-        "  FROM ai_interaction_logs l "
-        "  JOIN chat_sessions cs ON cs.id = l.session_id "
-        f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
-        "    AND cs.consumer <> 'telegram' "
-        "  GROUP BY l.session_id"
-        ") "
+        f"WITH {_cost_cte(scope_cte)} "
         "SELECT t.slug, t.title, "
         # Count only engaged sessions (>= 1 message): greeting-only "zero" sessions
         # had no OpenAI call and must not dilute the per-topic counts or rates.
@@ -2608,16 +2631,7 @@ async def by_language(dt_from: Any, dt_to: Any,
     args: list[Any] = [dt_from, dt_to]
     scope, scope_cte = _scope_clauses(product_ids, args)
     rows = await _pool.fetch(
-        # Cost CTE scoped to the same window+product (see by_topic) — no full-table
-        # scan of the unbounded ai_interaction_logs on every dashboard load.
-        "WITH costs AS ("
-        "  SELECT l.session_id, SUM(l.cost_usd) AS cost_usd_total "
-        "  FROM ai_interaction_logs l "
-        "  JOIN chat_sessions cs ON cs.id = l.session_id "
-        f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
-        "    AND cs.consumer <> 'telegram' "
-        "  GROUP BY l.session_id"
-        ") "
+        f"WITH {_cost_cte(scope_cte)} "
         "SELECT COALESCE(s.lang, 'unknown') AS lang, "
         # Engaged sessions only — exclude greeting-only "zero" sessions (no OpenAI
         # call) so the per-language counts and escalation rates aren't diluted.
@@ -2902,15 +2916,8 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any,
     args: list[Any] = [dt_from, dt_to]
     scope, scope_cte = _scope_clauses(product_ids, args)
     rows = await _pool.fetch(
-        # Cost CTE scoped to the same window+product (see by_topic) — no full-table
-        # scan of the unbounded ai_interaction_logs on every load.
-        "WITH costs AS ("
-        "  SELECT l.session_id, SUM(l.cost_usd) AS cost_usd_total "
-        "  FROM ai_interaction_logs l "
-        "  JOIN chat_sessions cs ON cs.id = l.session_id "
-        f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
-        "  GROUP BY l.session_id"
-        "), unresolved AS ("
+        f"WITH {_cost_cte(scope_cte, support_only=False)}"
+        ", unresolved AS ("
         "  SELECT COALESCE(t.slug, 'unknown') AS topic, "
         "    COALESCE(t.title, '{}'::jsonb) AS title, "
         "    s.id AS session_id, s.lang, s.status, s.escalated, s.message_count, "
@@ -2973,11 +2980,9 @@ def _row_to_retention_user(row: asyncpg.Record) -> dict[str, Any]:
         d["id"] = int(d["id"])
     if d.get("session_id") is not None:
         d["session_id"] = str(d["session_id"])
-    for ts in ("profile_updated_at", "last_stage_advance_at", "last_active_at",
+    _iso_fields(d, "profile_updated_at", "last_stage_advance_at", "last_active_at",
                "created_at", "updated_at", "photos_day", "last_login_at",
-               "last_played_at", "last_deposit_at", "last_ping_at", "pings_day"):
-        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
-            d[ts] = d[ts].isoformat()
+               "last_played_at", "last_deposit_at", "last_ping_at", "pings_day")
     return d
 
 
@@ -3120,11 +3125,7 @@ async def update_retention_profile(product_id: int, player_id: str,
         f"WHERE product_id = $1 AND player_id = $2",
         *args,
     )
-    # asyncpg returns "UPDATE <n>"
-    try:
-        return int(result.split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    return _affected(result)  # asyncpg returns "UPDATE <n>"
 
 
 async def set_retention_subscribed(rid: int, subscribed: bool) -> None:
@@ -3186,9 +3187,7 @@ def _row_to_rule(row: asyncpg.Record) -> dict[str, Any]:
             d["vip_tiers"] = json.loads(tiers)
         except ValueError:
             d["vip_tiers"] = []
-    for ts in ("created_at", "updated_at"):
-        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
-            d[ts] = d[ts].isoformat()
+    _iso_fields(d, "created_at", "updated_at")
     return d
 
 
@@ -3530,10 +3529,7 @@ async def prune_retention_events(keep_days: int = 90) -> int:
                 "WHERE processed_at IS NOT NULL "
                 "  AND processed_at < now() - make_interval(days => $1)",
                 int(keep_days))
-    try:
-        return int(result.split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    return _affected(result)
 
 
 async def list_retention_events(product_id: int, page: int = 1,
@@ -3633,10 +3629,7 @@ async def touch_retention_activity(product_id: int, player_id: str,
         "WHERE product_id = $1 AND player_id = $2",
         product_id, player_id, parsed,
     )
-    try:
-        return int(result.split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    return _affected(result)
 
 
 async def get_retention_user_by_player(product_id: int, player_id: str
@@ -3745,7 +3738,7 @@ async def delete_retention_event(product_id: int, event_pk: int) -> bool:
             result = await conn.execute(
                 "DELETE FROM retention_events WHERE product_id = $1 AND id = $2",
                 product_id, int(event_pk))
-    return result.split()[-1] == "1"
+    return _affected(result) == 1
 
 
 async def clear_retention_events(product_id: int) -> int:
@@ -3760,10 +3753,7 @@ async def clear_retention_events(product_id: int) -> int:
             result = await conn.execute(
                 "DELETE FROM retention_events WHERE product_id = $1",
                 product_id)
-    try:
-        return int(result.split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    return _affected(result)
 
 
 async def delete_retention_v2_decision(product_id: int,
@@ -3774,7 +3764,7 @@ async def delete_retention_v2_decision(product_id: int,
     result = await _pool.execute(
         "DELETE FROM retention_v2_decisions WHERE product_id = $1 AND id = $2",
         product_id, int(decision_pk))
-    return result.split()[-1] == "1"
+    return _affected(result) == 1
 
 
 async def clear_retention_v2_decisions(product_id: int) -> int:
@@ -3783,10 +3773,7 @@ async def clear_retention_v2_decisions(product_id: int) -> int:
     result = await _pool.execute(
         "DELETE FROM retention_v2_decisions WHERE product_id = $1",
         product_id)
-    try:
-        return int(result.split()[-1])
-    except (ValueError, IndexError):
-        return 0
+    return _affected(result)
 
 
 async def retention_v2_activity(product_id: int) -> dict[str, Any]:
@@ -4010,9 +3997,7 @@ def _row_to_photo(row: asyncpg.Record) -> dict[str, Any]:
     if d.get("id") is not None:
         d["id"] = int(d["id"])
     d["tags"] = _json_value(d.get("tags")) if d.get("tags") is not None else []
-    for ts in ("created_at", "updated_at"):
-        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
-            d[ts] = d[ts].isoformat()
+    _iso_fields(d, "created_at", "updated_at")
     return d
 
 
@@ -4137,9 +4122,7 @@ def _row_to_retention_kb(row: asyncpg.Record) -> dict[str, Any]:
     if d.get("id") is not None:
         d["id"] = int(d["id"])
     d["links"] = _json_value(d.get("links")) if d.get("links") is not None else []
-    for ts in ("created_at", "updated_at"):
-        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
-            d[ts] = d[ts].isoformat()
+    _iso_fields(d, "created_at", "updated_at")
     return d
 
 
@@ -4285,9 +4268,7 @@ def _row_to_manager(row: asyncpg.Record) -> dict[str, Any]:
     d = dict(row)
     if d.get("id") is not None:
         d["id"] = int(d["id"])
-    for ts in ("created_at", "updated_at"):
-        if d.get(ts) is not None and hasattr(d[ts], "isoformat"):
-            d[ts] = d[ts].isoformat()
+    _iso_fields(d, "created_at", "updated_at")
     return d
 
 

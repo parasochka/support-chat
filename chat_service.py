@@ -6,7 +6,7 @@ the atomic turn persistence in db.persist_turn. Keeps API handlers thin.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import time
 import zlib
@@ -55,10 +55,10 @@ class ChatReply:
     # {slug, title} when the model judged the question belongs to another topic
     # whose KB isn't loaded, so the front-end can offer a one-tap switch. Else None.
     suggested_topic: Optional[dict] = None
-    # Up to 3 short follow-up/clarifying questions (player's POV) the model offered
+    # Up to 2 short follow-up/clarifying questions (player's POV) the model offered
     # to steer the player toward a concrete KB answer; the widget renders them as
     # one-tap bubbles by the input field. Empty list when none.
-    suggestions: Optional[list] = None
+    suggestions: list = field(default_factory=list)
     # The trailing closing/resolution suggestion (declarative, e.g. "Issue solved.")
     # that the widget renders as a distinct finish-the-chat bubble: tapping it ends
     # the conversation (marks it resolved) instead of sending another question.
@@ -83,19 +83,36 @@ async def _none() -> None:
     return None
 
 
-def _session_base_lang(session: dict) -> str:
-    """The turn's base/fallback language: sticky conv_lang, else the session's
-    browser language, else the default. The AUTO branch defends against legacy
-    rows only — current create paths never store the literal AUTO sentinel —
-    so it never becomes an answer_lang / persisted assistant_lang value."""
-    base = (
-        session.get("conv_lang")
-        or session.get("lang")
-        or language.default_code()
+async def _log_model_failure(session_id, product_id, exc, label: str,
+                             *, ping: bool = False) -> str:
+    """Account a failed OpenAI call (invariant §4) + the sampled admin event.
+
+    Called from inside an except block (log.exception picks up the traceback).
+    Returns the error string for the caller's reply/return path.
+    """
+    error = f"{exc.__class__.__name__}: {exc}"
+    log.exception("%s session_id=%s error=%s", label, session_id, error)
+    await db.log_ai_interaction(
+        session_id, settings.model()["model"], "none",
+        0, 0, 0, 0.0, 0, False, error, product_id=product_id,
     )
-    if base == language.AUTO:
-        return language.default_code()
-    return base
+    payload: dict[str, Any] = {"error": error[:300]}
+    if ping:
+        payload["ping"] = True
+    await db.log_admin_event_sampled(session_id, "model_error", payload)
+    return error
+
+
+def _ai_meta(result, cost: float, **extra: Any) -> dict[str, Any]:
+    """The per-turn ai_meta dict persisted with every successful model turn."""
+    meta: dict[str, Any] = {
+        "model": result.model, "key_used": result.key_used,
+        "tokens_in": result.tokens_in, "tokens_out": result.tokens_out,
+        "cached_in": result.cached_in, "cost_usd": cost,
+        "latency_ms": result.latency_ms, "ok": True, "error": None,
+    }
+    meta.update(extra)
+    return meta
 
 
 async def handle_message(
@@ -127,7 +144,7 @@ async def handle_message(
     # to fall back to this base when the message is too short/ambiguous; it
     # reports the language it used via a [[LANG:xx]] tag we strip below. The
     # widget chrome is untouched (it keeps the browser language client-side).
-    base_lang = _session_base_lang(session)
+    base_lang = language.session_base_lang(session)
 
     # --- pre-model keyword escalation (SOFT, saves the model call) ----------
     # High-risk (fraud/legal) stems and explicit asks for a human don't depend
@@ -167,10 +184,6 @@ async def handle_message(
             lang=base_lang,
             escalation=esc_payload,
             message_count=new_count,
-            suggested_topic=None,
-            suggestions=[],
-            closing_suggestion=None,
-            resolved=False,
         )
 
     topic_id = session.get("topic_id")
@@ -262,24 +275,12 @@ async def handle_message(
         # in a moment" nudge; the turn is not persisted (no answer exists, the
         # player simply resends), but the failed call is logged for accounting
         # (invariant §4) and surfaced as an admin event so outages are visible.
-        error = f"{exc.__class__.__name__}: {exc}"
-        log.exception("chat_model_failed session_id=%s error=%s", session_id, error)
-        await db.log_ai_interaction(
-            session_id, settings.model()["model"], "none",
-            0, 0, 0, 0.0, 0, False, error, product_id=product_id,
-        )
-        await db.log_admin_event_sampled(
-            session_id, "model_error", {"error": error[:300]}
-        )
+        await _log_model_failure(session_id, product_id, exc, "chat_model_failed")
         return ChatReply(
             reply=_model_error_reply(base_lang),
             lang=base_lang,
             escalation=escalation.inactive_payload(),
             message_count=session.get("message_count", 0),
-            suggested_topic=None,
-            suggestions=[],
-            closing_suggestion=None,
-            resolved=False,
             model_error=True,
         )
 
@@ -410,9 +411,6 @@ async def handle_message(
             escalation=escalation.inactive_payload(),
             message_count=session.get("message_count", 0),
             suggested_topic=suggested_topic,
-            suggestions=[],
-            closing_suggestion=None,
-            resolved=False,
         )
 
     # A routing turn that ALSO trips a hard escalation (the message cap) must not
@@ -495,29 +493,12 @@ async def handle_message(
         assistant_text=clean_text,
         assistant_lang=answer_lang,
         product_id=product_id,
-        ai_meta={
-            "model": result.model,
-            "key_used": result.key_used,
-            "tokens_in": result.tokens_in,
-            "tokens_out": result.tokens_out,
-            "cached_in": result.cached_in,
-            "cost_usd": cost,
-            "latency_ms": result.latency_ms,
-            "ok": True,
-            "error": None,
-        },
+        ai_meta=_ai_meta(result, cost),
     )
 
     # --- apply escalation side effects --------------------------------------
     if decision.active:
-        # Always set the HARD state (idempotent) — a session that was earlier
-        # soft-escalated (escalated=TRUE, status still 'open') must still be
-        # CLOSED when the model itself signals the hand-off or the cap fires.
-        await db.mark_escalated(session_id)
-        if session.get("status") != "escalated":
-            await db.log_admin_event(
-                session_id, "escalation", {"reason": decision.reason}
-            )
+        await escalation.apply_hard_escalation(session, decision.reason)
 
     log.info(
         "chat_generation_finished session_id=%s message_count=%s elapsed_ms=%s",
@@ -618,6 +599,69 @@ def resolve_site_link(url: Optional[str]) -> tuple[Optional[str], Optional[str]]
     return None, None
 
 
+async def _retention_context(session: dict[str, Any]) -> tuple:
+    """The retention turn's shared context reads (dialogue + ping paths).
+
+    Concurrently fetches the whole retention-KB document (rendered), the
+    session history, and the product's OpenAI client; then — on the FIRST turn
+    of a fresh rolled-over session — the continuity tail of the previous chat
+    (`carry_context_turns`). Returns (kb_block, history, previous_history,
+    client).
+    """
+    session_id = session["id"]
+    product_id = session.get("product_id")
+    kb_text, history, client = await asyncio.gather(
+        db.retention_kb_block(product_id) if product_id else _none(),
+        db.get_history(
+            session_id,
+            limit=int(settings.general()["history_max_turns"]) * 2,
+        ),
+        openai_client.client_for_product(product_id),
+    )
+    kb_block = (
+        await kb.render_variables(kb_text, product_id=product_id)
+        if kb_text else None
+    )
+    previous_history: list[dict[str, Any]] = []
+    prev_sid = session.get("prev_session_id")
+    if not history and prev_sid:
+        carry = int(settings.retention()["carry_context_turns"])
+        if carry > 0:
+            previous_history = await db.get_history(prev_sid, limit=carry)
+    return kb_block, history, previous_history, client
+
+
+def _strip_retention_reply(raw_text: Optional[str], candidate_ids: set,
+                           session_id) -> tuple:
+    """Strip the retention sentinels + scrub the "AI-tell" typography.
+
+    Returns (clean_text, detected_lang, handoff, stage_up, photo_id, link_raw):
+    the language code already validated against the supported set, the photo id
+    already validated against the allowed candidate set. The ping path discards
+    handoff/stage_up (a ping never hands off) but the strip must still run.
+    """
+    detected_lang: Optional[str] = None
+    handoff = False
+    stage_up = False
+    photo_id: Optional[int] = None
+    link_raw: Optional[str] = None
+    clean_text = raw_text or ""
+    if clean_text:
+        clean_text, detected_lang = prompts.strip_language_tag(clean_text)
+        clean_text, handoff = prompts.strip_handoff_tag(clean_text)
+        clean_text, stage_up = prompts.strip_stage_up_tag(clean_text)
+        clean_text, photo_id = prompts.strip_photo_tag(clean_text)
+        clean_text, link_raw = prompts.strip_link_tag(clean_text)
+        clean_text = telegram_format.normalize_punctuation(clean_text)
+    if detected_lang and detected_lang not in language.supported_codes():
+        detected_lang = None
+    if photo_id is not None and photo_id not in candidate_ids:
+        log.info("retention_photo_id_rejected session_id=%s id=%s",
+                 session_id, photo_id)
+        photo_id = None
+    return clean_text, detected_lang, handoff, stage_up, photo_id, link_raw
+
+
 async def handle_retention_message(
     session: dict[str, Any],
     user_text: str,
@@ -645,32 +689,10 @@ async def handle_retention_message(
     candidates = photo_candidates or []
     candidate_ids = {int(c["id"]) for c in candidates}
 
-    base_lang = _session_base_lang(session)
+    base_lang = language.session_base_lang(session)
 
-    # --- retention KB (Layer 2, loaded WHOLE) + history ---------------------
-    # The three reads are independent — fetch them concurrently (mirrors the
-    # support path's gather) so a Telegram turn doesn't pay serial round-trips.
-    kb_text, history, client = await asyncio.gather(
-        db.retention_kb_block(product_id) if product_id else _none(),
-        db.get_history(
-            session_id,
-            limit=int(settings.general()["history_max_turns"]) * 2,
-        ),
-        openai_client.client_for_product(product_id),
-    )
-    kb_block = (
-        await kb.render_variables(kb_text, product_id=product_id)
-        if kb_text else None
-    )
-    # Returning-player continuity: on the FIRST turn of a fresh session that
-    # rolled over from an idle chat (prev_session_id), carry the tail of the
-    # previous conversation into Layer 3 so Nika greets them with continuity.
-    previous_history: list[dict[str, Any]] = []
-    prev_sid = session.get("prev_session_id")
-    if not history and prev_sid:
-        carry = int(settings.retention()["carry_context_turns"])
-        if carry > 0:
-            previous_history = await db.get_history(prev_sid, limit=carry)
+    # --- retention KB (Layer 2, loaded WHOLE) + history + continuity --------
+    kb_block, history, previous_history, client = await _retention_context(session)
     # Periodic play reminder: every N-th reply carries the Layer-3 nudge task
     # (a light in-context invitation to play + a one-tap site-map button).
     nudge = play_nudge_due(session.get("message_count", 0), str(session_id))
@@ -699,47 +721,22 @@ async def handle_retention_message(
     )
 
     # --- call model (product keys / env failover; client fetched above) -----
-    error: Optional[str] = None
     try:
         result = await client.complete(
             messages, session_id=session_id, on_failover=_on_failover
         )
         raw_text = result.text
     except Exception as exc:  # noqa: BLE001
-        error = f"{exc.__class__.__name__}: {exc}"
-        log.exception("retention_model_failed session_id=%s error=%s", session_id, error)
-        await db.log_ai_interaction(
-            session_id, settings.model()["model"], "none",
-            0, 0, 0, 0.0, 0, False, error, product_id=product_id,
-        )
-        await db.log_admin_event_sampled(session_id, "model_error", {"error": error[:300]})
+        await _log_model_failure(session_id, product_id, exc,
+                                 "retention_model_failed")
         return RetentionReply(
             reply=_model_error_reply(base_lang), lang=base_lang,
             message_count=session.get("message_count", 0), ok=False,
         )
 
     # --- strip retention sentinels ------------------------------------------
-    detected_lang: Optional[str] = None
-    handoff = False
-    stage_up = False
-    photo_id: Optional[int] = None
-    link_raw: Optional[str] = None
-    clean_text = raw_text or ""
-    if clean_text:
-        clean_text, detected_lang = prompts.strip_language_tag(clean_text)
-        clean_text, handoff = prompts.strip_handoff_tag(clean_text)
-        clean_text, stage_up = prompts.strip_stage_up_tag(clean_text)
-        clean_text, photo_id = prompts.strip_photo_tag(clean_text)
-        clean_text, link_raw = prompts.strip_link_tag(clean_text)
-        # Deterministically scrub the "AI-tell" typography (em dashes, guillemet
-        # quotes) the persona is told to avoid but the model keeps emitting.
-        clean_text = telegram_format.normalize_punctuation(clean_text)
-    if detected_lang and detected_lang not in language.supported_codes():
-        detected_lang = None
-    # Only honour a photo id from the allowed candidate set.
-    if photo_id is not None and photo_id not in candidate_ids:
-        log.info("retention_photo_id_rejected session_id=%s id=%s", session_id, photo_id)
-        photo_id = None
+    (clean_text, detected_lang, handoff, stage_up, photo_id,
+     link_raw) = _strip_retention_reply(raw_text, candidate_ids, session_id)
     # Only honour a CTA link that exactly matches an admin-configured site-map
     # page (never on a hand-off — the player is leaving for support/a manager).
     link_url, link_label = (None, None) if handoff else resolve_site_link(link_raw)
@@ -765,12 +762,7 @@ async def handle_retention_message(
         assistant_lang=answer_lang,
         product_id=product_id,
         link_url=link_url,
-        ai_meta={
-            "model": result.model, "key_used": result.key_used,
-            "tokens_in": result.tokens_in, "tokens_out": result.tokens_out,
-            "cached_in": result.cached_in, "cost_usd": cost,
-            "latency_ms": result.latency_ms, "ok": True, "error": None,
-        },
+        ai_meta=_ai_meta(result, cost),
     )
     log.info(
         "retention_turn_done session_id=%s photo=%s handoff=%s stage_up=%s elapsed_ms=%s",
@@ -825,31 +817,12 @@ async def generate_retention_ping(
     tenancy.set_current_product(product_id)
     candidates = photo_candidates or []
     candidate_ids = {int(c["id"]) for c in candidates}
-    lang = _session_base_lang(session)
+    lang = language.session_base_lang(session)
 
-    # Independent reads, fetched concurrently (same shape as the dialog turn).
-    kb_text, history, client = await asyncio.gather(
-        db.retention_kb_block(product_id) if product_id else _none(),
-        db.get_history(
-            session_id,
-            limit=int(settings.general()["history_max_turns"]) * 2,
-        ),
-        openai_client.client_for_product(product_id),
-    )
-    kb_block = (
-        await kb.render_variables(kb_text, product_id=product_id)
-        if kb_text else None
-    )
-    # Returning-player continuity, mirroring the dialogue path: a ping into a
-    # fresh session (the idle rollover just closed the old chat) carries the
-    # tail of the previous conversation — the ping task asks for concrete
-    # call-backs to what the player said, which needs something to call back to.
-    previous_history: list[dict[str, Any]] = []
-    prev_sid = session.get("prev_session_id")
-    if not history and prev_sid:
-        carry = int(settings.retention()["carry_context_turns"])
-        if carry > 0:
-            previous_history = await db.get_history(prev_sid, limit=carry)
+    # Shared context reads + returning-player continuity (a ping is usually the
+    # FIRST message of a fresh rolled-over session, and the ping task demands
+    # concrete call-backs to what the player said).
+    kb_block, history, previous_history, client = await _retention_context(session)
     messages = prompts.build_retention_ping_messages(
         session=session,
         kb_block=kb_block,
@@ -874,33 +847,14 @@ async def generate_retention_ping(
         )
         raw_text = result.text
     except Exception as exc:  # noqa: BLE001
-        error = f"{exc.__class__.__name__}: {exc}"
-        log.exception("retention_ping_model_failed session_id=%s error=%s",
-                      session_id, error)
-        await db.log_ai_interaction(
-            session_id, settings.model()["model"], "none",
-            0, 0, 0, 0.0, 0, False, error, product_id=product_id,
-        )
-        await db.log_admin_event_sampled(session_id, "model_error",
-                                         {"error": error[:300], "ping": True})
+        await _log_model_failure(session_id, product_id, exc,
+                                 "retention_ping_model_failed", ping=True)
         return None
 
-    clean_text = raw_text or ""
-    detected_lang: Optional[str] = None
-    photo_id: Optional[int] = None
-    link_raw: Optional[str] = None
-    if clean_text:
-        clean_text, detected_lang = prompts.strip_language_tag(clean_text)
-        # A ping never hands off or advances stages; strip defensively anyway.
-        clean_text, _ = prompts.strip_handoff_tag(clean_text)
-        clean_text, _ = prompts.strip_stage_up_tag(clean_text)
-        clean_text, photo_id = prompts.strip_photo_tag(clean_text)
-        clean_text, link_raw = prompts.strip_link_tag(clean_text)
-        clean_text = telegram_format.normalize_punctuation(clean_text)
-    if detected_lang and detected_lang not in language.supported_codes():
-        detected_lang = None
-    if photo_id is not None and photo_id not in candidate_ids:
-        photo_id = None
+    # A ping never hands off or advances stages — the flags are discarded, but
+    # the strip must still run so the tags never leak into the sent text.
+    (clean_text, detected_lang, _handoff, _stage_up, photo_id,
+     link_raw) = _strip_retention_reply(raw_text, candidate_ids, session_id)
     link_url, link_label = resolve_site_link(link_raw)
     if not clean_text and photo_id is None:
         # Nothing usable came back — treat like a failure, skip the ping.
@@ -917,11 +871,5 @@ async def generate_retention_ping(
         photo_id=photo_id,
         link_url=link_url,
         link_label=link_label,
-        ai_meta={
-            "model": result.model, "key_used": result.key_used,
-            "tokens_in": result.tokens_in, "tokens_out": result.tokens_out,
-            "cached_in": result.cached_in, "cost_usd": cost,
-            "latency_ms": result.latency_ms, "ok": True, "error": None,
-            "lang": answer_lang,
-        },
+        ai_meta=_ai_meta(result, cost, lang=answer_lang),
     )

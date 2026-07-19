@@ -757,54 +757,74 @@ def ensure_english(text: str, field: str) -> None:
             "Player-facing copy belongs in Translations instead.")
 
 
-def validate_prompt_variables(value: Any) -> dict[str, str]:
-    """Validate a prompt-variables write. Returns the cleaned map; raises ValueError.
+def global_retention_int(key: str, default: int, lo: int, hi: int) -> int:
+    """A `retention`-group int read at the GLOBAL layer, clamped to [lo, hi].
 
-    Only keys registered in prompts.PROMPT_VARIABLES are accepted (the template
-    is the single source of truth for which placeholders exist); values must be
-    strings. Empty strings are dropped so the resolved value falls back to the
-    built-in default. Stored separately from SETTING_KEYS (its own admin endpoint).
+    For deploy-wide loops (the agent worker, the media normalizer) that run
+    outside any product scope: the ContextVar is saved/restored so a caller
+    inside an admin request keeps its product scope, and a bad stored value
+    falls back to `default` instead of killing the loop.
+    """
+    import tenancy  # lazy: settings is imported before tenancy in some paths
+
+    token = tenancy.set_current_product(None)
+    try:
+        v = int(retention().get(key) or 0)
+    except Exception:  # noqa: BLE001
+        v = 0
+    finally:
+        tenancy.reset_current_product(token)
+    return min(max(v or default, lo), hi)
+
+
+def _validate_var_map(value: Any, known: set, label: str,
+                      unknown_key_error) -> dict[str, str]:
+    """Shared prompt-variable write validation (support + retention registries).
+
+    Only registered keys are accepted (the template is the single source of
+    truth for which placeholders exist); values must be English strings. Empty
+    strings are dropped so the resolved value falls back to the registry
+    default. `unknown_key_error(key)` builds the per-registry error message.
     """
     if not isinstance(value, dict):
-        raise ValueError("prompt_variables value must be a JSON object")
-    known = {key for key, _desc, _default in _prompts.PROMPT_VARIABLES}
-    retention_keys = {key for key, _d, _v, _i in _prompts.RETENTION_PROMPT_VARIABLES}
+        raise ValueError(f"{label} value must be a JSON object")
     out: dict[str, str] = {}
     for key, v in value.items():
         if key not in known:
-            if key in retention_keys:
-                raise ValueError(
-                    f"{key!r} is a retention prompt variable - write it via "
-                    "/admin/retention/prompt-variables")
-            raise ValueError(f"unknown prompt variable: {key!r}")
+            raise ValueError(unknown_key_error(key))
         if not isinstance(v, str):
             raise ValueError(f"{key} must be a string")
-        ensure_english(v, f"prompt variable {key!r}")
+        ensure_english(v, f"{label.replace('_', ' ').rstrip('s')} {key!r}")
         if v.strip():
             out[key] = v.strip()
     return out
+
+
+def validate_prompt_variables(value: Any) -> dict[str, str]:
+    """Validate a prompt-variables write (its own admin endpoint, outside
+    SETTING_KEYS). Returns the cleaned map; raises ValueError."""
+    known = {key for key, _desc, _default in _prompts.PROMPT_VARIABLES}
+    retention_keys = {key for key, _d, _v, _i in _prompts.RETENTION_PROMPT_VARIABLES}
+
+    def unknown(key: str) -> str:
+        if key in retention_keys:
+            return (f"{key!r} is a retention prompt variable - write it via "
+                    "/admin/retention/prompt-variables")
+        return f"unknown prompt variable: {key!r}"
+
+    return _validate_var_map(value, known, "prompt_variables", unknown)
 
 
 def validate_retention_prompt_variables(value: Any) -> dict[str, str]:
     """Validate a retention prompt-variables write. Returns the cleaned map.
 
-    Mirrors validate_prompt_variables over the RETENTION registry. Empty
-    strings are dropped so the resolved value falls back to the retention
+    Empty strings are dropped so the resolved value falls back to the retention
     registry default (no support inheritance; see retention_prompt_variables).
     """
-    if not isinstance(value, dict):
-        raise ValueError("retention_prompt_variables value must be a JSON object")
     known = {key for key, _d, _v, _i in _prompts.RETENTION_PROMPT_VARIABLES}
-    out: dict[str, str] = {}
-    for key, v in value.items():
-        if key not in known:
-            raise ValueError(f"unknown retention prompt variable: {key!r}")
-        if not isinstance(v, str):
-            raise ValueError(f"{key} must be a string")
-        ensure_english(v, f"retention prompt variable {key!r}")
-        if v.strip():
-            out[key] = v.strip()
-    return out
+    return _validate_var_map(
+        value, known, "retention_prompt_variables",
+        lambda key: f"unknown retention prompt variable: {key!r}")
 
 
 _SITE_MAP_MAX_PAGES = 60

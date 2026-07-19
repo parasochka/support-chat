@@ -405,37 +405,14 @@ async def test_html() -> FileResponse:
 # vars, docs index); the siblings cover the widget embed, player data transfer
 # & sync, the public Chat API / custom UI contract, the Telegram retention bot,
 # and the external "master" admin panel integration.
-@app.get("/integration", response_class=HTMLResponse)
-async def integration_docs() -> FileResponse:
-    return FileResponse(os.path.join(_FRONTEND_DIR, "integration.html"),
-                        media_type="text/html", headers=_WIDGET_CACHE)
+def _register_doc_page(path: str, filename: str) -> None:
+    async def _serve() -> FileResponse:
+        return FileResponse(os.path.join(_FRONTEND_DIR, filename),
+                            media_type="text/html", headers=_WIDGET_CACHE)
+    app.get(path, response_class=HTMLResponse, name=f"docs_{filename}")(_serve)
 
 
-@app.get("/integration-widget", response_class=HTMLResponse)
-async def integration_widget_docs() -> FileResponse:
-    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-widget.html"),
-                        media_type="text/html", headers=_WIDGET_CACHE)
-
-
-@app.get("/integration-data", response_class=HTMLResponse)
-async def integration_data_docs() -> FileResponse:
-    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-data.html"),
-                        media_type="text/html", headers=_WIDGET_CACHE)
-
-
-@app.get("/integration-chat-api", response_class=HTMLResponse)
-async def integration_chat_api_docs() -> FileResponse:
-    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-chat-api.html"),
-                        media_type="text/html", headers=_WIDGET_CACHE)
-
-
-@app.get("/integration-telegram", response_class=HTMLResponse)
-async def integration_telegram_docs() -> FileResponse:
-    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-telegram.html"),
-                        media_type="text/html", headers=_WIDGET_CACHE)
-
-
-@app.get("/integration-admin", response_class=HTMLResponse)
-async def integration_admin_docs() -> FileResponse:
-    return FileResponse(os.path.join(_FRONTEND_DIR, "integration-admin.html"),
-                        media_type="text/html", headers=_WIDGET_CACHE)
+for _doc_path in ("integration", "integration-widget", "integration-data",
+                  "integration-chat-api", "integration-telegram",
+                  "integration-admin"):
+    _register_doc_page(f"/{_doc_path}", f"{_doc_path}.html")

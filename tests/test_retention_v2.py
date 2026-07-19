@@ -13,6 +13,7 @@ import datetime as _dt
 
 import pytest
 
+import config
 import db
 import player_sync
 import prompts
@@ -287,7 +288,7 @@ async def test_guard_same_event_cooldown_knob(monkeypatch):
     cfg = _cfg()
     del cfg["v2_same_event_cooldown_hours"]
     g = await retention_v2.guard_check(1, _ru(), _evt(), st, cfg)
-    assert seen["hours"] == retention_v2._SAME_EVENT_COOLDOWN_HOURS
+    assert seen["hours"] == config.RETENTION_V2_SAME_EVENT_COOLDOWN_HOURS
 
 
 async def test_guard_has_no_quiet_hours_reason(monkeypatch):

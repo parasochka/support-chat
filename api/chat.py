@@ -474,8 +474,7 @@ async def send_message(req: Request, body: MessageSend,
     try:
         antispam.check_low_content(body.text)
     except antispam.AntiSpamError:
-        ans_lang = (session.get("conv_lang") or session.get("lang")
-                    or language.default_code())
+        ans_lang = language.session_base_lang(session)
         log.info(
             "chat_message_low_content_blocked session_id=%s chars=%s",
             body.session_id, len(body.text or ""),
@@ -526,8 +525,7 @@ async def send_message(req: Request, body: MessageSend,
             "chat_message_cap_reached session_id=%s count=%s",
             body.session_id, session.get("message_count", 0),
         )
-        ans_lang = (session.get("conv_lang") or session.get("lang")
-                    or language.default_code())
+        ans_lang = language.session_base_lang(session)
         esc_payload = await escalation.build_payload_for_session(session, ans_lang)
         new_count = await db.persist_turn(
             session_id=body.session_id,
@@ -538,12 +536,7 @@ async def send_message(req: Request, body: MessageSend,
             ai_meta=None,
             product_id=session.get("product_id"),
         )
-        # Always close (idempotent): a session soft-escalated earlier already
-        # has escalated=TRUE but must still be CLOSED when the cap fires.
-        await db.mark_escalated(body.session_id)
-        if session.get("status") != "escalated":
-            await db.log_admin_event(body.session_id, "escalation",
-                                     {"reason": "message_cap"})
+        await escalation.apply_hard_escalation(session, "message_cap")
         return JSONResponse(
             status_code=200,
             content={
@@ -635,13 +628,10 @@ async def escalate(body: EscalateReq,
     if closed:
         return closed
 
-    ans_lang = (session.get("conv_lang") or session.get("lang")
-                or language.default_code())
-    # Always close (idempotent) — an earlier SOFT keyword escalation left the
-    # session open with escalated=TRUE; the explicit tap is a HARD hand-off.
-    await db.mark_escalated(body.session_id)
-    if session.get("status") != "escalated":
-        await db.log_admin_event(body.session_id, "escalation", {"reason": "explicit"})
+    ans_lang = language.session_base_lang(session)
+    # The explicit tap is a HARD hand-off (an earlier SOFT keyword escalation
+    # left the session open).
+    await escalation.apply_hard_escalation(session, "explicit")
     esc_payload = await escalation.build_payload_for_session(session, ans_lang)
 
     return JSONResponse(
