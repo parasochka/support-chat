@@ -186,7 +186,12 @@ const state = {
   // the language the player drifted to instead of snapping back to the browser
   // language. Without this the chrome (and the new session's base language)
   // flickered back to the browser locale every time the session was abandoned.
-  locale: CONFIG.LOCALE,
+  // Seed from the SAME account-first signal as resolveLang() (the host-supplied
+  // account language wins over the browser locale): the backend resolves the
+  // session's base/answer language solely from this locale, so seeding it from
+  // the browser only would give a Russian-account player a Russian chrome but
+  // English first answers until answer-language drift caught up.
+  locale: (CONFIG.USER_CONTEXT && CONFIG.USER_CONTEXT.language) || CONFIG.LOCALE,
   topicChosen: false,
   // Guards against double-tapping a topic button while the session is still
   // warming up: onTopic awaits ensureSession(), and the buttons stay clickable
@@ -491,11 +496,14 @@ async function sendMessage(text, closing = false) {
   });
   if (!ok) {
     // The session was already closed (resolved) or handed off (escalated): the
-    // backend rejects further turns with 409. Don't surface a raw error — end the
-    // conversation locally so the next open starts a fresh session.
+    // backend rejects further turns with 409. Don't surface a raw error — signal
+    // a local close so the caller can start a fresh session on the next open.
+    // NB: do NOT call endConversation() here — it bumps state.generation, which
+    // the caller's in-flight gen guard then reads as "conversation abandoned" and
+    // drops this very reply, so the graceful "Chat ended" bubble never showed.
+    // The caller renders the message THEN ends (on the sessionClosed marker).
     if (status === 409 || (data && data.error === "session_closed")) {
-      endConversation();
-      return { reply: t("finished"), escalation: { active: false } };
+      return { reply: t("finished"), escalation: { active: false }, sessionClosed: true };
     }
     return { reply: data.detail || `Error (${status})`, escalation: { active: false } };
   }
@@ -739,7 +747,12 @@ function escapeHtml(s) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    // Also escape the single quote: not exploitable today (every attribute the
+    // renderer emits is double-quoted), but this keeps the escaper complete so a
+    // future single-quoted attribute carrying model/KB text can't become an
+    // attribute-injection XSS.
+    .replace(/'/g, "&#39;");
 }
 
 // Inline spans on already-escaped text. `code` spans and links are pulled out
@@ -966,6 +979,7 @@ async function autoSwitchTopic(suggested, originalText, depth) {
     if (gen !== state.generation) { typing.remove(); return; }
     fillTyping(typing, data.reply || "");
     applyTurnExtras(data, originalText, depth + 1);
+    if (data.sessionClosed) endConversation();
   } catch (e) {
     if (gen !== state.generation) { typing.remove(); return; }
     fillTyping(typing, t("sendError"), true);
@@ -1101,7 +1115,13 @@ function endConversation() {
 // is exactly what the player just chose. If that turn unexpectedly escalates, fall
 // back to the escalation hand-off instead of closing.
 async function finishWithClosing(text) {
-  if (!text) return;
+  if (!text || state.sending) return;
+  // Single-flight like submitText, and capture the generation: this goodbye runs
+  // for seconds while the composer is still visible, so without the guard a stale
+  // completion (player closed/reopened/started a NEW topic meanwhile) would run
+  // endConversation() below and nuke the FRESH session's credentials + composer.
+  state.sending = true;
+  const gen = state.generation;
   clearSuggestions();
   addMessage("user", text);
   const typing = addTyping();
@@ -1111,9 +1131,14 @@ async function finishWithClosing(text) {
     // for a pure goodbye (no follow-up that would reopen the conversation).
     data = await sendMessage(text, true);
   } catch (e) {
+    if (gen !== state.generation) { typing.remove(); return; }
     fillTyping(typing, t("sendError"), true);
     return;
+  } finally {
+    if (gen === state.generation) state.sending = false;
   }
+  // Abandoned while the goodbye was in flight — drop it, don't clobber the new chat.
+  if (gen !== state.generation) { typing.remove(); return; }
   fillTyping(typing, data.reply || "");
   if (data.escalation && data.escalation.active) {
     addEscalation(data.escalation);
@@ -1331,6 +1356,11 @@ function goBackToTopics() {
 async function onSend() {
   const text = els.input.value.trim();
   if (!text) return;
+  // A turn is already in flight (submitText would drop this on its state.sending
+  // guard). The Enter-key path is not gated by the disabled send button, so
+  // clearing the input here first would silently lose the follow-up. Leave the
+  // text in the box so the player can send it the moment the reply lands.
+  if (state.sending) return;
   els.input.value = "";
   await submitText(text);
 }
@@ -1353,6 +1383,9 @@ async function submitText(text) {
     if (gen !== state.generation) { typing.remove(); return; }
     fillTyping(typing, data.reply || "");
     applyTurnExtras(data, text);
+    // 409 from a server-closed session: render the "Chat ended" bubble first
+    // (above), THEN tear the session down locally.
+    if (data.sessionClosed) endConversation();
   } catch (e) {
     if (gen !== state.generation) { typing.remove(); return; }
     fillTyping(typing, t("sendError"), true);

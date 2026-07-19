@@ -8,6 +8,7 @@ strings are served via GET /api/chat/i18n.
 from __future__ import annotations
 
 import json
+import types
 
 import pytest
 
@@ -131,6 +132,10 @@ def test_widget_strings_scope_only():
     assert "escalation_message" not in strings["en"]
 
 
+def _req(ip="9.9.9.9"):
+    return types.SimpleNamespace(headers={}, client=types.SimpleNamespace(host=ip))
+
+
 async def test_public_i18n_endpoint(monkeypatch):
     import db
     from api import chat as chat_api
@@ -142,7 +147,7 @@ async def test_public_i18n_endpoint(monkeypatch):
     monkeypatch.setattr(settings, "_cache",
                         {"language": {"default": "en", "supported": ["en", "ru"]},
                          "translations": {"ru": {"support": "Хелп"}}})
-    resp = await chat_api.widget_i18n()
+    resp = await chat_api.widget_i18n(_req(), )
     data = json.loads(resp.body)
     assert data["languages"] == ["en", "ru"]
     assert data["strings"]["ru"]["support"] == "Хелп"

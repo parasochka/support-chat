@@ -14,6 +14,7 @@ the whole update).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -26,6 +27,10 @@ log = logging.getLogger(__name__)
 _API_BASE = "https://api.telegram.org"
 # Telegram getChatMember statuses that count as "subscribed" to the channel.
 _SUBSCRIBED_STATUSES = {"member", "administrator", "creator", "restricted"}
+# Upper bound on how long a single 429 retry will wait. Telegram's retry_after
+# is usually 1-5s; cap it so a pathological value can't park a send (and, on the
+# webhook path, a background task) for minutes.
+_MAX_RETRY_AFTER_SEC = 10
 
 
 # ---------------------------------------------------------------------------
@@ -114,21 +119,71 @@ class TelegramClient:
     def _url(self, method: str) -> str:
         return f"{_API_BASE}/bot{self._token}/{method}"
 
+    async def _post(self, method: str, *,
+                    json_body: Optional[dict[str, Any]] = None,
+                    form_data: Optional[dict[str, Any]] = None,
+                    files: Optional[dict[str, Any]] = None
+                    ) -> Optional[dict[str, Any]]:
+        """POST a Bot API method once and return the parsed JSON envelope, or
+        None on a transport exception (a send must never break the webhook).
+
+        The ONE HTTP choke point for every Bot API call, so the single 429
+        rate-limit retry lives here: Telegram answers a rate-limited send with
+        `ok=false, error_code=429, parameters.retry_after=<sec>`. Left unhandled
+        the message is silently dropped, which bites hardest exactly when the
+        proactive-agent sweep fans a burst of pings and trips the per-second
+        limit. We honour retry_after ONCE (capped), then give up to the caller's
+        normal failure handling — never an unbounded retry loop."""
+        for attempt in (0, 1):
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    resp = await client.post(self._url(method), json=json_body,
+                                             data=form_data, files=files)
+                data = resp.json()
+            except Exception as exc:  # noqa: BLE001 - a send must never break the webhook
+                log.warning("telegram_api_call_failed method=%s error=%s",
+                            method, exc)
+                return None
+            if (attempt == 0 and not data.get("ok")
+                    and data.get("error_code") == 429):
+                params = data.get("parameters") or {}
+                try:
+                    retry_after = int(params.get("retry_after") or 0)
+                except (TypeError, ValueError):
+                    retry_after = 0
+                wait = min(max(retry_after, 1), _MAX_RETRY_AFTER_SEC)
+                log.warning("telegram_rate_limited method=%s retry_after=%s wait=%s",
+                            method, retry_after, wait)
+                await asyncio.sleep(wait)
+                continue
+            return data
+        return data  # pragma: no cover - loop always returns inside
+
     async def _call(self, method: str, payload: dict[str, Any]
                     ) -> Optional[dict[str, Any]]:
         """POST a Bot API method; return the `result` dict or None on failure."""
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(self._url(method), json=payload)
-            data = resp.json()
-            if not data.get("ok"):
-                log.warning("telegram_api_error method=%s desc=%s",
-                            method, data.get("description"))
-                return None
-            return data.get("result")
-        except Exception as exc:  # noqa: BLE001 - a send must never break the webhook
-            log.warning("telegram_api_call_failed method=%s error=%s", method, exc)
+        data = await self._post(method, json_body=payload)
+        if data is None:
             return None
+        if not data.get("ok"):
+            log.warning("telegram_api_error method=%s desc=%s",
+                        method, data.get("description"))
+            return None
+        return data.get("result")
+
+    async def _call_verbose(self, method: str, payload: dict[str, Any]
+                            ) -> tuple[Optional[dict[str, Any]],
+                                       Optional[int], Optional[str]]:
+        """Like _call but returns (result, error_code, description) so callers can
+        act on the specific error (e.g. 403 -> the player blocked the bot)."""
+        data = await self._post(method, json_body=payload)
+        if data is None:
+            return None, None, "request_failed"
+        if not data.get("ok"):
+            log.warning("telegram_api_error method=%s desc=%s",
+                        method, data.get("description"))
+            return None, data.get("error_code"), data.get("description")
+        return data.get("result"), None, None
 
     async def send_message(self, chat_id: int, text: str, *,
                            reply_markup: Optional[dict[str, Any]] = None,
@@ -161,26 +216,24 @@ class TelegramClient:
             payload["parse_mode"] = parse_mode
         if disable_notification:
             payload["disable_notification"] = True
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(self._url("sendMessage"), json=payload)
-            data = resp.json()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("telegram_api_call_failed method=sendMessage error=%s", exc)
-            return None, None, str(exc)
+        data = await self._post("sendMessage", json_body=payload)
+        if data is None:
+            return None, None, "request_failed"
         if not data.get("ok"):
             log.warning("telegram_api_error method=sendMessage desc=%s",
                         data.get("description"))
             return None, data.get("error_code"), data.get("description")
         return data.get("result"), None, None
 
-    async def send_photo_file_id(self, chat_id: int, file_id: str, *,
-                                 caption: Optional[str] = None,
-                                 parse_mode: Optional[str] = None,
-                                 reply_markup: Optional[dict[str, Any]] = None,
-                                 disable_notification: bool = False
-                                 ) -> Optional[dict[str, Any]]:
-        """Send an already-uploaded photo by its cached file_id (no re-upload)."""
+    async def send_photo_file_id_verbose(
+            self, chat_id: int, file_id: str, *,
+            caption: Optional[str] = None, parse_mode: Optional[str] = None,
+            reply_markup: Optional[dict[str, Any]] = None,
+            disable_notification: bool = False
+            ) -> tuple[Optional[dict[str, Any]], Optional[int], Optional[str]]:
+        """sendPhoto by cached file_id, surfacing (error_code, description) so the
+        caller can tell a 403 (player blocked the bot -> unreachable) from a stale
+        file_id (retry via re-upload)."""
         payload: dict[str, Any] = {"chat_id": chat_id, "photo": file_id}
         if caption:
             payload["caption"] = caption
@@ -190,16 +243,28 @@ class TelegramClient:
             payload["reply_markup"] = reply_markup
         if disable_notification:
             payload["disable_notification"] = True
-        return await self._call("sendPhoto", payload)
+        return await self._call_verbose("sendPhoto", payload)
 
-    async def send_photo_bytes(self, chat_id: int, content: bytes, filename: str,
-                               *, caption: Optional[str] = None,
-                               parse_mode: Optional[str] = None,
-                               reply_markup: Optional[dict[str, Any]] = None,
-                               disable_notification: bool = False
-                               ) -> Optional[dict[str, Any]]:
-        """Upload a photo from bytes (first send). Returns the result so the
-        caller can cache the returned file_id for later sends."""
+    async def send_photo_file_id(self, chat_id: int, file_id: str, *,
+                                 caption: Optional[str] = None,
+                                 parse_mode: Optional[str] = None,
+                                 reply_markup: Optional[dict[str, Any]] = None,
+                                 disable_notification: bool = False
+                                 ) -> Optional[dict[str, Any]]:
+        """Send an already-uploaded photo by its cached file_id (no re-upload)."""
+        result, _code, _desc = await self.send_photo_file_id_verbose(
+            chat_id, file_id, caption=caption, parse_mode=parse_mode,
+            reply_markup=reply_markup, disable_notification=disable_notification)
+        return result
+
+    async def send_photo_bytes_verbose(
+            self, chat_id: int, content: bytes, filename: str, *,
+            caption: Optional[str] = None, parse_mode: Optional[str] = None,
+            reply_markup: Optional[dict[str, Any]] = None,
+            disable_notification: bool = False
+            ) -> tuple[Optional[dict[str, Any]], Optional[int], Optional[str]]:
+        """Upload a photo from bytes (first send), surfacing (error_code,
+        description). Returns the result so the caller can cache the file_id."""
         data: dict[str, Any] = {"chat_id": str(chat_id)}
         if caption:
             data["caption"] = caption
@@ -211,18 +276,26 @@ class TelegramClient:
             # multipart form fields must be strings — serialize the keyboard.
             data["reply_markup"] = json.dumps(reply_markup)
         files = {"photo": (filename, content)}
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(self._url("sendPhoto"), data=data,
-                                         files=files)
-            j = resp.json()
-            if not j.get("ok"):
-                log.warning("telegram_send_photo_error desc=%s", j.get("description"))
-                return None
-            return j.get("result")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("telegram_send_photo_failed error=%s", exc)
-            return None
+        j = await self._post("sendPhoto", form_data=data, files=files)
+        if j is None:
+            return None, None, "request_failed"
+        if not j.get("ok"):
+            log.warning("telegram_send_photo_error desc=%s", j.get("description"))
+            return None, j.get("error_code"), j.get("description")
+        return j.get("result"), None, None
+
+    async def send_photo_bytes(self, chat_id: int, content: bytes, filename: str,
+                               *, caption: Optional[str] = None,
+                               parse_mode: Optional[str] = None,
+                               reply_markup: Optional[dict[str, Any]] = None,
+                               disable_notification: bool = False
+                               ) -> Optional[dict[str, Any]]:
+        """Upload a photo from bytes (first send). Returns the result so the
+        caller can cache the returned file_id for later sends."""
+        result, _code, _desc = await self.send_photo_bytes_verbose(
+            chat_id, content, filename, caption=caption, parse_mode=parse_mode,
+            reply_markup=reply_markup, disable_notification=disable_notification)
+        return result
 
     @staticmethod
     def extract_photo_file_id(send_photo_result: Optional[dict[str, Any]]
@@ -263,17 +336,30 @@ class TelegramClient:
             return None
         return result.get("status")
 
-    async def is_subscribed(self, chat_id: Any, user_id: int) -> bool:
+    async def subscription_state(self, chat_id: Any, user_id: int
+                                 ) -> Optional[bool]:
+        """Tri-state membership check: True = member, False = definitively NOT a
+        member, None = the check could not be completed (network/API error, a
+        Telegram 5xx/429, or a bot-not-admin misconfig).
+
+        The None case matters: a transient outage must NOT be read as "the player
+        left the channel". Callers fail open on None instead of dropping the
+        player's message and flipping them to unsubscribed."""
         result = await self._call("getChatMember",
                                   {"chat_id": chat_id, "user_id": user_id})
         if not result:
-            return False
+            return None
         status = result.get("status")
         # A "restricted" member record exists even after the user leaves the
         # channel — only its is_member flag says whether they are actually in.
         if status == "restricted":
             return bool(result.get("is_member"))
         return status in _SUBSCRIBED_STATUSES
+
+    async def is_subscribed(self, chat_id: Any, user_id: int) -> bool:
+        """Boolean membership (an error/unknown collapses to False). Prefer
+        subscription_state where an outage must not look like 'not subscribed'."""
+        return bool(await self.subscription_state(chat_id, user_id))
 
     async def set_webhook(self, url: str, secret_token: str,
                           drop_pending: bool = True) -> Optional[dict[str, Any]]:

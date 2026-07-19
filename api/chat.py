@@ -163,7 +163,7 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
     # handshake secret, test profile, language set, topics) resolves for it.
     product, err = await _resolve_product(body.widget_key)
     if err:
-        await db.log_admin_event(None, "widget_key_rejected", {"ip": ip})
+        await db.log_admin_event_sampled(None, "widget_key_rejected", {"ip": ip})
         return err
     tenancy.set_current_product(product["id"])
 
@@ -181,8 +181,9 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
         await db.log_admin_event_sampled(None, "turnstile_skipped",
                                          {"reason": captcha.get("reason")})
     elif not captcha.get("ok"):
-        await db.log_admin_event(None, "turnstile_blocked",
-                                 {"reason": captcha.get("reason")})
+        await db.log_admin_event_sampled(None, "turnstile_blocked",
+                                         {"reason": captcha.get("reason")},
+                                         product_id=product["id"])
         return _err(403, "turnstile_failed", "Turnstile verification failed.")
 
     # --- resolve trusted user_context (signed handshake §9) -----------------
@@ -204,14 +205,16 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
             payload = auth.verify_handshake(body.signed_context,
                                             secret=product_handshake)
         except auth.TokenError as exc:
-            await db.log_admin_event(None, "handshake_rejected", {"reason": str(exc)})
+            await db.log_admin_event_sampled(None, "handshake_rejected",
+                                             {"reason": str(exc)},
+                                             product_id=product["id"])
             return _err(401, "bad_handshake", str(exc))
         user_context = {k: v for k, v in payload.items() if k not in ("iat", "exp")}
         context_source = "signed_handshake"
     elif product_handshake or config.WIDGET_HANDSHAKE_SECRET:
         if body.user_context:
-            await db.log_admin_event(None, "unsigned_context_ignored",
-                                     {"ip": ip})
+            await db.log_admin_event_sampled(None, "unsigned_context_ignored",
+                                             {"ip": ip}, product_id=product["id"])
         user_context = {}
         context_source = "zeroed_handshake_required"
     else:
@@ -248,10 +251,22 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
     resolved = language.resolve(locale=body.locale)
     session_lang = None if resolved == language.AUTO else resolved
 
+    # The player id is persisted on the session and surfaced in admin dashboards
+    # (attribution, escalations). When a handshake secret is configured the ONLY
+    # trusted identity source is the signed payload (user_context) — a raw
+    # client-supplied body.player_id must NOT override it, or an attacker could
+    # attribute their session (and any escalation/fraud signal it raises) to a
+    # victim's player id. Fall back to body.player_id only in dev mode, where no
+    # authoritative source exists.
+    ctx_player_id = user_context.get("id") if user_context else None
+    handshake_enforced = bool(product_handshake or config.WIDGET_HANDSHAKE_SECRET)
+    resolved_player_id = ctx_player_id if handshake_enforced else (
+        body.player_id or ctx_player_id)
+
     new_id = str(uuid.uuid4())
     session_id = await db.create_session(
         consumer=body.consumer or "web",
-        player_id=body.player_id or (user_context.get("id") if user_context else None),
+        player_id=resolved_player_id,
         lang=session_lang,
         user_context=user_context,
         session_id=new_id,
@@ -276,8 +291,18 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
 # ---------------------------------------------------------------------------
 # GET /api/chat/topics  -- session-free catalogue for an instant first paint
 # ---------------------------------------------------------------------------
+# Session-free catalogue/i18n GETs do per-request DB work (product lookup, topics,
+# translations). The 60s Cache-Control only helps cooperating browsers; a direct
+# client can loop them at line rate (also probing widget keys). A GENEROUS per-IP
+# cap bounds that abuse without hurting real traffic — even a busy NAT'd office
+# opens the widget far below this. Deliberately high; it only catches egregious
+# line-rate abuse, not normal re-opens.
+_CATALOGUE_RATE_LIMIT = 600
+
+
 @router.get("/topics")
-async def list_catalogue(lang: Optional[str] = None,
+async def list_catalogue(req: Request,
+                         lang: Optional[str] = None,
                          locale: Optional[str] = None,
                          widget_key: Optional[str] = None) -> JSONResponse:
     """Return the topic picker without a session, token, Turnstile, or DB write.
@@ -293,6 +318,13 @@ async def list_catalogue(lang: Optional[str] = None,
     `widget_key` picks the product whose catalogue (and language set) to serve;
     it is part of the URL, so the browser cache stays per product.
     """
+    ip = _client_ip(req)
+    try:
+        antispam.check_rate_limit(f"catalogue:{ip}", _CATALOGUE_RATE_LIMIT)
+    except antispam.AntiSpamError as exc:
+        await db.log_admin_event_sampled(None, "rate_limited",
+                                         {"ip": ip, "scope": "catalogue"})
+        return _err(exc.status, exc.code, exc.detail)
     product, err = await _resolve_product(widget_key)
     if err:
         return err
@@ -318,7 +350,8 @@ async def list_catalogue(lang: Optional[str] = None,
 # GET /api/chat/i18n  -- widget chrome strings (admin Translations > defaults)
 # ---------------------------------------------------------------------------
 @router.get("/i18n")
-async def widget_i18n(widget_key: Optional[str] = None) -> JSONResponse:
+async def widget_i18n(req: Request,
+                      widget_key: Optional[str] = None) -> JSONResponse:
     """Resolved widget-scope copy for every supported language.
 
     The widget paints instantly from its baked-in defaults, then fetches this and
@@ -327,6 +360,13 @@ async def widget_i18n(widget_key: Optional[str] = None) -> JSONResponse:
     chrome without a widget redeploy. Session-free and cacheable like /topics.
     `widget_key` scopes the copy (and the language set) to the product.
     """
+    ip = _client_ip(req)
+    try:
+        antispam.check_rate_limit(f"catalogue:{ip}", _CATALOGUE_RATE_LIMIT)
+    except antispam.AntiSpamError as exc:
+        await db.log_admin_event_sampled(None, "rate_limited",
+                                         {"ip": ip, "scope": "catalogue"})
+        return _err(exc.status, exc.code, exc.detail)
     product, err = await _resolve_product(widget_key)
     if err:
         return err
@@ -527,7 +567,10 @@ async def send_message(req: Request, body: MessageSend,
     # window and 429 — so the original question is never answered. Release the
     # cooldown for the automated follow-up (the routing turn still burned a model
     # call; this is not a spam bypass).
-    if result.suggested_topic:
+    # Same release on a transient model failure: the turn was NOT persisted and the
+    # nudge explicitly asks the player to resend — the resend must not be throttled
+    # by the cooldown armed above (which contradicts the "please resend" reply).
+    if result.suggested_topic or result.model_error:
         antispam.clear_cooldown(body.session_id)
     log.info(
         "chat_message_response_ready session_id=%s reply_chars=%s lang=%s escalation_active=%s message_count=%s",

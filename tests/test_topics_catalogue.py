@@ -6,6 +6,7 @@ product from the widget key (default product when absent) and scopes the list.
 from __future__ import annotations
 
 import json
+import types
 
 import config
 import db
@@ -19,6 +20,10 @@ _TOPICS = [
     # 'other' is a normal, never-hidden topic; db.list_topics sorts it last.
     {"id": 3, "slug": "other", "title": {"en": "Other", "ru": "Другое"}},
 ]
+
+
+def _req(ip="9.9.9.9"):
+    return types.SimpleNamespace(headers={}, client=types.SimpleNamespace(host=ip))
 
 
 def _payload(resp):
@@ -44,7 +49,7 @@ def _stub_tenancy(monkeypatch, expected_product_id=1):
 async def test_catalogue_localizes_and_includes_other(monkeypatch):
     _stub_tenancy(monkeypatch)
 
-    resp = await chat_api.list_catalogue(lang="ru")
+    resp = await chat_api.list_catalogue(_req(), lang="ru")
     data = _payload(resp)
     assert data["lang"] == "ru"
     # The full catalogue is served — 'other' included, last (never hidden).
@@ -58,27 +63,27 @@ async def test_catalogue_resolves_locale_then_default(monkeypatch):
     _stub_tenancy(monkeypatch)
 
     # Browser locale maps to a base code.
-    by_locale = _payload(await chat_api.list_catalogue(locale="es-MX"))
+    by_locale = _payload(await chat_api.list_catalogue(_req(), locale="es-MX"))
     assert by_locale["lang"] == "es"
 
     # Nothing supplied -> service default, never AUTO leaking to the client.
-    by_default = _payload(await chat_api.list_catalogue())
+    by_default = _payload(await chat_api.list_catalogue(_req(), ))
     assert by_default["lang"] == config.DEFAULT_LANGUAGE
 
 
 async def test_catalogue_is_browser_cacheable(monkeypatch):
     _stub_tenancy(monkeypatch)
 
-    resp = await chat_api.list_catalogue()
+    resp = await chat_api.list_catalogue(_req(), )
     assert "max-age" in resp.headers.get("cache-control", "")
 
 
 async def test_catalogue_accepts_widget_key_and_rejects_unknown(monkeypatch):
     _stub_tenancy(monkeypatch)
 
-    ok = await chat_api.list_catalogue(widget_key="wk_test")
+    ok = await chat_api.list_catalogue(_req(), widget_key="wk_test")
     assert _payload(ok)["topics"]
 
-    bad = await chat_api.list_catalogue(widget_key="wk_nope")
+    bad = await chat_api.list_catalogue(_req(), widget_key="wk_nope")
     assert bad.status_code == 403
     assert _payload(bad)["error"] == "bad_widget_key"

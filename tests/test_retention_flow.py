@@ -29,11 +29,20 @@ class FakeTelegram:
         self.photos.append((chat_id, "uploaded", caption))
         return {"photo": [{"file_id": "newid"}]}
 
+    async def send_photo_file_id_verbose(self, chat_id, file_id, **kwargs):
+        return await self.send_photo_file_id(chat_id, file_id, **kwargs), None, None
+
+    async def send_photo_bytes_verbose(self, chat_id, content, filename, **kwargs):
+        return await self.send_photo_bytes(chat_id, content, filename, **kwargs), None, None
+
     async def answer_callback(self, cb_id, text=None):
         self.answered.append(cb_id)
 
-    async def is_subscribed(self, chat_id, user_id):
+    async def subscription_state(self, chat_id, user_id):
         return self.subscribed
+
+    async def is_subscribed(self, chat_id, user_id):
+        return bool(await self.subscription_state(chat_id, user_id))
 
 
 def _patch_common(monkeypatch, tg):
@@ -408,3 +417,55 @@ async def test_nika_turn_no_intro_flag_when_library_empty(monkeypatch):
         "from": {"id": 7}, "chat": {"id": 7}, "text": "решил отдохнуть"}})
 
     assert seen["intro_photo"] is False
+
+
+async def test_send_photo_flips_unreachable_on_403(monkeypatch):
+    """A 403 (player blocked the bot) on a photo send flips `unreachable` and does
+    NOT waste a Volume read + re-upload — mirrors delivery.send_text's 403 path."""
+    calls = {"unreachable": None, "read_media": 0}
+
+    async def _get_photo(pid):
+        return {"id": 55, "active": True, "telegram_file_id": "cachedfile",
+                "storage_ref": "x.jpg"}
+    monkeypatch.setattr(retention.db, "get_retention_photo", _get_photo)
+
+    async def _unreachable(rid, val=True):
+        calls["unreachable"] = (rid, val)
+    monkeypatch.setattr(retention.db, "set_retention_unreachable", _unreachable)
+
+    def _read(ref):
+        calls["read_media"] += 1
+        return b"bytes"
+    monkeypatch.setattr(retention, "_read_media", _read)
+
+    class _BlockedClient:
+        async def send_photo_file_id_verbose(self, chat_id, file_id, **kw):
+            return None, 403, "Forbidden: bot was blocked by the user"
+
+    ru = {"id": 10, "tg_user_id": 7}
+    out = await retention._send_photo(_BlockedClient(), PRODUCT, ru, 7, 55, "hi")
+    assert out is None
+    assert calls["unreachable"] == (10, True)
+    assert calls["read_media"] == 0  # never re-uploaded on a 403
+
+
+async def test_send_photo_splits_overlong_caption(monkeypatch):
+    """A caption over Telegram's 1024 limit: the photo goes out captionless and the
+    full text follows as a normal message (never a failed send + ghost turn)."""
+    tg = FakeTelegram()
+
+    async def _get_photo(pid):
+        return {"id": 55, "active": True, "telegram_file_id": "cachedfile",
+                "storage_ref": "x.jpg"}
+    monkeypatch.setattr(retention.db, "get_retention_photo", _get_photo)
+
+    async def _record(rid, photo_id, product_id, session_id=None):
+        pass
+    monkeypatch.setattr(retention.db, "record_retention_photo_view", _record)
+
+    long_caption = "a" * (retention._TG_CAPTION_LIMIT + 50)
+    ru = {"id": 10, "tg_user_id": 7}
+    out = await retention._send_photo(tg, PRODUCT, ru, 7, 55, long_caption)
+    assert out == "photo"
+    assert tg.photos[0] == (7, "cachedfile", None)        # captionless photo
+    assert any(long_caption == m[1] for m in tg.messages)  # full text followed

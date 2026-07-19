@@ -6,7 +6,9 @@ valid token whose `sub` matches the path/body `session_id`.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
+import concurrent.futures
 import hashlib
 import hmac
 import json
@@ -111,12 +113,16 @@ def _sign_with(secret: str, signing_input: bytes) -> bytes:
 
 def issue_admin_token(role: str = "admin",
                       ttl_min: Optional[int] = None,
-                      email: Optional[str] = None) -> str:
+                      email: Optional[str] = None,
+                      pwv: Optional[str] = None) -> str:
     """Mint an admin JWT signed with ADMIN_JWT_SECRET (distinct from sessions).
 
     `role` drives authorization (admin may write; manager is read-only).
     `email` identifies the named user and rides in the token so the audit trail
-    (`updated_by`) records who acted.
+    (`updated_by`) records who acted. `pwv` is a short fingerprint of the current
+    password hash (see password_version); require_admin rejects a token whose pwv
+    no longer matches, so changing an account's password revokes its outstanding
+    tokens on their next request.
     """
     if ttl_min is None:
         import settings  # lazy: avoid an import cycle (settings is built atop db)
@@ -128,6 +134,8 @@ def issue_admin_token(role: str = "admin",
     payload = {"sub": email or "admin", "role": role, "iat": now, "exp": now + ttl * 60}
     if email:
         payload["email"] = email
+    if pwv:
+        payload["pwv"] = pwv
     header_b64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
     payload_b64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
     signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
@@ -164,7 +172,8 @@ def verify_admin_token(token: str) -> dict[str, Any]:
 
 
 def refresh_admin_token(payload: dict[str, Any], role: str,
-                        email: Optional[str] = None) -> Optional[str]:
+                        email: Optional[str] = None,
+                        pwv: Optional[str] = None) -> Optional[str]:
     """Sliding-session helper: given a still-valid admin token's payload, return
     a freshly-minted token (new `exp`, full TTL from settings) once the current
     one is past the HALFWAY point of its lifetime — else None (no refresh yet).
@@ -189,9 +198,12 @@ def refresh_admin_token(payload: dict[str, Any], role: str,
     lifetime = exp_i - iat_i
     if lifetime <= 0:
         return None
-    # Past the halfway mark of this token's life → slide it forward.
+    # Past the halfway mark of this token's life → slide it forward. Carry the
+    # current password version so a rotation still revokes the slid token; when
+    # the caller passes no pwv, fall back to the token's own claim.
     if (now - iat_i) * 2 >= lifetime:
-        return issue_admin_token(role=role, email=email)
+        return issue_admin_token(role=role, email=email,
+                                 pwv=pwv or payload.get("pwv"))
     return None
 
 
@@ -254,8 +266,19 @@ def verify_handshake(blob: str, secret: Optional[str] = None) -> dict[str, Any]:
     if exp is None or now >= int(exp):
         raise TokenError("handshake expired")
     iat = payload.get("iat")
-    if iat is not None and now - int(iat) > config.WIDGET_HANDSHAKE_MAX_AGE_SEC:
-        raise TokenError("handshake too old")
+    max_age = config.WIDGET_HANDSHAKE_MAX_AGE_SEC
+    if iat is not None:
+        if now - int(iat) > max_age:
+            raise TokenError("handshake too old")
+    elif int(exp) - now > max_age:
+        # No iat to bound the token's age against. A partner CMS that signs its
+        # own blob (the integration docs allow direct signing) could omit iat and
+        # set a far-future exp, and the max-age anti-replay window — documented as
+        # defence-in-depth alongside exp — would then be silently skipped, so a
+        # captured blob stays replayable (opening sessions / minting deeplinks as
+        # the victim) for the whole exp lifetime. Bound the window against exp
+        # instead: a token valid for longer than the max-age window is rejected.
+        raise TokenError("handshake exp exceeds max age")
     return payload
 
 
@@ -302,6 +325,48 @@ def verify_password(password: str, stored: str) -> bool:
         return False
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
     return hmac.compare_digest(dk, expected)
+
+
+def password_needs_rehash(stored: str) -> bool:
+    """True when a stored hash is weaker than the current target (fewer iterations
+    or a different alg), so login can transparently upgrade it (rehash-on-login).
+    Without this, legacy 200k-iteration hashes stay weak forever — the service has
+    no password-reset flow to re-derive them."""
+    try:
+        alg, iters_s, _salt, _hash = stored.split("$")
+        return alg != _PBKDF2_ALG or int(iters_s) < _PBKDF2_ITERATIONS
+    except (ValueError, AttributeError):
+        return False
+
+
+def password_version(password_hash: Optional[str]) -> str:
+    """A short fingerprint of the stored password hash, embedded in admin tokens
+    (pwv claim). require_admin compares it against the current hash, so changing a
+    password invalidates that account's outstanding tokens on their next request —
+    the natural incident response (rotate the compromised account's password) then
+    actually kills its sessions, without rotating the deploy-wide ADMIN_JWT_SECRET."""
+    return hashlib.sha256((password_hash or "").encode("utf-8")).hexdigest()[:16]
+
+
+# PBKDF2 is CPU-bound (~350ms at 600k iterations). Run it on a SMALL dedicated
+# pool, not the default asyncio executor: this caps total password-hashing CPU
+# (excess logins queue here instead of saturating every worker thread and
+# starving unrelated to_thread users — media reads, DNS pinning — and the event
+# loop) while still keeping the hash off the loop. maxsize is deliberately tiny.
+_PW_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="pbkdf2")
+
+
+async def verify_password_async(password: str, stored: str) -> bool:
+    """verify_password on the dedicated PBKDF2 pool (off the event loop)."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_PW_EXECUTOR, verify_password, password, stored)
+
+
+async def hash_password_async(password: str) -> str:
+    """hash_password on the dedicated PBKDF2 pool (off the event loop)."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_PW_EXECUTOR, hash_password, password)
 
 
 def extract_bearer(authorization: Optional[str]) -> str:

@@ -32,12 +32,21 @@ class FakeTelegram:
         self.photos.append((chat_id, "uploaded", caption))
         return {"photo": [{"file_id": "newid"}]}
 
+    async def send_photo_file_id_verbose(self, chat_id, file_id, **kwargs):
+        return await self.send_photo_file_id(chat_id, file_id, **kwargs), None, None
+
+    async def send_photo_bytes_verbose(self, chat_id, content, filename, **kwargs):
+        return await self.send_photo_bytes(chat_id, content, filename, **kwargs), None, None
+
     async def answer_callback(self, cb_id, text=None):
         pass
 
-    async def is_subscribed(self, chat_id, user_id):
+    async def subscription_state(self, chat_id, user_id):
         self.sub_checks += 1
         return self.subscribed
+
+    async def is_subscribed(self, chat_id, user_id):
+        return bool(await self.subscription_state(chat_id, user_id))
 
 
 PRODUCT = {"id": 1, "active": True, "retention_enabled": True,
@@ -63,7 +72,7 @@ def _patch_common(monkeypatch, tg, events: list):
         return dict(RU)
     monkeypatch.setattr(retention.db, "get_retention_user", _get_ru)
 
-    async def _sampled(sid, type_, payload=None):
+    async def _sampled(sid, type_, payload=None, product_id=None):
         events.append((type_, payload))
     monkeypatch.setattr(retention.db, "log_admin_event_sampled", _sampled)
 
@@ -225,6 +234,24 @@ async def test_subscription_check_is_cached(monkeypatch):
     assert not await retention.check_subscription(tg2, product, 7)
     assert not await retention.check_subscription(tg2, product, 7)
     assert tg2.sub_checks == 2
+
+
+async def test_subscription_check_returns_none_on_error(monkeypatch):
+    """A getChatMember failure (Telegram outage / bot-not-admin) yields None
+    (couldn't determine), NOT False — so the message gate can FAIL OPEN instead of
+    dropping the player's message and flipping them to unsubscribed. None is never
+    cached, so the next turn re-checks live."""
+    class _ErrTg(FakeTelegram):
+        async def subscription_state(self, chat_id, user_id):
+            self.sub_checks += 1
+            return None
+
+    tg = _ErrTg()
+    product = dict(PRODUCT, telegram_channel_id="@chan")
+    retention.reset_state()
+    assert await retention.check_subscription(tg, product, 7) is None
+    assert await retention.check_subscription(tg, product, 7) is None
+    assert tg.sub_checks == 2  # never cached
 
 
 async def test_photo_without_caption_gets_fallback(monkeypatch):

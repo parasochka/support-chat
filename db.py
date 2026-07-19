@@ -840,12 +840,23 @@ async def _migrate_tenancy(conn: asyncpg.Connection) -> int:
         "FROM chat_sessions s "
         "WHERE e.product_id IS NULL AND e.session_id = s.id"
     )
-    await conn.execute(
-        "INSERT INTO admin_memberships (email, scope_type, role) "
-        "SELECT u.email, 'global', u.role FROM admin_users u "
-        "WHERE NOT EXISTS "
-        "  (SELECT 1 FROM admin_memberships m WHERE m.email = u.email)"
-    )
+    # Adopt legacy PRE-tenancy admin_users into a global membership — but ONLY on
+    # the very first boot after tenancy was introduced, detected by an entirely
+    # empty memberships table. On every LATER boot a zero-membership account is a
+    # DELIBERATE "no access" state (its last membership was revoked, a legitimate
+    # state per _can_manage_user), and re-granting it a global membership would
+    # silently resurrect — and ESCALATE — access on the next restart, with no
+    # audit trail. Once any membership exists the feature is in use, so this
+    # backfill must never run again.
+    has_memberships = await conn.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM admin_memberships)")
+    if not has_memberships:
+        await conn.execute(
+            "INSERT INTO admin_memberships (email, scope_type, role) "
+            "SELECT u.email, 'global', u.role FROM admin_users u "
+            "WHERE NOT EXISTS "
+            "  (SELECT 1 FROM admin_memberships m WHERE m.email = u.email)"
+        )
     return product_id
 
 
@@ -941,6 +952,16 @@ def _invalidate_kb_cache() -> None:
     _kb_topics_cache.clear()
     _kb_content_cache.clear()
     _kb_vars_cache.clear()
+
+
+def clear_kb_caches() -> None:
+    """Public cache-drop for the periodic refresh loop. The KB caches are
+    invalidated only by writes routed through THIS process, so on a multi-instance
+    deployment an edit on instance A left instance B serving stale topics/KB/vars
+    forever. main._settings_refresh_loop calls this every 60s (the same cadence
+    the settings cache re-pulls at), bounding cross-instance KB staleness to ~60s
+    instead of "until restart"."""
+    _invalidate_kb_cache()
 
 
 async def upsert_topic(product_id: int, slug: str, title: dict[str, str],
@@ -1485,21 +1506,38 @@ async def log_admin_event(session_id: Optional[str], type_: str,
 # limiter itself — per instance, reset on restart, which is fine for sampling.
 _EVENT_SAMPLE_WINDOW_SEC = 300.0
 _EVENT_SAMPLE_MAX_PER_WINDOW = 20
-_event_sample_hits: dict[str, "_deque[float]"] = {}
+# Keyed by (type_, product_id): the budget is now PER TENANT, so one product's
+# flood can't exhaust the shared per-type budget and blank out another product's
+# abuse audit during a simultaneous attack (product_id=None keeps a global bucket
+# for scope-less callers).
+_event_sample_hits: dict[tuple[str, Optional[int]], "_deque[float]"] = {}
 
 
 async def log_admin_event_sampled(session_id: Optional[str], type_: str,
-                                  payload: Optional[dict[str, Any]] = None) -> None:
-    """log_admin_event with a per-type budget; excess events are dropped."""
+                                  payload: Optional[dict[str, Any]] = None,
+                                  product_id: Optional[int] = None) -> None:
+    """log_admin_event with a per-type budget; excess events are dropped.
+
+    `product_id` should be passed by callers with NO tenancy scope on the request
+    (the Telegram webhook path never sets it): without it these rows land with
+    product_id NULL and never heal, so a product-scoped admin's dashboard shows
+    zero abuse events for the product under attack. Callers on a scoped request
+    can omit it (log_admin_event falls back to the tenancy ContextVar)."""
     import time as _time
     now = _time.monotonic()
-    hits = _event_sample_hits.setdefault(type_, _deque())
+    hits = _event_sample_hits.setdefault((type_, product_id), _deque())
     while hits and now - hits[0] > _EVENT_SAMPLE_WINDOW_SEC:
         hits.popleft()
     if len(hits) >= _EVENT_SAMPLE_MAX_PER_WINDOW:
         return
     hits.append(now)
-    await log_admin_event(session_id, type_, payload)
+    # Only forward product_id when the caller set it explicitly; otherwise call
+    # exactly as before so log_admin_event's tenancy-ContextVar fallback applies
+    # (and callers/tests stubbing log_admin_event without the kwarg keep working).
+    if product_id is not None:
+        await log_admin_event(session_id, type_, payload, product_id=product_id)
+    else:
+        await log_admin_event(session_id, type_, payload)
 
 
 async def ping() -> bool:
@@ -3105,7 +3143,16 @@ async def update_retention_profile(product_id: int, player_id: str,
         sets.append(f"{f} = ${len(args)}")
     for f in act_cols:
         args.append(_as_ts(profile.get(f)))
-        sets.append(f"{f} = ${len(args)}")
+        n = len(args)
+        # Activity timestamps are forward-only + future-clamped, matching the
+        # event bridge (touch_retention_activity's GREATEST + _validate_event's
+        # future clamp). Without this the lazy Player-API pull / push webhook could
+        # REWIND a fresher event-set value with a stale snapshot (a no_deposit rule
+        # then pings a player who deposited today) or PIN a future timestamp from a
+        # skewed partner clock. now() clamps the future; GREATEST keeps forward-only.
+        sets.append(
+            f"{f} = GREATEST(COALESCE({f}, LEAST(${n}::timestamptz, now())), "
+            f"LEAST(${n}::timestamptz, now()))")
     result = await _pool.execute(
         f"UPDATE retention_users SET {', '.join(sets)} "
         f"WHERE product_id = $1 AND player_id = $2",
@@ -3243,11 +3290,17 @@ async def update_retention_rule(rule_id: int, product_id: int,
 
 async def delete_retention_rule(rule_id: int, product_id: int) -> bool:
     # The ledger keeps history: detach its rows instead of failing on the FK.
+    # BOTH statements are scoped by product_id: rule_id is globally unique, so an
+    # unscoped UPDATE would let a product-P admin NULL another tenant's ping->rule
+    # links (corrupting that tenant's per-rule cooldown) while the scoped DELETE
+    # matched nothing and returned 404 — a cross-tenant write. Mirrors
+    # delete_retention_event, which already scopes both statements.
     async with _acquire() as conn:
         async with conn.transaction():
             await conn.execute(
-                "UPDATE retention_pings SET rule_id = NULL WHERE rule_id = $1",
-                rule_id)
+                "UPDATE retention_pings SET rule_id = NULL "
+                "WHERE rule_id = $1 AND product_id = $2",
+                rule_id, product_id)
             result = await conn.execute(
                 "DELETE FROM retention_rules WHERE id = $1 AND product_id = $2",
                 rule_id, product_id)
@@ -3268,7 +3321,12 @@ async def eligible_ping_users(product_id: int, *, min_gap_hours: int,
         "  AND NOT unreachable "
         "  AND (last_ping_at IS NULL "
         "       OR last_ping_at < now() - make_interval(hours => $2)) "
-        "  AND (pings_day IS DISTINCT FROM CURRENT_DATE "
+        # pings_day is written as the UTC date (record_retention_ping) and the
+        # Python-side cap checks read the UTC clock, so compare against the UTC
+        # date here too — CURRENT_DATE is the DB session-timezone date, which
+        # disagrees for several hours a day on a non-UTC Postgres and would let a
+        # capped player slip back through the prefilter.
+        "  AND (pings_day IS DISTINCT FROM (now() at time zone 'utc')::date "
         "       OR pings_sent_today < $3) "
         "ORDER BY last_active_at ASC LIMIT $4",
         product_id, int(min_gap_hours), int(daily_cap), int(limit),
@@ -3320,29 +3378,44 @@ async def ping_rule_recently_fired(rid: int, rule_id: int,
     return bool(val)
 
 
-async def idle_rule_thresholds_fired_since(rid: int, since: Any
+async def idle_rule_thresholds_fired_since(rid: int, since: Any,
+                                           trigger_kind: Optional[str] = None
                                            ) -> dict[str, int]:
     """Max `inactivity_days` of the idle rules already fired ('sent') to this
-    player since `since` (their last activity), per trigger kind.
+    player since `since`, per trigger kind.
 
     The anti-cascade guard: per-rule cooldowns alone let a long-quiet player
     receive the ENTIRE ladder in reverse — after "quiet 60 days" fired, the
     45/30/21/… rungs each matched on the next sweep (their own cooldowns were
     clean) and cascaded out at min-gap pace. During ONE silence stretch only a
-    rung ABOVE the highest already-fired one may fire; the moment the player
-    writes again (`last_active_at` moves past the fired pings) every rung is
-    eligible again. `since` = the player's last activity; None counts every
-    fired ping."""
+    rung ABOVE the highest already-fired one may fire; the moment the current
+    silence stretch is broken every rung is eligible again.
+
+    `since` MUST be the start of the current silence stretch for `trigger_kind`
+    (see retention_idle._idle_anchor_for) — the SAME clock the rung measures
+    idleness on: `last_active_at` for bot_inactivity, but the casino
+    login/played/deposit timestamps for casino_inactivity/no_deposit. Anchoring
+    every kind on `last_active_at` (which a bot reply bumps) wrongly wiped the
+    fired memory of casino-anchored ladders while the casino silence continued,
+    re-opening the reverse-cascade for players who reply to pings. Pass
+    `trigger_kind` so the caller can query per-kind with the matching anchor;
+    None counts every fired ping across kinds."""
     since_ts = _as_ts(since)
+    args: list[Any] = [rid, since_ts]
+    kind_sql = ""
+    if trigger_kind is not None:
+        args.append(trigger_kind)
+        kind_sql = f" AND r.trigger_kind = ${len(args)}"
     rows = await _pool.fetch(
         "SELECT r.trigger_kind, MAX(r.inactivity_days) AS days "
         "FROM retention_pings p "
         "JOIN retention_rules r ON r.id = p.rule_id "
         "WHERE p.retention_user_id = $1 AND p.status = 'sent' "
         "  AND p.created_at > COALESCE($2::timestamptz, "
-        "                              '-infinity'::timestamptz) "
-        "GROUP BY r.trigger_kind",
-        rid, since_ts,
+        "                              '-infinity'::timestamptz)"
+        + kind_sql +
+        " GROUP BY r.trigger_kind",
+        *args,
     )
     return {str(r["trigger_kind"]): int(r["days"]) for r in rows
             if r["days"] is not None}
@@ -3470,6 +3543,35 @@ async def count_unprocessed_retention_events(product_id: int) -> int:
         product_id,
     )
     return int(val or 0)
+
+
+async def prune_retention_events(keep_days: int = 90) -> int:
+    """Delete PROCESSED canonical events older than keep_days (all products).
+
+    The event log is append-only and can grow by millions of rows/month (partners
+    stream bet_settled per settled bet), while the state resolver only reads recent
+    events (the 24h loss window + recent activity), so old processed rows are dead
+    weight with no reaper — unlike app_logs, which is capped. Only PROCESSED rows
+    are removed (an unclaimed event is never dropped). Decision-ledger rows that
+    referenced a pruned event keep their event_name snapshot and drop the FK link
+    (there is no ON DELETE clause, so the link must be nulled first)."""
+    async with _acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE retention_v2_decisions SET event_pk = NULL "
+                "WHERE event_pk IN (SELECT id FROM retention_events "
+                "  WHERE processed_at IS NOT NULL "
+                "    AND processed_at < now() - make_interval(days => $1))",
+                int(keep_days))
+            result = await conn.execute(
+                "DELETE FROM retention_events "
+                "WHERE processed_at IS NOT NULL "
+                "  AND processed_at < now() - make_interval(days => $1)",
+                int(keep_days))
+    try:
+        return int(result.split()[-1])
+    except (ValueError, IndexError):
+        return 0
 
 
 async def list_retention_events(product_id: int, page: int = 1,
@@ -3780,11 +3882,17 @@ async def list_retention_v2_logs(product_id: int, page: int = 1,
 
 
 async def retention_v2_cost_today(product_id: int) -> float:
-    """Summed decision-ledger cost since local midnight UTC — the daily-budget
-    stop switch reads this before every new decision."""
+    """Summed decision-ledger cost since midnight UTC — the daily-budget stop
+    switch reads this before every new decision.
+
+    Truncate in UTC explicitly: date_trunc('day', now()) truncates in the DB
+    session timezone, so on a non-UTC Postgres the budget window would silently
+    disagree with the day boundary the rest of the retention pacing uses."""
     val = await _pool.fetchval(
         "SELECT COALESCE(SUM(cost_usd), 0) FROM retention_v2_decisions "
-        "WHERE product_id = $1 AND created_at >= date_trunc('day', now())",
+        "WHERE product_id = $1 "
+        "AND created_at >= date_trunc('day', now() at time zone 'utc') "
+        "                  at time zone 'utc'",
         product_id,
     )
     return float(val or 0)
@@ -4869,7 +4977,10 @@ async def list_audit(product_ids: Optional[list[int]], *, include_admins: bool,
                      f"OR path ILIKE ${len(args)})")
     if before_id:
         args.append(before_id)
-        conds.append(f"id < ${len(args)}")
+        # Qualify with the alias: the query LEFT JOINs products (which also has an
+        # `id`), so a bare `id` is an ambiguous column reference (42702) and 500s
+        # every "load more" page.
+        conds.append(f"a.id < ${len(args)}")
     args.append(max(1, min(limit, 500)))
     where_sql = " AND ".join(f"({c})" for c in conds)
     rows = await _pool.fetch(

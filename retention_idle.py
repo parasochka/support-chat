@@ -75,6 +75,28 @@ def _idle_days_for(ru: dict[str, Any], trigger_kind: str,
     return None
 
 
+def _idle_anchor_for(ru: dict[str, Any], trigger_kind: str) -> Any:
+    """The timestamp that marks the START of the current silence stretch for this
+    trigger kind — the anti-cascade memory anchor. It MUST use the same clock as
+    _idle_days_for (idle = now - anchor), so that a fired rung 'counts' only while
+    it sits inside the ongoing silence.
+
+    Anchoring every kind on `last_active_at` (bumped by any bot reply) was the
+    bug: for casino_inactivity/no_deposit a player who replies to pings would
+    reset the fired memory while the casino silence stretch continued, letting the
+    lower rungs re-fire in reverse — the exact cascade the guard exists to stop."""
+    if trigger_kind == "bot_inactivity":
+        return ru.get("last_active_at")
+    if trigger_kind == "casino_inactivity":
+        # idle = min(days) => the MORE RECENT of login/played is the stretch start
+        ts = [t for t in (ru.get("last_login_at"), ru.get("last_played_at"))
+              if t is not None]
+        return max(ts) if ts else None
+    if trigger_kind == "no_deposit":
+        return ru.get("last_deposit_at")
+    return ru.get("last_active_at")
+
+
 async def _match_rule(ru: dict[str, Any], rules: list[dict[str, Any]]
                       ) -> Optional[tuple[dict[str, Any], int]]:
     """The highest-priority rule that fires for this player right now.
@@ -91,8 +113,15 @@ async def _match_rule(ru: dict[str, Any], rules: list[dict[str, Any]]
     single periodic rule keeps working)."""
     now = _dt.datetime.now(_dt.timezone.utc)
     vip = (ru.get("vip_level") or "").strip().lower()
-    fired = await db.idle_rule_thresholds_fired_since(
-        int(ru["id"]), ru.get("last_active_at"))
+    # Fired-rung memory, anchored PER trigger kind on that kind's own silence
+    # clock (see _idle_anchor_for) — never a single last_active_at anchor, which
+    # a bot reply would move, wiping the memory of casino-anchored ladders while
+    # their silence continues.
+    fired: dict[str, int] = {}
+    for kind in {str(r.get("trigger_kind") or "") for r in rules}:
+        part = await db.idle_rule_thresholds_fired_since(
+            int(ru["id"]), _idle_anchor_for(ru, kind), trigger_kind=kind)
+        fired.update(part)
     for rule in rules:  # already ordered priority DESC
         idle = _idle_days_for(ru, rule.get("trigger_kind", ""), now)
         if idle is None or idle < int(rule.get("inactivity_days") or 0):
@@ -255,6 +284,15 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
         photo_candidates=candidates,
     )
     if draft is None:
+        await db.insert_retention_v2_decision(
+            pid, retention_user_id=rid, player_id=ru.get("player_id"),
+            trigger_kind="idle", event_pk=None,
+            event_name=f"idle:{rule.get('trigger_kind')}",
+            state={"idle_days": idle_days},
+            guard={"allow": True, "reasons": []},
+            action=action, intent=rule.get("intent") or "",
+            reason=f"idle rule '{rule.get('name')}' matched ({idle_days}d)",
+            dry_run=False, delivered=False, detail="model_error", cost_usd=0.0)
         await db.record_retention_ping(pid, rid, rule_id, action, "failed",
                                        detail="model_error")
         return False
@@ -314,13 +352,27 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
         return True
 
     # The model call happened but nothing reached the player: account the cost
-    # (invariant §4 — every OpenAI call gets an ai_interaction_logs row).
+    # (invariant §4 — every OpenAI call gets an ai_interaction_logs row) AND write
+    # a decisions-ledger row. The per-product daily AI budget reads ONLY that
+    # ledger, so without this the generation spend of a persistently-failing send
+    # (revoked token, blocked players) would be invisible to the budget — it could
+    # keep generating past the daily stop-switch — and the Decisions audit would
+    # be missing every failed idle attempt.
     meta = draft.ai_meta
     await db.log_ai_interaction(
         session["id"], meta.get("model"), meta.get("key_used"),
         meta.get("tokens_in"), meta.get("tokens_out"), meta.get("cached_in"),
         cost, meta.get("latency_ms"), False, f"ping_undelivered {detail}",
         product_id=pid)
+    await db.insert_retention_v2_decision(
+        pid, retention_user_id=rid, player_id=ru.get("player_id"),
+        trigger_kind="idle", event_pk=None,
+        event_name=f"idle:{rule.get('trigger_kind')}",
+        state={"idle_days": idle_days},
+        guard={"allow": True, "reasons": []},
+        action=action, intent=rule.get("intent") or "",
+        reason=f"idle rule '{rule.get('name')}' matched ({idle_days}d)",
+        dry_run=False, delivered=False, detail=detail, cost_usd=cost)
     await db.record_retention_ping(pid, rid, rule_id, action, "failed",
                                    detail=detail, cost_usd=cost)
     log.warning("retention_idle_ping_failed product=%s player=%s detail=%s",

@@ -81,6 +81,14 @@ def to_html(text: str) -> str:
     if not text:
         return text
 
+    # Defensively drop any pre-existing stash sentinels from the input: the
+    # restore pass does stash[int(idx)], so a model-echoed U+E000<digits>U+E001
+    # with an out-of-range index would raise IndexError and unwind AFTER the turn
+    # is already persisted (player silence + a ghost transcript row). These are
+    # private-use characters that carry no legitimate meaning in a reply.
+    if _SENT_OPEN in text or _SENT_CLOSE in text:
+        text = text.replace(_SENT_OPEN, "").replace(_SENT_CLOSE, "")
+
     stash: list[str] = []
 
     def _stash(payload: str) -> str:

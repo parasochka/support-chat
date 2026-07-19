@@ -67,6 +67,10 @@ class ChatReply:
     # True when the model signalled the question looks fully resolved, so the widget
     # can offer a "finish chat" button nudging the player toward closing the chat.
     resolved: bool = False
+    # True when this reply is the transient-model-failure nudge ("please resend"):
+    # no turn was persisted, so api/chat releases the cooldown — the resend the
+    # nudge asks for must not be throttled.
+    model_error: bool = False
 
 
 async def _on_failover(session_id: Optional[str], reason: str) -> None:
@@ -226,8 +230,13 @@ async def handle_message(
         closing=closing,
         # After a topic switch the prompt history is cut at the reset boundary,
         # so the model would otherwise treat the next turn as a brand-new chat
-        # and greet again mid-conversation.
-        ongoing=context_reset_id > 0,
+        # and greet again mid-conversation. This only matters on the FIRST turn
+        # after the switch (when the post-boundary `history` is still empty); once
+        # the post-switch history is non-empty the model has context and won't
+        # re-greet, and keeping the "already in progress" block on every later turn
+        # made its "do not use the player's name" clause permanently override the
+        # personalization directive's complaint-reassurance allowance.
+        ongoing=context_reset_id > 0 and not history,
         history_window=int(settings.general()["history_max_turns"]),
     )
     log.info(
@@ -274,6 +283,7 @@ async def handle_message(
             suggestions=[],
             closing_suggestion=None,
             resolved=False,
+            model_error=True,
         )
 
     # --- strip control sentinels (escalation + topic + language + suggest) --
@@ -290,6 +300,10 @@ async def handle_message(
         clean_text, detected_lang = prompts.strip_language_tag(clean_text)
         clean_text, suggestions = prompts.strip_suggestions(clean_text)
         clean_text, resolved = prompts.strip_resolved_tag(clean_text)
+        # Backstop: remove any residual/truncated control-sentinel fragment the
+        # per-tag strips missed (e.g. a [[SUGGEST:… tag the model ran out of tokens
+        # mid-writing), so raw machine syntax never reaches the player's bubble.
+        clean_text = prompts.scrub_control_sentinels(clean_text)
         # Mechanically scrub the typographic "AI tells" the FORMATTING directive
         # forbids (em/en dashes, guillemet/curly quotes) in case the model emitted
         # them anyway - the same deterministic pass the retention channel applies,
@@ -404,6 +418,16 @@ async def handle_message(
             closing_suggestion=None,
             resolved=False,
         )
+
+    # A routing turn that ALSO trips a hard escalation (the message cap) must not
+    # show the in-place answer: it was produced WITHOUT the target topic's KB, so
+    # it is ungrounded (the documented invariant — it must never reach the player).
+    # The session is closing, so drop the switch suggestion too and hand off
+    # cleanly; the escalation card becomes the only thing shown (the empty-text
+    # branch below fills it with the localized hand-off copy).
+    if suggested_topic and decision.active:
+        clean_text = ""
+        suggested_topic = None
 
     esc_payload = escalation.inactive_payload()
     if decision.active:

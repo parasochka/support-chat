@@ -217,6 +217,12 @@ ADMIN_JWT_SECRET_IS_FALLBACK: bool = _env_opt("ADMIN_JWT_SECRET") is None
 # never logs you out while an untouched account expires after a week.
 ADMIN_TOKEN_TTL_MIN: int = _env_int("ADMIN_TOKEN_TTL_MIN", 10_080)
 
+# Per-IP allowance for /admin/login within the shared antispam window. Decoupled
+# from the widget's rate_limit_max_per_ip so raising the (hot) widget limit can't
+# silently widen the unauthenticated PBKDF2-CPU-burn budget on the login endpoint.
+# Deliberately tight — a human logs in a handful of times, a brute-forcer many.
+ADMIN_LOGIN_RATE_LIMIT: int = _env_int("ADMIN_LOGIN_RATE_LIMIT", 10)
+
 # --- Secrets encryption master key (multi-tenancy) ---------------------------
 # Encrypts per-product secrets at rest (OpenAI keys, handshake secrets) via
 # secretbox.py, so a DB dump alone never reveals a client's keys. Falls back to

@@ -543,9 +543,16 @@ _RL_NOTIFIED_PRUNE_THRESHOLD = 10_000
 
 
 async def check_subscription(client: TelegramClient, product: dict[str, Any],
-                             tg_user_id: int, *, use_cache: bool = True) -> bool:
-    """True when the player is subscribed to the product's channel (or no channel
-    is configured — a product without a channel skips the gate)."""
+                             tg_user_id: int, *, use_cache: bool = True
+                             ) -> Optional[bool]:
+    """Tri-state subscription gate. True = subscribed (or no channel configured),
+    False = definitively not a member, None = the check could not be completed
+    (Telegram outage / bot-not-admin blip).
+
+    None is NOT False: an outage must never be treated as "left the channel" — the
+    message gate fails open on None (see _handle_message) so a transient blip can't
+    drop the player's message and silently unsubscribe them from proactive pings.
+    Only a real True/False result touches the positive cache."""
     channel = product.get("telegram_channel_id")
     if not channel:
         return True
@@ -555,8 +562,12 @@ async def check_subscription(client: TelegramClient, product: dict[str, Any],
         expiry = _sub_cache.get(key)
         if expiry is not None and expiry > now:
             return True
-    ok = await client.is_subscribed(channel, tg_user_id)
-    if ok:
+    state = await client.subscription_state(channel, tg_user_id)
+    if state is None:
+        # Couldn't determine — leave the cached/stored state untouched, let the
+        # caller fail open for this turn.
+        return None
+    if state:
         # TTL is the hot `retention.subscription_cache_ttl_sec` knob
         # (0 = never cache: re-check live on every message).
         ttl = int(settings.retention().get("subscription_cache_ttl_sec",
@@ -571,7 +582,7 @@ async def check_subscription(client: TelegramClient, product: dict[str, Any],
             _sub_cache.pop(key, None)
     else:
         _sub_cache.pop(key, None)
-    return ok
+    return state
 
 
 def reset_state() -> None:
@@ -864,7 +875,8 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
                     product["id"], pu.tg_user_id)
         await db.log_admin_event_sampled(
             None, "rate_limited",
-            {"channel": "telegram", "tg_user_id": pu.tg_user_id})
+            {"channel": "telegram", "tg_user_id": pu.tg_user_id},
+            product_id=product["id"])
         now = time.monotonic()
         notified = _rl_notified.get(spam_key)
         if notified is None or now - notified > float(cfg["window_sec"]):
@@ -909,7 +921,14 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
         return
 
     # Subscription gate applies to every turn (positive results briefly cached).
-    if not await check_subscription(client, product, pu.tg_user_id):
+    # Tri-state: True = subscribed, False = definitively not a member, None = the
+    # check could not be completed (Telegram outage / bot-not-admin blip). On None
+    # we FAIL OPEN for this turn — never treat an outage as "left the channel",
+    # which would drop the player's live message AND flip them to unsubscribed,
+    # removing them from every proactive ping until they happen to write again
+    # during a healthy window.
+    sub = await check_subscription(client, product, pu.tg_user_id)
+    if sub is False:
         log.info("retention_subscription_gate product_id=%s tg_user_id=%s",
                  product["id"], pu.tg_user_id)
         await db.set_retention_subscribed(int(ru["id"]), False)
@@ -917,7 +936,7 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
                                   _rtn_text("rtn_subscribe_prompt", lang),
                                   reply_markup=_subscribe_markup(product, lang))
         return
-    if not ru.get("subscribed"):
+    if sub and not ru.get("subscribed"):
         await db.set_retention_subscribed(int(ru["id"]), True)
 
     # Input gates: overlong text is truncated (not rejected — chats are human);
@@ -933,7 +952,8 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
         log.info("retention_low_content product_id=%s tg_user_id=%s",
                  product["id"], pu.tg_user_id)
         await db.log_admin_event_sampled(
-            None, "low_content_blocked", {"channel": "telegram"})
+            None, "low_content_blocked", {"channel": "telegram"},
+            product_id=product["id"])
         await client.send_message(pu.chat_id,
                                   _rtn_text("rtn_low_content_reply", lang))
         return
@@ -942,7 +962,8 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
                     product["id"], pu.tg_user_id, cfg["injection_hard_block"])
         await db.log_admin_event_sampled(
             None, "injection_blocked",
-            {"channel": "telegram", "tg_user_id": pu.tg_user_id})
+            {"channel": "telegram", "tg_user_id": pu.tg_user_id},
+            product_id=product["id"])
         if cfg["injection_hard_block"]:
             await client.send_message(pu.chat_id,
                                       _rtn_text("rtn_injection_reply", lang))
@@ -1202,6 +1223,11 @@ async def _send_stage_up_note(client: TelegramClient, product: dict[str, Any],
         log.exception("retention_stage_up_note_failed ru=%s", ru.get("id"))
 
 
+# Telegram's hard cap on a media caption (chars). A longer reply is split: the
+# photo goes out captionless and the text follows as a normal message.
+_TG_CAPTION_LIMIT = 1024
+
+
 async def _send_photo(client: TelegramClient, product: dict[str, Any],
                       ru: dict[str, Any], chat_id: int, photo_id: int,
                       caption: str, session_id: Optional[str] = None,
@@ -1219,42 +1245,67 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
     the admin transcript can show it inline. `reply_markup` (a validated CTA
     button) rides on whatever message actually goes out.
     """
+    # Overflow-split: Telegram rejects captions over 1024 chars, so a long model
+    # reply on a photo turn would fail the ENTIRE send (and re-upload the binary
+    # with the same over-long caption) while the turn is already persisted — a
+    # ghost the player never saw. Send the photo captionless and deliver the full
+    # text as a follow-up message (carrying the CTA button, if any).
+    overflow_text: Optional[str] = None
+    if caption and len(caption) > _TG_CAPTION_LIMIT:
+        overflow_text = caption
+        caption = ""
+    photo_markup = None if overflow_text else reply_markup
     # Render the (model-generated) caption's light markup as Telegram HTML.
     caption_html = telegram_format.to_html(caption) if caption else None
     photo = await db.get_retention_photo(photo_id)
     if not photo or not photo.get("active"):
-        if caption and await _send_ai_text(client, chat_id, caption,
-                                           reply_markup=reply_markup,
-                                           silent=silent):
+        text_out = overflow_text or caption
+        if text_out and await _send_ai_text(client, chat_id, text_out,
+                                            reply_markup=reply_markup,
+                                            silent=silent):
             return "text"
         return None
     file_id = photo.get("telegram_file_id")
     result = None
+    err_code: Optional[int] = None
     if file_id:
-        result = await client.send_photo_file_id(
+        result, err_code, _ = await client.send_photo_file_id_verbose(
             chat_id, file_id, caption=caption_html, parse_mode="HTML",
-            reply_markup=reply_markup, disable_notification=silent)
+            reply_markup=photo_markup, disable_notification=silent)
     if result is None:
-        # No cached id (or the cached id failed) — upload from the Volume.
-        # Off-thread: a multi-MB Volume read on the event loop stalls every
-        # concurrent chat turn.
+        if err_code == 403:
+            # The player blocked the bot — flip unreachable so the guards stop
+            # retrying (mirrors delivery.send_text). Do NOT burn a Volume read +
+            # re-upload on a 403; it would fail again identically.
+            await db.set_retention_unreachable(int(ru["id"]), True)
+            return None
+        # No cached id (or a stale one) — upload from the Volume. Off-thread:
+        # a multi-MB Volume read on the event loop stalls every concurrent turn.
         content = await asyncio.to_thread(_read_media, photo.get("storage_ref"))
         if content is None:
-            if caption and await _send_ai_text(client, chat_id, caption,
-                                               reply_markup=reply_markup,
-                                               silent=silent):
+            text_out = overflow_text or caption
+            if text_out and await _send_ai_text(client, chat_id, text_out,
+                                                reply_markup=reply_markup,
+                                                silent=silent):
                 return "text"
             return None
-        result = await client.send_photo_bytes(
+        result, err_code, _ = await client.send_photo_bytes_verbose(
             chat_id, content, photo.get("storage_ref") or "photo.jpg",
             caption=caption_html, parse_mode="HTML",
-            reply_markup=reply_markup, disable_notification=silent)
+            reply_markup=photo_markup, disable_notification=silent)
+        if result is None and err_code == 403:
+            await db.set_retention_unreachable(int(ru["id"]), True)
+            return None
         new_file_id = TelegramClient.extract_photo_file_id(result)
         if new_file_id:
             await db.set_photo_file_id(photo_id, new_file_id)
     if result is not None:
         await db.record_retention_photo_view(int(ru["id"]), photo_id,
                                              product["id"], session_id)
+        if overflow_text:
+            # Photo went out captionless; deliver the full text (+ button) now.
+            await _send_ai_text(client, chat_id, overflow_text,
+                                reply_markup=reply_markup, silent=silent)
         return "photo"
     return None
 

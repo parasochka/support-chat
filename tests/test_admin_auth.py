@@ -88,7 +88,9 @@ async def test_unknown_user_rejected():
 
 
 async def test_login_rate_limited(monkeypatch, _setup):
-    monkeypatch.setattr(config, "RATE_LIMIT_MAX_PER_IP", 3)
+    # Login throttling uses its OWN dedicated allowance, decoupled from the widget
+    # per-IP knob (so widening the widget limit can't widen the login CPU budget).
+    monkeypatch.setattr(config, "ADMIN_LOGIN_RATE_LIMIT", 3)
     for _ in range(3):
         await admin_auth.login(
             _req("5.5.5.5"), admin_auth.AdminLogin(email="a@example.com", password="x"))
@@ -153,3 +155,54 @@ async def test_require_admin_sets_refresh_header_when_stale():
     fresh = auth.issue_admin_token(role="admin", email="a@example.com")
     await admin_auth.require_admin(authorization=f"Bearer {fresh}", response=resp2)
     assert resp2.headers.get("X-Refresh-Token") is None
+
+
+async def test_login_rehashes_legacy_hash(monkeypatch, _setup):
+    """Rehash-on-login: a legacy weaker hash is transparently upgraded to the
+    current iteration factor when the plaintext is in hand (the only moment it is,
+    since there is no reset flow)."""
+    legacy = auth.hash_password("s3cret-pw", iterations=200_000)
+    assert auth.password_needs_rehash(legacy)
+    written = {}
+
+    async def _get_user(email):
+        if email != "a@example.com":
+            return None
+        return {"email": email, "password_hash": legacy,
+                "role": "admin", "active": True}
+
+    async def _update(email, *, password_hash=None, **kw):
+        written["hash"] = password_hash
+        return {"email": email}
+
+    monkeypatch.setattr(db, "get_admin_user", _get_user)
+    monkeypatch.setattr(db, "update_admin_user", _update)
+
+    resp = await admin_auth.login(
+        _req(), admin_auth.AdminLogin(email="a@example.com", password="s3cret-pw"))
+    assert resp.status_code == 200
+    assert written.get("hash") and not auth.password_needs_rehash(written["hash"])
+
+
+async def test_token_revoked_after_password_change(monkeypatch, _setup):
+    """The pwv binding revokes an outstanding token once the account's password
+    hash changes (the natural response to a leak), without deactivating the
+    account or rotating the deploy secret."""
+    resp = await admin_auth.login(
+        _req(), admin_auth.AdminLogin(email="a@example.com", password="s3cret-pw"))
+    token = json.loads(resp.body)["token"]
+
+    # Still valid against the unchanged hash.
+    who = await admin_auth.require_admin(authorization=f"Bearer {token}")
+    assert who["email"] == "a@example.com"
+
+    # Password rotated -> stored hash differs -> pwv mismatch -> token rejected.
+    async def _rotated(email):
+        return {"email": email,
+                "password_hash": auth.hash_password("a-brand-new-password"),
+                "role": "admin", "active": True}
+    monkeypatch.setattr(db, "get_admin_user", _rotated)
+
+    with pytest.raises(HTTPException) as ei:
+        await admin_auth.require_admin(authorization=f"Bearer {token}")
+    assert ei.value.status_code == 401

@@ -83,9 +83,20 @@ async def verify_turnstile(token: Optional[str], remote_ip: Optional[str] = None
                 "reason": f"verify_error:{exc.__class__.__name__}"}
 
     if not bool(data.get("success")):
-        codes = data.get("error-codes") or []
-        return {"ok": False, "skipped": False,
-                "reason": "turnstile_failed:" + ",".join(str(c) for c in codes)}
+        codes = [str(c) for c in (data.get("error-codes") or [])]
+        # ADVISORY fail-open (docstring): ONLY a definitive bad-TOKEN verdict
+        # blocks — a real bot/replay signal. Everything else that yields
+        # success:false — a verifier `internal-error`, a mistyped/absent product
+        # secret (`invalid-input-secret` / `missing-input-secret`), a malformed
+        # request, or an unknown/empty code — is a Cloudflare-side config/outage
+        # problem, NOT a bot, and must SKIP so a player never loses the chat over
+        # it (a typo'd secret would otherwise 403 every visitor = product outage).
+        blocking_codes = {"invalid-input-response", "timeout-or-duplicate"}
+        if blocking_codes.intersection(codes):
+            return {"ok": False, "skipped": False,
+                    "reason": "turnstile_failed:" + ",".join(codes)}
+        return {"ok": True, "skipped": True,
+                "reason": "turnstile_nonblocking:" + ",".join(codes or ["unknown"])}
     return {"ok": True, "skipped": False, "reason": "ok"}
 
 
