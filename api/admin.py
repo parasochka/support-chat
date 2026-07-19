@@ -5,7 +5,6 @@ destructive action writes an `admin_events` audit row (invariant §15.5).
 """
 from __future__ import annotations
 
-import asyncio
 import csv
 import io
 import re
@@ -960,8 +959,9 @@ async def create_user(body: UserCreate,
     await _require_scope_admin(admin, scope, partner_id, product_id)
     if await db.get_admin_user(email):
         raise HTTPException(status_code=409, detail="A user with that email already exists.")
-    # PBKDF2 hashing is CPU-bound — keep it off the event loop.
-    pw_hash = await asyncio.to_thread(auth.hash_password, body.password)
+    # PBKDF2 hashing is CPU-bound — run it on the dedicated pool (off the loop,
+    # total hashing CPU capped).
+    pw_hash = await auth.hash_password_async(body.password)
     user = await db.create_admin_user(email, pw_hash, role)
     membership = await db.add_membership(email, scope, partner_id, product_id, role)
     await db.log_admin_event(None, "admin_user_created",
@@ -980,6 +980,16 @@ async def grant_membership(email: str, body: MembershipSpec,
     if admin.get("email") == target:
         raise HTTPException(status_code=400,
                             detail="You cannot change your own memberships.")
+    # Reach check on the TARGET account: the caller may only touch an account
+    # whose ENTIRE existing membership set is inside its admin reach — the same
+    # rule update_user/delete_user enforce. Without it a product-scoped admin
+    # could attach memberships to accounts it cannot otherwise see or edit (a
+    # global admin's account, another partner's admin), mutating the membership
+    # graph of accounts outside its reach.
+    target_memberships = await db.memberships_for(target)
+    if not await _can_manage_user(admin, target_memberships):
+        raise HTTPException(status_code=403,
+                            detail="No administrator reach over this account.")
     role = _validate_role(body.role)
     scope, partner_id, product_id = await _validate_scope(body)
     await _require_scope_admin(admin, scope, partner_id, product_id)
@@ -1030,7 +1040,7 @@ async def update_user(email: str, body: UserUpdate,
     pw_hash = None
     if body.password is not None:
         _validate_password(body.password)
-        pw_hash = await asyncio.to_thread(auth.hash_password, body.password)
+        pw_hash = await auth.hash_password_async(body.password)
     # Guard against self-lockout: an account cannot demote or deactivate itself
     # in the same session. With no owner password recovery path, keep at least a
     # second admin account so a forgotten password never locks everyone out.

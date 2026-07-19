@@ -12,7 +12,7 @@ data routes in api/admin.py.
 """
 from __future__ import annotations
 
-import asyncio
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
@@ -25,6 +25,7 @@ import config
 import db
 from api.client_ip import client_ip
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 # A throwaway PBKDF2 hash used to equalize login timing: when the account is
@@ -111,6 +112,16 @@ async def require_admin(authorization: Optional[str] = Header(default=None),
     user = await db.get_admin_user(email)
     if not user or not user.get("active", False):
         raise HTTPException(status_code=401, detail="account disabled")
+    # Password-version binding: a token minted after a password change carries the
+    # current pwv; if the stored hash later changes (the account rotates a leaked
+    # password), the mismatch revokes every outstanding token on the next request.
+    # Tokens minted before this feature carry no pwv and are accepted (they gain
+    # one on the next sliding refresh), so a deploy never logs everyone out.
+    current_pwv = auth.password_version(user.get("password_hash"))
+    token_pwv = payload.get("pwv")
+    if token_pwv is not None and token_pwv != current_pwv:
+        raise HTTPException(status_code=401,
+                            detail="credentials changed, please sign in again")
     payload["memberships"] = await db.memberships_for(email)
     # Effective coarse role: 'admin' when the account may write ANYWHERE (the
     # fine-grained scope checks still apply per route), else 'manager'.
@@ -124,7 +135,8 @@ async def require_admin(authorization: Optional[str] = Header(default=None),
     # (admin + manager) — service API keys (the sak_ path above) are not
     # sessions and returned earlier without refresh.
     if response is not None:
-        new_token = auth.refresh_admin_token(payload, payload["role"], email)
+        new_token = auth.refresh_admin_token(payload, payload["role"], email,
+                                             pwv=current_pwv)
         if new_token:
             response.headers["X-Refresh-Token"] = new_token
     _stash_actor(request, email, payload["role"])
@@ -254,9 +266,13 @@ async def resolve_scope_filter(admin: dict, product_id: Optional[int] = None,
 @router.post("/login")
 async def login(req: Request, body: AdminLogin) -> JSONResponse:
     ip = _client_ip(req)
-    # Reuse the Phase 1 sliding-window to throttle brute force on a dedicated key.
+    # Sliding-window brute-force throttle on a dedicated key + a dedicated, tight
+    # allowance (config.ADMIN_LOGIN_RATE_LIMIT) — NOT the hot widget knob, so an
+    # operator widening the widget limit can't widen the unauthenticated
+    # PBKDF2-CPU-burn budget of this endpoint.
     try:
-        antispam.check_rate_limit(f"admin-login:{ip}")
+        antispam.check_rate_limit(f"admin-login:{ip}",
+                                  max_hits=config.ADMIN_LOGIN_RATE_LIMIT)
     except antispam.AntiSpamError as exc:
         # Sampled: the limiter blocks the attempt, but an unsampled INSERT per
         # blocked request would let one hammering IP grow admin_events unbounded.
@@ -276,19 +292,15 @@ async def login(req: Request, body: AdminLogin) -> JSONResponse:
     # the client (no account enumeration).
     user = await db.get_admin_user(email)
     ok = False
-    # PBKDF2 (200k iterations) is CPU-bound and would block the event loop for
-    # ~100ms per attempt — run it in a worker thread. Always run exactly one
-    # verify: against the real hash when the account exists and is active, else
-    # against a dummy hash of equal cost, so timing cannot distinguish a valid
-    # active email from a missing/disabled one (no account enumeration).
+    # PBKDF2 is CPU-bound (~350ms at 600k iterations) and would block the event
+    # loop — run it on the dedicated PBKDF2 pool. Always run exactly one verify:
+    # against the real hash when the account exists and is active, else against a
+    # dummy hash of equal cost, so timing cannot distinguish a valid active email
+    # from a missing/disabled one (no account enumeration).
     if user and user.get("active", False):
-        ok = await asyncio.to_thread(
-            auth.verify_password, body.password, user["password_hash"]
-        )
+        ok = await auth.verify_password_async(body.password, user["password_hash"])
     else:
-        await asyncio.to_thread(
-            auth.verify_password, body.password, _DUMMY_PW_HASH
-        )
+        await auth.verify_password_async(body.password, _DUMMY_PW_HASH)
     if not ok:
         await db.log_admin_event(None, "admin_login_failed",
                                  {"ip": ip, "reason": "bad_user_credentials",
@@ -296,13 +308,27 @@ async def login(req: Request, body: AdminLogin) -> JSONResponse:
         return JSONResponse(status_code=401,
                             content={"error": "unauthorized",
                                      "detail": "Invalid email or password."})
+    # Rehash-on-login: transparently upgrade a legacy/weaker hash (e.g. a
+    # pre-600k-iteration account) now that the plaintext is in hand — the only
+    # moment it is, since there is no password-reset flow. Best-effort: a failed
+    # write-back never blocks the login.
+    password_hash = user["password_hash"]
+    if auth.password_needs_rehash(password_hash):
+        try:
+            password_hash = await auth.hash_password_async(body.password)
+            await db.update_admin_user(email, password_hash=password_hash)
+        except Exception:  # noqa: BLE001 - upgrade is opportunistic, never fatal
+            log.warning("admin_password_rehash_failed email=%s", email)
+            password_hash = user["password_hash"]
     # The token's role claim is a coarse "may write anywhere?" hint — the
     # authoritative fine-grained answer is recomputed from admin_memberships on
-    # every request in require_admin.
+    # every request in require_admin. The pwv binds the token to the current
+    # password hash so a later rotation revokes it.
     memberships = await db.memberships_for(email)
     role = ("admin" if any(m.get("role") == "admin" for m in memberships)
             else "manager")
-    token = auth.issue_admin_token(role=role, email=email)
+    token = auth.issue_admin_token(role=role, email=email,
+                                   pwv=auth.password_version(password_hash))
     return JSONResponse(status_code=200,
                         content={"token": token,
                                  "ttl_min": config.ADMIN_TOKEN_TTL_MIN,
