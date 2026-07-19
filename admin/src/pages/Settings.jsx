@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import { Navigate, useSearchParams } from 'react-router-dom';
-import { Title, useNotify, usePermissions } from 'react-admin';
+import { Title, useNotify } from 'react-admin';
 import Accordion from '@mui/material/Accordion';
 import AccordionDetails from '@mui/material/AccordionDetails';
 import AccordionSummary from '@mui/material/AccordionSummary';
@@ -35,6 +35,8 @@ import { getProductId, getScopeName, withProduct } from '../productScope';
 import { t } from '../i18n';
 import RequireProduct from '../components/RequireProduct';
 import rich from '../components/Rich';
+import { notifyError } from '../lib/notifyError';
+import { useReadOnly } from '../lib/useReadOnly';
 import {
   GROUP_HELP,
   GROUP_LABELS,
@@ -357,8 +359,7 @@ const GroupEditor = ({ group, fields, resolved, overrides, onSaved, scopeLabel, 
   const notify = useNotify();
   // Managers are read-only server-side (403 on PUT) — pre-disable the save,
   // matching the SiteMap/Translations pattern.
-  const { permissions } = usePermissions();
-  const readOnly = permissions !== 'admin';
+  const readOnly = useReadOnly();
   const [form, setForm] = useState(() => ({ ...(resolved || {}) }));
   const [saving, setSaving] = useState(false);
 
@@ -388,7 +389,7 @@ const GroupEditor = ({ group, fields, resolved, overrides, onSaved, scopeLabel, 
       notify(`${t(GROUP_LABELS[group] || group)} — ${t('settings saved')}`, { type: 'success' });
       onSaved?.();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     } finally {
       setSaving(false);
     }
@@ -445,8 +446,7 @@ const GroupEditor = ({ group, fields, resolved, overrides, onSaved, scopeLabel, 
 // ---------------------------------------------------------------------------
 const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
   const notify = useNotify();
-  const { permissions } = usePermissions();
-  const readOnly = permissions !== 'admin';
+  const readOnly = useReadOnly();
   const lang = resolved?.language || {};
   const [supported, setSupported] = useState(() => [...(lang.supported || [])]);
   const [def, setDef] = useState(lang.default || 'en');
@@ -501,7 +501,7 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
       notify(t('Languages saved'), { type: 'success' });
       onSaved?.();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     } finally {
       setSaving(false);
     }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Title, useNotify, usePermissions } from 'react-admin';
+import { Title, useNotify } from 'react-admin';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
@@ -13,6 +13,8 @@ import { API_URL, httpClient } from '../httpClient';
 import { getProductId, withProduct } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
 import { t as tr } from '../i18n';
+import { notifyError } from '../lib/notifyError';
+import { useReadOnly } from '../lib/useReadOnly';
 
 // Keys that are service/error notices rather than the bot's own voice — split
 // into their own block so the "what the player hears from the bot" sections
@@ -86,8 +88,7 @@ const TranslationsInner = () => {
   const notify = useNotify();
   // Managers are read-only server-side (403 on PUT) — pre-disable the editor
   // instead of letting them type and lose the edit, matching SiteMap.
-  const { permissions } = usePermissions();
-  const readOnly = permissions !== 'admin';
+  const readOnly = useReadOnly();
 
   const load = () =>
     Promise.all([
@@ -193,7 +194,7 @@ const TranslationsInner = () => {
       notify(tr('Translations saved — live'), { type: 'success' });
       await load();
     } catch (e) {
-      notify(e.body?.detail || e.message || tr('Save failed'), { type: 'error' });
+      notifyError(notify, e, tr('Save failed'));
     } finally {
       setSaving(false);
     }

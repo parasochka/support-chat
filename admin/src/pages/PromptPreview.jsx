@@ -7,31 +7,9 @@ import Typography from '@mui/material/Typography';
 import { API_URL, httpClient } from '../httpClient';
 import { withProduct } from '../productScope';
 import TextStats from '../components/TextStats';
+import PromptBlock from '../components/PromptBlock';
 import rich from '../components/Rich';
 import { t } from '../i18n';
-
-const Block = ({ title, text }) => (
-  <Card sx={{ mb: 2 }}>
-    <CardContent>
-      <Typography variant="h6" gutterBottom>
-        {title}
-      </Typography>
-      <TextStats text={text || ''} sx={{ mb: 1 }} />
-      <Typography
-        component="pre"
-        sx={{
-          whiteSpace: 'pre-wrap',
-          overflowWrap: 'anywhere',
-          fontFamily: 'monospace',
-          fontSize: 13,
-          m: 0,
-        }}
-      >
-        {text || '—'}
-      </Typography>
-    </CardContent>
-  </Card>
-);
 
 /**
  * Read-only view of the whole assembled prompt (GET /admin/effective-prompt):
@@ -67,11 +45,11 @@ const PromptPreview = () => {
         text={[preview?.system, preview?.user]}
         sx={{ mb: 1.5 }}
       />
-      <Block
+      <PromptBlock
         title={t('System message (Layer 1 core + directives + Layer 2 KB)')}
         text={preview?.system}
       />
-      <Block title={t('User message (Layer 3 dynamic directives)')} text={preview?.user} />
+      <PromptBlock title={t('User message (Layer 3 dynamic directives)')} text={preview?.user} />
     </Box>
   );
 };

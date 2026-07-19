@@ -28,6 +28,8 @@ import { API_URL, httpClient } from '../httpClient';
 import useIsMobile from '../lib/useIsMobile';
 import { t } from '../i18n';
 import rich from '../components/Rich';
+import { notifyError } from '../lib/notifyError';
+import { fmtDateTime } from '../lib/fmt';
 
 const ROLE_CHOICES = [
   ['admin', t('admin (read + write)')],
@@ -123,7 +125,7 @@ const ApiKeys = () => {
       setForm({ ...EMPTY_FORM });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Create failed'), { type: 'error' });
+      notifyError(notify, e, t('Create failed'));
     }
   };
 
@@ -135,7 +137,7 @@ const ApiKeys = () => {
       });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     }
   };
 
@@ -147,7 +149,7 @@ const ApiKeys = () => {
       notify(t('Key deleted'), { type: 'success' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Delete failed'), { type: 'error' });
+      notifyError(notify, e, t('Delete failed'));
     }
   };
 
@@ -296,10 +298,10 @@ const ApiKeys = () => {
                   />
                 </TableCell>
                 <TableCell>
-                  {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : t('never')}
+                  {k.last_used_at ? fmtDateTime(k.last_used_at) : t('never')}
                 </TableCell>
                 <TableCell>
-                  {new Date(k.created_at).toLocaleString()}
+                  {fmtDateTime(k.created_at)}
                   {k.created_by ? ` · ${k.created_by}` : ''}
                 </TableCell>
                 <TableCell>

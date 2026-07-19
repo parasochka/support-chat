@@ -14,15 +14,9 @@ import LightModeIcon from '@mui/icons-material/LightMode';
 
 import { API_URL, httpClient } from '../httpClient';
 import { getAdminLang, setAdminLang, t } from '../i18n';
+import { fmtDateTime } from '../lib/fmt';
 
-const fmtDate = (iso) => {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-};
+const fmtDate = (iso) => fmtDateTime(iso) || '—';
 
 // Human label for one membership scope row.
 const scopeLabel = (m) => {

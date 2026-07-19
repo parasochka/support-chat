@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Title, useNotify, usePermissions } from 'react-admin';
+import { Title, useNotify } from 'react-admin';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
@@ -23,6 +23,8 @@ import RequireProduct from '../components/RequireProduct';
 import SecretField from '../components/SecretField';
 import { SettingsModule } from './Settings';
 import { t } from '../i18n';
+import { notifyError } from '../lib/notifyError';
+import { useReadOnly } from '../lib/useReadOnly';
 
 /**
  * The one home for everything that CONFIGURES the retention bot: the Telegram
@@ -38,8 +40,7 @@ import { t } from '../i18n';
 const ConfigTab = ({ productId }) => {
   const notify = useNotify();
   // Managers are read-only server-side (403 on write) — pre-disable saves.
-  const { permissions } = usePermissions();
-  const readOnly = permissions !== 'admin';
+  const readOnly = useReadOnly();
   const [data, setData] = useState(null);
   const [form, setForm] = useState({});
   const [secrets, setSecrets] = useState({});
@@ -73,7 +74,7 @@ const ConfigTab = ({ productId }) => {
       notify(t('Telegram config saved'), { type: 'success' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     }
   };
 
@@ -93,7 +94,7 @@ const ConfigTab = ({ productId }) => {
       setSecrets({});
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     }
   };
 
@@ -114,7 +115,7 @@ const ConfigTab = ({ productId }) => {
       setSecrets({ ...secrets, [field]: '' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Clear failed'), { type: 'error' });
+      notifyError(notify, e, t('Clear failed'));
     }
   };
 
@@ -127,9 +128,7 @@ const ConfigTab = ({ productId }) => {
       notify(`${t('Webhook registered:')} ${json.webhook_url || 'ok'}`, { type: 'success' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Webhook registration failed'), {
-        type: 'error',
-      });
+      notifyError(notify, e, t('Webhook registration failed'));
     }
   };
 
@@ -205,8 +204,7 @@ const ConfigTab = ({ productId }) => {
 const ManagersTab = ({ productId }) => {
   const notify = useNotify();
   // Managers are read-only server-side (403 on write) — pre-disable writes.
-  const { permissions } = usePermissions();
-  const readOnly = permissions !== 'admin';
+  const readOnly = useReadOnly();
   const [items, setItems] = useState([]);
   const [form, setForm] = useState({ display_name: '', username: '' });
 
@@ -229,7 +227,7 @@ const ManagersTab = ({ productId }) => {
       setForm({ display_name: '', username: '' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Create failed'), { type: 'error' });
+      notifyError(notify, e, t('Create failed'));
     }
   };
 
@@ -241,7 +239,7 @@ const ManagersTab = ({ productId }) => {
       });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     }
   };
 
@@ -251,7 +249,7 @@ const ManagersTab = ({ productId }) => {
       await httpClient(`${API_URL}/admin/retention/managers/${id}`, { method: 'DELETE' });
       load();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Delete failed'), { type: 'error' });
+      notifyError(notify, e, t('Delete failed'));
     }
   };
 

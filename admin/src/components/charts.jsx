@@ -20,7 +20,7 @@ import {
 import { t } from '../i18n';
 
 // Fractional-dollar formatter for cost axes/tooltips (spend is cents, not units).
-const usd = (v) => (v == null ? '—' : `$${Number(v).toFixed(4)}`);
+export const usd = (v) => (v == null ? '—' : `$${Number(v).toFixed(4)}`);
 
 /**
  * Theme-aware recharts wrappers shared by the dashboard and the retention
@@ -80,6 +80,7 @@ export const SeriesLineChart = ({
   xKey = 'date',
   height = 220,
   valueFormatter,
+  colorOffset = 0,
 }) => {
   const colors = useChartColors();
   const chrome = useChartChrome();
@@ -117,7 +118,7 @@ export const SeriesLineChart = ({
             type="monotone"
             dataKey={s.key}
             name={s.label}
-            stroke={colors[i % colors.length]}
+            stroke={colors[(i + colorOffset) % colors.length]}
             strokeWidth={2}
             dot={false}
             activeDot={{ r: 4 }}

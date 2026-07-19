@@ -39,6 +39,8 @@ import { API_URL, httpClient } from '../httpClient';
 import { generatePassword } from '../lib/secrets';
 import useIsMobile from '../lib/useIsMobile';
 import { t } from '../i18n';
+import { notifyError } from '../lib/notifyError';
+import { fmtDateTime } from '../lib/fmt';
 
 const ROLE_CHOICES = [
   { id: 'admin', name: t('admin (read + write)') },
@@ -126,7 +128,7 @@ export const UserList = () => {
             `${membershipsSummary(r)} · ${r.active ? t('active') : t('inactive')}`
           }
           tertiaryText={(r) =>
-            r.created_at ? new Date(r.created_at).toLocaleString() : ''
+            fmtDateTime(r.created_at)
           }
           onRowClick={(id) => redirect('edit', 'users', id)}
         />
@@ -192,7 +194,7 @@ const MembershipsPanel = () => {
       setForm({ scope_type: 'product', partner_id: '', product_id: '', role: 'manager' });
       refresh();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Save failed'), { type: 'error' });
+      notifyError(notify, e, t('Save failed'));
     }
   };
 
@@ -206,7 +208,7 @@ const MembershipsPanel = () => {
       notify(t('Access revoked'), { type: 'success' });
       refresh();
     } catch (e) {
-      notify(e.body?.detail || e.message || t('Delete failed'), { type: 'error' });
+      notifyError(notify, e, t('Delete failed'));
     }
   };
 

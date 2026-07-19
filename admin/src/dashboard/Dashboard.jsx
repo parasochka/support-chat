@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Title } from 'react-admin';
-import { useTheme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
@@ -14,54 +13,34 @@ import TableCell from '@mui/material/TableCell';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
-import LineChart from '../components/LineChart';
 import {
-  CHART_COLORS,
   FunnelBars,
   SeriesLineChart,
   TelegramCostCharts,
+  usd,
 } from '../components/charts';
 import { API_URL, httpClient } from '../httpClient';
 import { getProductId, scopeParams } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
 import { t } from '../i18n';
+import { Kpi, RETENTION_FUNNEL_STEPS, RETENTION_TIMESERIES_SERIES } from '../components/Kpi';
 
 const pct = (v) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`);
-const usd = (v) => (v == null ? '—' : `$${Number(v).toFixed(4)}`);
 const num = (v) => (v == null ? '—' : String(v));
 // Latency reads as whole ms under a second, seconds above — the natural unit
 // for a reasoning-model turn that often runs several seconds.
 const ms = (v) =>
   v == null ? '—' : v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)} ms`;
 
+// [metric, title, chip format, axis format (undefined = integer counts)]
 const CHARTS = [
-  ['sessions', t('Sessions over time'), (v) => String(Math.round(v))],
-  ['cost', t('Cost over time'), usd],
-  ['cost_per_session', t('Avg cost / session'), usd],
-  ['escalation_rate', t('Escalation rate'), pct],
+  ['sessions', t('Sessions over time'), (v) => String(Math.round(v)), undefined],
+  ['cost', t('Cost over time'), usd, usd],
+  ['cost_per_session', t('Avg cost / session'), usd, usd],
+  ['escalation_rate', t('Escalation rate'), pct, pct],
 ];
 
-const Kpi = ({ label, value, hint }) => (
-  <Grid size={{ xs: 6, sm: 4, md: 3, lg: 2 }}>
-    <Card sx={{ height: '100%' }}>
-      <CardContent sx={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-        <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
-          {label}
-        </Typography>
-        <Typography variant="h5" sx={{ fontWeight: 600 }}>
-          {value ?? '—'}
-        </Typography>
-        {hint && (
-          <Typography variant="caption" color="text.secondary" sx={{ mt: 'auto' }}>
-            {hint}
-          </Typography>
-        )}
-      </CardContent>
-    </Card>
-  </Grid>
-);
-
-const ChartPanel = ({ title, series, color, format }) => {
+const ChartPanel = ({ title, series, colorOffset, format, axisFormat }) => {
   const values = (series || []).map((d) => d.value);
   const last = values.length ? values[values.length - 1] : null;
   const avg = values.length
@@ -90,7 +69,13 @@ const ChartPanel = ({ title, series, color, format }) => {
               </Stack>
             )}
           </Stack>
-          <LineChart series={series} color={color} format={format} />
+          <SeriesLineChart
+            data={series}
+            xKey="bucket"
+            series={[{ key: 'value', label: title }]}
+            valueFormatter={axisFormat}
+            colorOffset={colorOffset}
+          />
         </CardContent>
       </Card>
     </Grid>
@@ -162,7 +147,6 @@ const BlockError = ({ label, error }) => (
  * header product scope; the default range is the backend's last 30 days.
  */
 const SupportBlock = () => {
-  const theme = useTheme();
   const [overview, setOverview] = useState(null);
   const [charts, setCharts] = useState({});
   const [topics, setTopics] = useState([]);
@@ -192,8 +176,6 @@ const SupportBlock = () => {
         .catch(() => setCharts((prev) => ({ ...prev, [metric]: [] })));
     });
   }, []);
-
-  const colors = CHART_COLORS[theme.palette.mode] || CHART_COLORS.dark;
 
   if (error) return <BlockError label={t('Support chat')} error={error} />;
 
@@ -277,13 +259,14 @@ const SupportBlock = () => {
       </Grid>
 
       <Grid container spacing={2} sx={{ mt: 2 }} alignItems="stretch">
-        {CHARTS.map(([metric, title, format], i) => (
+        {CHARTS.map(([metric, title, format, axisFormat], i) => (
           <ChartPanel
             key={metric}
             title={title}
             series={charts[metric]}
-            color={colors[i]}
+            colorOffset={i}
             format={format}
+            axisFormat={axisFormat}
           />
         ))}
       </Grid>
@@ -306,23 +289,10 @@ const SupportBlock = () => {
   );
 };
 
-// Daily retention activity on the dashboard: player messages vs pings sent.
-const RETENTION_SERIES = [
-  { key: 'messages', label: t('Messages') },
-  { key: 'pings', label: t('Pings') },
-];
-
-// Entry funnel steps shown beside the activity chart (deeplink → hand-off);
-// mirrors the fuller funnel on Retention → Analytics.
-const RETENTION_FUNNEL_STEPS = [
-  ['deeplinks_created', t('Deeplinks minted')],
-  ['starts', t('/start redemptions')],
-  ['new_users', t('New linked players')],
-  ['subscribed', t('Subscribed to channel')],
-  ['engaged', t('Engaged (wrote a message)')],
-  ['photo_receivers', t('Received a photo')],
-  ['handoffs', t('Handed off')],
-];
+// Daily retention activity on the dashboard: player messages vs pings sent
+// (the first/last of the shared four-series catalogue).
+const RETENTION_SERIES = [RETENTION_TIMESERIES_SERIES[0],
+                          RETENTION_TIMESERIES_SERIES[3]];
 
 /**
  * Retention · Telegram block: GET /admin/retention/overview + /timeseries in

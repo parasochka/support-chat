@@ -29,6 +29,7 @@ import MobileList from '../components/MobileList';
 import RequireProduct from '../components/RequireProduct';
 import useIsMobile from '../lib/useIsMobile';
 import { t } from '../i18n';
+import { fmtDateTime } from '../lib/fmt';
 
 const STATUS_CHOICES = [
   { id: 'open', name: t('Open') },
@@ -91,7 +92,7 @@ export const ConversationList = () => {
             secondaryText={(r) => `${r.lang || ''} · ${r.id}`}
             tertiaryText={(r) =>
               `${r.message_count ?? 0} ${t('msgs')} · $${(r.cost_usd_total ?? 0).toFixed(4)} · ${
-                r.created_at ? new Date(r.created_at).toLocaleString() : ''
+                fmtDateTime(r.created_at)
               }`
             }
             onRowClick={(id) => redirect('show', 'sessions', id)}
@@ -168,7 +169,7 @@ const MessageThread = () => {
           >
             <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
               <Typography variant="caption" color="text.secondary">
-                {item.role} · {new Date(item.created_at).toLocaleString()}
+                {item.role} · {fmtDateTime(item.created_at)}
                 {item.model ? ` · ${item.model}` : ''}
                 {item.cost_usd ? ` · $${item.cost_usd.toFixed(5)}` : ''}
                 {item.ping_context ? ` · ⚡ ${t('proactive')}: ${item.ping_context}` : ''}
@@ -193,7 +194,7 @@ const SessionSummary = () => {
     [t('Escalated'), record.escalated ? t('yes') : t('no')],
     [t('Messages'), record.message_count],
     [t('Total cost $'), record.cost_usd_total],
-    [t('Created'), record.created_at && new Date(record.created_at).toLocaleString()],
+    [t('Created'), record.created_at && fmtDateTime(record.created_at)],
   ];
   return (
     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
