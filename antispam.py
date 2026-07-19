@@ -1,6 +1,7 @@
 """Layered anti-spam: Turnstile, rate-limit, cooldown, caps, injection scan.
 
-All thresholds come from config (§3 env). The IP sliding-window and per-session
+All thresholds come from the hot-reloaded `antispam` settings group (env is
+only the fallback layer). The IP sliding-window and per-session
 cooldown use in-memory dicts — fine for Phase 1, but they do NOT span multiple
 instances (documented limitation).
 """
@@ -38,7 +39,7 @@ class AntiSpamError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# 1. Cloudflare Turnstile (verified at session create; ADVISORY, fail-open)
+# Cloudflare Turnstile (verified at session create; ADVISORY, fail-open)
 # ---------------------------------------------------------------------------
 async def verify_turnstile(token: Optional[str], remote_ip: Optional[str] = None,
                            secret: Optional[str] = None) -> dict[str, object]:
@@ -101,7 +102,7 @@ async def verify_turnstile(token: Optional[str], remote_ip: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
-# 3. IP sliding-window rate-limit
+# IP sliding-window rate-limit
 # ---------------------------------------------------------------------------
 def _prune_ip_hits(now: float, window: float) -> None:
     """Drop IP buckets whose entire window has expired (bound memory growth)."""
@@ -139,7 +140,7 @@ def check_rate_limit(ip: str, max_hits: Optional[int] = None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. Per-session cooldown
+# Per-session cooldown
 # ---------------------------------------------------------------------------
 # Above this many tracked sessions we prune stale cooldown entries so the
 # in-memory dict cannot grow without bound under churn (one session per visitor).
@@ -191,7 +192,7 @@ def clear_cooldown(session_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. Input length cap
+# Input length cap
 # ---------------------------------------------------------------------------
 def check_input_length(text: str) -> None:
     if text is None:
@@ -205,7 +206,7 @@ def check_input_length(text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7b. Low-content / junk guard (lone chars, symbol spam, repeated mashing)
+# Low-content / junk guard (lone chars, symbol spam, repeated mashing)
 # ---------------------------------------------------------------------------
 # A real product-support question carries at least a couple of distinct
 # letters/digits. A lone character ("a"), a message of pure punctuation or emoji
@@ -247,7 +248,7 @@ def low_content_reply(lang: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 8. Injection / jailbreak scan on the user message (log, don't necessarily block)
+# Injection / jailbreak scan on the user message (log, don't necessarily block)
 # ---------------------------------------------------------------------------
 _INJECTION_PATTERNS = (
     "ignore previous",
@@ -337,7 +338,8 @@ def scan_injection(text: str) -> bool:
     """Return True if the user message looks like an injection/jailbreak attempt.
 
     SYSTEM_CORE plus the Layer-3 guardrails are the real defence; this scan feeds
-    the `injection_blocked` audit log (and an optional hard block, see config).
+    the `injection_blocked` audit log (and an optional hard block — the
+    `antispam.injection_hard_block` setting, enforced in api/chat.py).
     Input is normalized first so spacing/zero-width obfuscation can't slip a known
     trigger past the (word-boundary-aware) match, while an innocent substring of a
     longer word no longer trips it.

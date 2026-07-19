@@ -1,6 +1,6 @@
 """Prompt assembly — prefix-cache optimised, 3-layer design.
 
-Layer 1 (the system message): BYTE-STABLE Russian core. Always cached. It is made
+Layer 1 (the system message): BYTE-STABLE English core. Always cached. It is made
   of `SYSTEM_CORE` (the persona + absolute rules) PLUS every *static* behavioural
   directive (greeting, formatting, KB-grounding, escalation restraint, suggested
   questions, finish-chat, lead-forward). These never change per request, so they
@@ -555,7 +555,6 @@ def _personalization_directive(full_name: str,
 # when the player's name is known (the Layer-3 PERSONALIZATION block), the
 # FIRST reply opens with a short by-name greeting ("Привет, Андрей!") and then
 # answers; with no name there is no greeting at all. Later replies never greet.
-# Carries no per-request data, so it rides in the byte-stable Layer-1 block.
 _GREETING_DIRECTIVE = (
     "GREETING:\n"
     "- The chat window has ALREADY shown the player your canned greeting (\"Hi, "
@@ -642,9 +641,8 @@ _KB_GROUNDING_DIRECTIVE = (
 # and clarify (one short question at a time) and steer the player to the concrete KB
 # answer. It deliberately PRESERVES the immediate-escalation cases (explicit request
 # for a human, complaint/grievance, suspected fraud, legal threat) so genuine
-# hand-offs are not delayed. Carries no per-request data, so it rides in the
-# byte-stable Layer-1 block; pairs with _KB_GROUNDING_DIRECTIVE (try hard to find
-# the answer → don't give up too early).
+# hand-offs are not delayed. Pairs with _KB_GROUNDING_DIRECTIVE (try hard to
+# find the answer → don't give up too early).
 _ESCALATION_RESTRAINT_DIRECTIVE = (
     "ESCALATION RESTRAINT:\n"
     "- Escalation is a last resort - do not rush it. Do NOT add [[ESCALATE]] just "
@@ -668,10 +666,10 @@ _ESCALATION_RESTRAINT_DIRECTIVE = (
 # field; tapping one sends it as the next message. The third, closing "issue
 # solved" bubble is NOT generated: chat_service appends a fixed localized option
 # (see chat_service.closing_suggestion_for) whenever guiding questions are shown,
-# so its wording is exact and it reliably ends the chat. Carries no per-request
-# data, so it rides in the byte-stable Layer-1 block; the tag is stripped before
-# the reply is shown. Pairs with _RESOLVED_DIRECTIVE + _LEAD_FORWARD_DIRECTIVE so
-# the reply always ends with a next step (bubbles) OR the finish-chat nudge.
+# so its wording is exact and it reliably ends the chat. The tag is stripped
+# before the reply is shown. Pairs with _RESOLVED_DIRECTIVE +
+# _LEAD_FORWARD_DIRECTIVE so the reply always ends with a next step (bubbles)
+# OR the finish-chat nudge.
 _SUGGESTIONS_DIRECTIVE = (
     "SUGGESTED QUESTIONS:\n"
     "- On its own LAST line, output [[SUGGEST: question 1 | question 2]] - up to "
@@ -695,8 +693,7 @@ _SUGGESTIONS_DIRECTIVE = (
 # satisfied player to close the conversation. The trigger is deliberately BROAD (not
 # only an explicit "thanks"): also when the question is essentially answered and no
 # suitable KB follow-ups remain — otherwise the reply ends with neither bubbles nor a
-# finish button (the dead-end the owner reported). Carries no per-request data, so it
-# rides in the byte-stable Layer-1 block.
+# finish button (the dead-end the owner reported).
 _RESOLVED_DIRECTIVE = (
     "FINISHING THE CHAT:\n"
     "- Output [[RESOLVED]] on its own line when there is nothing more to offer on "
@@ -714,8 +711,7 @@ _RESOLVED_DIRECTIVE = (
 # appeared. The rule: whenever the exchange on the current question is complete and
 # the model is not itself asking a clarifying question, end with [[SUGGEST]] (if good
 # KB follow-ups exist) OR [[RESOLVED]] (if nothing is left). Escalation is the only
-# exception (chat_service also suppresses both on a hand-off). Carries no per-request
-# data, so it rides in the byte-stable Layer-1 block.
+# exception (chat_service also suppresses both on a hand-off).
 _LEAD_FORWARD_DIRECTIVE = (
     "LEAD THE PLAYER FORWARD:\n"
     "- When the exchange on the current question is complete and you are not "

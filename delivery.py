@@ -1,14 +1,12 @@
 """Outbound delivery seam — the ONE place a proactive persona message leaves
 the service, and the channel abstraction future transports plug into.
 
-Today there is one channel (Telegram). The proactive senders — the event agent
-(`retention_v2._send_touch`) and the idle ladder (`retention_idle._send_idle_ping`)
-— used to each hand-roll the same send mechanics: the persona-header
+Today there is one channel (Telegram). The send mechanics — persona-header
 composition, the Markdown-subset → Telegram-HTML render with a plain-text
-fallback, the 403 → `unreachable` bookkeeping, and the photo caption-only
-fallback tri-state. Three copies of that logic had already started to drift;
-it now lives here once. A future channel (email / push / on-site inbox / SMS)
-implements the same `send_text`/`send_photo` surface and is returned by
+fallback, the 403 → `unreachable` bookkeeping, the photo caption-only fallback
+tri-state — live here ONCE for every proactive sender (the event agent and the
+idle ladder). A future channel (email / push / on-site inbox / SMS) implements
+the same `send_text`/`send_photo` surface and is returned by
 `channel_for_product()` — the callers never talk to a transport client
 directly.
 
@@ -153,8 +151,6 @@ async def account_undelivered_generation(session_id, draft, detail, *,
     """Invariant §4 for a generated-but-undelivered proactive message: the
     OpenAI call happened, so its cost must land in ai_interaction_logs even
     though no chat turn was persisted. Returns the generation cost."""
-    import db  # noqa: PLC0415 — lazy, keeps the seam import-light
-
     meta = draft.ai_meta
     cost = float(meta.get("cost_usd") or 0)
     await db.log_ai_interaction(

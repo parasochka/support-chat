@@ -347,10 +347,8 @@ async def maybe_advance_stage(ru: dict[str, Any]) -> Optional[int]:
 
     Progression is FULLY backend-decided: engagement threshold + tier ceiling
     + spacing, evaluated on every meaningful message. The model's [[STAGE_UP]]
-    sentinel is stripped defensively (chat_service) but deliberately does NOT
-    gate the advance — an earlier version accepted it as a parameter and then
-    ignored it, which read as if the model had a say. `ru` must be the
-    freshly-bumped row.
+    sentinel is stripped defensively (chat_service) but deliberately has NO
+    say in this gate. `ru` must be the freshly-bumped row.
     """
     cfg = settings.retention()
     unlocked = int(ru.get("unlocked_stage") or 1)

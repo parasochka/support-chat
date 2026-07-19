@@ -598,9 +598,7 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
 
     `CREATE TABLE IF NOT EXISTS` never alters an existing table, so any new
     column on an already-deployed table must be added here. Each statement is
-    idempotent via `ADD COLUMN IF NOT EXISTS`. (None needed yet — Phase 1
-    baseline — but the seam is here so the rule from the brief is honoured.)
-    """
+    idempotent via `ADD COLUMN IF NOT EXISTS`. """
     alters: list[str] = [
         # Prompt-history boundary bumped on each topic switch (loop fix); only
         # messages newer than this id are sent to the model.

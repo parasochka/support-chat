@@ -3,8 +3,8 @@
 
 The event-driven agent (retention_v2) reacts to things that HAPPEN; a player
 who simply went quiet produces no events, so without this sweep they are never
-written to again. The rules ladder (7 / 14 / 30 days …) is edited in the admin
-Retention · Telegram -> Idle pings tab; the sweep runs from the SAME worker
+written to again. The rules ladder (7 / 14 / 30 days …) is edited on the Idle pings tab of the
+admin Proactive agent page (/retention-agent?tab=idle); the sweep runs from the SAME worker
 loop as the event pipeline, under the same advisory lock, and is bounded by
 the SAME per-player guards and ledgers:
 
@@ -74,10 +74,9 @@ def _idle_anchor_for(ru: dict[str, Any], trigger_kind: str) -> Any:
     _idle_days_for (idle = now - anchor), so that a fired rung 'counts' only while
     it sits inside the ongoing silence.
 
-    Anchoring every kind on `last_active_at` (bumped by any bot reply) was the
-    bug: for casino_inactivity/no_deposit a player who replies to pings would
-    reset the fired memory while the casino silence stretch continued, letting the
-    lower rungs re-fire in reverse — the exact cascade the guard exists to stop."""
+    Must anchor PER trigger kind: `last_active_at` moves on any bot reply, so
+    a casino/deposit silence stretch must key on its own clock or a player who
+    replies to pings resets the fired memory mid-stretch."""
     if trigger_kind == "bot_inactivity":
         return ru.get("last_active_at")
     if trigger_kind == "casino_inactivity":
@@ -95,21 +94,15 @@ async def _match_rule(ru: dict[str, Any], rules: list[dict[str, Any]]
     """The highest-priority rule that fires for this player right now.
 
     Anti-cascade: during ONE silence stretch only a rung ABOVE the highest
-    already-fired one may fire (per trigger kind). Per-rule cooldowns alone
-    let a 60-days-quiet player receive the ENTIRE ladder in reverse — after
-    "quiet 60 days" fired, the 45/30/21/… rungs each matched on the next
-    sweeps (their own cooldowns were clean) and cascaded out at min-gap pace,
-    3 messages a day to the most-churned player. The fired-rung memory resets
-    the moment the player writes again (`last_active_at` moves past the fired
-    pings), so a returning-then-quiet-again player restarts the ladder from
-    the bottom. The SAME rung may re-fire after its own `cooldown_days` (a
-    single periodic rule keeps working)."""
+    already-fired one may fire (per trigger kind) — per-rule cooldowns alone
+    would let a long-quiet player receive the whole ladder in reverse at
+    min-gap pace. The fired-rung memory resets when the player writes again,
+    so a returning-then-quiet-again player restarts the ladder from the
+    bottom; the SAME rung may re-fire after its own `cooldown_days`."""
     now = _dt.datetime.now(_dt.timezone.utc)
     vip = (ru.get("vip_level") or "").strip().lower()
-    # Fired-rung memory, anchored PER trigger kind on that kind's own silence
-    # clock (see _idle_anchor_for) — never a single last_active_at anchor, which
-    # a bot reply would move, wiping the memory of casino-anchored ladders while
-    # their silence continues.
+    # Fired-rung memory, anchored per trigger kind on that kind's own silence
+    # clock (see _idle_anchor_for).
     fired: dict[str, int] = {}
     for kind in {str(r.get("trigger_kind") or "") for r in rules}:
         part = await db.idle_rule_thresholds_fired_since(
@@ -141,11 +134,9 @@ async def run_product_idle_pings_locked(product: dict[str, Any],
                                         ) -> dict[str, Any]:
     """run_product_idle_pings under the SAME advisory lock the worker holds.
 
-    The admin «Run now» button used to call the sweep directly: it could run
-    concurrently with the worker's idle sweep (or a second instance), both
-    read a player's guard counters before either write, and both sent — the
-    same guard-race class the v2 «Process queue now» button was given
-    run_product_events_locked for. Blocking lock (not try-lock): the button
+    Required: without the lock a button-run and the worker's sweep can both
+    read a player's guard counters before either writes — double send (the
+    same guard-race class run_product_events_locked guards). Blocking lock (not try-lock): the button
     should run right after the worker finishes, not silently no-op."""
     pool = db.pool()
     async with pool.acquire() as conn:

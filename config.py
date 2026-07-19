@@ -540,10 +540,6 @@ RETENTION_MEDIA_MAX_SIDE_PX: int = _env_int(
     "RETENTION_MEDIA_MAX_SIDE_PX", 2560)
 RETENTION_MEDIA_WEBP_QUALITY: int = _env_int(
     "RETENTION_MEDIA_WEBP_QUALITY", 90)
-# (The old RETENTION_V2_SHOW_TRIGGER raw-trigger chrome line was removed: an
-# event reaction now ALWAYS carries a localized human occasion phrase merged
-# into the header line — see retention_v2._proactive_header + the rtn_trig_*
-# translations keys.)
 
 # Serve /docs, /redoc and /openapi.json (they describe the WHOLE API surface,
 # /admin included) — off by default; enable only on dev/stage deployments.

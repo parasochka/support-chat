@@ -82,8 +82,8 @@ _OCCASIONS: dict[str, str] = {
                        "received the payout",
     "bonus_expired": "one of the player's bonuses just expired unused",
     "bet_settled": "the player has had a rough, losing day",
-    # Non-default triggers (toggleable from the agent's Triggers tab) — every
-    # canonical event the owner may enable ships its own occasion wording.
+    # Non-default triggers (enabled only via the `retention.v2_decision_events`
+    # setting) — every enableable canonical event ships its own occasion wording.
     "session_started": "the player just came online and started a session",
     "session_ended": "the player just wrapped up a play session",
     "deposit_initiated": "the player just started making a deposit (it is "
@@ -158,7 +158,7 @@ _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 # ---------------------------------------------------------------------------
-# Scheduler loop (started from main.py lifespan, next to the v1 loop)
+# Scheduler loop (started from main.py lifespan)
 # ---------------------------------------------------------------------------
 def worker_interval_sec() -> int:
     """The hot worker cadence (`retention.worker_interval_sec`, global layer).
@@ -219,13 +219,11 @@ async def run_product_events_locked(product: dict[str, Any], *,
                                     ) -> dict[str, Any]:
     """run_product_events under the SAME advisory lock the worker sweep holds.
 
-    The admin «Process queue now» button used to call the pipeline directly:
-    event CLAIMING stayed atomic, but two different events for the same player
-    processed concurrently (button + worker) both read the per-player guard
-    counters before either write — both passed the min-gap/daily-cap guards and
-    both sent. Blocking lock (not try-lock): the button should run right after
-    the worker finishes, not silently no-op. The manual run also bypasses the
-    humanizing send delay — the operator pressing the button wants answers now."""
+    Required: without the lock a button-run and the worker can both read the
+    per-player guard counters before either writes — double send. Blocking
+    lock (not try-lock): the button should run right after the worker
+    finishes, not silently no-op. The manual run also bypasses the humanizing
+    send delay — the operator pressing the button wants answers now."""
     pool = db.pool()
     async with pool.acquire() as conn:
         await conn.execute("SELECT pg_advisory_lock($1)", _ADVISORY_LOCK_KEY)
@@ -254,12 +252,10 @@ async def run_product_events(product: dict[str, Any], *,
 
     QUIET HOURS defer the pipeline instead of consuming events: the worker
     simply does not CLAIM during the window, so a night-time deposit gets its
-    warm note in the morning (the freshness cap in `_is_decision_worthy`
-    bounds how stale a reaction may get). The old shape — process + guard-block
-    — burned the event forever: the reaction never happened at all, and in a
-    casino the night IS peak deposit time. The admin «Process queue now»
-    button (`ignore_send_delay`) claims regardless: the operator explicitly
-    asked for answers now.
+    warm note in the morning (in a casino the night IS peak deposit time; the
+    freshness cap in `_is_decision_worthy` bounds how stale a reaction may
+    get). The admin «Process queue now» button (`ignore_send_delay`) claims
+    regardless: the operator explicitly asked for answers now.
 
     The idle sweep at the tail runs on its OWN switch (`idle_pings_enabled`),
     independent of `v2_enabled` — turning the event agent off must not
@@ -417,7 +413,7 @@ async def guard_check(product_id: int, ru: dict[str, Any],
         reasons.append("player_opted_out")
     if ru.get("unreachable"):
         reasons.append("bot_blocked_by_player")
-    # Shared anti-annoyance state (same fields the v1 matrix maintains).
+    # Shared anti-annoyance state (the per-player ping counters/gaps).
     gap_h = int(cfg["ping_min_gap_hours"])
     last_ping_days = days_since(ru.get("last_ping_at"))
     if last_ping_days is not None and last_ping_days * 24 < gap_h:
@@ -569,8 +565,8 @@ async def _history_tail(ru: dict[str, Any]) -> list[dict[str, Any]]:
 def effective_decision_events(cfg: dict[str, Any]) -> frozenset[str]:
     """The event names allowed to wake the agent for this product.
 
-    Admin-tunable (`retention.v2_decision_events`, the agent's Events tab);
-    absent/None resolves to the built-in DECISION_EVENTS. bet_settled is never
+    Tunable only via the `retention.v2_decision_events` setting (deliberately
+    not panel-editable); absent/None resolves to the built-in DECISION_EVENTS. bet_settled is never
     in the set — it stays special-cased on the loss threshold below.
     """
     v = cfg.get("v2_decision_events")
@@ -705,7 +701,7 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
 
 
 # ---------------------------------------------------------------------------
-# Sending (the persona writes; mechanics mirror the v1 ping send)
+# Sending (the persona writes; delivery via the delivery.py seam)
 # ---------------------------------------------------------------------------
 # Chrome detail per event for the header occasion phrase — unlike the
 # model-facing occasion line, the CHROME may name the amount (the player just
@@ -839,8 +835,8 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
                                    ai_meta=draft.ai_meta, product_id=pid,
                                    ping_context=ping_context,
                                    link_url=draft.link_url if link_attached else None)
-        # Shared anti-annoyance state: the SAME ledger/counters the v1 matrix
-        # uses, so caps and min-gap hold across regimes.
+        # Shared anti-annoyance state: the same ledger/counters the idle
+        # ladder uses, so caps and min-gap hold across regimes.
         sent_detail = f"v2:{evt.get('event_name')}"
         if detail == "photo_fallback_text":
             sent_detail += " (photo fallback: text)"

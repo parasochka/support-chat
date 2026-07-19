@@ -193,11 +193,9 @@ const state = {
   // English first answers until answer-language drift caught up.
   locale: (CONFIG.USER_CONTEXT && CONFIG.USER_CONTEXT.language) || CONFIG.LOCALE,
   topicChosen: false,
-  // Guards against double-tapping a topic button while the session is still
-  // warming up: onTopic awaits ensureSession(), and the buttons stay clickable
-  // during that wait, so a second tap used to fire a second onTopic and paint a
-  // second greeting bubble. Set the instant the first tap lands, cleared if the
-  // selection fails.
+  // Guards against double-tapping a topic button while setup runs (the
+  // buttons stay clickable during the await): set the instant the first tap
+  // lands, cleared if the selection fails.
   topicSelecting: false,
   open: false,
   // True while the mobile full-screen sheet is active (geometry driven by JS).
@@ -1284,10 +1282,10 @@ async function togglePanel() {
       els.topics.innerHTML = "";
       addMessageToTopics(t("startError"));
     }
-    // NOTE: the session is created LAZILY — only when the player actually picks
-    // a topic (onTopic -> ensureSession). Opening and closing the panel used to
-    // mint a DB session (and burn the per-IP session budget) for visitors who
-    // never engaged; those "zero" sessions no longer exist at all.
+    // NOTE: the session is created LAZILY — only when the player actually
+    // picks a topic (onTopic -> ensureSession), never on panel open, so a
+    // visitor who opens and closes the widget costs no DB session and no
+    // per-IP session budget.
   } else {
     // Closing the widget abandons the current chat: drop the session credentials
     // so nothing stale is reused. The next open starts cleanly (above).
@@ -1305,13 +1303,11 @@ async function onTopic(slug) {
   if (state.topicSelecting || state.topicChosen) return;
   state.topicSelecting = true;
   state.topicChosen = true;
-  // Paint the conversation view IMMEDIATELY — the greeting bubble is canned and
-  // client-side, so nothing about it needs the network. The slow parts
+  // Paint the conversation view IMMEDIATELY — the greeting bubble is canned
+  // and client-side, so nothing about it needs the network. The slow parts
   // (Turnstile + session create + topic select) run in the background below;
-  // the player can already read the greeting and start typing, and their first
-  // send just awaits the setup (sendMessage). Previously this whole function
-  // awaited the session create FIRST, so tapping a category left the picker
-  // frozen for seconds before the chat appeared.
+  // the player can already read the greeting and start typing, and their
+  // first send just awaits the setup (sendMessage).
   els.topics.classList.add("npchat-hidden");
   els.messages.classList.remove("npchat-hidden");
   els.inputRow.classList.remove("npchat-hidden");

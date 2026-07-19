@@ -31,11 +31,9 @@ logging.basicConfig(
 )
 log = logging.getLogger(config.SERVICE_NAME)
 
-# Mirror the application's runtime logs into the in-process buffer so the admin
-# panel's System-logs view can show them (the flush loop below drains it into the
-# bounded app_logs table). Attaches to the ROOT logger so every app module is
-# captured (they log under their own __name__), with a denylist that keeps out
-# uvicorn's access log / third-party noise — see logcapture.py.
+# Mirror runtime logs into the in-process buffer for the admin System-logs view
+# (the flush loop below drains it into the bounded app_logs table) — see
+# logcapture.py for the root-logger/denylist rationale.
 import logcapture  # noqa: E402
 logcapture.install()
 

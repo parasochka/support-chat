@@ -66,12 +66,9 @@ const i18nProvider = polyglotI18nProvider(
   ],
   { allowMissing: true }
 );
-// The AppBar carries our own compact EN/RU toggle (ScopeAppBar → LangSwitch),
-// so react-admin's built-in LocalesMenuButton ("ENGLISH ▾") is a redundant
-// second language control. On a phone that ~130px button also shoved the theme
-// toggle and the user menu (logout!) off the right edge of the toolbar. Report
-// no locales so the built-in button renders nothing; our toggle stays the one
-// switcher (it drives the same persisted admin_lang, then reloads).
+// Report no locales so react-admin's built-in LocalesMenuButton renders
+// nothing — our own EN/RU toggle (ScopeAppBar → LangSwitch) is the one
+// language control (it drives the persisted admin_lang, then reloads).
 i18nProvider.getLocales = () => [];
 
 // ---------------------------------------------------------------------------
@@ -196,9 +193,8 @@ const SubItem = ({ to, label, icon, active, sx }) => {
       onClick={() => navigate(to)}
       sx={{ pl: 4, py: { xs: 1, md: 0.4 }, ...sx }}
     >
-      {/* 40px matches react-admin's own MenuItemLink icon box, so the custom
-          sub-items and the RA resource/menu links share ONE icon column and the
-          text labels line up exactly (a 34 vs 40 mismatch made them "jump"). */}
+      {/* 40px must match react-admin's own MenuItemLink icon box so every
+          sidebar entry shares one icon column and the labels align. */}
       <ListItemIcon sx={{ minWidth: 40 }}>{icon}</ListItemIcon>
       {/* No typography override: the Menu-level rule below pins one font size
           for every entry, so sub-items match the resource/custom items. */}
@@ -257,9 +253,8 @@ const RETENTION_TAB_PARENT = {
 
 // A retention tab as its own sidebar entry: navigates to /retention?tab=… and
 // highlights when that tab (or one bundled under it) is the active one (the
-// page reads ?tab=). The pathname match is EXACT — '/retention-agent' also
-// startsWith '/retention', which used to light up a sibling whenever the
-// Proactive agent page was open.
+// page reads ?tab=). The pathname match must stay EXACT — '/retention-agent'
+// also startsWith '/retention', so a prefix match lights up siblings.
 const RetentionSubItem = ({ tab, label, icon }) => (
   <SubItem
     to={`/retention?tab=${tab}`}

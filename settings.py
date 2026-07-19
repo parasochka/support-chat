@@ -114,6 +114,8 @@ async def reload() -> None:
 
 
 def invalidate() -> None:
+    """Drop the in-process caches WITHOUT a DB reload (test seam — production
+    code always uses reload())."""
     _cache.clear()
     _product_cache.clear()
 

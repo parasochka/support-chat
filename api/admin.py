@@ -1415,9 +1415,8 @@ async def rotate_widget_key(product_id: int,
 # forbidden topics) + the player context in the user message. We assemble the
 # exact messages chat_service would send for the SAME example player the chat
 # would actually use: the admin "Test sandbox" profile (the single source of the
-# test player). There is NO separate hard-coded preview player — that diverged
-# from the sandbox and showed one user in the prompt while the sandbox defined
-# another. When the sandbox is disabled (or its fields are blank) the preview
+# test player — never a separate hard-coded preview player, so the preview and
+# the sandbox can't disagree). When the sandbox is disabled (or blank) the preview
 # renders an anonymous session, so no invented player data appears anywhere.
 # Nothing here is sent to the model — it's a faithful rendering of the live
 # assembly so "how is the prompt formed?" has one answer in one place.
