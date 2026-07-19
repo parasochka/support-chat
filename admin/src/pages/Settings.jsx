@@ -117,6 +117,26 @@ const Field = ({ field, value, onChange, form, locked = false }) => {
   const help = t(field.help);
   const longHelp = (help || '').length > LONG_HELP;
 
+  // Seed any configured order key (e.g. a newly-added vip_tier) that has no entry
+  // in this intmap. Without it the ceiling grid renders NO input for the new tier
+  // (the old `.filter(k => k in obj)` dropped it), and the backend then falls the
+  // unmapped tier back to the TOP stage — silently unlocking the most explicit
+  // photos to a tier the operator meant to restrict. Seeding to field.min (the
+  // most conservative ceiling) makes every tier both editable and safe-by-default.
+  const intmapOrder = type === 'intmap' && field.orderByField
+    && Array.isArray(form?.[field.orderByField])
+    ? form[field.orderByField].map((x) => String(x).toLowerCase()) : [];
+  useEffect(() => {
+    if (type !== 'intmap' || !intmapOrder.length) return;
+    const obj = value && typeof value === 'object' ? value : {};
+    const missing = intmapOrder.filter((k) => !(k in obj));
+    if (!missing.length) return;
+    const seeded = { ...obj };
+    missing.forEach((k) => { seeded[k] = field.min ?? 0; });
+    onChange(seeded);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [type, intmapOrder.join(','), field.min]);
+
   // A deploy-wide (global-only) field with a product selected: the backend
   // strips it from product-layer saves, so show it read-only with a pointer
   // to the scope where it CAN be edited.
@@ -270,7 +290,11 @@ const Field = ({ field, value, onChange, form, locked = false }) => {
     const order = field.orderByField && Array.isArray(form?.[field.orderByField])
       ? form[field.orderByField].map((x) => String(x).toLowerCase())
       : [];
-    const keys = [...new Set([...order, ...Object.keys(obj)])].filter((k) => k in obj);
+    // Include order-only keys (a just-added tier not yet in the map) so every
+    // configured tier is editable; the seeding effect above fills their value.
+    const keys = order.length
+      ? [...new Set([...order, ...Object.keys(obj)])]
+      : Object.keys(obj);
     const lo = field.min ?? 0;
     return (
       <Grid size={{ xs: 12 }}>
@@ -284,7 +308,7 @@ const Field = ({ field, value, onChange, form, locked = false }) => {
               <TextField
                 label={order.length ? `Level ${i} · ${k}` : k}
                 type="number"
-                value={obj[k]}
+                value={obj[k] ?? lo}
                 onChange={(e) =>
                   onChange({ ...obj, [k]: Math.max(lo, Number(e.target.value) || lo) })
                 }
@@ -329,7 +353,7 @@ const Field = ({ field, value, onChange, form, locked = false }) => {
 // module-filtered slice; the form still carries the FULL resolved group, so
 // the save round-trips unseen fields unchanged.
 // ---------------------------------------------------------------------------
-const GroupEditor = ({ group, fields, resolved, onSaved, scopeLabel, productScoped }) => {
+const GroupEditor = ({ group, fields, resolved, overrides, onSaved, scopeLabel, productScoped }) => {
   const notify = useNotify();
   // Managers are read-only server-side (403 on PUT) — pre-disable the save,
   // matching the SiteMap/Translations pattern.
@@ -343,9 +367,23 @@ const GroupEditor = ({ group, fields, resolved, onSaved, scopeLabel, productScop
   const save = async () => {
     setSaving(true);
     try {
+      // Persist ONLY the fields the operator actually changed, merged over the
+      // edited layer's existing overrides — NOT the whole effective object. The
+      // form is seeded from `resolved` (product > global > env > default), so
+      // PUTting `form` whole would bake every inherited value into this layer as
+      // an explicit override; the backend then field-merges {**global, **override}
+      // and every baked field is permanently shadowed, so later global/default
+      // changes stop reaching this product. (This is the exact hazard
+      // Translations.jsx already guards against.) Module-filtered fields the
+      // operator never even saw are the worst case. Send the diff over overrides.
+      const baseline = resolved || {};
+      const value = { ...(overrides || {}) };
+      for (const k of Object.keys(form)) {
+        if (JSON.stringify(form[k]) !== JSON.stringify(baseline[k])) value[k] = form[k];
+      }
       await httpClient(withProduct(`${API_URL}/admin/settings/${group}`), {
         method: 'PUT',
-        body: JSON.stringify({ value: form }),
+        body: JSON.stringify({ value }),
       });
       notify(`${t(GROUP_LABELS[group] || group)} — ${t('settings saved')}`, { type: 'success' });
       onSaved?.();
@@ -717,6 +755,7 @@ export const SettingsModule = ({ module }) => {
             group={g}
             fields={fieldsForModule(g, module)}
             resolved={settings.resolved?.[g]}
+            overrides={settings.overrides?.[g]}
             onSaved={load}
             scopeLabel={scopeLabel}
             productScoped={Boolean(productId)}
