@@ -248,10 +248,22 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
     resolved = language.resolve(locale=body.locale)
     session_lang = None if resolved == language.AUTO else resolved
 
+    # The player id is persisted on the session and surfaced in admin dashboards
+    # (attribution, escalations). When a handshake secret is configured the ONLY
+    # trusted identity source is the signed payload (user_context) — a raw
+    # client-supplied body.player_id must NOT override it, or an attacker could
+    # attribute their session (and any escalation/fraud signal it raises) to a
+    # victim's player id. Fall back to body.player_id only in dev mode, where no
+    # authoritative source exists.
+    ctx_player_id = user_context.get("id") if user_context else None
+    handshake_enforced = bool(product_handshake or config.WIDGET_HANDSHAKE_SECRET)
+    resolved_player_id = ctx_player_id if handshake_enforced else (
+        body.player_id or ctx_player_id)
+
     new_id = str(uuid.uuid4())
     session_id = await db.create_session(
         consumer=body.consumer or "web",
-        player_id=body.player_id or (user_context.get("id") if user_context else None),
+        player_id=resolved_player_id,
         lang=session_lang,
         user_context=user_context,
         session_id=new_id,
