@@ -43,9 +43,12 @@ class _FakeClient:
     def __init__(self):
         self.calls = 0
 
-    async def is_subscribed(self, channel, tg_user_id):
+    async def subscription_state(self, channel, tg_user_id):
         self.calls += 1
         return True
+
+    async def is_subscribed(self, channel, tg_user_id):
+        return bool(await self.subscription_state(channel, tg_user_id))
 
 
 async def test_check_subscription_ttl_zero_never_caches(monkeypatch):

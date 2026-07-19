@@ -263,17 +263,30 @@ class TelegramClient:
             return None
         return result.get("status")
 
-    async def is_subscribed(self, chat_id: Any, user_id: int) -> bool:
+    async def subscription_state(self, chat_id: Any, user_id: int
+                                 ) -> Optional[bool]:
+        """Tri-state membership check: True = member, False = definitively NOT a
+        member, None = the check could not be completed (network/API error, a
+        Telegram 5xx/429, or a bot-not-admin misconfig).
+
+        The None case matters: a transient outage must NOT be read as "the player
+        left the channel". Callers fail open on None instead of dropping the
+        player's message and flipping them to unsubscribed."""
         result = await self._call("getChatMember",
                                   {"chat_id": chat_id, "user_id": user_id})
         if not result:
-            return False
+            return None
         status = result.get("status")
         # A "restricted" member record exists even after the user leaves the
         # channel — only its is_member flag says whether they are actually in.
         if status == "restricted":
             return bool(result.get("is_member"))
         return status in _SUBSCRIBED_STATUSES
+
+    async def is_subscribed(self, chat_id: Any, user_id: int) -> bool:
+        """Boolean membership (an error/unknown collapses to False). Prefer
+        subscription_state where an outage must not look like 'not subscribed'."""
+        return bool(await self.subscription_state(chat_id, user_id))
 
     async def set_webhook(self, url: str, secret_token: str,
                           drop_pending: bool = True) -> Optional[dict[str, Any]]:

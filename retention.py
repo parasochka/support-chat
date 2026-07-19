@@ -543,9 +543,16 @@ _RL_NOTIFIED_PRUNE_THRESHOLD = 10_000
 
 
 async def check_subscription(client: TelegramClient, product: dict[str, Any],
-                             tg_user_id: int, *, use_cache: bool = True) -> bool:
-    """True when the player is subscribed to the product's channel (or no channel
-    is configured — a product without a channel skips the gate)."""
+                             tg_user_id: int, *, use_cache: bool = True
+                             ) -> Optional[bool]:
+    """Tri-state subscription gate. True = subscribed (or no channel configured),
+    False = definitively not a member, None = the check could not be completed
+    (Telegram outage / bot-not-admin blip).
+
+    None is NOT False: an outage must never be treated as "left the channel" — the
+    message gate fails open on None (see _handle_message) so a transient blip can't
+    drop the player's message and silently unsubscribe them from proactive pings.
+    Only a real True/False result touches the positive cache."""
     channel = product.get("telegram_channel_id")
     if not channel:
         return True
@@ -555,8 +562,12 @@ async def check_subscription(client: TelegramClient, product: dict[str, Any],
         expiry = _sub_cache.get(key)
         if expiry is not None and expiry > now:
             return True
-    ok = await client.is_subscribed(channel, tg_user_id)
-    if ok:
+    state = await client.subscription_state(channel, tg_user_id)
+    if state is None:
+        # Couldn't determine — leave the cached/stored state untouched, let the
+        # caller fail open for this turn.
+        return None
+    if state:
         # TTL is the hot `retention.subscription_cache_ttl_sec` knob
         # (0 = never cache: re-check live on every message).
         ttl = int(settings.retention().get("subscription_cache_ttl_sec",
@@ -571,7 +582,7 @@ async def check_subscription(client: TelegramClient, product: dict[str, Any],
             _sub_cache.pop(key, None)
     else:
         _sub_cache.pop(key, None)
-    return ok
+    return state
 
 
 def reset_state() -> None:
@@ -909,7 +920,14 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
         return
 
     # Subscription gate applies to every turn (positive results briefly cached).
-    if not await check_subscription(client, product, pu.tg_user_id):
+    # Tri-state: True = subscribed, False = definitively not a member, None = the
+    # check could not be completed (Telegram outage / bot-not-admin blip). On None
+    # we FAIL OPEN for this turn — never treat an outage as "left the channel",
+    # which would drop the player's live message AND flip them to unsubscribed,
+    # removing them from every proactive ping until they happen to write again
+    # during a healthy window.
+    sub = await check_subscription(client, product, pu.tg_user_id)
+    if sub is False:
         log.info("retention_subscription_gate product_id=%s tg_user_id=%s",
                  product["id"], pu.tg_user_id)
         await db.set_retention_subscribed(int(ru["id"]), False)
@@ -917,7 +935,7 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
                                   _rtn_text("rtn_subscribe_prompt", lang),
                                   reply_markup=_subscribe_markup(product, lang))
         return
-    if not ru.get("subscribed"):
+    if sub and not ru.get("subscribed"):
         await db.set_retention_subscribed(int(ru["id"]), True)
 
     # Input gates: overlong text is truncated (not rejected — chats are human);

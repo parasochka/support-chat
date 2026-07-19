@@ -32,8 +32,11 @@ class FakeTelegram:
     async def answer_callback(self, cb_id, text=None):
         self.answered.append(cb_id)
 
-    async def is_subscribed(self, chat_id, user_id):
+    async def subscription_state(self, chat_id, user_id):
         return self.subscribed
+
+    async def is_subscribed(self, chat_id, user_id):
+        return bool(await self.subscription_state(chat_id, user_id))
 
 
 def _patch_common(monkeypatch, tg):
