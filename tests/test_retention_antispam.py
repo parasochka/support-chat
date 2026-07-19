@@ -72,7 +72,7 @@ def _patch_common(monkeypatch, tg, events: list):
         return dict(RU)
     monkeypatch.setattr(retention.db, "get_retention_user", _get_ru)
 
-    async def _sampled(sid, type_, payload=None):
+    async def _sampled(sid, type_, payload=None, product_id=None):
         events.append((type_, payload))
     monkeypatch.setattr(retention.db, "log_admin_event_sampled", _sampled)
 

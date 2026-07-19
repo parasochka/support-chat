@@ -2250,6 +2250,21 @@ _V2_DECISION_TASK = (
 )
 
 
+_V2_PAYLOAD_MAX_CHARS = 600
+
+
+def _short_payload(payload: Any) -> str:
+    """Serialize an event payload, capped: a partner may ride verbose blobs on an
+    event, and this call embeds the triggering payload + up to 8 recent ones, so
+    an uncapped dump could put tens of KB (partner-controlled) into every decision
+    call the code calls 'compact/cheap'. The conversation tail is already capped at
+    160 chars/line; mirror that for payloads."""
+    s = json.dumps(payload or {}, ensure_ascii=False)
+    if len(s) > _V2_PAYLOAD_MAX_CHARS:
+        return s[:_V2_PAYLOAD_MAX_CHARS] + "…(truncated)"
+    return s
+
+
 def build_retention_v2_decision_messages(
     state: dict[str, Any],
     event: dict[str, Any],
@@ -2266,7 +2281,7 @@ def build_retention_v2_decision_messages(
     """
     ev_lines = [
         f"- {e.get('event_name')} at {e.get('ts')} "
-        f"payload={json.dumps(e.get('payload') or {}, ensure_ascii=False)}"
+        f"payload={_short_payload(e.get('payload'))}"
         for e in (recent_events or [])[:8]
     ]
     convo_lines = [
@@ -2281,7 +2296,7 @@ def build_retention_v2_decision_messages(
         "",
         "=== TRIGGERING EVENT ===",
         f"{event.get('event_name')} at {event.get('ts')} "
-        f"payload={json.dumps(event.get('payload') or {}, ensure_ascii=False)}",
+        f"payload={_short_payload(event.get('payload'))}",
         "",
         "=== RECENT EVENTS (newest first) ===" if ev_lines else "",
         "\n".join(ev_lines),

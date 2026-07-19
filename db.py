@@ -1500,8 +1500,15 @@ _event_sample_hits: dict[str, "_deque[float]"] = {}
 
 
 async def log_admin_event_sampled(session_id: Optional[str], type_: str,
-                                  payload: Optional[dict[str, Any]] = None) -> None:
-    """log_admin_event with a per-type budget; excess events are dropped."""
+                                  payload: Optional[dict[str, Any]] = None,
+                                  product_id: Optional[int] = None) -> None:
+    """log_admin_event with a per-type budget; excess events are dropped.
+
+    `product_id` should be passed by callers with NO tenancy scope on the request
+    (the Telegram webhook path never sets it): without it these rows land with
+    product_id NULL and never heal, so a product-scoped admin's dashboard shows
+    zero abuse events for the product under attack. Callers on a scoped request
+    can omit it (log_admin_event falls back to the tenancy ContextVar)."""
     import time as _time
     now = _time.monotonic()
     hits = _event_sample_hits.setdefault(type_, _deque())
@@ -1510,7 +1517,13 @@ async def log_admin_event_sampled(session_id: Optional[str], type_: str,
     if len(hits) >= _EVENT_SAMPLE_MAX_PER_WINDOW:
         return
     hits.append(now)
-    await log_admin_event(session_id, type_, payload)
+    # Only forward product_id when the caller set it explicitly; otherwise call
+    # exactly as before so log_admin_event's tenancy-ContextVar fallback applies
+    # (and callers/tests stubbing log_admin_event without the kwarg keep working).
+    if product_id is not None:
+        await log_admin_event(session_id, type_, payload, product_id=product_id)
+    else:
+        await log_admin_event(session_id, type_, payload)
 
 
 async def ping() -> bool:
@@ -3294,7 +3307,12 @@ async def eligible_ping_users(product_id: int, *, min_gap_hours: int,
         "  AND NOT unreachable "
         "  AND (last_ping_at IS NULL "
         "       OR last_ping_at < now() - make_interval(hours => $2)) "
-        "  AND (pings_day IS DISTINCT FROM CURRENT_DATE "
+        # pings_day is written as the UTC date (record_retention_ping) and the
+        # Python-side cap checks read the UTC clock, so compare against the UTC
+        # date here too — CURRENT_DATE is the DB session-timezone date, which
+        # disagrees for several hours a day on a non-UTC Postgres and would let a
+        # capped player slip back through the prefilter.
+        "  AND (pings_day IS DISTINCT FROM (now() at time zone 'utc')::date "
         "       OR pings_sent_today < $3) "
         "ORDER BY last_active_at ASC LIMIT $4",
         product_id, int(min_gap_hours), int(daily_cap), int(limit),
@@ -3821,11 +3839,17 @@ async def list_retention_v2_logs(product_id: int, page: int = 1,
 
 
 async def retention_v2_cost_today(product_id: int) -> float:
-    """Summed decision-ledger cost since local midnight UTC — the daily-budget
-    stop switch reads this before every new decision."""
+    """Summed decision-ledger cost since midnight UTC — the daily-budget stop
+    switch reads this before every new decision.
+
+    Truncate in UTC explicitly: date_trunc('day', now()) truncates in the DB
+    session timezone, so on a non-UTC Postgres the budget window would silently
+    disagree with the day boundary the rest of the retention pacing uses."""
     val = await _pool.fetchval(
         "SELECT COALESCE(SUM(cost_usd), 0) FROM retention_v2_decisions "
-        "WHERE product_id = $1 AND created_at >= date_trunc('day', now())",
+        "WHERE product_id = $1 "
+        "AND created_at >= date_trunc('day', now() at time zone 'utc') "
+        "                  at time zone 'utc'",
         product_id,
     )
     return float(val or 0)

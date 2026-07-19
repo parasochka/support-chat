@@ -875,7 +875,8 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
                     product["id"], pu.tg_user_id)
         await db.log_admin_event_sampled(
             None, "rate_limited",
-            {"channel": "telegram", "tg_user_id": pu.tg_user_id})
+            {"channel": "telegram", "tg_user_id": pu.tg_user_id},
+            product_id=product["id"])
         now = time.monotonic()
         notified = _rl_notified.get(spam_key)
         if notified is None or now - notified > float(cfg["window_sec"]):
@@ -951,7 +952,8 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
         log.info("retention_low_content product_id=%s tg_user_id=%s",
                  product["id"], pu.tg_user_id)
         await db.log_admin_event_sampled(
-            None, "low_content_blocked", {"channel": "telegram"})
+            None, "low_content_blocked", {"channel": "telegram"},
+            product_id=product["id"])
         await client.send_message(pu.chat_id,
                                   _rtn_text("rtn_low_content_reply", lang))
         return
@@ -960,7 +962,8 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
                     product["id"], pu.tg_user_id, cfg["injection_hard_block"])
         await db.log_admin_event_sampled(
             None, "injection_blocked",
-            {"channel": "telegram", "tg_user_id": pu.tg_user_id})
+            {"channel": "telegram", "tg_user_id": pu.tg_user_id},
+            product_id=product["id"])
         if cfg["injection_hard_block"]:
             await client.send_message(pu.chat_id,
                                       _rtn_text("rtn_injection_reply", lang))

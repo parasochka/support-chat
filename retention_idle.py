@@ -284,6 +284,15 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
         photo_candidates=candidates,
     )
     if draft is None:
+        await db.insert_retention_v2_decision(
+            pid, retention_user_id=rid, player_id=ru.get("player_id"),
+            trigger_kind="idle", event_pk=None,
+            event_name=f"idle:{rule.get('trigger_kind')}",
+            state={"idle_days": idle_days},
+            guard={"allow": True, "reasons": []},
+            action=action, intent=rule.get("intent") or "",
+            reason=f"idle rule '{rule.get('name')}' matched ({idle_days}d)",
+            dry_run=False, delivered=False, detail="model_error", cost_usd=0.0)
         await db.record_retention_ping(pid, rid, rule_id, action, "failed",
                                        detail="model_error")
         return False
@@ -343,13 +352,27 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
         return True
 
     # The model call happened but nothing reached the player: account the cost
-    # (invariant §4 — every OpenAI call gets an ai_interaction_logs row).
+    # (invariant §4 — every OpenAI call gets an ai_interaction_logs row) AND write
+    # a decisions-ledger row. The per-product daily AI budget reads ONLY that
+    # ledger, so without this the generation spend of a persistently-failing send
+    # (revoked token, blocked players) would be invisible to the budget — it could
+    # keep generating past the daily stop-switch — and the Decisions audit would
+    # be missing every failed idle attempt.
     meta = draft.ai_meta
     await db.log_ai_interaction(
         session["id"], meta.get("model"), meta.get("key_used"),
         meta.get("tokens_in"), meta.get("tokens_out"), meta.get("cached_in"),
         cost, meta.get("latency_ms"), False, f"ping_undelivered {detail}",
         product_id=pid)
+    await db.insert_retention_v2_decision(
+        pid, retention_user_id=rid, player_id=ru.get("player_id"),
+        trigger_kind="idle", event_pk=None,
+        event_name=f"idle:{rule.get('trigger_kind')}",
+        state={"idle_days": idle_days},
+        guard={"allow": True, "reasons": []},
+        action=action, intent=rule.get("intent") or "",
+        reason=f"idle rule '{rule.get('name')}' matched ({idle_days}d)",
+        dry_run=False, delivered=False, detail=detail, cost_usd=cost)
     await db.record_retention_ping(pid, rid, rule_id, action, "failed",
                                    detail=detail, cost_usd=cost)
     log.warning("retention_idle_ping_failed product=%s player=%s detail=%s",
