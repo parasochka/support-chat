@@ -25,6 +25,7 @@ import { notifyError } from '../../lib/notifyError';
 import { useReadOnly } from '../../lib/useReadOnly';
 import { fmtDateTime } from '../../lib/fmt';
 import PhotoPreview from './PhotoPreview';
+import GridPagination from '../../components/GridPagination';
 
 // ---------------------------------------------------------------------------
 // Conversations tab — the Telegram chats, logged apart from support. A chat

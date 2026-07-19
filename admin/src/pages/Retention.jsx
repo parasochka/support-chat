@@ -18,6 +18,7 @@ import { FunnelBars,
   TelegramCostCharts, usd } from '../components/charts';
 import RequireProduct from '../components/RequireProduct';
 import TextStats from '../components/TextStats';
+import PromptBlock from '../components/PromptBlock';
 import rich from '../components/Rich';
 import AlgorithmMapTab from './RetentionAlgorithmMap';
 import PhotosTab from './retention/PhotosTab';
@@ -296,11 +297,11 @@ const PromptTab = ({ productId }) => {
         text={[preview?.system, preview?.user]}
         sx={{ mb: 1.5 }}
       />
-      <PreviewBlock
+      <PromptBlock
         title={t('System message (retention Layer 1 core + Layer 2 retention KB)')}
         text={preview?.system}
       />
-      <PreviewBlock
+      <PromptBlock
         title={t('User message (Layer 3: profile, language, photo candidates, guardrails)')}
         text={preview?.user}
       />
