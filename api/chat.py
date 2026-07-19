@@ -539,7 +539,10 @@ async def send_message(req: Request, body: MessageSend,
     # window and 429 — so the original question is never answered. Release the
     # cooldown for the automated follow-up (the routing turn still burned a model
     # call; this is not a spam bypass).
-    if result.suggested_topic:
+    # Same release on a transient model failure: the turn was NOT persisted and the
+    # nudge explicitly asks the player to resend — the resend must not be throttled
+    # by the cooldown armed above (which contradicts the "please resend" reply).
+    if result.suggested_topic or result.model_error:
         antispam.clear_cooldown(body.session_id)
     log.info(
         "chat_message_response_ready session_id=%s reply_chars=%s lang=%s escalation_active=%s message_count=%s",
