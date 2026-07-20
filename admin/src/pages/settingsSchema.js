@@ -32,7 +32,7 @@ export const GROUP_HELP = {
   antispam:
     'Rate limiting, cooldowns and the injection / low-content guards that run before the model.',
   model:
-    'OpenAI request tuning. Edits are hot — the next turn uses them (the client is rebuilt on save).',
+    'Which AI provider answers (OpenAI or DeepSeek) and each provider\'s request parameters as one JSON per tab. Edits are hot — the next turn uses them (the client is rebuilt on save).',
   general:
     'Operational limits with no other home: session/token lifetimes, the message cap, prompt-history window and the request body cap.',
   retention:
@@ -80,15 +80,17 @@ export const GROUP_FIELDS = {
     { name: 'low_content_block', label: 'Block low-content messages', type: 'bool', help: 'Nudge instead of calling the model on empty/one-character spam.' },
     { name: 'min_meaningful_chars', label: 'Min meaningful characters', type: 'int', min: 1, max: 100, help: 'Distinct letters/digits a message must carry to reach the model.' },
   ],
+  // The model group is provider-switched: one active provider + a free-form
+  // JSON config per provider (rendered as the OpenAI / DeepSeek tabs). All
+  // request parameters — model id, budgets, timeouts, and any per-model extras
+  // (temperature, top_p, …) — live line-by-line in the JSON; unrecognized keys
+  // are passed to the API verbatim. An optional `pricing` block
+  // ({input_per_1m, cached_input_per_1m, output_per_1m}, USD per 1M tokens)
+  // feeds cost accounting for models the built-in price table doesn't know.
   model: [
-    { name: 'model', label: 'Model id', type: 'string', help: 'OpenAI model, e.g. gpt-5-mini (the GPT-5 mini reasoning family).' },
-    { name: 'reasoning_effort', label: 'Reasoning effort', type: 'select', options: ['', 'minimal', 'low', 'medium', 'high'], help: 'Hidden-reasoning depth. Empty = the model default (parameter omitted).' },
-    { name: 'verbosity', label: 'Verbosity', type: 'select', options: ['', 'low', 'medium', 'high'], help: 'Answer length. Empty = the model default (parameter omitted).' },
-    { name: 'max_output_tokens', label: 'Max output tokens', type: 'int', min: 1, max: 128000, help: 'Output budget — INCLUDES hidden reasoning tokens, so keep it generous (≈2000).' },
-    { name: 'request_timeout_sec', label: 'Request timeout (sec)', type: 'int', min: 1, max: 600, help: 'Per-request timeout before a retry/failover.' },
-    { name: 'key_switch_timeout_sec', label: 'Key-switch timeout (sec)', type: 'int', min: 1, max: 600, help: 'Silence on the primary key before the fallback key is raced.' },
-    { name: 'max_attempts', label: 'Max attempts / key', type: 'int', min: 1, max: 10, help: 'Retries per key on transient (429/timeout) errors.' },
-    { name: 'max_concurrent_per_key', label: 'Max concurrent / key', type: 'int', min: 1, max: 1000, help: 'Concurrent in-flight requests allowed per API key.' },
+    { name: 'provider', label: 'Active model provider', type: 'select', options: ['openai', 'deepseek'], help: 'Which provider answers the chats: OpenAI or DeepSeek. Each keeps its own parameter JSON below (the tabs); only the active one is used. API keys are NOT set here — deploy env (OPENAI_API_KEY / DEEPSEEK_API_KEY) or the product\'s encrypted keys in Structure.' },
+    { name: 'openai_config', label: 'OpenAI parameters (JSON)', type: 'json', tab: 'OpenAI', help: 'All OpenAI request parameters as one JSON object: "model", "reasoning_effort", "verbosity", "max_output_tokens" (includes hidden reasoning — keep ≈2000), "request_timeout_sec", "key_switch_timeout_sec", "max_attempts", "max_concurrent_per_key". Any other key (e.g. "temperature") is sent to the API verbatim. Optional "pricing" block = USD per 1M tokens for cost accounting.' },
+    { name: 'deepseek_config', label: 'DeepSeek parameters (JSON)', type: 'json', tab: 'DeepSeek', help: 'All DeepSeek request parameters as one JSON object: "model" (deepseek-chat / deepseek-reasoner), "max_output_tokens" (sent as max_tokens), "base_url", the shared timeout/attempt knobs, plus any extra API params ("temperature", …) passed verbatim. Add a "pricing" block ({"input_per_1m", "cached_input_per_1m", "output_per_1m"}, USD per 1M tokens) so dashboard costs stay correct for models the built-in table doesn\'t know.' },
   ],
   general: [
     { name: 'session_ttl_hours', label: 'Session TTL (hours)', type: 'int', min: 1, max: 8760, module: 'support', help: 'How long a chat session stays valid.' },

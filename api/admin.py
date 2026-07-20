@@ -1232,6 +1232,9 @@ class ProductSecretsWrite(BaseModel):
     # Absent field = leave unchanged; empty string = clear (fall back to env).
     openai_key_primary: Optional[str] = None
     openai_key_fallback: Optional[str] = None
+    # DeepSeek keys (used when the product's model provider is 'deepseek').
+    deepseek_key_primary: Optional[str] = None
+    deepseek_key_fallback: Optional[str] = None
     handshake_secret: Optional[str] = None
     # Retention / Telegram secrets (encrypted at rest, like the keys above).
     telegram_bot_token: Optional[str] = None
@@ -1366,6 +1369,10 @@ async def put_product_secrets(product_id: int, body: ProductSecretsWrite,
         fields["openai_key_primary"] = body.openai_key_primary
     if body.openai_key_fallback is not None:
         fields["openai_key_fallback"] = body.openai_key_fallback
+    if body.deepseek_key_primary is not None:
+        fields["deepseek_key_primary"] = body.deepseek_key_primary
+    if body.deepseek_key_fallback is not None:
+        fields["deepseek_key_fallback"] = body.deepseek_key_fallback
     if body.handshake_secret is not None:
         fields["handshake_secret"] = body.handshake_secret
     if body.telegram_bot_token is not None:

@@ -137,6 +137,20 @@ OPENAI_MAX_CONCURRENT_PER_KEY: int = _env_int("OPENAI_MAX_CONCURRENT_PER_KEY", 4
 OPENAI_BREAKER_FAIL_THRESHOLD: int = _env_int("OPENAI_BREAKER_FAIL_THRESHOLD", 5)
 OPENAI_BREAKER_COOLDOWN_SEC: int = _env_int("OPENAI_BREAKER_COOLDOWN_SEC", 30)
 
+# --- Model provider switch + DeepSeek ---------------------------------------
+# Which provider answers by default: "openai" | "deepseek". The hot `model`
+# settings group can override it globally or per product (the admin AI-model
+# tab); this env var is only the deploy-level default. DeepSeek speaks the
+# OpenAI-compatible chat.completions protocol, so the whole two-key failover /
+# breaker / cost stack is reused — only the base_url, the keys and the request
+# parameter shape differ (DeepSeek takes `max_tokens`, no reasoning_effort/
+# verbosity/store).
+MODEL_PROVIDER: str = _env("MODEL_PROVIDER", "openai").strip().lower()
+DEEPSEEK_API_KEY: str | None = _env_opt("DEEPSEEK_API_KEY")
+DEEPSEEK_API_KEY_FALLBACK: str | None = _env_opt("DEEPSEEK_API_KEY_FALLBACK")
+DEEPSEEK_MODEL: str = _env("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_BASE_URL: str = _env("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+
 # --- Sessions / limits ------------------------------------------------------
 SESSION_TTL_HOURS: int = _env_int("SESSION_TTL_HOURS", 24)
 MAX_MESSAGES_PER_SESSION: int = _env_int("MAX_MESSAGES_PER_SESSION", 15)
