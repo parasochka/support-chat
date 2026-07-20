@@ -678,11 +678,8 @@ def _validate_model_config(cfg: Any, label: str) -> dict[str, Any]:
         raise ValueError(f"{label} is too large "
                          f"(max {_MODEL_CONFIG_MAX_JSON} chars serialized)")
     _require_nonempty_str(cfg, "model")
-    # "minimal"/"low"/"medium"/"high" are the OpenAI GPT-5 tiers; "max" is
-    # DeepSeek V4's top thinking tier (its two levels are "high" and "max").
     _require_choice(cfg, "reasoning_effort",
-                    ("minimal", "low", "medium", "high", "max"),
-                    allow_empty=True)
+                    ("minimal", "low", "medium", "high"), allow_empty=True)
     _require_choice(cfg, "verbosity", ("low", "medium", "high"),
                     allow_empty=True)
     _require_int(cfg, "max_output_tokens", 1, 128_000)
