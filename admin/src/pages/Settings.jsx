@@ -111,6 +111,54 @@ const InfoAdornment = ({ help }) => (
 );
 
 // ---------------------------------------------------------------------------
+// Free-form JSON config field (the per-provider model configs). Local text
+// state so a half-typed edit doesn't fight the parser; only valid JSON
+// propagates to the form — while invalid, the last valid object stands and an
+// error is shown, so Save can never send garbage.
+// ---------------------------------------------------------------------------
+const JsonField = ({ field, value, onChange }) => {
+  const [text, setText] = useState(() =>
+    JSON.stringify(value && typeof value === 'object' ? value : {}, null, 2)
+  );
+  const [error, setError] = useState(null);
+  const label = t(field.label);
+  const help = t(field.help);
+
+  const handle = (raw) => {
+    setText(raw);
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        setError(t('Must be a JSON object'));
+        return;
+      }
+      setError(null);
+      onChange(parsed);
+    } catch (e) {
+      setError(t('Invalid JSON — fix it before saving (the last valid version is kept)'));
+    }
+  };
+
+  return (
+    <Grid size={{ xs: 12 }}>
+      <TextField
+        label={label}
+        value={text}
+        onChange={(e) => handle(e.target.value)}
+        error={Boolean(error)}
+        helperText={error || help}
+        fullWidth
+        multiline
+        minRows={10}
+        slotProps={{
+          input: { sx: { fontFamily: 'monospace', fontSize: 13 } },
+        }}
+      />
+    </Grid>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // One typed field
 // ---------------------------------------------------------------------------
 const Field = ({ field, value, onChange, form, locked = false }) => {
@@ -156,6 +204,10 @@ const Field = ({ field, value, onChange, form, locked = false }) => {
         />
       </Grid>
     );
+  }
+
+  if (type === 'json') {
+    return <JsonField field={field} value={value} onChange={onChange} />;
   }
 
   // Explicitness-stage thresholds shown as one labelled column per stage
@@ -362,6 +414,11 @@ const GroupEditor = ({ group, fields, resolved, overrides, onSaved, scopeLabel, 
   const readOnly = useReadOnly();
   const [form, setForm] = useState(() => ({ ...(resolved || {}) }));
   const [saving, setSaving] = useState(false);
+  // Fields carrying a `tab` render inside an in-card tab strip (the model
+  // group's per-provider OpenAI / DeepSeek configs); the rest render plainly.
+  const plainFields = fields.filter((f) => !f.tab);
+  const tabNames = [...new Set(fields.filter((f) => f.tab).map((f) => f.tab))];
+  const [fieldTab, setFieldTab] = useState(tabNames[0] || null);
 
   const setField = (name, v) => setForm((f) => ({ ...f, [name]: v }));
 
@@ -410,8 +467,8 @@ const GroupEditor = ({ group, fields, resolved, overrides, onSaved, scopeLabel, 
           </Alert>
         )}
         <Grid container spacing={2}>
-          {fields.map((f, i) => {
-            const startsSection = f.section && f.section !== fields[i - 1]?.section;
+          {plainFields.map((f, i) => {
+            const startsSection = f.section && f.section !== plainFields[i - 1]?.section;
             return (
               <Fragment key={f.name}>
                 {startsSection && (
@@ -433,6 +490,33 @@ const GroupEditor = ({ group, fields, resolved, overrides, onSaved, scopeLabel, 
             );
           })}
         </Grid>
+        {tabNames.length > 0 && (
+          <Box sx={{ mt: 2 }}>
+            <Tabs
+              value={fieldTab}
+              onChange={(e, v) => setFieldTab(v)}
+              sx={{ mb: 2, borderBottom: 1, borderColor: 'divider' }}
+            >
+              {tabNames.map((name) => (
+                <Tab key={name} value={name} label={name} />
+              ))}
+            </Tabs>
+            <Grid container spacing={2}>
+              {fields
+                .filter((f) => f.tab === fieldTab)
+                .map((f) => (
+                  <Field
+                    key={f.name}
+                    field={f}
+                    value={form[f.name]}
+                    form={form}
+                    locked={Boolean(f.globalOnly && productScoped)}
+                    onChange={(v) => setField(f.name, v)}
+                  />
+                ))}
+            </Grid>
+          </Box>
+        )}
         <Button variant="contained" onClick={save} disabled={saving || readOnly} sx={{ mt: 2 }}>
           {saving ? t('Saving…') : `${t('Save')} — ${t(GROUP_LABELS[group] || group)}${scopeLabel}`}
         </Button>

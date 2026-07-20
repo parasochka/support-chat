@@ -30,6 +30,8 @@ const embedSnippet = (widgetKey) =>
 const SECRET_FIELDS = [
   ['openai_key_primary', t('OpenAI key (primary)'), 'has_openai_key', false],
   ['openai_key_fallback', t('OpenAI key (fallback)'), 'has_openai_key_fallback', false],
+  ['deepseek_key_primary', t('DeepSeek key (primary)'), 'has_deepseek_key', false],
+  ['deepseek_key_fallback', t('DeepSeek key (fallback)'), 'has_deepseek_key_fallback', false],
   ['handshake_secret', t('Widget handshake secret'), 'has_handshake_secret', true],
   ['turnstile_secret', t('Turnstile secret key'), 'has_turnstile_secret', false],
   ['telegram_bot_token', t('Telegram bot token'), 'has_telegram_bot_token', false],
