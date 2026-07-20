@@ -195,9 +195,7 @@ bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию
           <span class="tag put">PUT</span><code>/admin/products/{id}</code></td>
       <td>Создать казино (widget key генерируется, стартовая KB сеется) / изменить.</td></tr>
   <tr><td><span class="tag put">PUT</span><code>/admin/products/{id}/secrets</code></td>
-      <td>Write-only секреты продукта: OpenAI-ключи, DeepSeek-ключи
-          (<code>deepseek_key_primary</code>/<code>_fallback</code> — используются, когда в
-          настройках модели выбран провайдер deepseek), handshake, токен Telegram-бота,
+      <td>Write-only секреты продукта: OpenAI-ключи, handshake, токен Telegram-бота,
           player-API-ключ, секрет Turnstile. Хранятся шифрованно; в ответ только has_*-флаги.</td></tr>
   <tr><td><span class="tag post">POST</span><code>/admin/products/{id}/widget-key</code></td>
       <td>Ротация widget key (старые сниппеты перестают работать сразу).</td></tr>

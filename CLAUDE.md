@@ -495,32 +495,6 @@ model-free turns (the message-cap hand-off, low-content nudge) pass `ai_meta=Non
 chat turn + counter still persist atomically but **no `ai_interaction_logs` row** is written
 (there was no OpenAI call — consistent with invariant §4, which scopes the AI log to actual calls).
 
-### Model provider switch — OpenAI | DeepSeek (`model` settings group)
-The `model` group is **provider-switched**: a `provider` field (`openai` |
-`deepseek`, env default `MODEL_PROVIDER`) plus one free-form **config JSON per
-provider** (`openai_config` / `deepseek_config`), resolvable globally AND per
-product like every group. `settings.model()` returns the same flat keys as
-before (model, budgets, timeouts — no caller churn) resolved from the ACTIVE
-provider's config (config JSON → legacy flat fields (openai only) → env →
-default), plus `provider`, `base_url`, `extra_params` (unrecognized config keys,
-passed to `chat.completions.create` verbatim — the seam for per-model params
-like `temperature`) and `pricing_overrides` (from the configs' optional
-`pricing` blocks: `{input_per_1m, cached_input_per_1m, output_per_1m}` USD/1M
-tokens, consulted by `_pricing_for_model` BEFORE the built-in `_PRICING` table —
-how an unlisted/negotiated model gets correct cost accounting from the admin).
-DeepSeek speaks the OpenAI-compatible protocol, so the whole two-key failover /
-breaker / cost stack is reused; only the request shape differs
-(`_KeyClient.call`: `max_tokens` instead of `max_completion_tokens`, no
-`reasoning_effort`/`verbosity`/`store`). Keys: env `DEEPSEEK_API_KEY`(+
-`_FALLBACK`) or the product's encrypted `deepseek_key_*_enc` pair (Structure
-tab, `db.get_product_deepseek_keys`); `get_client()` caches one env client per
-(provider, base_url) and `client_for_product` picks the key pair by the active
-provider. API keys are BANNED from the config JSONs
-(`settings._validate_model_config`) — secrets stay in env / encrypted product
-secrets. Admin: System → Settings → AI model = provider select + an
-OpenAI / DeepSeek tab pair, each one JSON editor (`type: 'json'` in
-`settingsSchema.js`). Tests: `tests/test_model_provider.py`.
-
 ### Two-key OpenAI failover (`openai_client.py`)
 Primary key first; if it stays silent for `OPENAI_KEY_SWITCH_TIMEOUT_SEC`, the fallback is
 launched **in parallel** and whichever responds first wins (loser cancelled). A hard error
