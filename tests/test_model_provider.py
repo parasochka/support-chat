@@ -180,18 +180,33 @@ async def test_openai_request_shape():
 async def test_deepseek_request_shape_and_extras():
     settings._cache["model"] = {
         "provider": "deepseek",
-        "deepseek_config": {"model": "deepseek-chat",
+        "deepseek_config": {"model": "deepseek-v4-flash",
                             "max_output_tokens": 900,
                             "temperature": 1.3},
     }
     kc, cap = _key_client_with_capture()
     await kc.call([{"role": "user", "content": "hi"}])
-    assert cap.kwargs["model"] == "deepseek-chat"
+    assert cap.kwargs["model"] == "deepseek-v4-flash"
     assert cap.kwargs["max_tokens"] == 900
     assert "max_completion_tokens" not in cap.kwargs
     assert "store" not in cap.kwargs
     assert "reasoning_effort" not in cap.kwargs
-    assert cap.kwargs["temperature"] == 1.3
+    # Free-form params ride in extra_body (the SDK rejects unknown kwargs).
+    assert cap.kwargs["extra_body"] == {"temperature": 1.3}
+
+
+async def test_deepseek_thinking_mode_params():
+    settings._cache["model"] = {
+        "provider": "deepseek",
+        "deepseek_config": {"model": "deepseek-v4-flash",
+                            "reasoning_effort": "high",
+                            "thinking": {"type": "enabled"}},
+    }
+    kc, cap = _key_client_with_capture()
+    await kc.call([{"role": "user", "content": "hi"}])
+    assert cap.kwargs["extra_body"] == {
+        "thinking": {"type": "enabled"}, "reasoning_effort": "high"}
+    assert "reasoning_effort" not in cap.kwargs  # body field, not a kwarg
 
 
 # ---------------------------------------------------------------------------

@@ -238,9 +238,18 @@ class _KeyClient:
             verbosity = m.get("verbosity")
             if verbosity:
                 kwargs["verbosity"] = verbosity
-        for k, v in (m.get("extra_params") or {}).items():
-            if k != "messages":
-                kwargs[k] = v
+        # Free-form config params ride in `extra_body`: the OpenAI SDK rejects
+        # unknown keyword arguments (a provider-specific field like DeepSeek's
+        # `thinking` would raise TypeError as a kwarg), while extra_body merges
+        # verbatim into the JSON request body. DeepSeek's thinking mode also
+        # takes `reasoning_effort` ("high" | "max") — sent only when set, like
+        # on the OpenAI side.
+        extra_body = {k: v for k, v in (m.get("extra_params") or {}).items()
+                      if k != "messages"}
+        if provider == "deepseek" and m.get("reasoning_effort"):
+            extra_body.setdefault("reasoning_effort", m["reasoning_effort"])
+        if extra_body:
+            kwargs["extra_body"] = extra_body
         log.info(
             "openai_request_start key=%s provider=%s model=%s %s=%s effort=%s verbosity=%s timeout=%s messages=%s",
             self.name, provider, kwargs["model"], token_param, budget,
