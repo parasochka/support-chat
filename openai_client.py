@@ -90,14 +90,19 @@ _PRICING: dict[str, tuple[float, float, float]] = {
     # gpt-5-mini (the live default).
     "gpt-5-mini": (0.25, 0.025, 2.00),
     "gpt-5-mini-2025-08-07": (0.25, 0.025, 2.00),
-    # DeepSeek (OpenAI-compatible API). V3.2 unified list prices verified
-    # 2026-07-20: input $0.28, cached input $0.028, output $0.42 per 1M tokens
-    # for both chat and reasoner. Re-verify against api-docs.deepseek.com if
-    # the configured model changes; a model not listed here can carry its own
-    # `pricing` block in the deepseek_config JSON (settings `model` group),
-    # which takes precedence over this table.
-    "deepseek-chat": (0.28, 0.028, 0.42),
-    "deepseek-reasoner": (0.28, 0.028, 0.42),
+    # DeepSeek (OpenAI-compatible API). V4 list prices verified 2026-07-20
+    # against api-docs.deepseek.com/quick_start/pricing: v4-flash input $0.14
+    # (cache miss) / $0.0028 (cache hit) / output $0.28 per 1M tokens; v4-pro
+    # $0.435 / $0.003625 / $0.87. The legacy `deepseek-chat` /
+    # `deepseek-reasoner` ids are deprecated 2026-07-24 and already alias the
+    # v4-flash non-thinking / thinking modes, so they price identically.
+    # Re-verify if the configured model changes; a model not listed here can
+    # carry its own `pricing` block in the deepseek_config JSON (settings
+    # `model` group), which takes precedence over this table.
+    "deepseek-v4-flash": (0.14, 0.0028, 0.28),
+    "deepseek-v4-pro": (0.435, 0.003625, 0.87),
+    "deepseek-chat": (0.14, 0.0028, 0.28),
+    "deepseek-reasoner": (0.14, 0.0028, 0.28),
 }
 
 

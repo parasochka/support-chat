@@ -159,7 +159,7 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `MODEL_PROVIDER` | no | `openai` | Default AI provider: `openai` or `deepseek`. Overridable live (globally or per product) from the admin AI-model settings tab. |
 | `DEEPSEEK_API_KEY` | no | — | Primary DeepSeek key (used when the provider is `deepseek`). Same two-key failover machinery; per-product keys are set in Structure. |
 | `DEEPSEEK_API_KEY_FALLBACK` | no | — | Second DeepSeek key for the failover. |
-| `DEEPSEEK_MODEL` | no | `deepseek-chat` | Default DeepSeek model id. |
+| `DEEPSEEK_MODEL` | no | `deepseek-v4-flash` | Default DeepSeek model id (`deepseek-chat`/`-reasoner` are deprecated aliases of the v4-flash modes). |
 | `DEEPSEEK_BASE_URL` | no | `https://api.deepseek.com` | DeepSeek OpenAI-compatible endpoint. |
 | `APP_ENV` | no | `development` | Deployment environment. Secret hygiene is **fail-closed**: on a real deployment — `APP_ENV=production`/`prod` **or a non-local `DATABASE_URL`** — the app **refuses to boot** if `ADMIN_JWT_SECRET`, `SECRETS_MASTER_KEY`, or `TELEGRAM_WEBHOOK_SECRET` is unset and would reuse `SESSION_JWT_SECRET`, or if any secret is shorter than 32 chars. Only a genuinely local run (loopback DB, not production) stays lenient — set `APP_ENV=development` to opt into leniency against a remote DB. |
 | `ADMIN_JWT_SECRET` | no | `SESSION_JWT_SECRET` | Signs admin tokens; set a distinct **≥32-char** value (**required on a real deployment** — see `APP_ENV`). |

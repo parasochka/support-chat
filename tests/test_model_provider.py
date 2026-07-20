@@ -198,8 +198,15 @@ async def test_deepseek_request_shape_and_extras():
 # pricing / cost accounting
 # ---------------------------------------------------------------------------
 def test_builtin_deepseek_pricing_known():
-    cost = openai_client.compute_cost("deepseek-chat", 1_000_000, 0, 0)
-    assert cost == pytest.approx(0.28)
+    # v4-flash: $0.14 in / $0.28 out per 1M; deepseek-chat aliases it.
+    assert openai_client.compute_cost(
+        "deepseek-v4-flash", 1_000_000, 0, 0) == pytest.approx(0.14)
+    assert openai_client.compute_cost(
+        "deepseek-v4-flash", 0, 1_000_000, 0) == pytest.approx(0.28)
+    assert openai_client.compute_cost(
+        "deepseek-chat", 1_000_000, 0, 0) == pytest.approx(0.14)
+    assert openai_client.compute_cost(
+        "deepseek-v4-pro", 1_000_000, 0, 0) == pytest.approx(0.435)
 
 
 def test_pricing_override_feeds_compute_cost():

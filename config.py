@@ -148,7 +148,9 @@ OPENAI_BREAKER_COOLDOWN_SEC: int = _env_int("OPENAI_BREAKER_COOLDOWN_SEC", 30)
 MODEL_PROVIDER: str = _env("MODEL_PROVIDER", "openai").strip().lower()
 DEEPSEEK_API_KEY: str | None = _env_opt("DEEPSEEK_API_KEY")
 DEEPSEEK_API_KEY_FALLBACK: str | None = _env_opt("DEEPSEEK_API_KEY_FALLBACK")
-DEEPSEEK_MODEL: str = _env("DEEPSEEK_MODEL", "deepseek-chat")
+# deepseek-chat/-reasoner are deprecated 2026-07-24 in favour of the v4 family;
+# v4-flash is the cheap default (v4-pro is the heavier tier).
+DEEPSEEK_MODEL: str = _env("DEEPSEEK_MODEL", "deepseek-v4-flash")
 DEEPSEEK_BASE_URL: str = _env("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 
 # --- Sessions / limits ------------------------------------------------------
