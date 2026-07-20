@@ -90,41 +90,20 @@ _PRICING: dict[str, tuple[float, float, float]] = {
     # gpt-5-mini (the live default).
     "gpt-5-mini": (0.25, 0.025, 2.00),
     "gpt-5-mini-2025-08-07": (0.25, 0.025, 2.00),
-    # DeepSeek (OpenAI-compatible API). V4 list prices verified 2026-07-20
-    # against api-docs.deepseek.com/quick_start/pricing: v4-flash input $0.14
-    # (cache miss) / $0.0028 (cache hit) / output $0.28 per 1M tokens; v4-pro
-    # $0.435 / $0.003625 / $0.87. The legacy `deepseek-chat` /
-    # `deepseek-reasoner` ids are deprecated 2026-07-24 and already alias the
-    # v4-flash non-thinking / thinking modes, so they price identically.
-    # Re-verify if the configured model changes; a model not listed here can
-    # carry its own `pricing` block in the deepseek_config JSON (settings
-    # `model` group), which takes precedence over this table.
-    "deepseek-v4-flash": (0.14, 0.0028, 0.28),
-    "deepseek-v4-pro": (0.435, 0.003625, 0.87),
-    "deepseek-chat": (0.14, 0.0028, 0.28),
-    "deepseek-reasoner": (0.14, 0.0028, 0.28),
 }
 
 
 def _pricing_for_model(model: str) -> Optional[tuple[float, float, float]]:
-    # Admin-configured pricing (the `pricing` block of a provider config JSON)
-    # beats the built-in table — that is how a model we have no list price for
-    # (or a negotiated rate) gets correct cost accounting without a redeploy.
-    try:
-        overrides = settings.model().get("pricing_overrides") or {}
-    except Exception:  # noqa: BLE001 — pricing must never break a call path
-        overrides = {}
-    pricing = overrides.get(model) or _PRICING.get(model)
+    pricing = _PRICING.get(model)
     if pricing:
-        return tuple(pricing)  # type: ignore[return-value]
-    # Providers can return dated snapshot ids (for example
+        return pricing
+    # OpenAI can return dated snapshot ids (for example
     # `gpt-5.4-mini-2026-03-17`) while admins often configure the stable alias.
     # Strip a trailing -YYYY-MM-DD and price it as the alias when known, so a new
     # snapshot does not silently flatten dashboard costs to $0.
     parts = model.rsplit("-", 3)
     if len(parts) == 4 and all(p.isdigit() for p in parts[1:]):
-        p = overrides.get(parts[0]) or _PRICING.get(parts[0])
-        return tuple(p) if p else None
+        return _PRICING.get(parts[0])
     return None
 
 
@@ -182,10 +161,9 @@ class ChatResult:
 class _KeyClient:
     """Wraps one API key with its own AsyncOpenAI client + concurrency semaphore."""
 
-    def __init__(self, name: str, api_key: str, base_url: Optional[str] = None):
+    def __init__(self, name: str, api_key: str):
         self.name = name
         self.api_key = api_key
-        self.base_url = base_url or None
         # Token usage of DISCARDED truncated first attempts, keyed by id() of the
         # retry response they were replaced with (plus a weakref so a recycled
         # id() — CPython reuses addresses after GC — can never attribute a stale
@@ -200,59 +178,38 @@ class _KeyClient:
         m = settings.model()
         self._sem = asyncio.Semaphore(int(m["max_concurrent_per_key"]))
         if AsyncOpenAI is not None:
-            kwargs: dict[str, Any] = {"api_key": api_key,
-                                      "timeout": m["request_timeout_sec"]}
-            if self.base_url:
-                kwargs["base_url"] = self.base_url
-            self.client = AsyncOpenAI(**kwargs)
+            self.client = AsyncOpenAI(
+                api_key=api_key, timeout=m["request_timeout_sec"]
+            )
         else:  # pragma: no cover - only when openai missing & not under test stub
             self.client = None
 
     async def call(self, messages: list[dict[str, str]]) -> Any:
         # model / reasoning effort / verbosity / max tokens / per-call timeout
         # are read live so tuning from the admin panel takes effect without a
-        # redeploy. Request shape differs per provider: the GPT-5 reasoning
-        # family takes `max_completion_tokens` (not `max_tokens`), does NOT
-        # accept `temperature`, and exposes reasoning_effort/verbosity (sent
-        # only when set — empty ⇒ use the model default); DeepSeek's
-        # OpenAI-compatible API takes plain `max_tokens` and none of the
-        # reasoning knobs. Free-form per-model parameters ride in the config
-        # JSON's unrecognized keys (`extra_params`), merged last so they can
-        # override anything but the messages.
+        # redeploy. The GPT-5 reasoning family takes `max_completion_tokens`
+        # (not `max_tokens`) and does NOT accept `temperature`; reasoning_effort
+        # and verbosity are sent only when set (empty ⇒ use the model default),
+        # so the owner can disable either from the admin panel if a future model
+        # rejects it.
         m = settings.model()
-        provider = m.get("provider", "openai")
         budget = int(m["max_output_tokens"])
-        token_param = "max_tokens" if provider == "deepseek" \
-            else "max_completion_tokens"
         kwargs: dict[str, Any] = {
             "model": m["model"],
             "messages": messages,
-            token_param: budget,
+            "max_completion_tokens": budget,
             "timeout": m["request_timeout_sec"],
+            "store": False,
         }
-        if provider != "deepseek":
-            kwargs["store"] = False
-            effort = m.get("reasoning_effort")
-            if effort:
-                kwargs["reasoning_effort"] = effort
-            verbosity = m.get("verbosity")
-            if verbosity:
-                kwargs["verbosity"] = verbosity
-        # Free-form config params ride in `extra_body`: the OpenAI SDK rejects
-        # unknown keyword arguments (a provider-specific field like DeepSeek's
-        # `thinking` would raise TypeError as a kwarg), while extra_body merges
-        # verbatim into the JSON request body. DeepSeek's thinking mode also
-        # takes `reasoning_effort` ("high" | "max") — sent only when set, like
-        # on the OpenAI side.
-        extra_body = {k: v for k, v in (m.get("extra_params") or {}).items()
-                      if k != "messages"}
-        if provider == "deepseek" and m.get("reasoning_effort"):
-            extra_body.setdefault("reasoning_effort", m["reasoning_effort"])
-        if extra_body:
-            kwargs["extra_body"] = extra_body
+        effort = m.get("reasoning_effort")
+        if effort:
+            kwargs["reasoning_effort"] = effort
+        verbosity = m.get("verbosity")
+        if verbosity:
+            kwargs["verbosity"] = verbosity
         log.info(
-            "openai_request_start key=%s provider=%s model=%s %s=%s effort=%s verbosity=%s timeout=%s messages=%s",
-            self.name, provider, kwargs["model"], token_param, budget,
+            "openai_request_start key=%s model=%s max_completion_tokens=%s effort=%s verbosity=%s timeout=%s messages=%s",
+            self.name, kwargs["model"], kwargs["max_completion_tokens"],
             kwargs.get("reasoning_effort"), kwargs.get("verbosity"),
             kwargs["timeout"], len(messages),
         )
@@ -278,7 +235,7 @@ class _KeyClient:
                 # output budget went to hidden reasoning) — remember its usage so
                 # _result() can fold it into the returned counts.
                 _, first_in, first_out, first_cached = _extract(resp)
-                kwargs[token_param] = bumped
+                kwargs["max_completion_tokens"] = bumped
                 async with self._sem:
                     resp = await self.client.chat.completions.create(**kwargs)
                 while len(self._pending_extra_usage) > 32:
@@ -413,19 +370,17 @@ class OpenAIClient:
 
     def __init__(self, primary_key: Optional[str] = None,
                  fallback_key: Optional[str] = None,
-                 key_source: str = "env",
-                 base_url: Optional[str] = None) -> None:
+                 key_source: str = "env") -> None:
         """Two-key client. With no explicit keys it binds the deploy env keys
         (the pre-tenancy behaviour); `client_for_product` passes a product's own
-        decrypted keys instead. `key_source` only labels log lines; `base_url`
-        points the SDK at a non-OpenAI provider (DeepSeek) when set."""
+        decrypted keys instead. `key_source` only labels log lines."""
         self.key_source = key_source
         primary = primary_key or config.OPENAI_API_KEY
         fallback = fallback_key if primary_key else config.OPENAI_API_KEY_FALLBACK
-        self.primary = _KeyClient("primary", primary, base_url=base_url)
+        self.primary = _KeyClient("primary", primary)
         self.fallback: Optional[_KeyClient] = None
         if fallback:
-            self.fallback = _KeyClient("fallback", fallback, base_url=base_url)
+            self.fallback = _KeyClient("fallback", fallback)
 
     async def complete(
         self,
@@ -606,52 +561,26 @@ class OpenAIClient:
         )
 
 
-# Lazily-instantiated clients. The env-keyed clients keep the pre-tenancy
-# entry point working — one per (provider, base_url), since the active provider
-# is a hot product-scoped setting; the registry caches one client per product
-# whose OWN keys are configured (keyed by product id + a key fingerprint, so a
-# rotated key rebuilds the client instead of serving the stale one).
-_env_clients: dict[tuple[str, str], OpenAIClient] = {}
+# Lazily-instantiated clients. The env-keyed singleton keeps the pre-tenancy
+# entry point working; the registry caches one client per product whose OWN
+# keys are configured (keyed by product id + a key fingerprint, so a rotated
+# key rebuilds the client instead of serving the stale one).
+_client: Optional[OpenAIClient] = None
 _product_clients: dict[tuple[int, str], OpenAIClient] = {}
-# Short-TTL cache of the DECRYPTED per-product keys (keyed by product +
-# provider): without it every single turn pays a DB round-trip + secretbox
-# decrypt before the model call, even on a client-cache hit. reset() (called on
-# every product-secrets write) clears it, so a rotation applies within the TTL
-# at worst on another instance and immediately on the instance that took the
-# write.
-_product_keys_cache: dict[tuple[int, str], tuple[float, Optional[dict]]] = {}
+# Short-TTL cache of the DECRYPTED per-product keys: without it every single
+# turn pays a DB round-trip + secretbox decrypt before the model call, even on
+# a client-cache hit. reset() (called on every product-secrets write) clears
+# it, so a rotation applies within the TTL at worst on another instance and
+# immediately on the instance that took the write.
+_product_keys_cache: dict[int, tuple[float, Optional[dict]]] = {}
 _PRODUCT_KEYS_TTL_SEC = 60.0
 
 
 def get_client() -> OpenAIClient:
-    """The env-keyed client for the ACTIVE provider (per the request's scope).
-
-    OpenAI binds OPENAI_API_KEY(+_FALLBACK); DeepSeek binds DEEPSEEK_API_KEY
-    (+_FALLBACK) and the provider's base_url. A missing DeepSeek env key still
-    builds a client (the call fails with a clear auth error, handled as a
-    model error by chat_service) — logged so the misconfiguration is visible.
-    """
-    m = settings.model()
-    provider = m.get("provider", "openai")
-    base_url = m.get("base_url") or ""
-    cache_key = (provider, base_url)
-    client = _env_clients.get(cache_key)
-    if client is None:
-        if provider == "deepseek":
-            primary = config.DEEPSEEK_API_KEY
-            if not primary:
-                log.warning(
-                    "deepseek_env_key_missing — provider is 'deepseek' but "
-                    "DEEPSEEK_API_KEY is not set and the product has no own key")
-                primary = "missing-deepseek-api-key"
-            client = OpenAIClient(primary_key=primary,
-                                  fallback_key=config.DEEPSEEK_API_KEY_FALLBACK,
-                                  key_source="env:deepseek",
-                                  base_url=base_url or config.DEEPSEEK_BASE_URL)
-        else:
-            client = OpenAIClient(base_url=base_url or None)
-        _env_clients[cache_key] = client
-    return client
+    global _client
+    if _client is None:
+        _client = OpenAIClient()
+    return _client
 
 
 def _fingerprint(*keys: Optional[str]) -> str:
@@ -671,40 +600,27 @@ async def client_for_product(product_id: Optional[int]) -> OpenAIClient:
     falls back to the deploy env keys (dev/transition mode). The two-key
     failover machinery is identical either way.
     """
-    m = settings.model()
-    provider = m.get("provider", "openai")
-    base_url = m.get("base_url") or None
-    if provider == "deepseek" and not base_url:
-        base_url = config.DEEPSEEK_BASE_URL
     if product_id is not None:
         import db  # lazy: keep module importable without the app wired up
         now = time.monotonic()
-        keys_key = (product_id, provider)
-        cached = _product_keys_cache.get(keys_key)
+        cached = _product_keys_cache.get(product_id)
         if cached is not None and now - cached[0] < _PRODUCT_KEYS_TTL_SEC:
             keys = cached[1]
         else:
-            if provider == "deepseek":
-                keys = await db.get_product_deepseek_keys(product_id)
-            else:
-                keys = await db.get_product_openai_keys(product_id)
+            keys = await db.get_product_openai_keys(product_id)
             if len(_product_keys_cache) > 1024:
                 _product_keys_cache.clear()
-            _product_keys_cache[keys_key] = (now, keys)
+            _product_keys_cache[product_id] = (now, keys)
         if keys and keys.get("primary"):
-            cache_key = (product_id,
-                         _fingerprint(provider, base_url or "",
-                                      keys["primary"], keys.get("fallback")))
+            cache_key = (product_id, _fingerprint(keys["primary"], keys.get("fallback")))
             client = _product_clients.get(cache_key)
             if client is None:
-                # Drop stale entries for the same product (rotated keys or a
-                # provider/base_url switch).
+                # Drop stale entries for the same product (rotated keys).
                 for k in [k for k in _product_clients if k[0] == product_id]:
                     _product_clients.pop(k, None)
                 client = OpenAIClient(primary_key=keys["primary"],
                                       fallback_key=keys.get("fallback"),
-                                      key_source=f"product:{product_id}",
-                                      base_url=base_url)
+                                      key_source=f"product:{product_id}")
                 _product_clients[cache_key] = client
             return client
     return get_client()
@@ -720,7 +636,8 @@ def reset() -> None:
     a `model` write and on a product-keys write. (No effect on the OpenAI-side
     prefix cache.)
     """
-    _env_clients.clear()
+    global _client
+    _client = None
     _product_clients.clear()
     _product_keys_cache.clear()
     # Clear breaker state too: an operator changing model/keys is an explicit

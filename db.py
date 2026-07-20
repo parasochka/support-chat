@@ -717,14 +717,6 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         "player_api_key_enc TEXT",
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
         "retention_enabled BOOLEAN NOT NULL DEFAULT FALSE",
-        # Per-product DeepSeek API keys (encrypted at rest, like the OpenAI
-        # pair). Used when the product's `model` settings group selects the
-        # deepseek provider; without them the deploy env DEEPSEEK_API_KEY(_
-        # FALLBACK) applies.
-        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
-        "deepseek_key_primary_enc TEXT",
-        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
-        "deepseek_key_fallback_enc TEXT",
         # The Telegram user this session belongs to (nullable; the durable
         # tg<->player link lives in retention_users). Only set on telegram
         # sessions; web sessions leave it NULL.
@@ -1666,8 +1658,6 @@ def _row_to_product(row: asyncpg.Record) -> dict[str, Any]:
         "active": row["active"],
         "has_openai_key": row["openai_key_primary_enc"] is not None,
         "has_openai_key_fallback": row["openai_key_fallback_enc"] is not None,
-        "has_deepseek_key": row["deepseek_key_primary_enc"] is not None,
-        "has_deepseek_key_fallback": row["deepseek_key_fallback_enc"] is not None,
         "has_handshake_secret": row["handshake_secret_enc"] is not None,
         # Retention / Telegram config (secrets exposed as presence flags only).
         "has_telegram_bot_token": row["telegram_bot_token_enc"] is not None,
@@ -1690,7 +1680,6 @@ def _row_to_product(row: asyncpg.Record) -> dict[str, Any]:
 
 _PRODUCT_COLS = ("id, partner_id, slug, name, widget_key, active, "
                  "openai_key_primary_enc, openai_key_fallback_enc, "
-                 "deepseek_key_primary_enc, deepseek_key_fallback_enc, "
                  "handshake_secret_enc, telegram_bot_token_enc, "
                  "telegram_bot_username, telegram_webhook_secret, "
                  "telegram_channel_id, telegram_channel_url, player_api_url, "
@@ -1856,8 +1845,6 @@ UNSET: Any = object()
 async def set_product_secrets(product_id: int, *,
                               openai_key_primary: Any = UNSET,
                               openai_key_fallback: Any = UNSET,
-                              deepseek_key_primary: Any = UNSET,
-                              deepseek_key_fallback: Any = UNSET,
                               handshake_secret: Any = UNSET,
                               telegram_bot_token: Any = UNSET,
                               player_api_key: Any = UNSET,
@@ -1875,8 +1862,6 @@ async def set_product_secrets(product_id: int, *,
     args: list[Any] = []
     for col, val in (("openai_key_primary_enc", openai_key_primary),
                      ("openai_key_fallback_enc", openai_key_fallback),
-                     ("deepseek_key_primary_enc", deepseek_key_primary),
-                     ("deepseek_key_fallback_enc", deepseek_key_fallback),
                      ("handshake_secret_enc", handshake_secret),
                      ("telegram_bot_token_enc", telegram_bot_token),
                      ("player_api_key_enc", player_api_key),
@@ -2006,37 +1991,6 @@ async def get_product_openai_keys(product_id: int) -> Optional[dict[str, Optiona
     except secretbox.SecretBoxError:
         logging.getLogger(__name__).warning(
             "product_secret_undecryptable product_id=%s kind=openai "
-            "(SECRETS_MASTER_KEY rotated? re-enter the keys in the admin panel)",
-            product_id,
-        )
-        return None
-    return {"primary": primary, "fallback": fallback}
-
-
-async def get_product_deepseek_keys(product_id: int
-                                    ) -> Optional[dict[str, Optional[str]]]:
-    """Decrypted per-product DeepSeek keys, or None when the product has none.
-
-    Mirrors get_product_openai_keys: a decryption failure is logged and treated
-    as "no product keys" so the chat degrades to the env DEEPSEEK_API_KEY
-    fallback instead of hard-failing every turn.
-    """
-    import logging
-
-    import secretbox
-    row = await _pool.fetchrow(
-        "SELECT deepseek_key_primary_enc, deepseek_key_fallback_enc "
-        "FROM products WHERE id = $1", product_id,
-    )
-    if not row or row["deepseek_key_primary_enc"] is None:
-        return None
-    try:
-        primary = secretbox.decrypt(row["deepseek_key_primary_enc"])
-        fallback = (secretbox.decrypt(row["deepseek_key_fallback_enc"])
-                    if row["deepseek_key_fallback_enc"] else None)
-    except secretbox.SecretBoxError:
-        logging.getLogger(__name__).warning(
-            "product_secret_undecryptable product_id=%s kind=deepseek "
             "(SECRETS_MASTER_KEY rotated? re-enter the keys in the admin panel)",
             product_id,
         )

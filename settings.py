@@ -163,47 +163,20 @@ def antispam() -> dict[str, Any]:
     }
 
 
-# The selectable model providers. Both speak the OpenAI-compatible
-# chat.completions protocol; they differ in base_url, keys and request shape.
-MODEL_PROVIDERS = ("openai", "deepseek")
+def model() -> dict[str, Any]:
+    """Resolved OpenAI tuning knobs: app_settings override over env defaults.
 
-# Fields of a per-provider config the client machinery interprets itself.
-# Anything ELSE in the config JSON is passed to chat.completions.create
-# verbatim (`extra_params`) — the free-form seam for per-model parameters
-# (temperature, top_p, …) that differ from model to model.
-_MODEL_KNOWN_FIELDS = frozenset({
-    "model", "reasoning_effort", "verbosity", "base_url", "pricing",
-    "max_output_tokens", "request_timeout_sec", "key_switch_timeout_sec",
-    "max_attempts", "max_concurrent_per_key",
-})
-
-
-def _model_provider_config(db_v: dict[str, Any], provider: str) -> dict[str, Any]:
-    """The EFFECTIVE config for one provider: stored JSON over legacy/env defaults.
-
-    For openai the legacy flat `model` group fields (pre-provider-split rows)
-    still act as a middle layer, so an old stored override keeps working; for
-    deepseek only its own JSON + env defaults apply (the flat infra knobs —
-    timeouts, attempts, concurrency — are provider-agnostic and shared).
+    Read live by `openai_client` on every call (model/reasoning_effort/verbosity/
+    max tokens/switch timeout/attempts) so edits are hot. `request_timeout_sec` and
+    `max_concurrent_per_key` are bound when the client is constructed, so the
+    admin write also calls `openai_client.reset()` to rebuild it.
     """
-    cfg = db_v.get(f"{provider}_config")
-    cfg = dict(cfg) if isinstance(cfg, dict) else {}
-    if provider == "deepseek":
-        base: dict[str, Any] = {
-            "model": config.DEEPSEEK_MODEL,
-            "reasoning_effort": "",
-            "verbosity": "",
-            "base_url": config.DEEPSEEK_BASE_URL,
-        }
-    else:
-        base = {
-            "model": db_v.get("model", config.OPENAI_MODEL),
-            "reasoning_effort": db_v.get("reasoning_effort",
-                                         config.OPENAI_REASONING_EFFORT),
-            "verbosity": db_v.get("verbosity", config.OPENAI_VERBOSITY),
-            "base_url": "",
-        }
-    base.update({
+    db_v = _group("model")
+    return {
+        "model": db_v.get("model", config.OPENAI_MODEL),
+        "reasoning_effort": db_v.get("reasoning_effort",
+                                     config.OPENAI_REASONING_EFFORT),
+        "verbosity": db_v.get("verbosity", config.OPENAI_VERBOSITY),
         "max_output_tokens": db_v.get("max_output_tokens",
                                       config.OPENAI_MAX_OUTPUT_TOKENS),
         "request_timeout_sec": db_v.get("request_timeout_sec",
@@ -213,68 +186,6 @@ def _model_provider_config(db_v: dict[str, Any], provider: str) -> dict[str, Any
         "max_attempts": db_v.get("max_attempts", config.OPENAI_MAX_ATTEMPTS),
         "max_concurrent_per_key": db_v.get("max_concurrent_per_key",
                                            config.OPENAI_MAX_CONCURRENT_PER_KEY),
-    })
-    base.update(cfg)
-    return base
-
-
-def model() -> dict[str, Any]:
-    """Resolved model tuning knobs for the ACTIVE provider (openai | deepseek).
-
-    Resolution: the provider's config JSON (`openai_config` / `deepseek_config`,
-    product layer over global like every group) → legacy flat fields (openai
-    only) → env → default. The flat keys the callers read (model, budgets,
-    timeouts) keep their historical names, so `openai_client`/`chat_service`
-    needed no signature churn; new keys:
-
-      provider          — the active provider name
-      base_url          — API endpoint ("" = the SDK default, i.e. OpenAI)
-      extra_params      — unrecognized config keys, sent to the API verbatim
-      pricing_overrides — {model_name: (in, cached_in, out) USD per 1M tokens}
-                          from the configs' optional `pricing` blocks
-      openai_config / deepseek_config — the full effective per-provider configs
-                          (what the admin JSON editors display and round-trip)
-
-    Read live by `openai_client` on every call so edits are hot;
-    `request_timeout_sec`/`max_concurrent_per_key` are bound at client build, so
-    the admin write also calls `openai_client.reset()`.
-    """
-    db_v = _group("model")
-    provider = str(db_v.get("provider", config.MODEL_PROVIDER) or "openai")
-    if provider not in MODEL_PROVIDERS:
-        provider = "openai"
-    openai_cfg = _model_provider_config(db_v, "openai")
-    deepseek_cfg = _model_provider_config(db_v, "deepseek")
-    active = deepseek_cfg if provider == "deepseek" else openai_cfg
-    extra = {k: v for k, v in active.items() if k not in _MODEL_KNOWN_FIELDS}
-    pricing_overrides: dict[str, tuple[float, float, float]] = {}
-    for cfgd in (openai_cfg, deepseek_cfg):
-        pr = cfgd.get("pricing")
-        mdl = cfgd.get("model")
-        if isinstance(pr, dict) and isinstance(mdl, str) and mdl:
-            try:
-                pricing_overrides[mdl] = (
-                    float(pr.get("input_per_1m", 0.0)),
-                    float(pr.get("cached_input_per_1m", 0.0)),
-                    float(pr.get("output_per_1m", 0.0)),
-                )
-            except (TypeError, ValueError):
-                pass  # bad stored junk must never break a live turn
-    return {
-        "provider": provider,
-        "model": active.get("model") or config.OPENAI_MODEL,
-        "reasoning_effort": active.get("reasoning_effort", ""),
-        "verbosity": active.get("verbosity", ""),
-        "max_output_tokens": active["max_output_tokens"],
-        "request_timeout_sec": active["request_timeout_sec"],
-        "key_switch_timeout_sec": active["key_switch_timeout_sec"],
-        "max_attempts": active["max_attempts"],
-        "max_concurrent_per_key": active["max_concurrent_per_key"],
-        "base_url": active.get("base_url") or "",
-        "extra_params": extra,
-        "pricing_overrides": pricing_overrides,
-        "openai_config": openai_cfg,
-        "deepseek_config": deepseek_cfg,
     }
 
 
@@ -645,71 +556,6 @@ def _require_choice(d: dict, field: str, choices: tuple[str, ...],
             raise ValueError(f"{field} must be one of: {allowed}")
 
 
-# Keys that must NEVER ride in a provider config JSON: API keys are secrets
-# (env / encrypted product secrets, never plaintext app_settings) and
-# `messages` is the request payload itself.
-_MODEL_CONFIG_BANNED = ("api_key", "api_keys", "api_key_fallback", "messages")
-_MODEL_CONFIG_MAX_JSON = 20_000  # chars, serialized — a config is a page, not a dump
-
-
-def _validate_model_config(cfg: Any, label: str) -> dict[str, Any]:
-    """Validate one provider config JSON (`openai_config` / `deepseek_config`).
-
-    Known infra fields get the same bounds as the legacy flat fields; `pricing`
-    is an optional {input_per_1m, cached_input_per_1m, output_per_1m} block
-    (USD per 1M tokens) used by cost accounting for models not in the built-in
-    price table; everything else is passed to the API verbatim, so it is only
-    checked for size and for smuggled secrets.
-    """
-    import json as _json
-    if not isinstance(cfg, dict):
-        raise ValueError(f"{label} must be a JSON object")
-    for banned in _MODEL_CONFIG_BANNED:
-        if banned in cfg:
-            raise ValueError(
-                f"{label} must not contain {banned!r} — API keys belong in env "
-                "or the product's encrypted secrets (Structure tab), never in "
-                "settings")
-    try:
-        serialized = _json.dumps(cfg)
-    except (TypeError, ValueError):
-        raise ValueError(f"{label} must be JSON-serializable")
-    if len(serialized) > _MODEL_CONFIG_MAX_JSON:
-        raise ValueError(f"{label} is too large "
-                         f"(max {_MODEL_CONFIG_MAX_JSON} chars serialized)")
-    _require_nonempty_str(cfg, "model")
-    # "minimal"/"low"/"medium"/"high" are the OpenAI GPT-5 tiers; "max" is
-    # DeepSeek V4's top thinking tier (its two levels are "high" and "max").
-    _require_choice(cfg, "reasoning_effort",
-                    ("minimal", "low", "medium", "high", "max"),
-                    allow_empty=True)
-    _require_choice(cfg, "verbosity", ("low", "medium", "high"),
-                    allow_empty=True)
-    _require_int(cfg, "max_output_tokens", 1, 128_000)
-    _require_int(cfg, "request_timeout_sec", 1, 600)
-    _require_int(cfg, "key_switch_timeout_sec", 1, 600)
-    _require_int(cfg, "max_attempts", 1, 10)
-    _require_int(cfg, "max_concurrent_per_key", 1, 1_000)
-    if "base_url" in cfg:
-        v = cfg["base_url"]
-        if not isinstance(v, str):
-            raise ValueError("base_url must be a string")
-        if v and not v.startswith(("http://", "https://")):
-            raise ValueError("base_url must be an http(s) URL (or empty)")
-    if "pricing" in cfg:
-        pr = cfg["pricing"]
-        if not isinstance(pr, dict):
-            raise ValueError(f"{label}.pricing must be a JSON object")
-        for pf in ("input_per_1m", "cached_input_per_1m", "output_per_1m"):
-            _require_float(pr, pf, 0.0, 100_000.0)
-        unknown = set(pr) - {"input_per_1m", "cached_input_per_1m",
-                             "output_per_1m"}
-        if unknown:
-            raise ValueError(
-                f"{label}.pricing has unknown fields: {', '.join(sorted(unknown))}")
-    return cfg
-
-
 def validate_setting(key: str, value: Any) -> dict[str, Any]:
     """Validate a settings write. Returns the value on success; raises ValueError."""
     if key not in SETTING_KEYS:
@@ -727,7 +573,6 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_bool(value, "low_content_block")
         _require_int(value, "min_meaningful_chars", 1, 100)
     elif key == "model":
-        _require_choice(value, "provider", MODEL_PROVIDERS)
         _require_nonempty_str(value, "model")
         # GPT-5 reasoning knobs; "" ⇒ omit the parameter (use model default).
         # "minimal" is the GPT-5 family's lowest tier — almost no hidden reasoning
@@ -741,10 +586,6 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "key_switch_timeout_sec", 1, 600)
         _require_int(value, "max_attempts", 1, 10)
         _require_int(value, "max_concurrent_per_key", 1, 1_000)
-        for prov in MODEL_PROVIDERS:
-            fkey = f"{prov}_config"
-            if fkey in value:
-                value[fkey] = _validate_model_config(value[fkey], fkey)
     elif key == "general":
         _require_int(value, "session_ttl_hours", 1, 8_760)        # <= 1 year
         _require_int(value, "admin_token_ttl_min", 5, 10_080)     # 5 min..1 week
