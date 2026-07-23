@@ -1102,9 +1102,15 @@ checklist lives in the admin — the **Retention → How it works** page.
   under the SAME advisory lock as the sweep, deduped per product), so new media is
   delivery-ready in moments — the periodic sweep stays as the catch-up. Knobs in the hot
   `retention` group (`media_normalize_enabled` per product;
-  `media_normalize_interval_sec` global-only — one loop serves every product); the Media tab's
-  «Optimize» button (`POST /admin/retention/photos/normalize`) runs one product's sweep
-  immediately, bypassing the enabled switch. Requires `Pillow` (requirements.txt). Tests:
+  `media_normalize_interval_sec` global-only — one loop serves every product);
+  `POST /admin/retention/photos/normalize` runs one product's sweep immediately, bypassing the
+  enabled switch (API-only — the Media tab's «Optimize» button was removed once uploads started
+  normalizing automatically right after upload, the hourly sweep staying as the catch-up). The
+  upload request body is capped by `RETENTION_MAX_UPLOAD_BYTES` (deploy env, default 512 MiB —
+  sized for raw video originals); `/admin/meta` exposes it as `retention_max_upload_bytes` and
+  the SPA pre-checks the selected files against it, because an over-cap 413 aborts the
+  connection mid-upload and the browser reports only an opaque «failed to fetch».
+  Requires `Pillow` (requirements.txt). Tests:
   `tests/test_media_normalizer.py`. **Upload is bulk-friendly** (`POST /admin/retention/photos` takes any number
   of `files` — photos AND videos, `media_type` set by extension — in one request; the single `file` field stays for older consumers) and metadata is
   **AI-generated on demand**: `POST /admin/retention/photos/generate-metadata` (`{ids: […]}`,

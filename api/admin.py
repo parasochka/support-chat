@@ -92,6 +92,10 @@ async def meta(product_id: Optional[int] = None,
                                            key=lambda kv: kv[1])],
         "model_pricing": {"model": mdl,
                           "pricing": openai_client.pricing_for_model(mdl)},
+        # Media-upload body cap: the SPA pre-checks file sizes against it so an
+        # oversized video gets a clear error instead of the browser's bare
+        # "failed to fetch" (a 413 mid-upload aborts the connection).
+        "retention_max_upload_bytes": config.RETENTION_MAX_UPLOAD_BYTES,
     })
 
 

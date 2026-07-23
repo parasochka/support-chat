@@ -610,14 +610,12 @@ const RU = {
   'Select all': 'Выбрать все',
   'Generating…': 'Генерация…',
   'Generating metadata…': 'Генерация метаданных…',
-  'Optimize': 'Оптимизировать',
-  'Optimizing…': 'Оптимизация…',
-  'Optimizing media… this can take a while, keep this tab open.':
-    'Оптимизация медиа… это может занять время, не закрывайте вкладку.',
   "AI (the product's own model + API key) fills the description, tags, stage and minimum VIP level for every selected photo. Current values are overwritten.":
     'ИИ (модель и API-ключ самого продукта) заполняет описание, теги, stage и минимальный VIP-уровень для каждого выбранного фото. Текущие значения перезаписываются.',
-  'Re-encodes heavy uploads (multi-MB JPG/PNG) to Telegram-sized WebP and deletes the originals. Runs automatically on a schedule — this is the immediate run.':
-    'Пережимает тяжёлые загрузки (JPG/PNG в несколько МБ) в WebP размера Telegram и удаляет оригиналы. Запускается автоматически по расписанию — эта кнопка запускает сейчас.',
+  'Selected files total {mb} MB — over the {cap} MB upload limit. Upload fewer files at once.':
+    'Выбранные файлы весят {mb} МБ — больше лимита загрузки {cap} МБ. Загрузите меньше файлов за раз.',
+  'Upload failed — connection interrupted. The files may exceed the server upload limit.':
+    'Не удалось загрузить — соединение прервано. Возможно, файлы превышают лимит загрузки на сервере.',
   'Delete this manager?': 'Удалить этого менеджера?',
   'Display name': 'Отображаемое имя',
   'Telegram username (without @)': 'Username в Telegram (без @)',
@@ -1153,10 +1151,6 @@ const RU = {
   'admin may edit within the scope; manager is read-only.':
     'admin может редактировать в пределах области; manager — только чтение.',
 
-  // ----- Media normalizer -----
-  'Media normalized: {n} converted, {f} failed, {mb} MB freed':
-    'Медиа нормализовано: {n} сконвертировано, {f} с ошибкой, освобождено {mb} МБ',
-
   // ----- API keys page -----
   'Global (everything)': 'Глобально (всё)',
   'Partner (all its products)': 'Партнёр (все его продукты)',
@@ -1297,8 +1291,8 @@ const RU = {
   'The periodic sweep re-encodes heavy uploads (multi-MB JPG/PNG) to WebP at Telegram-appropriate dimensions and DELETES the heavy originals — Telegram re-compresses photos anyway, so the originals only burn storage. GIFs are left alone.':
     'Периодический проход пережимает тяжёлые загрузки (JPG/PNG в несколько МБ) в WebP под размеры Telegram и УДАЛЯЕТ тяжёлые оригиналы — Telegram всё равно пережимает фото, так что оригиналы только занимают место. GIF не трогаются.',
   'Normalize sweep interval (sec)': 'Интервал прохода нормализации (сек)',
-  'How often the media sweep runs — ONE loop serves every product, so this is a deploy-wide (global) setting. Default 3600 (hourly). The «Normalize now» button on the Media tab runs one product immediately.':
-    'Как часто выполняется проход нормализации — ОДИН цикл обслуживает все продукты, поэтому это общесистемная (глобальная) настройка. По умолчанию 3600 (раз в час). Кнопка «Нормализовать сейчас» на вкладке «Медиа» запускает один продукт немедленно.',
+  'How often the media sweep runs — ONE loop serves every product, so this is a deploy-wide (global) setting. Default 3600 (hourly). New uploads are also normalized immediately in the background; the sweep is the catch-up.':
+    'Как часто выполняется проход нормализации — ОДИН цикл обслуживает все продукты, поэтому это общесистемная (глобальная) настройка. По умолчанию 3600 (раз в час). Новые загрузки нормализуются сразу в фоне; проход — это подстраховка.',
   'Max photo side (px)': 'Макс. сторона фото (px)',
   'Longest side after normalization. Telegram re-compresses photos to ~2560 px anyway, so the default 2560 keeps full delivered quality at a fraction of the original file size.':
     'Самая длинная сторона после нормализации. Telegram всё равно пережимает фото до ~2560 px, так что значение по умолчанию 2560 сохраняет полное качество доставки при заметно меньшем размере файла.',

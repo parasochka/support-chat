@@ -407,10 +407,15 @@ RETENTION_MEDIA_DIR: str = _env("RETENTION_MEDIA_DIR",
 # this env value is the default.
 RETENTION_NONCE_TTL_SEC: int = _env_int("RETENTION_NONCE_TTL_SEC", 120)
 # Max size of a retention media upload (bytes). The JSON body cap (BODY_MAX_BYTES,
-# 64 KiB) is far too small for an image, so the media-upload path uses this cap
-# instead (see main.body_size_cap). Default 10 MiB.
+# 64 KiB) is far too small for media, so the media-upload path uses this cap
+# instead (see main.body_size_cap). Default 512 MiB: the library takes VIDEOS
+# too, and a raw phone video original runs to hundreds of MB (the normalizer
+# transcodes it down before anything reaches Telegram). NB a 413 on this cap
+# aborts the connection mid-upload, which browsers surface as a bare network
+# error — the SPA pre-checks file sizes against this value (via /admin/meta)
+# to give the operator a real message instead.
 RETENTION_MAX_UPLOAD_BYTES: int = _env_int("RETENTION_MAX_UPLOAD_BYTES",
-                                           10 * 1024 * 1024)
+                                           512 * 1024 * 1024)
 # Photo-progression / proactivity knobs — env defaults for the `retention`
 # settings group (hot-reloadable per product from the admin panel).
 RETENTION_DAILY_PHOTO_CAP: int = _env_int("RETENTION_DAILY_PHOTO_CAP", 5)
