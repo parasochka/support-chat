@@ -6,6 +6,7 @@ import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
 import Checkbox from '@mui/material/Checkbox';
 import Chip from '@mui/material/Chip';
+import IconButton from '@mui/material/IconButton';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Grid from '@mui/material/Grid';
 import MenuItem from '@mui/material/MenuItem';
@@ -16,6 +17,7 @@ import Typography from '@mui/material/Typography';
 import LinearProgress from '@mui/material/LinearProgress';
 import Tooltip from '@mui/material/Tooltip';
 import CheckCircleOutlinedIcon from '@mui/icons-material/CheckCircleOutlined';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { API_URL, httpClient, getToken } from '../../httpClient';
 import rich from '../../components/Rich';
 import { t } from '../../i18n';
@@ -65,6 +67,44 @@ const uploadWithProgress = (url, formData, onProgress) =>
   });
 
 const fmtMb = (bytes) => (bytes / (1024 * 1024)).toFixed(1);
+// '—' (not "0 MB") while /admin/meta hasn't answered — the tooltip must never
+// state a limit it doesn't know.
+const mbInt = (bytes) => (bytes ? Math.round(bytes / (1024 * 1024)) : '—');
+
+// Read a file's pixel dimensions in the browser (no upload). Resolves null on a
+// decode error so a corrupt/unsupported file falls through to the server rather
+// than blocking on a phantom resolution check.
+const readImageSize = (file) =>
+  new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve({ w: img.naturalWidth, h: img.naturalHeight });
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(null);
+    };
+    img.src = url;
+  });
+
+// Read a video's duration (seconds) from its metadata, without uploading.
+const readVideoDuration = (file) =>
+  new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.onloadedmetadata = () => {
+      URL.revokeObjectURL(url);
+      resolve(Number.isFinite(v.duration) ? v.duration : null);
+    };
+    v.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(null);
+    };
+    v.src = url;
+  });
 
 // Has this row been through the media normalizer? Mirrors the backend's own
 // done-markers: a video is normalized exactly once to `.tg.mp4`
@@ -95,10 +135,15 @@ const PhotosTab = ({ productId }) => {
   // { done, total } while a metadata batch runs — drives the determinate
   // progress bar so the operator sees it moving and knows it hasn't stalled.
   const [genProgress, setGenProgress] = useState(null);
-  // Server-side body cap for the upload request. A request over it is aborted
-  // mid-upload (413), which the browser reports as a bare "failed to fetch" —
-  // pre-checking here is the only way to give the operator a real message.
-  const [uploadCap, setUploadCap] = useState(null);
+  // Upload limits from /admin/meta: the whole-request body cap (a request over
+  // it is aborted mid-upload as a 413, which the browser reports as a bare
+  // "failed to fetch") plus the per-file caps (size by type + photo resolution +
+  // video duration) validated in the browser before the upload starts.
+  const [limits, setLimits] = useState(null);
+  // [{ name, error }] for files that fail a per-file limit — upload is blocked
+  // while non-empty; recomputed on every file selection.
+  const [fileErrors, setFileErrors] = useState([]);
+  const [validating, setValidating] = useState(false);
   const [filters, setFilters] = useState({ q: '', stage: 'all', level: 'all', status: 'all', type: 'all' });
   const [page, setPage] = useState(1);
   // The product's real gate ranges — Stage 1..maxStage, Level 0..tiers-1 — so
@@ -130,25 +175,90 @@ const PhotosTab = ({ productId }) => {
 
   useEffect(() => {
     httpClient(`${API_URL}/admin/meta`)
-      .then(({ json }) => setUploadCap(json?.retention_max_upload_bytes || null))
+      .then(({ json }) =>
+        setLimits({
+          batchBytes: json?.retention_max_upload_bytes || null,
+          photoBytes: json?.retention_max_photo_bytes || null,
+          photoSidePx: json?.retention_max_photo_side_px || null,
+          videoBytes: json?.retention_max_video_bytes || null,
+          videoDurationSec: json?.retention_max_video_duration_sec || null,
+        })
+      )
       .catch(() => {});
   }, []);
+
+  // Validate one file against the per-file limits (size by type, then photo
+  // resolution / video duration read in the browser). Returns an error string
+  // or null.
+  const validateFile = async (f) => {
+    const isVideo = VIDEO_EXT_RE.test(f.name || '') || (f.type || '').startsWith('video/');
+    if (isVideo) {
+      if (limits?.videoBytes && f.size > limits.videoBytes) {
+        return t('“{name}” is {mb} MB — over the {cap} MB limit per video.')
+          .replace('{name}', f.name).replace('{mb}', fmtMb(f.size)).replace('{cap}', mbInt(limits.videoBytes));
+      }
+      if (limits?.videoDurationSec) {
+        const dur = await readVideoDuration(f);
+        // +0.5s tolerance: a nominal 60s clip often reads as 60.0x.
+        if (dur != null && dur > limits.videoDurationSec + 0.5) {
+          return t('“{name}” is {sec}s long — over the {cap}s limit per video.')
+            .replace('{name}', f.name).replace('{sec}', Math.round(dur)).replace('{cap}', limits.videoDurationSec);
+        }
+      }
+      return null;
+    }
+    if (limits?.photoBytes && f.size > limits.photoBytes) {
+      return t('“{name}” is {mb} MB — over the {cap} MB limit per photo.')
+        .replace('{name}', f.name).replace('{mb}', fmtMb(f.size)).replace('{cap}', mbInt(limits.photoBytes));
+    }
+    if (limits?.photoSidePx) {
+      const size = await readImageSize(f);
+      if (size && Math.max(size.w, size.h) > limits.photoSidePx) {
+        return t('“{name}” is {px}px — over the {cap}px max side per photo.')
+          .replace('{name}', f.name).replace('{px}', Math.max(size.w, size.h)).replace('{cap}', limits.photoSidePx);
+      }
+    }
+    return null;
+  };
+
+  const onFilesChosen = async (list) => {
+    setFiles(list);
+    setFileErrors([]);
+    if (!list.length || !limits) return;
+    setValidating(true);
+    const errs = [];
+    for (const f of list) {
+      // Sequential on purpose — a huge multi-file selection shouldn't spawn a
+      // decode for every file at once.
+      // eslint-disable-next-line no-await-in-loop
+      const err = await validateFile(f);
+      if (err) errs.push({ name: f.name, error: err });
+    }
+    setFileErrors(errs);
+    setValidating(false);
+  };
 
   const stageChoices = Array.from({ length: gate.maxStage }, (_, i) => i + 1);
   const levelChoices = gate.tiers.map((t, i) => ({ value: i, label: `${i} · ${t}` }));
 
   const doUpload = async () => {
     if (!files.length) return;
-    // The cap bounds the WHOLE request body — reject up front, because the
+    // A per-file limit failed — block (the button is also disabled, this is the
+    // belt-and-suspenders for a programmatic call).
+    if (fileErrors.length) {
+      notify(t('Some files exceed the upload limits — fix the selection first.'), { type: 'error' });
+      return;
+    }
+    // The batch cap bounds the WHOLE request body — reject up front, because the
     // server's 413 aborts the connection mid-upload and the browser only
     // reports an opaque network error.
-    if (uploadCap) {
+    if (limits?.batchBytes) {
       const total = files.reduce((sum, f) => sum + (f.size || 0), 0);
-      if (total > uploadCap) {
+      if (total > limits.batchBytes) {
         notify(
           t('Selected files total {mb} MB — over the {cap} MB upload limit. Upload fewer files at once.')
             .replace('{mb}', (total / (1024 * 1024)).toFixed(0))
-            .replace('{cap}', (uploadCap / (1024 * 1024)).toFixed(0)),
+            .replace('{cap}', (limits.batchBytes / (1024 * 1024)).toFixed(0)),
           { type: 'error' }
         );
         return;
@@ -194,6 +304,7 @@ const PhotosTab = ({ productId }) => {
       }
       notify(msg, { type: 'success' });
       setFiles([]);
+      setFileErrors([]);
       load();
     } catch (e) {
       // Network failure: without this the rejection escapes the click handler
@@ -415,7 +526,7 @@ const PhotosTab = ({ productId }) => {
               />
             </Grid>
           </Grid>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
             <Button variant="outlined" component="label">
               {files.length
                 ? t('{n} files chosen').replace('{n}', files.length)
@@ -425,13 +536,58 @@ const PhotosTab = ({ productId }) => {
                 type="file"
                 accept="image/*,video/*"
                 multiple
-                onChange={(e) => setFiles([...e.target.files])}
+                onChange={(e) => onFilesChosen([...e.target.files])}
               />
             </Button>
-            <Button variant="contained" onClick={doUpload} disabled={!files.length || uploading || readOnly}>
+            <Button
+              variant="contained"
+              onClick={doUpload}
+              disabled={!files.length || uploading || readOnly || validating || fileErrors.length > 0}
+            >
               {uploading ? t('Uploading…') : t('Upload')}
             </Button>
+            <Tooltip
+              title={
+                <Box sx={{ py: 0.5 }}>
+                  <Typography variant="caption" component="div" sx={{ fontWeight: 700, mb: 0.5 }}>
+                    {t('Upload limits')}
+                  </Typography>
+                  <Typography variant="caption" component="div">
+                    {t('Photo: up to {mb} MB, max side {px}px')
+                      .replace('{mb}', mbInt(limits?.photoBytes))
+                      .replace('{px}', limits?.photoSidePx ?? '—')}
+                  </Typography>
+                  <Typography variant="caption" component="div">
+                    {t('Video: up to {mb} MB, up to {sec}s')
+                      .replace('{mb}', mbInt(limits?.videoBytes))
+                      .replace('{sec}', limits?.videoDurationSec ?? '—')}
+                  </Typography>
+                  <Typography variant="caption" component="div">
+                    {t('All files in one upload: up to {mb} MB')
+                      .replace('{mb}', mbInt(limits?.batchBytes))}
+                  </Typography>
+                </Box>
+              }
+            >
+              <IconButton size="small" aria-label={t('Upload limits')}>
+                <InfoOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            {validating && (
+              <Typography variant="caption" color="text.secondary">
+                {t('Checking files…')}
+              </Typography>
+            )}
           </Stack>
+          {fileErrors.length > 0 && (
+            <Box sx={{ mt: 1 }}>
+              {fileErrors.map((fe) => (
+                <Typography key={fe.name} variant="caption" color="error" component="div">
+                  {fe.error}
+                </Typography>
+              ))}
+            </Box>
+          )}
           {/* Upload progress — determinate while the bytes stream out (video
               batches run to hundreds of MB), switching to an indeterminate
               "processing" bar once the body is sent and the server is writing

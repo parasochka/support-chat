@@ -1083,7 +1083,7 @@ checklist lives in the admin — the **Retention → How it works** page.
   every photo to ~2560px anyway, so a periodic sweep (hourly by default; own asyncio task from
   `main.py` lifespan under the same `RETENTION_SCHEDULER_ENABLED` switch, own advisory lock)
   re-encodes every .jpg/.png (and any oversized .webp) to WebP at
-  `retention.media_max_side_px` (default 2560) × `media_webp_quality` (90), re-points the row
+  `RETENTION_MEDIA_MAX_SIDE_PX` (default 2560) × `RETENTION_MEDIA_WEBP_QUALITY` (90), re-points the row
   (`db.set_retention_photo_storage_ref`) and **deletes the heavy original** — GIFs are left alone
   (possibly animated), the cached `telegram_file_id` is KEPT (the already-uploaded copy stays
   valid), and the row is re-pointed BEFORE the delete so a crash can orphan a file but never break
@@ -1100,17 +1100,30 @@ checklist lives in the admin — the **Retention → How it works** page.
   never starves the serving process. **Normalization also runs IMMEDIATELY after an upload**: the
   upload endpoint fires `media_normalizer.schedule_product_normalization` (a background task
   under the SAME advisory lock as the sweep, deduped per product), so new media is
-  delivery-ready in moments — the periodic sweep stays as the catch-up. Knobs in the hot
-  `retention` group (`media_normalize_enabled` per product;
-  `media_normalize_interval_sec` global-only — one loop serves every product);
-  `POST /admin/retention/photos/normalize` runs one product's sweep immediately, bypassing the
-  enabled switch (API-only — the Media tab's «Optimize» button was removed once uploads started
-  normalizing automatically right after upload, the hourly sweep staying as the catch-up). The
-  upload request body is capped by `RETENTION_MAX_UPLOAD_BYTES` (deploy env, default 512 MiB —
-  sized for raw video originals); `/admin/meta` exposes it as `retention_max_upload_bytes` and
-  the SPA pre-checks the selected files against it, because an over-cap 413 aborts the
-  connection mid-upload and the browser reports only an opaque «failed to fetch».
-  Requires `Pillow` (requirements.txt). Tests:
+  delivery-ready in moments — the periodic sweep stays as the catch-up. **Normalization is
+  ALWAYS ON and fully code-owned — there is deliberately NO admin knob and NO on/off switch**
+  (the whole sweep loop is still gated by the deploy-wide `RETENTION_SCHEDULER_ENABLED`, which
+  governs every background worker). Every parameter is a deploy-level constant in `config.py`:
+  `RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC` (sweep cadence), the photo target
+  (`RETENTION_MEDIA_MAX_SIDE_PX` / `RETENTION_MEDIA_WEBP_QUALITY`) and the video target
+  (`RETENTION_MEDIA_VIDEO_*`). The `retention` settings group and the admin Settings tab no
+  longer carry any `media_*` normalization field. `POST /admin/retention/photos/normalize`
+  runs one product's sweep immediately (API-only — no UI button; the always-on sweep + the
+  post-upload run make it unnecessary). **Upload limits.** The whole request body is capped by
+  `RETENTION_MAX_UPLOAD_BYTES` (deploy env, default 512 MiB — sized for raw video originals),
+  and each file is bounded by type: `RETENTION_MAX_PHOTO_BYTES` (10 MiB) +
+  `RETENTION_MAX_PHOTO_SIDE_PX` (8000 px longest side) for photos, `RETENTION_MAX_VIDEO_BYTES`
+  (100 MiB) + `RETENTION_MAX_VIDEO_DURATION_SEC` (60 s) for videos. `/admin/meta` exposes all of
+  them (`retention_max_upload_bytes`, `retention_max_photo_bytes`, `retention_max_photo_side_px`,
+  `retention_max_video_bytes`, `retention_max_video_duration_sec`); the SPA Media tab lists them
+  in an info-(i) tooltip beside «Upload» and validates every selected file BEFORE uploading —
+  size by type + photo resolution (`Image`) + video duration (`<video>` metadata), read in the
+  browser — blocking the upload with a per-file error. The server ALSO enforces the per-file
+  byte caps in `create_photo` (before any file is written, so one over-cap file rejects the
+  batch); the resolution/duration caps stay a client-side guard (verifying them server-side
+  would mean decoding every upload, and the Media tab is admin-only). The batch cap matters
+  because an over-cap 413 aborts the connection mid-upload and the browser reports only an
+  opaque «failed to fetch». Requires `Pillow` (requirements.txt). Tests:
   `tests/test_media_normalizer.py`. **Upload is bulk-friendly** (`POST /admin/retention/photos` takes any number
   of `files` — photos AND videos, `media_type` set by extension — in one request; the single `file` field stays for older consumers) and metadata is
   **AI-generated on demand**: `POST /admin/retention/photos/generate-metadata` (`{ids: […]}`,

@@ -96,6 +96,13 @@ async def meta(product_id: Optional[int] = None,
         # oversized video gets a clear error instead of the browser's bare
         # "failed to fetch" (a 413 mid-upload aborts the connection).
         "retention_max_upload_bytes": config.RETENTION_MAX_UPLOAD_BYTES,
+        # Per-file media limits — the SPA validates each file (size by type +
+        # photo resolution + video duration) before uploading and lists them in
+        # the Media tab's info tooltip. Server-side enforces the byte sizes.
+        "retention_max_photo_bytes": config.RETENTION_MAX_PHOTO_BYTES,
+        "retention_max_photo_side_px": config.RETENTION_MAX_PHOTO_SIDE_PX,
+        "retention_max_video_bytes": config.RETENTION_MAX_VIDEO_BYTES,
+        "retention_max_video_duration_sec": config.RETENTION_MAX_VIDEO_DURATION_SEC,
     })
 
 

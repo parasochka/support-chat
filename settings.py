@@ -54,8 +54,7 @@ SETTING_KEYS = ("escalation", "language", "antispam", "model", "general",
 # otherwise the Settings editor happily stores a value the runtime never reads
 # (the "I changed the worker interval and nothing happened" trap).
 GLOBAL_ONLY_FIELDS: dict[str, frozenset[str]] = {
-    "retention": frozenset({"worker_interval_sec",
-                            "media_normalize_interval_sec"}),
+    "retention": frozenset({"worker_interval_sec"}),
     "general": frozenset({"admin_token_ttl_min", "body_max_bytes"}),
 }
 
@@ -474,17 +473,9 @@ def retention() -> dict[str, Any]:
         # calls the sweep every tick; this throttles the rule evaluation).
         "idle_sweep_interval_sec": db_v.get(
             "idle_sweep_interval_sec", config.RETENTION_IDLE_SWEEP_INTERVAL_SEC),
-        # Media normalizer: the periodic sweep re-encoding uploaded photos to
-        # WebP at Telegram-appropriate dimensions (heavy originals deleted).
-        "media_normalize_enabled": db_v.get(
-            "media_normalize_enabled", config.RETENTION_MEDIA_NORMALIZE_ENABLED),
-        "media_normalize_interval_sec": db_v.get(
-            "media_normalize_interval_sec",
-            config.RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC),
-        "media_max_side_px": db_v.get("media_max_side_px",
-                                      config.RETENTION_MEDIA_MAX_SIDE_PX),
-        "media_webp_quality": db_v.get("media_webp_quality",
-                                       config.RETENTION_MEDIA_WEBP_QUALITY),
+        # NB: media-normalizer knobs (max side / WebP quality / sweep interval /
+        # enabled) are deliberately NOT here — normalization is always-on and
+        # fully code-owned (config.RETENTION_MEDIA_*), with no admin surface.
         # Which canonical events may wake the agent (the Decisions pipeline);
         # everything else stays state food. None/absent = the built-in set
         # (retention_v2.DECISION_EVENTS); bet_settled is special-cased on the
@@ -641,10 +632,6 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
             raise ValueError("v2_send_delay_max_sec must be >= v2_send_delay_min_sec")
         _require_bool(value, "idle_pings_enabled")
         _require_int(value, "idle_sweep_interval_sec", 60, 86_400)
-        _require_bool(value, "media_normalize_enabled")
-        _require_int(value, "media_normalize_interval_sec", 300, 86_400)
-        _require_int(value, "media_max_side_px", 512, 4_096)
-        _require_int(value, "media_webp_quality", 40, 100)
         if value.get("v2_decision_events") is not None:
             import player_sync  # lazy: avoid an import cycle at module load
             v = value["v2_decision_events"]
