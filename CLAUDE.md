@@ -1056,11 +1056,21 @@ checklist lives in the admin — the **Retention → How it works** page.
   cache serve both; the delivery path (`retention._send_photo`) picks
   `sendPhoto`/`sendVideo` (+ `extract_video_file_id`) from the row's type, and the
   captionless fallback uses video-worded copy (`rtn_video_caption*`). The candidate
-  list caps videos at **≤ 1/3 of the slots** (`db._video_slot_cap` in
-  `db.candidate_photos` — e.g. 4 photos + 2 videos at list size 6; photos fill unused
-  video slots), the Layer-3 candidate line carries the type (`id | photo-or-video |
-  stage | …`) and the photo directive tells the model to word the caption for what is
-  actually sent ("here's my video…"). It gates by `level_min` (VIP-tier ordinal) ×
+  list (default size **6** — `candidate_list_size`, env `RETENTION_CANDIDATE_LIST_SIZE`)
+  reserves a **fixed video share** (`db._video_slot_cap` in `db.candidate_photos`):
+  6 → 4 photos + 2 videos, and the share never drops below 2 while the list has room
+  (4 → 2+2; only tiny lists shrink it: 3 → 2 photos + 1 video, 2 → 1+1, 1 → photo-only;
+  bigger lists scale at ~⅓). Photos fill unused video slots; a video that has not yet
+  been normalized (`storage_ref` not `.tg.mp4`) is NEVER offered or sent
+  (`db._VIDEO_SENDABLE_SQL` + a backstop in `retention._send_photo`), so a raw
+  multi-hundred-MB original can't reach Telegram before the transcode. The Layer-3
+  candidate line carries the type (`id | photo-or-video | stage | …`) and the photo
+  directive tells the model to word the caption for what is actually sent ("here's my
+  video…"); an explicit video ask («пришли видео») bypasses the proactive cooldown via
+  the same `is_photo_request` stems (video words included). Idle-ladder rules take
+  **`action: message | photo | video`** — `photo` = the mixed feed, `video` = videos
+  only (`select_photo_candidates(media=…)`); the v2 agent's `photo` action uses the
+  mixed feed too. It gates by `level_min` (VIP-tier ordinal) ×
   `stage` (explicitness). **Both values are bounded to the product's real ranges on EVERY write**
   — `stage` to 1..`max_stage`, `level_min` to 0..(last tier ordinal) — whether the value is
   AI-generated OR hand-entered/API-posted (`api.retention._clamp_photo_gate`, applied in

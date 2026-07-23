@@ -1099,7 +1099,9 @@ class SimulateEventReq(BaseModel):
 # is the worker-side sweep).
 # ---------------------------------------------------------------------------
 _RULE_TRIGGERS = ("bot_inactivity", "casino_inactivity", "no_deposit")
-_RULE_ACTIONS = ("message", "photo")
+# 'photo' offers the normal mixed media feed (photos + up to 1/3 videos, the
+# model picks); 'video' restricts the candidates to videos only.
+_RULE_ACTIONS = ("message", "photo", "video")
 
 
 class RuleWrite(BaseModel):

@@ -285,7 +285,18 @@ async def test_sweep_failed_video_isolated(media_dir, fake_db, monkeypatch):
 
 def test_video_slot_cap():
     import db as _db
-    assert _db._video_slot_cap(6) == 2   # 4 photos + 2 videos
-    assert _db._video_slot_cap(9) == 3
-    assert _db._video_slot_cap(2) == 1   # tiny list still admits one video
+    assert _db._video_slot_cap(6) == 2   # the default feed: 4 photos + 2 videos
+    assert _db._video_slot_cap(5) == 2
+    assert _db._video_slot_cap(4) == 2   # never below 2 while the list has room
+    assert _db._video_slot_cap(3) == 1   # 2 photos + 1 video
+    assert _db._video_slot_cap(2) == 1
+    assert _db._video_slot_cap(1) == 0   # 1-slot list stays photo-first
+    assert _db._video_slot_cap(9) == 3   # larger lists scale at ~a third
+    assert _db._video_slot_cap(12) == 4
     assert _db._video_slot_cap(0) == 0
+
+
+def test_candidate_list_default_is_six():
+    import config as _config
+    assert _config.RETENTION_CANDIDATE_LIST_SIZE == 6
+    assert settings.retention()["candidate_list_size"] == 6

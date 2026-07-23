@@ -4072,38 +4072,56 @@ async def delete_retention_photo(photo_id: int) -> bool:
 
 
 def _video_slot_cap(limit: int) -> int:
-    """How many candidate slots videos may occupy: at most a third of the list.
+    """How many candidate slots videos may occupy in the mixed feed.
 
-    Photos stay the staple of the feed; videos are the occasional treat mixed
-    in (e.g. limit 6 -> up to 2 videos + 4 photos). A list too small for a
-    thirds split (limit < 3) still admits one video so a video-only library
-    is not silently unservable.
+    Photos stay the staple, but videos must stay PRESENT: the default list of
+    6 carries 2 videos + 4 photos, and the video share never drops below 2
+    while the list has room for it (limit 4 -> 2+2). Only a very small list
+    shrinks it: limit 3 -> 1 video + 2 photos, limit 2 -> 1+1; a 1-slot list
+    is photos-only (the feed is photo-first at the extreme). Larger lists
+    scale at about a third (limit 9 -> 3, limit 12 -> 4).
     """
-    return max(1, limit // 3) if limit > 0 else 0
+    if limit <= 1:
+        return 0
+    if limit <= 3:
+        return 1
+    return max(2, limit // 3)
+
+
+# Only a NORMALIZED video (re-encoded to the .tg.mp4 delivery format) is ever
+# offered as a candidate: a just-uploaded raw original (multi-hundred-MB .mov)
+# must not be uploadable to Telegram before the transcode finishes.
+_VIDEO_SENDABLE_SQL = "storage_ref LIKE '%.tg.mp4'"
 
 
 async def candidate_photos(product_id: int, retention_user_id: int, *,
-                           level_ordinal: int, max_stage: int, limit: int
+                           level_ordinal: int, max_stage: int, limit: int,
+                           media: Optional[str] = None
                            ) -> list[dict[str, Any]]:
     """Media eligible for this player: active, within tier + stage gate, unseen.
 
     Ordered by stage then least-viewed then sort_order so the model sees a
-    small, fresh, on-tier candidate set. Photos and videos ride ONE stream,
-    but videos are capped to ~1/3 of the slots (see _video_slot_cap) so the
-    feed stays photo-first; when there are fewer videos than the cap, photos
-    fill the freed slots.
+    small, fresh, on-tier candidate set. Photos and videos ride ONE stream
+    with a fixed video share (see _video_slot_cap: the default list of 6 =
+    4 photos + 2 videos, never below 2 videos while the list has room); when
+    there are fewer videos than the share, photos fill the freed slots.
+    `media='video'`/'photo' restricts the set to one kind (the idle ladder's
+    explicit video-ping action) — a video-only list is NOT share-capped.
+    Un-normalized videos are never offered.
     """
-    videos = await _pool.fetch(
+    video_limit = (limit if media == "video"
+                   else min(_video_slot_cap(limit), limit))
+    videos = [] if media == "photo" else await _pool.fetch(
         f"SELECT {_PHOTO_COLS} FROM retention_photos "
         "WHERE product_id = $1 AND active AND media_type = 'video' "
+        f"  AND {_VIDEO_SENDABLE_SQL} "
         "  AND level_min <= $2 AND stage <= $3 "
         "  AND id NOT IN (SELECT photo_id FROM retention_photo_views "
         "                 WHERE retention_user_id = $4) "
         "ORDER BY stage, views_count, sort_order, id LIMIT $5",
-        product_id, level_ordinal, max_stage, retention_user_id,
-        min(_video_slot_cap(limit), limit),
+        product_id, level_ordinal, max_stage, retention_user_id, video_limit,
     )
-    photos = await _pool.fetch(
+    photos = [] if media == "video" else await _pool.fetch(
         f"SELECT {_PHOTO_COLS} FROM retention_photos "
         "WHERE product_id = $1 AND active AND media_type <> 'video' "
         "  AND level_min <= $2 AND stage <= $3 "

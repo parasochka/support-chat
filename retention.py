@@ -155,6 +155,10 @@ _PHOTO_REQUEST_STEMS = (
     "фото", "фотк", "картинк", "покажи", "снимок", "селфи", "пришли",
     "photo", "pic", "picture", "selfie", "show", "send me",
     "foto", "muestra", "envía", "fotoğraf", "göster", "resim",
+    # Videos ride the same stream, so an explicit video ask bypasses the
+    # proactive cooldown exactly like a photo ask ("пришли видео", "some
+    # video of you"). "vídeo" covers es/pt spelling, "video" en/tr.
+    "видео", "видос", "video", "vídeo",
 )
 # Word-START matching (not raw substring): "pic" matches "pictures" but never
 # "epic"/"topic", so an unrelated word can't accidentally bypass the proactive
@@ -250,7 +254,8 @@ def is_meaningful(text: str) -> bool:
 # ---------------------------------------------------------------------------
 async def select_photo_candidates(product_id: int, ru: dict[str, Any],
                                   user_text: str, *,
-                                  bypass_cooldown: bool = False
+                                  bypass_cooldown: bool = False,
+                                  media: Optional[str] = None
                                   ) -> list[dict[str, Any]]:
     """The allowed photo set for this turn (empty = no photo this turn).
 
@@ -291,6 +296,7 @@ async def select_photo_candidates(product_id: int, ru: dict[str, Any],
         product_id, int(ru["id"]),
         level_ordinal=level_ord, max_stage=max_stage,
         limit=int(cfg["candidate_list_size"]),
+        media=media,
     )
 
 
@@ -610,6 +616,19 @@ def fallback_video_caption(lang: str) -> str:
     key = random.choice(("rtn_video_caption", "rtn_video_caption_2",
                          "rtn_video_caption_3"))
     return _rtn_text(key, lang)
+
+
+def fallback_media_caption(lang: str, photo_id: Optional[int],
+                           candidates: Optional[list[dict[str, Any]]]) -> str:
+    """The right captionless fallback for whatever is being sent: video-worded
+    copy when `photo_id` resolves to a video in the candidate list the model
+    chose from, photo-worded otherwise (the ping senders use this)."""
+    chosen = next((c for c in candidates or []
+                   if photo_id is not None
+                   and int(c.get("id", 0)) == int(photo_id)), None)
+    if chosen and chosen.get("media_type") == "video":
+        return fallback_video_caption(lang)
+    return fallback_photo_caption(lang)
 
 
 def _subscribe_markup(product: dict[str, Any], lang: str) -> dict[str, Any]:
@@ -1265,6 +1284,18 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
             return "text"
         return None
     is_video = photo.get("media_type") == "video"
+    # Backstop mirror of db._VIDEO_SENDABLE_SQL: a raw, not-yet-transcoded
+    # video original must never be uploaded to Telegram (it can be huge and
+    # in a format Telegram won't stream). Candidates already exclude these;
+    # this guards any other path that reaches a video row directly.
+    if is_video and not (photo.get("storage_ref") or "").lower().endswith(
+            ".tg.mp4") and not photo.get("telegram_file_id"):
+        text_out = overflow_text or caption
+        if text_out and await _send_ai_text(client, chat_id, text_out,
+                                            reply_markup=reply_markup,
+                                            silent=silent):
+            return "text"
+        return None
     file_id = photo.get("telegram_file_id")
     result = None
     err_code: Optional[int] = None

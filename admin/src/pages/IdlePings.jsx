@@ -412,12 +412,13 @@ const IdlePingsTab = ({ productId }) => {
                 value={editing.action}
                 onChange={(e) => setEditing({ ...editing, action: e.target.value })}
                 helperText={t(
-                  "Photo pings pick from the player's unlocked media (tier × stage gates apply)."
+                  "Media pings pick from the player's unlocked media (tier × stage gates apply). “photo” offers the mixed feed (photos + a couple of videos, the AI picks); “video” sends a video only."
                 )}
                 fullWidth
               >
                 <MenuItem value="message">{t('message')}</MenuItem>
                 <MenuItem value="photo">{t('photo')}</MenuItem>
+                <MenuItem value="video">{t('video')}</MenuItem>
               </TextField>
               <TextField
                 size="small"
