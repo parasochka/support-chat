@@ -416,6 +416,21 @@ RETENTION_NONCE_TTL_SEC: int = _env_int("RETENTION_NONCE_TTL_SEC", 120)
 # to give the operator a real message instead.
 RETENTION_MAX_UPLOAD_BYTES: int = _env_int("RETENTION_MAX_UPLOAD_BYTES",
                                            512 * 1024 * 1024)
+# Per-FILE upload limits for retention media (the admin Media tab). The batch
+# cap above bounds the whole request; these bound each file by type. Enforced
+# server-side by byte size (below) AND client-side in the SPA, which also checks
+# the resolution / duration caps in the browser before the upload starts (the
+# server would have to decode every file to verify those, so they stay a
+# client-side guard — the Media tab is admin-only). Photos are downscaled to
+# `media_max_side_px` on delivery anyway, so the side cap only rejects absurd /
+# decompression-bomb originals. Exposed via /admin/meta for the SPA + tooltip.
+RETENTION_MAX_PHOTO_BYTES: int = _env_int("RETENTION_MAX_PHOTO_BYTES",
+                                          10 * 1024 * 1024)
+RETENTION_MAX_PHOTO_SIDE_PX: int = _env_int("RETENTION_MAX_PHOTO_SIDE_PX", 8000)
+RETENTION_MAX_VIDEO_BYTES: int = _env_int("RETENTION_MAX_VIDEO_BYTES",
+                                          100 * 1024 * 1024)
+RETENTION_MAX_VIDEO_DURATION_SEC: int = _env_int(
+    "RETENTION_MAX_VIDEO_DURATION_SEC", 60)
 # Photo-progression / proactivity knobs — env defaults for the `retention`
 # settings group (hot-reloadable per product from the admin panel).
 RETENTION_DAILY_PHOTO_CAP: int = _env_int("RETENTION_DAILY_PHOTO_CAP", 5)
@@ -536,9 +551,10 @@ RETENTION_IDLE_SWEEP_INTERVAL_SEC: int = _env_int(
 RETENTION_MAX_REPLY_PARTS: int = _env_int("RETENTION_MAX_REPLY_PARTS", 3)
 # Media normalizer (media_normalizer.py): the periodic sweep that re-encodes
 # uploaded retention photos to WebP at Telegram-appropriate dimensions and
-# deletes the heavy originals. Defaults for the hot `retention` group knobs.
-RETENTION_MEDIA_NORMALIZE_ENABLED: bool = _env_bool(
-    "RETENTION_MEDIA_NORMALIZE_ENABLED", True)
+# deletes the heavy originals. Normalization is ALWAYS ON and fully code-owned —
+# there is deliberately no admin knob and no on/off switch (the whole sweep loop
+# is still gated by the deploy-wide RETENTION_SCHEDULER_ENABLED that governs all
+# background workers). These are deploy-level constants, not admin settings.
 RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC: int = _env_int(
     "RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC", 3600)
 RETENTION_MEDIA_MAX_SIDE_PX: int = _env_int(

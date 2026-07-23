@@ -2,7 +2,7 @@
 
 Covers the decision function, the re-encode itself (resize + format), the
 per-product sweep (row re-point + original delete + one-bad-file isolation)
-and the settings knobs.
+and the code-owned (no-admin-knob) sweep cadence / always-on behaviour.
 """
 from __future__ import annotations
 
@@ -96,15 +96,8 @@ def fake_db(monkeypatch):
     return _install
 
 
-def _retention_cfg(monkeypatch, **over):
-    cfg = {"media_normalize_enabled": True, "media_max_side_px": 2048,
-           "media_webp_quality": 82, **over}
-    monkeypatch.setattr(settings, "retention", lambda: cfg)
-
-
 async def test_sweep_converts_repoints_and_deletes(media_dir, fake_db,
                                                    monkeypatch):
-    _retention_cfg(monkeypatch)
     big = media_dir / "p1_x.jpg"
     _make_image(str(big), (4000, 2000), "JPEG")
     ok_webp = media_dir / "p1_y.webp"
@@ -127,7 +120,6 @@ async def test_sweep_converts_repoints_and_deletes(media_dir, fake_db,
 
 async def test_sweep_one_bad_file_does_not_kill_it(media_dir, fake_db,
                                                    monkeypatch):
-    _retention_cfg(monkeypatch)
     # A file that PROBES as an image but fails on full decode: truncated jpg.
     good = media_dir / "p2_good.jpg"
     _make_image(str(good), (3000, 1500), "JPEG")
@@ -143,38 +135,33 @@ async def test_sweep_one_bad_file_does_not_kill_it(media_dir, fake_db,
     assert bad.exists()  # the bad original is never deleted
 
 
-async def test_sweep_respects_enabled_switch_and_force(media_dir, fake_db,
-                                                       monkeypatch):
-    _retention_cfg(monkeypatch, media_normalize_enabled=False)
+async def test_sweep_runs_unconditionally(media_dir, fake_db, monkeypatch):
+    """Normalization is always-on and code-owned — there is no enabled switch
+    to skip it and no force flag to bypass one."""
     jpg = media_dir / "p3.jpg"
     _make_image(str(jpg), (3000, 1500), "JPEG")
     fake = fake_db([{"id": 20, "storage_ref": "p3.jpg"}])
-    assert (await media_normalizer.normalize_product_photos(1)) == {
-        "skipped": "media_normalize_disabled"}
-    assert jpg.exists() and not fake.repointed
-    # force=True (the admin «Normalize now» button) bypasses the switch.
-    stats = await media_normalizer.normalize_product_photos(1, force=True)
+    stats = await media_normalizer.normalize_product_photos(1)
     assert stats["normalized"] == 1 and fake.repointed == {20: "p3.webp"}
+    assert not jpg.exists()
 
 
-def test_media_settings_validation():
-    ok = {"media_normalize_enabled": True, "media_normalize_interval_sec": 3600,
-          "media_max_side_px": 2048, "media_webp_quality": 82}
-    assert settings.validate_setting("retention", ok) == ok
-    for bad in ({"media_normalize_interval_sec": 10},
-                {"media_max_side_px": 100},
-                {"media_webp_quality": 10},
-                {"media_normalize_enabled": "yes"}):
-        with pytest.raises(ValueError):
-            settings.validate_setting("retention", bad)
+def test_media_knobs_are_not_admin_settings():
+    """The media-normalizer knobs left the retention settings group — values
+    that used to be rejected there are now inert (normalization is code-owned,
+    not admin-tunable)."""
+    for was_bad in ({"media_normalize_interval_sec": 10},
+                    {"media_max_side_px": 100},
+                    {"media_webp_quality": 10},
+                    {"media_normalize_enabled": "yes"}):
+        # No longer a settings key -> no validation error.
+        settings.validate_setting("retention", was_bad)
 
 
-def test_interval_reads_global_layer(monkeypatch):
-    monkeypatch.setattr(settings, "retention",
-                        lambda: {"media_normalize_interval_sec": 60})
+def test_interval_is_code_owned_and_clamped(monkeypatch):
+    monkeypatch.setattr(config, "RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC", 60)
     assert media_normalizer.interval_sec() == 300  # clamped low
-    monkeypatch.setattr(settings, "retention",
-                        lambda: {"media_normalize_interval_sec": 7200})
+    monkeypatch.setattr(config, "RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC", 7200)
     assert media_normalizer.interval_sec() == 7200
 
 
@@ -210,7 +197,6 @@ async def test_sweep_transcodes_video_and_extracts_poster(media_dir, fake_db,
                                                           monkeypatch):
     """A video upload is re-encoded to .tg.mp4 + poster, re-pointed, original
     deleted — with ffmpeg stubbed out (not installed in CI)."""
-    _retention_cfg(monkeypatch)
     src = media_dir / "p9_v.mov"
     src.write_bytes(b"fake-video-bytes" * 1000)
     calls = []
@@ -244,7 +230,6 @@ async def test_sweep_transcodes_video_and_extracts_poster(media_dir, fake_db,
 
 async def test_sweep_skips_normalized_video_but_backfills_poster(
         media_dir, fake_db, monkeypatch):
-    _retention_cfg(monkeypatch)
     done = media_dir / "p9_done.tg.mp4"
     done.write_bytes(b"mp4")
     posters = []
@@ -270,7 +255,6 @@ async def test_sweep_skips_normalized_video_but_backfills_poster(
 
 
 async def test_sweep_failed_video_isolated(media_dir, fake_db, monkeypatch):
-    _retention_cfg(monkeypatch)
     (media_dir / "p9_bad.mov").write_bytes(b"junk")
 
     def boom(*a, **kw):

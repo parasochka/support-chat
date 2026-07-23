@@ -711,6 +711,21 @@ async def create_photo(product_id: int = Form(...),
             raise HTTPException(
                 status_code=400,
                 detail=f"Unsupported media type: {up.filename or ext}")
+        # Per-file byte cap by type (defense-in-depth over the SPA's client-side
+        # check; the resolution / duration caps stay client-side — verifying
+        # them would mean decoding every upload, and the Media tab is admin-only).
+        # Runs before any file is written, so one over-cap file rejects the whole
+        # batch instead of half-uploading it.
+        is_video = ext in media_normalizer.VIDEO_EXTS
+        limit = (config.RETENTION_MAX_VIDEO_BYTES if is_video
+                 else config.RETENTION_MAX_PHOTO_BYTES)
+        size = getattr(up, "size", None)
+        if size is not None and size > limit:
+            kind = "video" if is_video else "photo"
+            raise HTTPException(
+                status_code=400,
+                detail=(f"{up.filename or ext} is {size // (1024 * 1024)} MB — "
+                        f"over the {limit // (1024 * 1024)} MB limit per {kind}."))
         exts.append(ext)
     os.makedirs(config.RETENTION_MEDIA_DIR, exist_ok=True)
     tag_list = [t.strip() for t in tags.split(",") if t.strip()]
@@ -972,14 +987,13 @@ class NormalizePhotosReq(BaseModel):
 @admin_router.post("/photos/normalize")
 async def normalize_photos(body: NormalizePhotosReq,
                            admin=Depends(require_admin_write)) -> JSONResponse:
-    """Run the media normalizer for one product NOW (the hourly sweep's admin
-    button): re-encode heavy JPG/PNG uploads to Telegram-sized WebP and delete
-    the originals. Bypasses the per-product enabled switch — pressing the
-    button IS the opt-in for this run."""
+    """Run the media normalizer for one product NOW (an on-demand pass over the
+    always-on hourly sweep): re-encode heavy JPG/PNG uploads to Telegram-sized
+    WebP and delete the originals. API-only — there is no admin UI knob for
+    normalization."""
     await admin_auth.require_product_write(admin, body.product_id)
     import media_normalizer
-    stats = await media_normalizer.normalize_product_photos(
-        body.product_id, force=True)
+    stats = await media_normalizer.normalize_product_photos(body.product_id)
     return JSONResponse(content={"stats": stats})
 
 

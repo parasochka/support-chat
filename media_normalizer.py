@@ -5,7 +5,7 @@ phone videos at 4K); Telegram re-compresses photos to ~2560px anyway and a
 bot upload is capped at 50 MB, so storing the originals only burns Volume
 space and upload time on the first send. This module brings every stored
 binary to the delivery format:
-- photos -> WebP, longest side capped at `retention.media_max_side_px`;
+- photos -> WebP, longest side capped at `RETENTION_MEDIA_MAX_SIDE_PX`;
 - videos -> MP4 (H.264 + AAC, ffmpeg), longest side capped at
   `RETENTION_MEDIA_VIDEO_MAX_SIDE_PX` (1080p-class — a vertical phone reel
   keeps its native 1080x1920), CRF-encoded, plus a
@@ -38,12 +38,13 @@ Rules of the sweep (per product, inside its settings scope):
 
 The loop runs from main.py lifespan under the same RETENTION_SCHEDULER_ENABLED
 deploy switch as the agent worker, under its own advisory lock (multi-instance
-safe). Knobs (hot `retention` group): `media_normalize_enabled` (per product),
-`media_normalize_interval_sec` (global — one loop serves every product),
-`media_max_side_px`, `media_webp_quality`; the video caps are deploy env
-constants (`RETENTION_MEDIA_VIDEO_MAX_SIDE_PX` / `RETENTION_MEDIA_VIDEO_CRF`).
-The admin Media tab's «Optimize» button (POST /admin/retention/photos/
-normalize) runs one product's sweep on demand.
+safe). Normalization is ALWAYS ON and fully code-owned — there is deliberately
+NO admin knob and NO enabled switch. Every parameter is a deploy-level constant
+in config.py: `RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC`, the photo target
+(`RETENTION_MEDIA_MAX_SIDE_PX` / `RETENTION_MEDIA_WEBP_QUALITY`) and the video
+target (`RETENTION_MEDIA_VIDEO_MAX_SIDE_PX` / `RETENTION_MEDIA_VIDEO_CRF` /
+`RETENTION_MEDIA_VIDEO_PRESET`). POST /admin/retention/photos/normalize runs one
+product's sweep on demand (API-only, no UI button).
 """
 from __future__ import annotations
 
@@ -56,7 +57,6 @@ from typing import Any, Optional
 
 import config
 import db
-import settings
 import tenancy
 
 log = logging.getLogger(__name__)
@@ -82,13 +82,13 @@ _TG_VIDEO_MAX_BYTES = 50 * 1024 * 1024
 
 
 def interval_sec() -> int:
-    """The hot sweep cadence (`retention.media_normalize_interval_sec`).
+    """The sweep cadence — a code-owned deploy constant, clamped 300s..24h.
 
-    Global-layer read (one loop serves every product), clamped 300s..24h.
+    Not an admin setting: normalization is always-on and fully code-owned
+    (`config.RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC`), so there is no per-product
+    or hot override to resolve.
     """
-    return settings.global_retention_int(
-        "media_normalize_interval_sec",
-        config.RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC, 300, 86_400)
+    return max(300, min(86_400, config.RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC))
 
 
 def _probe(path: str) -> Optional[tuple[str, int, int]]:
@@ -238,22 +238,17 @@ def extract_poster(src_path: str, poster_path: str, *, max_side: int) -> bool:
     return False
 
 
-async def normalize_product_photos(product_id: int, *,
-                                   force: bool = False) -> dict[str, Any]:
+async def normalize_product_photos(product_id: int) -> dict[str, Any]:
     """One product's sweep: convert every heavy photo, re-point rows, delete
     originals. Returns counters; one bad photo never kills the sweep.
 
-    `force` (the admin «Normalize now» button) bypasses the per-product
-    enabled switch — pressing the button IS the opt-in for that run.
+    Normalization is unconditional — there is no enabled switch; the size /
+    quality targets are code-owned deploy constants (`config.RETENTION_MEDIA_*`),
+    not admin settings.
     """
     tenancy.set_current_product(product_id)
-    cfg = settings.retention()
-    if not force and not cfg.get("media_normalize_enabled", True):
-        return {"skipped": "media_normalize_disabled"}
-    max_side = int(cfg.get("media_max_side_px")
-                   or config.RETENTION_MEDIA_MAX_SIDE_PX)
-    quality = int(cfg.get("media_webp_quality")
-                  or config.RETENTION_MEDIA_WEBP_QUALITY)
+    max_side = int(config.RETENTION_MEDIA_MAX_SIDE_PX)
+    quality = int(config.RETENTION_MEDIA_WEBP_QUALITY)
     stats = {"checked": 0, "normalized": 0, "failed": 0,
              "bytes_saved": 0}
     for photo in await db.list_retention_photos(product_id):
@@ -349,7 +344,7 @@ async def _run_product_locked(product_id: int) -> dict[str, Any]:
     async with pool.acquire() as conn:
         await conn.execute("SELECT pg_advisory_lock($1)", _ADVISORY_LOCK_KEY)
         try:
-            return await normalize_product_photos(product_id, force=True)
+            return await normalize_product_photos(product_id)
         finally:
             await conn.execute("SELECT pg_advisory_unlock($1)",
                                _ADVISORY_LOCK_KEY)

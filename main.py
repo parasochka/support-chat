@@ -154,8 +154,8 @@ async def lifespan(app: FastAPI):
         agent_task = asyncio.create_task(retention_v2.scheduler_loop())
         # Media normalizer: the hourly sweep re-encoding uploaded retention
         # photos to WebP at Telegram-appropriate dimensions (heavy originals
-        # deleted). Same deploy switch as the agent worker; per-product opt-out
-        # via the hot `retention.media_normalize_enabled` setting.
+        # deleted). Same deploy switch as the agent worker; normalization is
+        # always-on and fully code-owned (no admin knob, no per-product switch).
         media_task = asyncio.create_task(media_normalizer.scheduler_loop())
     # Periodic settings-cache refresh: the in-process cache is reloaded on a
     # local admin write, but a write made by ANOTHER instance (or directly in

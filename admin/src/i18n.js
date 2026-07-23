@@ -616,6 +616,21 @@ const RU = {
     'Выбранные файлы весят {mb} МБ — больше лимита загрузки {cap} МБ. Загрузите меньше файлов за раз.',
   'Upload failed — connection interrupted. The files may exceed the server upload limit.':
     'Не удалось загрузить — соединение прервано. Возможно, файлы превышают лимит загрузки на сервере.',
+  'Upload limits': 'Лимиты загрузки',
+  'Photo: up to {mb} MB, max side {px}px': 'Фото: до {mb} МБ, длинная сторона до {px}px',
+  'Video: up to {mb} MB, up to {sec}s': 'Видео: до {mb} МБ, длительность до {sec} с',
+  'All files in one upload: up to {mb} MB': 'Все файлы за одну загрузку: до {mb} МБ',
+  'Checking files…': 'Проверка файлов…',
+  'Some files exceed the upload limits — fix the selection first.':
+    'Некоторые файлы превышают лимиты загрузки — сначала исправьте выбор.',
+  '“{name}” is {mb} MB — over the {cap} MB limit per photo.':
+    '«{name}» весит {mb} МБ — больше лимита {cap} МБ на одно фото.',
+  '“{name}” is {px}px — over the {cap}px max side per photo.':
+    '«{name}» — {px}px по длинной стороне, больше лимита {cap}px на одно фото.',
+  '“{name}” is {mb} MB — over the {cap} MB limit per video.':
+    '«{name}» весит {mb} МБ — больше лимита {cap} МБ на одно видео.',
+  '“{name}” is {sec}s long — over the {cap}s limit per video.':
+    '«{name}» длится {sec} с — больше лимита {cap} с на одно видео.',
   'Delete this manager?': 'Удалить этого менеджера?',
   'Display name': 'Отображаемое имя',
   'Telegram username (without @)': 'Username в Telegram (без @)',
