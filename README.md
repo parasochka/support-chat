@@ -177,7 +177,7 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `OPENAI_BREAKER_COOLDOWN_SEC` | no | `30` | How long the breaker stays open before allowing one half-open trial request to probe recovery. |
 | `PUBLIC_BASE_URL` | no | — | Retention bot: public base URL of this service (e.g. `https://chat.example.com`), used to build the webhook URL when registering it with Telegram. Required to auto-register the webhook from the admin. |
 | `RETENTION_MEDIA_DIR` | no | `./media` | Retention bot: on-disk path for uploaded media. On Railway set it to the mount path of an attached **Volume** so photos survive redeploys. |
-| `RETENTION_MAX_UPLOAD_BYTES` | no | `10485760` | Max size of a retention media upload (the JSON body cap is far smaller; the media-upload path uses this instead). |
+| `RETENTION_MAX_UPLOAD_BYTES` | no | `536870912` | Max size (bytes) of one retention media-upload request — the whole batch, photos AND videos (the JSON body cap is far smaller; the media-upload path uses this instead). Default 512 MiB, sized for raw phone-video originals; the normalizer transcodes them down after upload. |
 | `RETENTION_NONCE_TTL_SEC` | no | `120` | Retention deeplink nonce lifetime (also a `retention` settings knob). |
 | `RETENTION_PROFILE_PULL_TTL_SEC` | no | `3600` | If a profile snapshot is older than this and the product has a Player API, pull a fresh profile before a turn (also a `retention` settings knob). |
 | `RETENTION_SESSION_IDLE_MINUTES` | no | `360` | Minutes of inactivity before a Telegram chat closes; the player's next message starts a fresh chat (0 = never; also a `retention` settings knob). |

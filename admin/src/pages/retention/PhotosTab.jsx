@@ -48,7 +48,10 @@ const PhotosTab = ({ productId }) => {
   // { done, total } while a metadata batch runs — drives the determinate
   // progress bar so the operator sees it moving and knows it hasn't stalled.
   const [genProgress, setGenProgress] = useState(null);
-  const [normalizing, setNormalizing] = useState(false);
+  // Server-side body cap for the upload request. A request over it is aborted
+  // mid-upload (413), which the browser reports as a bare "failed to fetch" —
+  // pre-checking here is the only way to give the operator a real message.
+  const [uploadCap, setUploadCap] = useState(null);
   const [filters, setFilters] = useState({ q: '', stage: 'all', level: 'all', status: 'all', type: 'all' });
   const [page, setPage] = useState(1);
   // The product's real gate ranges — Stage 1..maxStage, Level 0..tiers-1 — so
@@ -78,11 +81,32 @@ const PhotosTab = ({ productId }) => {
       .catch(() => {});
   }, [productId]);
 
+  useEffect(() => {
+    httpClient(`${API_URL}/admin/meta`)
+      .then(({ json }) => setUploadCap(json?.retention_max_upload_bytes || null))
+      .catch(() => {});
+  }, []);
+
   const stageChoices = Array.from({ length: gate.maxStage }, (_, i) => i + 1);
   const levelChoices = gate.tiers.map((t, i) => ({ value: i, label: `${i} · ${t}` }));
 
   const doUpload = async () => {
     if (!files.length) return;
+    // The cap bounds the WHOLE request body — reject up front, because the
+    // server's 413 aborts the connection mid-upload and the browser only
+    // reports an opaque network error.
+    if (uploadCap) {
+      const total = files.reduce((sum, f) => sum + (f.size || 0), 0);
+      if (total > uploadCap) {
+        notify(
+          t('Selected files total {mb} MB — over the {cap} MB upload limit. Upload fewer files at once.')
+            .replace('{mb}', (total / (1024 * 1024)).toFixed(0))
+            .replace('{cap}', (uploadCap / (1024 * 1024)).toFixed(0)),
+          { type: 'error' }
+        );
+        return;
+      }
+    }
     setUploading(true);
     const fd = new FormData();
     fd.append('product_id', String(productId));
@@ -112,8 +136,12 @@ const PhotosTab = ({ productId }) => {
       load();
     } catch (e) {
       // Network failure: without this the rejection escapes the click handler
-      // and the operator gets no feedback at all.
-      notify(e.message || t('Upload failed'), { type: 'error' });
+      // and the operator gets no feedback at all. A fetch TypeError here is
+      // usually the server aborting an over-cap body mid-upload.
+      notify(
+        t('Upload failed — connection interrupted. The files may exceed the server upload limit.'),
+        { type: 'error' }
+      );
     } finally {
       setUploading(false);
     }
@@ -251,32 +279,6 @@ const PhotosTab = ({ productId }) => {
     }
   };
 
-  // The hourly media normalizer, on demand for THIS product: heavy JPG/PNG
-  // uploads become Telegram-sized WebP, the originals are deleted.
-  const normalize = async () => {
-    if (normalizing) return;
-    setNormalizing(true);
-    try {
-      const { json } = await httpClient(
-        `${API_URL}/admin/retention/photos/normalize`,
-        { method: 'POST', body: JSON.stringify({ product_id: Number(productId) }) }
-      );
-      const s = json.stats || {};
-      notify(
-        t('Media normalized: {n} converted, {f} failed, {mb} MB freed')
-          .replace('{n}', s.normalized || 0)
-          .replace('{f}', s.failed || 0)
-          .replace('{mb}', ((s.bytes_saved || 0) / (1024 * 1024)).toFixed(1)),
-        { type: s.failed ? 'warning' : 'success' }
-      );
-      load();
-    } catch (e) {
-      notifyError(notify, e, t('request failed'));
-    } finally {
-      setNormalizing(false);
-    }
-  };
-
   return (
     <Box>
       <Card sx={{ mb: 2 }}>
@@ -385,7 +387,7 @@ const PhotosTab = ({ productId }) => {
               label={t('Search (description, tags, category)')}
               value={filters.q}
               onChange={(e) => setFilter({ q: e.target.value })}
-              sx={{ minWidth: 240 }}
+              sx={{ minWidth: 200, flexGrow: 1 }}
             />
             <TextField
               select
@@ -393,7 +395,7 @@ const PhotosTab = ({ productId }) => {
               label={t('Stage')}
               value={filters.stage}
               onChange={(e) => setFilter({ stage: e.target.value })}
-              sx={{ minWidth: 110 }}
+              sx={{ minWidth: 96 }}
             >
               <MenuItem value="all">{t('all')}</MenuItem>
               {stageOptions.map((s) => (
@@ -408,7 +410,7 @@ const PhotosTab = ({ productId }) => {
               label={t('Level min')}
               value={filters.level}
               onChange={(e) => setFilter({ level: e.target.value })}
-              sx={{ minWidth: 110 }}
+              sx={{ minWidth: 96 }}
             >
               <MenuItem value="all">{t('all')}</MenuItem>
               {levelOptions.map((l) => (
@@ -423,7 +425,7 @@ const PhotosTab = ({ productId }) => {
               label={t('Type')}
               value={filters.type}
               onChange={(e) => setFilter({ type: e.target.value })}
-              sx={{ minWidth: 110 }}
+              sx={{ minWidth: 96 }}
             >
               <MenuItem value="all">{t('all')}</MenuItem>
               <MenuItem value="photo">{t('photos')}</MenuItem>
@@ -435,17 +437,12 @@ const PhotosTab = ({ productId }) => {
               label={t('Status')}
               value={filters.status}
               onChange={(e) => setFilter({ status: e.target.value })}
-              sx={{ minWidth: 110 }}
+              sx={{ minWidth: 96 }}
             >
               <MenuItem value="all">{t('all')}</MenuItem>
               <MenuItem value="active">{t('active')}</MenuItem>
               <MenuItem value="inactive">{t('inactive')}</MenuItem>
             </TextField>
-            <Typography variant="body2" color="text.secondary">
-              {t('{shown} of {total} photos')
-                .replace('{shown}', visible.length)
-                .replace('{total}', items.length)}
-            </Typography>
           </Stack>
           {/* Action row: short, single-word buttons (the full explanation is an
               (i) tooltip) so they never wrap to a ragged two-line shape, and a
@@ -485,26 +482,20 @@ const PhotosTab = ({ productId }) => {
                 </Button>
               </span>
             </Tooltip>
-            <Tooltip
-              title={t(
-                'Re-encodes heavy uploads (multi-MB JPG/PNG) to Telegram-sized WebP and deletes the originals. Runs automatically on a schedule — this is the immediate run.'
-              )}
+            {/* The shown/total counter lives here (not in the crowded filters
+                row above) so it always has room and never wraps vertically. */}
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{ ml: 'auto', whiteSpace: 'nowrap' }}
             >
-              <span>
-                <Button
-                  variant="outlined"
-                  size="small"
-                  onClick={normalize}
-                  disabled={normalizing || readOnly}
-                >
-                  {normalizing ? t('Optimizing…') : t('Optimize')}
-                </Button>
-              </span>
-            </Tooltip>
+              {t('{shown} of {total} photos')
+                .replace('{shown}', visible.length)
+                .replace('{total}', items.length)}
+            </Typography>
           </Stack>
-          {/* Progress feedback — determinate for the chunked metadata batch (so
-              the operator sees N/total advance), indeterminate for the single
-              server-side normalize sweep (whose duration we can't predict). */}
+          {/* Progress feedback — determinate for the chunked metadata batch, so
+              the operator sees N/total advance. */}
           {generating && genProgress && (
             <Box sx={{ mt: 1.5 }}>
               <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
@@ -519,14 +510,6 @@ const PhotosTab = ({ productId }) => {
                 variant="determinate"
                 value={genProgress.total ? (genProgress.done / genProgress.total) * 100 : 0}
               />
-            </Box>
-          )}
-          {normalizing && (
-            <Box sx={{ mt: 1.5 }}>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-                {t('Optimizing media… this can take a while, keep this tab open.')}
-              </Typography>
-              <LinearProgress />
             </Box>
           )}
         </CardContent>
