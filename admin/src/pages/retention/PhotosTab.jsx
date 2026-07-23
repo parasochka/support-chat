@@ -15,6 +15,7 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import LinearProgress from '@mui/material/LinearProgress';
 import Tooltip from '@mui/material/Tooltip';
+import CheckCircleOutlinedIcon from '@mui/icons-material/CheckCircleOutlined';
 import { API_URL, httpClient, getToken } from '../../httpClient';
 import rich from '../../components/Rich';
 import { t } from '../../i18n';
@@ -35,6 +36,48 @@ const META_CHUNK = 10;
 // time instead of every photo at once.
 const PHOTOS_PER_PAGE = 21;
 
+// Mirrors media_normalizer.VIDEO_EXTS — only the fallback when a response row
+// lacks media_type; the server's classification is authoritative.
+const VIDEO_EXT_RE = /\.(mp4|mov|m4v|webm|mkv|avi)$/i;
+
+// fetch() can't report upload progress, so the media upload goes through
+// XMLHttpRequest: onprogress fires as the body streams out, which is the
+// signal the progress bar needs for multi-hundred-MB video batches.
+const uploadWithProgress = (url, formData, onProgress) =>
+  new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    xhr.setRequestHeader('Authorization', `Bearer ${getToken()}`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(e.loaded, e.total);
+    };
+    xhr.onload = () => {
+      let body = {};
+      try {
+        body = JSON.parse(xhr.responseText || '{}');
+      } catch {
+        // non-JSON error body — keep {}
+      }
+      resolve({ status: xhr.status, body });
+    };
+    xhr.onerror = () => reject(new Error('network'));
+    xhr.send(formData);
+  });
+
+const fmtMb = (bytes) => (bytes / (1024 * 1024)).toFixed(1);
+
+// Has this row been through the media normalizer? Mirrors the backend's own
+// done-markers: a video is normalized exactly once to `.tg.mp4`
+// (media_normalizer._VIDEO_NORM_SUFFIX), a photo's normalized output is always
+// WebP. GIFs are deliberately left alone by the normalizer, so they never show
+// the mark.
+const isOptimized = (ph) => {
+  const ref = (ph.storage_ref || '').toLowerCase();
+  if (!ref) return false;
+  if ((ph.media_type || 'photo') === 'video') return ref.endsWith('.tg.mp4');
+  return ref.endsWith('.webp');
+};
+
 const PhotosTab = ({ productId }) => {
   // Managers are read-only server-side (403 on write) — pre-disable writes.
   const readOnly = useReadOnly();
@@ -43,6 +86,10 @@ const PhotosTab = ({ productId }) => {
   const [upload, setUpload] = useState({ description: '', tags: '', level_min: 0, stage: 1, category: '' });
   const [files, setFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
+  // { loaded, total } while the upload body streams out — drives the upload
+  // progress bar. loaded === total means the bytes are sent and the server is
+  // writing files / creating rows (shown as an indeterminate "processing" bar).
+  const [uploadProgress, setUploadProgress] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
   const [generating, setGenerating] = useState(false);
   // { done, total } while a metadata batch runs — drives the determinate
@@ -108,6 +155,7 @@ const PhotosTab = ({ productId }) => {
       }
     }
     setUploading(true);
+    setUploadProgress({ loaded: 0, total: files.reduce((sum, f) => sum + (f.size || 0), 0) });
     const fd = new FormData();
     fd.append('product_id', String(productId));
     fd.append('description', upload.description);
@@ -117,33 +165,47 @@ const PhotosTab = ({ productId }) => {
     fd.append('category', upload.category);
     files.forEach((f) => fd.append('files', f));
     try {
-      const res = await fetch(`${API_URL}/admin/retention/photos`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${getToken()}` },
-        body: fd,
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
+      const { status, body } = await uploadWithProgress(
+        `${API_URL}/admin/retention/photos`,
+        fd,
+        (loaded, total) => setUploadProgress({ loaded, total })
+      );
+      if (status < 200 || status >= 300) {
         notify(body.detail || t('Upload failed'), { type: 'error' });
         return;
       }
-      const body = await res.json().catch(() => ({}));
-      const uploaded = (body.photos || []).length || 1;
-      notify(t('{n} photo(s) uploaded').replace('{n}', uploaded), {
-        type: 'success',
-      });
+      // The popup names what was actually uploaded — "6 videos" must not read
+      // as "6 photos". Counted from the server's own per-row media_type, with
+      // the filename extension as the fallback for rows without it.
+      const rows = body.photos || [];
+      const nVideos = rows.length
+        ? rows.filter((p) => (p.media_type || 'photo') === 'video').length
+        : files.filter((f) => VIDEO_EXT_RE.test(f.name || '')).length;
+      const nPhotos = (rows.length || files.length) - nVideos;
+      let msg;
+      if (nPhotos && nVideos) {
+        msg = t('{p} photo(s) and {v} video(s) uploaded')
+          .replace('{p}', nPhotos)
+          .replace('{v}', nVideos);
+      } else if (nVideos) {
+        msg = t('{n} video(s) uploaded').replace('{n}', nVideos);
+      } else {
+        msg = t('{n} photo(s) uploaded').replace('{n}', nPhotos);
+      }
+      notify(msg, { type: 'success' });
       setFiles([]);
       load();
     } catch (e) {
       // Network failure: without this the rejection escapes the click handler
-      // and the operator gets no feedback at all. A fetch TypeError here is
-      // usually the server aborting an over-cap body mid-upload.
+      // and the operator gets no feedback at all. An abort mid-upload here is
+      // usually the server rejecting an over-cap body.
       notify(
         t('Upload failed — connection interrupted. The files may exceed the server upload limit.'),
         { type: 'error' }
       );
     } finally {
       setUploading(false);
+      setUploadProgress(null);
     }
   };
 
@@ -370,6 +432,36 @@ const PhotosTab = ({ productId }) => {
               {uploading ? t('Uploading…') : t('Upload')}
             </Button>
           </Stack>
+          {/* Upload progress — determinate while the bytes stream out (video
+              batches run to hundreds of MB), switching to an indeterminate
+              "processing" bar once the body is sent and the server is writing
+              files + creating the catalogue rows. */}
+          {uploading && uploadProgress && (
+            <Box sx={{ mt: 1.5 }}>
+              <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">
+                  {uploadProgress.loaded >= uploadProgress.total
+                    ? t('Processing on the server…')
+                    : t('Uploading…')}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {fmtMb(uploadProgress.loaded)} / {fmtMb(uploadProgress.total)} MB
+                </Typography>
+              </Stack>
+              <LinearProgress
+                variant={
+                  uploadProgress.total && uploadProgress.loaded < uploadProgress.total
+                    ? 'determinate'
+                    : 'indeterminate'
+                }
+                value={
+                  uploadProgress.total
+                    ? Math.min(100, (uploadProgress.loaded / uploadProgress.total) * 100)
+                    : 0
+                }
+              />
+            </Box>
+          )}
         </CardContent>
       </Card>
 
@@ -558,6 +650,26 @@ const PhotosTab = ({ productId }) => {
                 >
                   {ph.media_type === 'video' && (
                     <Chip size="small" color="secondary" label={t('video')} />
+                  )}
+                  {/* Quiet done-marker: this file has been through the media
+                      normalizer (WebP / Telegram MP4) and is delivery-ready. */}
+                  {isOptimized(ph) && (
+                    <Tooltip
+                      title={
+                        ph.media_type === 'video'
+                          ? t('Optimized: re-encoded to a Telegram-ready MP4')
+                          : t('Optimized: re-encoded to WebP for delivery')
+                      }
+                    >
+                      <CheckCircleOutlinedIcon
+                        sx={{
+                          fontSize: 16,
+                          color: 'success.main',
+                          opacity: 0.7,
+                          alignSelf: 'center',
+                        }}
+                      />
+                    </Tooltip>
                   )}
                   <Chip size="small" variant="outlined" label={`${t('stage')} ${ph.stage}`} />
                   <Chip size="small" variant="outlined" label={`${t('level')} ${ph.level_min}+`} />
