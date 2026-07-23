@@ -192,17 +192,18 @@ def _video_scale_filter(max_side: int) -> str:
 
 
 def normalize_video_file(src_path: str, dst_path: str, *, max_side: int,
-                         crf: int) -> None:
+                         crf: int, preset: str = "medium") -> None:
     """Re-encode one video to Telegram-friendly MP4 (H.264 + AAC, faststart).
 
     Synchronous + CPU-bound — call via asyncio.to_thread; the caller
     serializes encodes (one at a time). `-threads 2` bounds ffmpeg's CPU
     grab; raises on a non-zero exit (the ffmpeg stderr rides in the message).
+    A slower `preset` yields more quality per CRF for a longer encode.
     """
     cmd = _ffmpeg_cmd([
         "-i", src_path,
         "-vf", _video_scale_filter(max_side),
-        "-c:v", "libx264", "-crf", str(crf), "-preset", "veryfast",
+        "-c:v", "libx264", "-crf", str(crf), "-preset", preset,
         "-pix_fmt", "yuv420p", "-movflags", "+faststart",
         "-c:a", "aac", "-b:a", "96k",
         "-threads", "2",
@@ -284,7 +285,8 @@ async def normalize_product_photos(product_id: int, *,
                 await asyncio.to_thread(
                     normalize_video_file, path, new_path,
                     max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX,
-                    crf=config.RETENTION_MEDIA_VIDEO_CRF)
+                    crf=config.RETENTION_MEDIA_VIDEO_CRF,
+                    preset=config.RETENTION_MEDIA_VIDEO_PRESET)
                 await asyncio.to_thread(
                     extract_poster, new_path, poster_path,
                     max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX)

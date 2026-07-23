@@ -215,8 +215,8 @@ async def test_sweep_transcodes_video_and_extracts_poster(media_dir, fake_db,
     src.write_bytes(b"fake-video-bytes" * 1000)
     calls = []
 
-    def fake_transcode(src_path, dst_path, *, max_side, crf):
-        calls.append(("transcode", src_path, dst_path, max_side, crf))
+    def fake_transcode(src_path, dst_path, *, max_side, crf, preset="medium"):
+        calls.append(("transcode", src_path, dst_path, max_side, crf, preset))
         with open(dst_path, "wb") as fh:
             fh.write(b"small-mp4")
 

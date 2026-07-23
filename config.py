@@ -549,11 +549,17 @@ RETENTION_MEDIA_WEBP_QUALITY: int = _env_int(
 # constants on purpose (no admin knobs yet): 1080p-class longest side (a
 # vertical phone reel keeps its native 1080x1920 - photos are served at
 # Telegram's max resolution too, so video quality matches) + a CRF quality
-# target that still crushes the bloated source bitrate.
+# target that still crushes the bloated source bitrate. Lower CRF = better
+# quality + bigger file (~-6 CRF doubles the size); the `medium` preset squeezes
+# more quality out of the same CRF than `veryfast` at a longer encode time —
+# fine here since transcodes run in the background and quality matters more than
+# speed. Watch the 50 MB Telegram bot cap when lowering CRF on long clips.
 RETENTION_MEDIA_VIDEO_MAX_SIDE_PX: int = _env_int(
     "RETENTION_MEDIA_VIDEO_MAX_SIDE_PX", 1920)
 RETENTION_MEDIA_VIDEO_CRF: int = _env_int(
-    "RETENTION_MEDIA_VIDEO_CRF", 26)
+    "RETENTION_MEDIA_VIDEO_CRF", 23)
+RETENTION_MEDIA_VIDEO_PRESET: str = _env(
+    "RETENTION_MEDIA_VIDEO_PRESET", "medium")
 
 # Serve /docs, /redoc and /openapi.json (they describe the WHOLE API surface,
 # /admin included) — off by default; enable only on dev/stage deployments.
