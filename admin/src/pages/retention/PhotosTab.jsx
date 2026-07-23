@@ -648,11 +648,11 @@ const PhotosTab = ({ productId }) => {
                   useFlexGap
                   sx={{ mt: 1 }}
                 >
-                  {ph.media_type === 'video' && (
-                    <Chip size="small" color="secondary" label={t('video')} />
-                  )}
                   {/* Quiet done-marker: this file has been through the media
-                      normalizer (WebP / Telegram MP4) and is delivery-ready. */}
+                      normalizer (WebP / Telegram MP4) and is delivery-ready.
+                      The "video" indicator is intentionally omitted — the
+                      preview's Play button already signals a video — and tags
+                      are left off this compact line (still editable below). */}
                   {isOptimized(ph) && (
                     <Tooltip
                       title={
@@ -673,12 +673,6 @@ const PhotosTab = ({ productId }) => {
                   )}
                   <Chip size="small" variant="outlined" label={`${t('stage')} ${ph.stage}`} />
                   <Chip size="small" variant="outlined" label={`${t('level')} ${ph.level_min}+`} />
-                  {(ph.tags || []).slice(0, 4).map((t) => (
-                    <Chip key={t} size="small" label={t} />
-                  ))}
-                  {(ph.tags || []).length > 4 && (
-                    <Chip size="small" label={`+${ph.tags.length - 4}`} />
-                  )}
                 </Stack>
                 <Stack spacing={1.5} sx={{ mt: 1.5 }}>
                   <TextField
