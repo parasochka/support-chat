@@ -151,6 +151,18 @@ def test_photo_candidates_directive():
     assert "YOUR APPEARANCE" in empty
 
 
+def test_photo_candidates_directive_media_type():
+    # Videos are labeled so the model words the caption for what is sent
+    # ("here's my video"), photos stay the default.
+    block = prompts._photo_candidates_directive([
+        {"id": 7, "stage": 2, "description": "dancing", "tags": [],
+         "media_type": "video"},
+        {"id": 8, "stage": 1, "description": "portrait", "tags": []},
+    ])
+    assert "- 7 | video | stage 2" in block
+    assert "- 8 | photo | stage 1" in block
+
+
 def test_build_retention_messages_shape():
     session = {"id": "s1", "user_context": {"full_name": "Andrey", "vip_level": "Gold"}}
     msgs = prompts.build_retention_messages(

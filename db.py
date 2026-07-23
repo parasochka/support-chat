@@ -364,6 +364,7 @@ CREATE TABLE IF NOT EXISTS retention_photos (
   id                BIGSERIAL PRIMARY KEY,
   product_id        INT NOT NULL REFERENCES products(id),
   storage_ref       TEXT,
+  media_type        TEXT NOT NULL DEFAULT 'photo',  -- 'photo' | 'video'
   telegram_file_id  TEXT,
   description        TEXT NOT NULL DEFAULT '',
   tags              JSONB NOT NULL DEFAULT '[]',
@@ -749,6 +750,10 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         # reply-rate metric probe by (product, tg_user).
         "CREATE INDEX IF NOT EXISTS idx_chat_sessions_product_tg "
         "ON chat_sessions(product_id, tg_user_id) WHERE tg_user_id IS NOT NULL",
+        # Media library: photos + short videos share one catalogue/stream —
+        # media_type tells the delivery path which Telegram send to use.
+        "ALTER TABLE retention_photos ADD COLUMN IF NOT EXISTS "
+        "media_type TEXT NOT NULL DEFAULT 'photo'",
         # --- Per-product Cloudflare Turnstile --------------------------------
         # Each product (domain) runs its own Turnstile widget (INVISIBLE mode):
         # the site key is public config served to the chat widget; the secret is
@@ -3999,9 +4004,9 @@ def _row_to_photo(row: asyncpg.Record) -> dict[str, Any]:
     return d
 
 
-_PHOTO_COLS = ("id, product_id, storage_ref, telegram_file_id, description, "
-               "tags, level_min, stage, category, sort_order, active, "
-               "views_count, created_by, created_at, updated_at")
+_PHOTO_COLS = ("id, product_id, storage_ref, media_type, telegram_file_id, "
+               "description, tags, level_min, stage, category, sort_order, "
+               "active, views_count, created_by, created_at, updated_at")
 
 
 async def list_retention_photos(product_id: int, *, active_only: bool = False
@@ -4024,14 +4029,16 @@ async def create_retention_photo(product_id: int, *, storage_ref: Optional[str],
                                  description: str, tags: list[str],
                                  level_min: int, stage: int,
                                  category: Optional[str], sort_order: int,
-                                 created_by: Optional[str]) -> dict[str, Any]:
+                                 created_by: Optional[str],
+                                 media_type: str = "photo") -> dict[str, Any]:
     row = await _pool.fetchrow(
         "INSERT INTO retention_photos "
-        "(product_id, storage_ref, description, tags, level_min, stage, "
-        " category, sort_order, created_by) "
-        "VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9) "
+        "(product_id, storage_ref, media_type, description, tags, level_min, "
+        " stage, category, sort_order, created_by) "
+        "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10) "
         f"RETURNING {_PHOTO_COLS}",
-        product_id, storage_ref, description or "", json.dumps(tags or []),
+        product_id, storage_ref, media_type if media_type == "video" else "photo",
+        description or "", json.dumps(tags or []),
         level_min, stage, category, sort_order, created_by,
     )
     return _row_to_photo(row)
@@ -4064,23 +4071,52 @@ async def delete_retention_photo(photo_id: int) -> bool:
     return row is not None
 
 
+def _video_slot_cap(limit: int) -> int:
+    """How many candidate slots videos may occupy: at most a third of the list.
+
+    Photos stay the staple of the feed; videos are the occasional treat mixed
+    in (e.g. limit 6 -> up to 2 videos + 4 photos). A list too small for a
+    thirds split (limit < 3) still admits one video so a video-only library
+    is not silently unservable.
+    """
+    return max(1, limit // 3) if limit > 0 else 0
+
+
 async def candidate_photos(product_id: int, retention_user_id: int, *,
                            level_ordinal: int, max_stage: int, limit: int
                            ) -> list[dict[str, Any]]:
-    """Photos eligible for this player: active, within tier + stage gate, unseen.
+    """Media eligible for this player: active, within tier + stage gate, unseen.
 
-    Ordered by stage then least-viewed then sort_order so the model sees a small,
-    fresh, on-tier candidate set.
+    Ordered by stage then least-viewed then sort_order so the model sees a
+    small, fresh, on-tier candidate set. Photos and videos ride ONE stream,
+    but videos are capped to ~1/3 of the slots (see _video_slot_cap) so the
+    feed stays photo-first; when there are fewer videos than the cap, photos
+    fill the freed slots.
     """
-    rows = await _pool.fetch(
+    videos = await _pool.fetch(
         f"SELECT {_PHOTO_COLS} FROM retention_photos "
-        "WHERE product_id = $1 AND active AND level_min <= $2 AND stage <= $3 "
+        "WHERE product_id = $1 AND active AND media_type = 'video' "
+        "  AND level_min <= $2 AND stage <= $3 "
         "  AND id NOT IN (SELECT photo_id FROM retention_photo_views "
         "                 WHERE retention_user_id = $4) "
         "ORDER BY stage, views_count, sort_order, id LIMIT $5",
-        product_id, level_ordinal, max_stage, retention_user_id, limit,
+        product_id, level_ordinal, max_stage, retention_user_id,
+        min(_video_slot_cap(limit), limit),
     )
-    return [_row_to_photo(r) for r in rows]
+    photos = await _pool.fetch(
+        f"SELECT {_PHOTO_COLS} FROM retention_photos "
+        "WHERE product_id = $1 AND active AND media_type <> 'video' "
+        "  AND level_min <= $2 AND stage <= $3 "
+        "  AND id NOT IN (SELECT photo_id FROM retention_photo_views "
+        "                 WHERE retention_user_id = $4) "
+        "ORDER BY stage, views_count, sort_order, id LIMIT $5",
+        product_id, level_ordinal, max_stage, retention_user_id,
+        max(limit - len(videos), 0),
+    )
+    merged = [_row_to_photo(r) for r in list(photos) + list(videos)]
+    merged.sort(key=lambda p: (p.get("stage") or 0, p.get("views_count") or 0,
+                               p.get("sort_order") or 0, p["id"]))
+    return merged
 
 
 async def retention_appearance_context(product_id: int, retention_user_id: int

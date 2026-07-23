@@ -540,6 +540,13 @@ RETENTION_MEDIA_MAX_SIDE_PX: int = _env_int(
     "RETENTION_MEDIA_MAX_SIDE_PX", 2560)
 RETENTION_MEDIA_WEBP_QUALITY: int = _env_int(
     "RETENTION_MEDIA_WEBP_QUALITY", 90)
+# Video normalization (ffmpeg -> Telegram-friendly MP4/H.264). Deploy-level
+# constants on purpose (no admin knobs yet): 720p-class longest side + a CRF
+# quality target keep a phone clip small without visible damage.
+RETENTION_MEDIA_VIDEO_MAX_SIDE_PX: int = _env_int(
+    "RETENTION_MEDIA_VIDEO_MAX_SIDE_PX", 1280)
+RETENTION_MEDIA_VIDEO_CRF: int = _env_int(
+    "RETENTION_MEDIA_VIDEO_CRF", 26)
 
 # Serve /docs, /redoc and /openapi.json (they describe the WHOLE API surface,
 # /admin included) — off by default; enable only on dev/stage deployments.

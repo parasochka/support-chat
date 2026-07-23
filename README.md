@@ -192,6 +192,8 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `RETENTION_MEDIA_NORMALIZE_INTERVAL_SEC` | no | `3600` | Default for `retention.media_normalize_interval_sec` — how often the media sweep runs (one deploy-wide loop; the Media tab's «Normalize now» button runs one product immediately). |
 | `RETENTION_MEDIA_MAX_SIDE_PX` | no | `2560` | Default for `retention.media_max_side_px` — longest photo side after normalization (matches the ~2560 px Telegram re-compresses photos to). |
 | `RETENTION_MEDIA_WEBP_QUALITY` | no | `90` | Default for `retention.media_webp_quality` — WebP quality of the normalized photo. |
+| `RETENTION_MEDIA_VIDEO_MAX_SIDE_PX` | no | `1280` | Longest side of a normalized retention VIDEO (uploads are re-encoded to Telegram-friendly MP4/H.264 by ffmpeg right after upload; 720p-class keeps a clip small). |
+| `RETENTION_MEDIA_VIDEO_CRF` | no | `26` | H.264 CRF quality target for normalized retention videos (lower = better quality / bigger file). |
 | `TG_RATE_LIMIT_MAX_PER_USER` | no | `60` | Retention bot: max Telegram messages from one player per rate-limit window (`RATE_LIMIT_WINDOW_SEC`). Higher than the widget's per-IP limit because a live chat is faster; also an `antispam` settings knob (`tg_rate_limit_max_per_user`). |
 | `RETENTION_SCHEDULER_ENABLED` | no | `true` | Whether this instance runs the retention-agent worker loop at all (deploy-level switch, not a setting). |
 | `RETENTION_WORKER_INTERVAL_SEC` | no | `5` | Default for `retention.worker_interval_sec` — how often the agent worker drains the event queues (hot setting, read live each tick; clamped 5..3600; advisory-locked + atomic event claim, so multiple instances never double-send). |

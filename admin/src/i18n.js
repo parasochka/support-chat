@@ -549,6 +549,9 @@ const RU = {
   'Retention prompt variables saved': 'Переменные промпта бота сохранены',
   'Save variables': 'Сохранить переменные',
   'Upload photos': 'Загрузка фото',
+  'Upload photos & videos': 'Загрузка фото и видео',
+  'video': 'видео',
+  'videos': 'видео',
   'Description (grounds the caption the model writes)': 'Описание (на нём модель строит подпись)',
   'Tags (comma-separated)': 'Теги (через запятую)',
   'Level (min VIP tier)': 'Level (мин. VIP-уровень)',
@@ -1036,8 +1039,8 @@ const RU = {
     'Сообщение пользователя (слой 3: профиль, язык, фото-кандидаты, ограничители)',
 
   // ----- retention: media / photos -----
-  'Pick any number of files at once. The fields below apply to every uploaded photo — leave them empty and use **Generate metadata** afterwards to have the AI fill the description, tags, explicitness stage and VIP level per photo.':
-    'Выберите сразу любое количество файлов. Поля ниже применяются к каждому загруженному фото — оставьте их пустыми и после загрузки нажмите **Сгенерировать метаданные**, чтобы AI заполнил описание, теги, стадию откровенности и VIP-уровень для каждого фото.',
+  'Pick any number of files at once — photos and videos share one library and one delivery stream. The fields below apply to every uploaded item — leave them empty and use **Generate metadata** afterwards to have the AI fill the description, tags, explicitness stage and VIP level per item. Videos are re-encoded to a Telegram-friendly MP4 right after upload (a poster frame appears as the preview).':
+    'Выберите сразу любое количество файлов — фото и видео живут в одной библиотеке и одном потоке отправки. Поля ниже применяются к каждому загруженному элементу — оставьте их пустыми и после загрузки нажмите **Сгенерировать метаданные**, чтобы AI заполнил описание, теги, стадию откровенности и VIP-уровень. Видео сразу после загрузки пережимаются в MP4 для Telegram (в превью появится кадр-постер).',
   'VIP tier to unlock': 'VIP-уровень для доступа',
   '1 = softest': '1 = самое мягкое',
   'Choose files': 'Выбрать файлы',

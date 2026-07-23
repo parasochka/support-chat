@@ -688,14 +688,18 @@ async def create_photo(product_id: int = Form(...),
                        file: Optional[UploadFile] = File(default=None),
                        files: Optional[list[UploadFile]] = File(default=None),
                        admin=Depends(require_admin_write)) -> JSONResponse:
-    """Upload photo binaries to the media Volume + create their catalogue rows.
+    """Upload media binaries (photos AND videos) + create their catalogue rows.
 
-    Bulk-friendly: `files` takes any number of images in one request (the shared
+    Bulk-friendly: `files` takes any number of files in one request (the shared
     form fields apply to every one — typically left blank and filled by the AI
     metadata generation afterwards). The single `file` field stays accepted for
     older API consumers. Validation runs BEFORE anything is written, so one bad
-    file rejects the batch instead of half-uploading it.
+    file rejects the batch instead of half-uploading it. After the batch lands,
+    the media normalizer runs for this product in the background (WebP for
+    photos, Telegram MP4 + poster frame for videos) — no waiting for the
+    hourly sweep.
     """
+    import media_normalizer
     await admin_auth.require_product_write(admin, product_id)
     uploads = [u for u in ([file] if file else []) + list(files or []) if u]
     if not uploads:
@@ -703,10 +707,10 @@ async def create_photo(product_id: int = Form(...),
     exts = []
     for up in uploads:
         ext = os.path.splitext(up.filename or "")[1].lower() or ".jpg"
-        if ext not in _PHOTO_EXTS:
+        if ext not in _PHOTO_EXTS + media_normalizer.VIDEO_EXTS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported image type: {up.filename or ext}")
+                detail=f"Unsupported media type: {up.filename or ext}")
         exts.append(ext)
     os.makedirs(config.RETENTION_MEDIA_DIR, exist_ok=True)
     tag_list = [t.strip() for t in tags.split(",") if t.strip()]
@@ -735,12 +739,18 @@ async def create_photo(product_id: int = Form(...),
             product_id, storage_ref=storage_ref, description=description,
             tags=tag_list, level_min=level_min, stage=stage,
             category=category.strip() or None, sort_order=sort_order,
-            created_by=admin.get("email"))
+            created_by=admin.get("email"),
+            media_type="video" if ext in media_normalizer.VIDEO_EXTS
+            else "photo")
         photos.append(photo)
     await db.log_admin_event(None, "retention_photo_created",
                              {"ids": [p["id"] for p in photos],
                               "count": len(photos), "by": admin.get("email")},
                              product_id=product_id)
+    # Instant normalization: the batch is delivery-ready in moments (photos ->
+    # WebP, videos -> Telegram MP4 + poster). Background + advisory-locked;
+    # the hourly sweep remains the backstop if this run fails.
+    media_normalizer.schedule_product_normalization(product_id)
     # `photo` (the first row) is kept for pre-bulk API consumers.
     return JSONResponse(content={"photos": photos, "photo": photos[0]})
 
@@ -808,12 +818,33 @@ async def _generate_photo_meta(client: Any, photo: dict[str, Any],
                                max_stage: int,
                                library_counts: Optional[dict[str, dict[int, int]]] = None,
                                ) -> dict[str, Any]:
-    """One photo: read the binary, one vision call, validate, update the row."""
+    """One item: read the binary, one vision call, validate, update the row.
+
+    A VIDEO is rated by its poster frame (extracted during normalization; a
+    missing poster is extracted on demand here) — the model sees one
+    representative frame with a "this is a frame from a short video" note.
+    """
     import base64
+    import media_normalizer
     ref = photo.get("storage_ref")
     path = os.path.join(config.RETENTION_MEDIA_DIR, os.path.basename(ref or ""))
     if not ref or not os.path.exists(path):
         return {"id": photo["id"], "ok": False, "error": "file missing on disk"}
+    is_video = photo.get("media_type") == "video"
+    if is_video:
+        poster_ref = media_normalizer.poster_ref_for(os.path.basename(ref))
+        if not poster_ref:
+            return {"id": photo["id"], "ok": False,
+                    "error": "no poster frame for this video"}
+        poster_path = os.path.join(config.RETENTION_MEDIA_DIR, poster_ref)
+        if not os.path.exists(poster_path):
+            ok = await asyncio.to_thread(
+                media_normalizer.extract_poster, path, poster_path,
+                max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX)
+            if not ok:
+                return {"id": photo["id"], "ok": False,
+                        "error": "could not extract a video frame"}
+        path = poster_path
     ext = os.path.splitext(path)[1].lower()
     mime = _PHOTO_META_CONTENT_TYPES.get(ext, "image/jpeg")
 
@@ -826,7 +857,8 @@ async def _generate_photo_meta(client: Any, photo: dict[str, Any],
 
     data_url = await asyncio.to_thread(_read_data_url)
     messages = prompts.build_photo_meta_messages(data_url, vip_tiers, max_stage,
-                                                 library_counts=library_counts)
+                                                 library_counts=library_counts,
+                                                 is_video=is_video)
     try:
         result = await client.complete(messages)
     except Exception as exc:  # noqa: BLE001 - one bad photo must not kill the batch
@@ -963,8 +995,14 @@ async def delete_photo(photo_id: int,
 
 
 @admin_router.get("/photos/{photo_id}/file")
-async def get_photo_file(photo_id: int, admin=Depends(require_admin)) -> Any:
-    """Serve a photo binary for the admin preview (guarded)."""
+async def get_photo_file(photo_id: int, poster: bool = False,
+                         admin=Depends(require_admin)) -> Any:
+    """Serve a media binary for the admin preview (guarded).
+
+    `poster=1` on a VIDEO row serves its poster frame instead of the video
+    binary — the grid preview shows a still, not a multi-MB download.
+    """
+    import media_normalizer
     photo = await db.get_retention_photo(photo_id)
     if photo is None:
         raise HTTPException(status_code=404, detail="Photo not found.")
@@ -972,6 +1010,15 @@ async def get_photo_file(photo_id: int, admin=Depends(require_admin)) -> Any:
     ref = photo.get("storage_ref")
     if not ref:
         raise HTTPException(status_code=404, detail="No stored file.")
+    ref = os.path.basename(ref)
+    if poster and photo.get("media_type") == "video":
+        poster_ref = media_normalizer.poster_ref_for(ref)
+        if poster_ref and os.path.exists(
+                os.path.join(config.RETENTION_MEDIA_DIR, poster_ref)):
+            ref = poster_ref
+        else:
+            raise HTTPException(status_code=404,
+                                detail="Poster not extracted yet.")
     path = os.path.join(config.RETENTION_MEDIA_DIR, os.path.basename(ref))
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="File missing on disk.")

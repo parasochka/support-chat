@@ -605,6 +605,13 @@ def fallback_photo_caption(lang: str) -> str:
     return _rtn_text(key, lang)
 
 
+def fallback_video_caption(lang: str) -> str:
+    """The video twin of fallback_photo_caption (rotating video-worded lines)."""
+    key = random.choice(("rtn_video_caption", "rtn_video_caption_2",
+                         "rtn_video_caption_3"))
+    return _rtn_text(key, lang)
+
+
 def _subscribe_markup(product: dict[str, Any], lang: str) -> dict[str, Any]:
     rows = []
     url = product.get("telegram_channel_url")
@@ -1140,11 +1147,16 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
         markup = inline_keyboard([[{"text": reply.link_label or reply.link_url,
                                     "url": reply.link_url}]])
 
-    # Photo delivery (file_id cache; first send uploads + caches the id).
+    # Media delivery (file_id cache; first send uploads + caches the id).
     if reply.photo_id is not None:
-        # Never send a bare image: fall back to a short localized caption when
-        # the model returned a photo with no text.
-        caption = reply.reply or fallback_photo_caption(reply.lang)
+        # Never send a bare image/video: fall back to a short localized caption
+        # when the model returned media with no text — worded for what is
+        # actually being sent ("here's my video" vs "here's my photo").
+        chosen = next((c for c in candidates
+                       if int(c.get("id", 0)) == reply.photo_id), None)
+        is_video = bool(chosen) and chosen.get("media_type") == "video"
+        caption = reply.reply or (fallback_video_caption(reply.lang) if is_video
+                                  else fallback_photo_caption(reply.lang))
         await _send_photo(client, product, ru, pu.chat_id, reply.photo_id,
                           caption, session_id=session["id"],
                           reply_markup=markup)
@@ -1220,11 +1232,12 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
                       reply_markup: Optional[dict[str, Any]] = None,
                       silent: bool = False
                       ) -> Optional[str]:
-    """Send a media-library photo, using the cached file_id or uploading once.
+    """Send a media-library item (photo OR video), via cached file_id or a
+    one-time upload — the row's media_type picks sendPhoto vs sendVideo.
 
-    Returns what actually reached the player: "photo" (the photo itself),
-    "text" (the caption-only fallback — the photo row was inactive or the
-    media file missing, but a message WAS delivered), or None (nothing went
+    Returns what actually reached the player: "photo" (the media itself),
+    "text" (the caption-only fallback — the media row was inactive or the
+    file missing, but a message WAS delivered), or None (nothing went
     out). The distinction matters: a delivered text fallback must still be
     persisted/recorded as sent, or the player receives a message that exists
     in no transcript. `session_id` links the delivery to the chat session so
@@ -1251,11 +1264,14 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
                                             silent=silent):
             return "text"
         return None
+    is_video = photo.get("media_type") == "video"
     file_id = photo.get("telegram_file_id")
     result = None
     err_code: Optional[int] = None
     if file_id:
-        result, err_code, _ = await client.send_photo_file_id_verbose(
+        send_by_id = (client.send_video_file_id_verbose if is_video
+                      else client.send_photo_file_id_verbose)
+        result, err_code, _ = await send_by_id(
             chat_id, file_id, caption=caption_html, parse_mode="HTML",
             reply_markup=photo_markup, disable_notification=silent)
     if result is None:
@@ -1275,14 +1291,19 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
                                                 silent=silent):
                 return "text"
             return None
-        result, err_code, _ = await client.send_photo_bytes_verbose(
-            chat_id, content, photo.get("storage_ref") or "photo.jpg",
+        send_bytes = (client.send_video_bytes_verbose if is_video
+                      else client.send_photo_bytes_verbose)
+        result, err_code, _ = await send_bytes(
+            chat_id, content,
+            photo.get("storage_ref") or ("video.mp4" if is_video
+                                         else "photo.jpg"),
             caption=caption_html, parse_mode="HTML",
             reply_markup=photo_markup, disable_notification=silent)
         if result is None and err_code == 403:
             await db.set_retention_unreachable(int(ru["id"]), True)
             return None
-        new_file_id = TelegramClient.extract_photo_file_id(result)
+        new_file_id = (TelegramClient.extract_video_file_id(result) if is_video
+                       else TelegramClient.extract_photo_file_id(result))
         if new_file_id:
             await db.set_photo_file_id(photo_id, new_file_id)
     if result is not None:

@@ -1050,7 +1050,17 @@ checklist lives in the admin — the **Retention → How it works** page.
   pinned the same page every time. Skip the invitation entirely in a
   complaint/money/just-lost/sensitive moment. Tests: `tests/test_retention_cta.py`,
   `tests/test_naturalness.py`.
-- **Media library + file_id cache**: `retention_photos` gates by `level_min` (VIP-tier ordinal) ×
+- **Media library + file_id cache**: `retention_photos` holds PHOTOS **and short
+  VIDEOS** in one catalogue/stream (`media_type` column, `'photo'`/`'video'` by upload
+  extension) — the same gating, unseen-tracking, daily cap, candidate feed and file_id
+  cache serve both; the delivery path (`retention._send_photo`) picks
+  `sendPhoto`/`sendVideo` (+ `extract_video_file_id`) from the row's type, and the
+  captionless fallback uses video-worded copy (`rtn_video_caption*`). The candidate
+  list caps videos at **≤ 1/3 of the slots** (`db._video_slot_cap` in
+  `db.candidate_photos` — e.g. 4 photos + 2 videos at list size 6; photos fill unused
+  video slots), the Layer-3 candidate line carries the type (`id | photo-or-video |
+  stage | …`) and the photo directive tells the model to word the caption for what is
+  actually sent ("here's my video…"). It gates by `level_min` (VIP-tier ordinal) ×
   `stage` (explicitness). **Both values are bounded to the product's real ranges on EVERY write**
   — `stage` to 1..`max_stage`, `level_min` to 0..(last tier ordinal) — whether the value is
   AI-generated OR hand-entered/API-posted (`api.retention._clamp_photo_gate`, applied in
@@ -1067,12 +1077,24 @@ checklist lives in the admin — the **Retention → How it works** page.
   (`db.set_retention_photo_storage_ref`) and **deletes the heavy original** — GIFs are left alone
   (possibly animated), the cached `telegram_file_id` is KEPT (the already-uploaded copy stays
   valid), and the row is re-pointed BEFORE the delete so a crash can orphan a file but never break
-  a photo. Knobs in the hot `retention` group (`media_normalize_enabled` per product;
+  a photo. **Videos** normalize through the same module via **ffmpeg** (installed in the Docker
+  image): re-encoded ONCE to Telegram-friendly `<base>.tg.mp4` (H.264 + AAC, faststart, longest
+  side `RETENTION_MEDIA_VIDEO_MAX_SIDE_PX`/1280, CRF `RETENTION_MEDIA_VIDEO_CRF`/26 — deploy env
+  constants, deliberately no admin knobs) plus a `<base>.poster.webp` frame (the admin grid
+  preview via `GET …/photos/{id}/file?poster=1`, and the AI-metadata vision call rates the video
+  by that frame — `build_photo_meta_messages(is_video=True)`); the `.tg.mp4` suffix is the
+  done-marker, and a normalized video still over Telegram's 50 MB bot cap is loudly logged.
+  Encodes run strictly one at a time at low OS priority (`nice`, `-threads 2`) so a bulk upload
+  never starves the serving process. **Normalization also runs IMMEDIATELY after an upload**: the
+  upload endpoint fires `media_normalizer.schedule_product_normalization` (a background task
+  under the SAME advisory lock as the sweep, deduped per product), so new media is
+  delivery-ready in moments — the periodic sweep stays as the catch-up. Knobs in the hot
+  `retention` group (`media_normalize_enabled` per product;
   `media_normalize_interval_sec` global-only — one loop serves every product); the Media tab's
-  «Normalize now» button (`POST /admin/retention/photos/normalize`) runs one product's sweep
+  «Optimize» button (`POST /admin/retention/photos/normalize`) runs one product's sweep
   immediately, bypassing the enabled switch. Requires `Pillow` (requirements.txt). Tests:
   `tests/test_media_normalizer.py`. **Upload is bulk-friendly** (`POST /admin/retention/photos` takes any number
-  of `files` in one request; the single `file` field stays for older consumers) and metadata is
+  of `files` — photos AND videos, `media_type` set by extension — in one request; the single `file` field stays for older consumers) and metadata is
   **AI-generated on demand**: `POST /admin/retention/photos/generate-metadata` (`{ids: […]}`,
   ≤20/request — the SPA chunks bigger selections) runs one vision call per photo through the
   product's OWN OpenAI client (`client_for_product`) + the product-resolved `model` settings
