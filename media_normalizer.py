@@ -7,7 +7,8 @@ space and upload time on the first send. This module brings every stored
 binary to the delivery format:
 - photos -> WebP, longest side capped at `retention.media_max_side_px`;
 - videos -> MP4 (H.264 + AAC, ffmpeg), longest side capped at
-  `RETENTION_MEDIA_VIDEO_MAX_SIDE_PX` (720p-class), CRF-encoded, plus a
+  `RETENTION_MEDIA_VIDEO_MAX_SIDE_PX` (1080p-class — a vertical phone reel
+  keeps its native 1080x1920), CRF-encoded, plus a
   poster frame (`<base>.poster.webp`) used by the admin preview and the
   AI metadata generation.
 The heavy original is DELETED after the row is re-pointed — the normalized

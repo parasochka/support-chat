@@ -541,10 +541,12 @@ RETENTION_MEDIA_MAX_SIDE_PX: int = _env_int(
 RETENTION_MEDIA_WEBP_QUALITY: int = _env_int(
     "RETENTION_MEDIA_WEBP_QUALITY", 90)
 # Video normalization (ffmpeg -> Telegram-friendly MP4/H.264). Deploy-level
-# constants on purpose (no admin knobs yet): 720p-class longest side + a CRF
-# quality target keep a phone clip small without visible damage.
+# constants on purpose (no admin knobs yet): 1080p-class longest side (a
+# vertical phone reel keeps its native 1080x1920 - photos are served at
+# Telegram's max resolution too, so video quality matches) + a CRF quality
+# target that still crushes the bloated source bitrate.
 RETENTION_MEDIA_VIDEO_MAX_SIDE_PX: int = _env_int(
-    "RETENTION_MEDIA_VIDEO_MAX_SIDE_PX", 1280)
+    "RETENTION_MEDIA_VIDEO_MAX_SIDE_PX", 1920)
 RETENTION_MEDIA_VIDEO_CRF: int = _env_int(
     "RETENTION_MEDIA_VIDEO_CRF", 26)
 

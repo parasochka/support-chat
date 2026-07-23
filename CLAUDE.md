@@ -1089,7 +1089,9 @@ checklist lives in the admin — the **Retention → How it works** page.
   valid), and the row is re-pointed BEFORE the delete so a crash can orphan a file but never break
   a photo. **Videos** normalize through the same module via **ffmpeg** (installed in the Docker
   image): re-encoded ONCE to Telegram-friendly `<base>.tg.mp4` (H.264 + AAC, faststart, longest
-  side `RETENTION_MEDIA_VIDEO_MAX_SIDE_PX`/1280, CRF `RETENTION_MEDIA_VIDEO_CRF`/26 — deploy env
+  side `RETENTION_MEDIA_VIDEO_MAX_SIDE_PX`/1920 (a vertical 1080×1920 reel keeps native
+  resolution; the CRF re-encode still shrinks a bloated source ~6-10×), CRF
+  `RETENTION_MEDIA_VIDEO_CRF`/26 — deploy env
   constants, deliberately no admin knobs) plus a `<base>.poster.webp` frame (the admin grid
   preview via `GET …/photos/{id}/file?poster=1`, and the AI-metadata vision call rates the video
   by that frame — `build_photo_meta_messages(is_video=True)`); the `.tg.mp4` suffix is the
