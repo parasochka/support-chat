@@ -246,10 +246,13 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
     session["user_context"] = retention._user_context_from_ru(ru)
 
     candidates: list[dict[str, Any]] = []
-    if action == "photo" and not dry_run:
+    if action in ("photo", "video") and not dry_run:
+        # 'photo' offers the normal mixed feed (photos + up to 1/3 videos);
+        # 'video' restricts the candidates to videos only.
         candidates = await retention.select_photo_candidates(
-            pid, ru, "", bypass_cooldown=True)
-        # No sendable photo (daily photo cap, tier gate, nothing unseen) —
+            pid, ru, "", bypass_cooldown=True,
+            media="video" if action == "video" else None)
+        # No sendable media (daily photo cap, tier gate, nothing unseen) —
         # gracefully fall back to a text-only ping rather than skipping.
 
     reason = _TRIGGER_REASONS.get(rule.get("trigger_kind", ""), "inactivity")
@@ -279,7 +282,8 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
     header = retention._rtn_text("rtn_ping_header", draft.lang).strip()
     delivered, detail, link_attached = await delivery.deliver_draft(
         channel, ru, draft, header=header or None, session_id=session["id"],
-        photo_fallback_caption=retention.fallback_photo_caption(draft.lang))
+        photo_fallback_caption=retention.fallback_media_caption(
+            draft.lang, draft.photo_id, candidates))
 
     cost = float(draft.ai_meta.get("cost_usd") or 0)
     ping_context = (f"idle_reengagement: the player has been away about "

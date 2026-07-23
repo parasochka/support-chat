@@ -266,6 +266,62 @@ class TelegramClient:
             return None, j.get("error_code"), j.get("description")
         return j.get("result"), None, None
 
+    async def send_video_file_id_verbose(
+            self, chat_id: int, file_id: str, *,
+            caption: Optional[str] = None, parse_mode: Optional[str] = None,
+            reply_markup: Optional[dict[str, Any]] = None,
+            disable_notification: bool = False
+            ) -> tuple[Optional[dict[str, Any]], Optional[int], Optional[str]]:
+        """sendVideo by cached file_id — the video twin of
+        send_photo_file_id_verbose (same 403-vs-stale-id split)."""
+        payload: dict[str, Any] = {"chat_id": chat_id, "video": file_id,
+                                   "supports_streaming": True}
+        if caption:
+            payload["caption"] = caption
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        if disable_notification:
+            payload["disable_notification"] = True
+        return await self._call_verbose("sendVideo", payload)
+
+    async def send_video_bytes_verbose(
+            self, chat_id: int, content: bytes, filename: str, *,
+            caption: Optional[str] = None, parse_mode: Optional[str] = None,
+            reply_markup: Optional[dict[str, Any]] = None,
+            disable_notification: bool = False
+            ) -> tuple[Optional[dict[str, Any]], Optional[int], Optional[str]]:
+        """Upload a video from bytes (first send), surfacing (error_code,
+        description). Returns the result so the caller can cache the file_id."""
+        data: dict[str, Any] = {"chat_id": str(chat_id),
+                                "supports_streaming": "true"}
+        if caption:
+            data["caption"] = caption
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+        if disable_notification:
+            data["disable_notification"] = "true"
+        if reply_markup is not None:
+            data["reply_markup"] = json.dumps(reply_markup)
+        files = {"video": (filename, content)}
+        j = await self._post("sendVideo", form_data=data, files=files)
+        if j is None:
+            return None, None, "request_failed"
+        if not j.get("ok"):
+            log.warning("telegram_send_video_error desc=%s", j.get("description"))
+            return None, j.get("error_code"), j.get("description")
+        return j.get("result"), None, None
+
+    @staticmethod
+    def extract_video_file_id(send_video_result: Optional[dict[str, Any]]
+                              ) -> Optional[str]:
+        """Pull the video file_id out of a sendVideo result."""
+        if not send_video_result:
+            return None
+        video = send_video_result.get("video") or {}
+        return video.get("file_id")
+
     @staticmethod
     def extract_photo_file_id(send_photo_result: Optional[dict[str, Any]]
                               ) -> Optional[str]:

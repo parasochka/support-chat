@@ -364,6 +364,7 @@ CREATE TABLE IF NOT EXISTS retention_photos (
   id                BIGSERIAL PRIMARY KEY,
   product_id        INT NOT NULL REFERENCES products(id),
   storage_ref       TEXT,
+  media_type        TEXT NOT NULL DEFAULT 'photo',  -- 'photo' | 'video'
   telegram_file_id  TEXT,
   description        TEXT NOT NULL DEFAULT '',
   tags              JSONB NOT NULL DEFAULT '[]',
@@ -749,6 +750,10 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         # reply-rate metric probe by (product, tg_user).
         "CREATE INDEX IF NOT EXISTS idx_chat_sessions_product_tg "
         "ON chat_sessions(product_id, tg_user_id) WHERE tg_user_id IS NOT NULL",
+        # Media library: photos + short videos share one catalogue/stream —
+        # media_type tells the delivery path which Telegram send to use.
+        "ALTER TABLE retention_photos ADD COLUMN IF NOT EXISTS "
+        "media_type TEXT NOT NULL DEFAULT 'photo'",
         # --- Per-product Cloudflare Turnstile --------------------------------
         # Each product (domain) runs its own Turnstile widget (INVISIBLE mode):
         # the site key is public config served to the chat widget; the secret is
@@ -3999,9 +4004,9 @@ def _row_to_photo(row: asyncpg.Record) -> dict[str, Any]:
     return d
 
 
-_PHOTO_COLS = ("id, product_id, storage_ref, telegram_file_id, description, "
-               "tags, level_min, stage, category, sort_order, active, "
-               "views_count, created_by, created_at, updated_at")
+_PHOTO_COLS = ("id, product_id, storage_ref, media_type, telegram_file_id, "
+               "description, tags, level_min, stage, category, sort_order, "
+               "active, views_count, created_by, created_at, updated_at")
 
 
 async def list_retention_photos(product_id: int, *, active_only: bool = False
@@ -4024,14 +4029,16 @@ async def create_retention_photo(product_id: int, *, storage_ref: Optional[str],
                                  description: str, tags: list[str],
                                  level_min: int, stage: int,
                                  category: Optional[str], sort_order: int,
-                                 created_by: Optional[str]) -> dict[str, Any]:
+                                 created_by: Optional[str],
+                                 media_type: str = "photo") -> dict[str, Any]:
     row = await _pool.fetchrow(
         "INSERT INTO retention_photos "
-        "(product_id, storage_ref, description, tags, level_min, stage, "
-        " category, sort_order, created_by) "
-        "VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9) "
+        "(product_id, storage_ref, media_type, description, tags, level_min, "
+        " stage, category, sort_order, created_by) "
+        "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10) "
         f"RETURNING {_PHOTO_COLS}",
-        product_id, storage_ref, description or "", json.dumps(tags or []),
+        product_id, storage_ref, media_type if media_type == "video" else "photo",
+        description or "", json.dumps(tags or []),
         level_min, stage, category, sort_order, created_by,
     )
     return _row_to_photo(row)
@@ -4064,23 +4071,70 @@ async def delete_retention_photo(photo_id: int) -> bool:
     return row is not None
 
 
-async def candidate_photos(product_id: int, retention_user_id: int, *,
-                           level_ordinal: int, max_stage: int, limit: int
-                           ) -> list[dict[str, Any]]:
-    """Photos eligible for this player: active, within tier + stage gate, unseen.
+def _video_slot_cap(limit: int) -> int:
+    """How many candidate slots videos may occupy in the mixed feed.
 
-    Ordered by stage then least-viewed then sort_order so the model sees a small,
-    fresh, on-tier candidate set.
+    Photos stay the staple, but videos must stay PRESENT: the default list of
+    6 carries 2 videos + 4 photos, and the video share never drops below 2
+    while the list has room for it (limit 4 -> 2+2). Only a very small list
+    shrinks it: limit 3 -> 1 video + 2 photos, limit 2 -> 1+1; a 1-slot list
+    is photos-only (the feed is photo-first at the extreme). Larger lists
+    scale at about a third (limit 9 -> 3, limit 12 -> 4).
     """
-    rows = await _pool.fetch(
+    if limit <= 1:
+        return 0
+    if limit <= 3:
+        return 1
+    return max(2, limit // 3)
+
+
+# Only a NORMALIZED video (re-encoded to the .tg.mp4 delivery format) is ever
+# offered as a candidate: a just-uploaded raw original (multi-hundred-MB .mov)
+# must not be uploadable to Telegram before the transcode finishes.
+_VIDEO_SENDABLE_SQL = "storage_ref LIKE '%.tg.mp4'"
+
+
+async def candidate_photos(product_id: int, retention_user_id: int, *,
+                           level_ordinal: int, max_stage: int, limit: int,
+                           media: Optional[str] = None
+                           ) -> list[dict[str, Any]]:
+    """Media eligible for this player: active, within tier + stage gate, unseen.
+
+    Ordered by stage then least-viewed then sort_order so the model sees a
+    small, fresh, on-tier candidate set. Photos and videos ride ONE stream
+    with a fixed video share (see _video_slot_cap: the default list of 6 =
+    4 photos + 2 videos, never below 2 videos while the list has room); when
+    there are fewer videos than the share, photos fill the freed slots.
+    `media='video'`/'photo' restricts the set to one kind (the idle ladder's
+    explicit video-ping action) — a video-only list is NOT share-capped.
+    Un-normalized videos are never offered.
+    """
+    video_limit = (limit if media == "video"
+                   else min(_video_slot_cap(limit), limit))
+    videos = [] if media == "photo" else await _pool.fetch(
         f"SELECT {_PHOTO_COLS} FROM retention_photos "
-        "WHERE product_id = $1 AND active AND level_min <= $2 AND stage <= $3 "
+        "WHERE product_id = $1 AND active AND media_type = 'video' "
+        f"  AND {_VIDEO_SENDABLE_SQL} "
+        "  AND level_min <= $2 AND stage <= $3 "
         "  AND id NOT IN (SELECT photo_id FROM retention_photo_views "
         "                 WHERE retention_user_id = $4) "
         "ORDER BY stage, views_count, sort_order, id LIMIT $5",
-        product_id, level_ordinal, max_stage, retention_user_id, limit,
+        product_id, level_ordinal, max_stage, retention_user_id, video_limit,
     )
-    return [_row_to_photo(r) for r in rows]
+    photos = [] if media == "video" else await _pool.fetch(
+        f"SELECT {_PHOTO_COLS} FROM retention_photos "
+        "WHERE product_id = $1 AND active AND media_type <> 'video' "
+        "  AND level_min <= $2 AND stage <= $3 "
+        "  AND id NOT IN (SELECT photo_id FROM retention_photo_views "
+        "                 WHERE retention_user_id = $4) "
+        "ORDER BY stage, views_count, sort_order, id LIMIT $5",
+        product_id, level_ordinal, max_stage, retention_user_id,
+        max(limit - len(videos), 0),
+    )
+    merged = [_row_to_photo(r) for r in list(photos) + list(videos)]
+    merged.sort(key=lambda p: (p.get("stage") or 0, p.get("views_count") or 0,
+                               p.get("sort_order") or 0, p["id"]))
+    return merged
 
 
 async def retention_appearance_context(product_id: int, retention_user_id: int

@@ -1260,16 +1260,22 @@ _RETENTION_ENGAGEMENT_DIRECTIVE = (
 )
 
 
-# Photo directive (STATIC → retention Layer-1). Governs [[PHOTO:id]] emission.
+# Photo/video directive (STATIC → retention Layer-1). Governs [[PHOTO:id]]
+# emission — the id may be a photo OR a short video; the backend picks the
+# right Telegram send from the row's media_type.
 _RETENTION_PHOTO_DIRECTIVE = (
-    "PHOTOS:\n"
-    "- You can send the player a photo of yourself. A PHOTO CANDIDATES block in "
-    "the user message lists the photos you may send right now, each as "
-    "'id | stage | description | tags'. To send one, put [[PHOTO:id]] on its own "
+    "PHOTOS & VIDEOS:\n"
+    "- You can send the player a photo or a short video of yourself. A PHOTO "
+    "CANDIDATES block in the user message lists the media you may send right "
+    "now, each as 'id | photo-or-video | stage | description | tags'. To send "
+    "one, put [[PHOTO:id]] on its own "
     "line at the top of the reply, choosing an id ONLY from that list that best "
-    "fits the moment or the player's request. The text after the tags becomes the "
-    "photo's caption, so write it to match the description of the id you chose - "
-    "warm and in character, never quoting the raw description or tags.\n"
+    "fits the moment or the player's request. The text after the tags becomes "
+    "the caption, so write it to match the description of the id you chose - "
+    "warm and in character, never quoting the raw description or tags. When "
+    "the id is a VIDEO, say so naturally in the caption (\"here's a little "
+    "video of me...\") - never call a video a photo or vice versa; a video is "
+    "a rarer, more intimate gift than a photo, so frame it as such.\n"
     "- Your APPEARANCE is defined ONLY by your real photos. The YOUR APPEARANCE "
     "block in the user message (built from your actual photo descriptions) is the "
     "single source of truth for how you look: stable traits (hair, face, build) "
@@ -1469,10 +1475,12 @@ def build_retention_system_message(kb_block: Optional[str]) -> str:
 def _photo_candidates_directive(candidates: list[dict[str, Any]]) -> Optional[str]:
     """Layer-3 block listing the photos the model may send this turn.
 
-    Each candidate: id | stage | description | tags. Only these ids are valid
-    for [[PHOTO:id]] (the backend re-validates). Returns None when there are no
-    candidates, so the model is told (via the photo directive) to keep chatting
-    with text instead of promising a photo it cannot send.
+    Each candidate: id | photo-or-video | stage | description | tags. Only
+    these ids are valid for [[PHOTO:id]] (the backend re-validates; the type
+    tells the model to word the caption for what is actually sent). Returns
+    None when there are no candidates, so the model is told (via the photo
+    directive) to keep chatting with text instead of promising media it
+    cannot send.
     """
     if not candidates:
         return (
@@ -1493,7 +1501,9 @@ def _photo_candidates_directive(candidates: list[dict[str, Any]]) -> Optional[st
     for c in candidates:
         tags = ", ".join(c.get("tags") or [])
         desc = (c.get("description") or "").replace("\n", " ").strip()
-        lines.append(f"- {c['id']} | stage {c.get('stage')} | {desc} | [{tags}]")
+        kind = "video" if c.get("media_type") == "video" else "photo"
+        lines.append(
+            f"- {c['id']} | {kind} | stage {c.get('stage')} | {desc} | [{tags}]")
     return "\n".join(lines)
 
 
@@ -1691,7 +1701,8 @@ _INTRO_PHOTO_DIRECTIVE = (
     "[[PHOTO:id]] on its own line. This is an order for this turn: the usual "
     "\"when the moment fits\" judgment does NOT apply, and the brevity or "
     "restraint rules must not drop the photo. Pick the friendliest, most "
-    "inviting candidate (a warm everyday shot over a daring one). First react "
+    "inviting candidate (a warm everyday shot over a daring one; prefer a "
+    "PHOTO over a video for this first introduction). First react "
     "naturally to what the player just said (if it needs an answer), then "
     "present the photo as your way of saying \"here I am\": a short, warm "
     "caption in the player's language, in your own words, along the lines of "
@@ -1970,9 +1981,10 @@ _RETENTION_PING_TASK = (
     "- No pressure, no guilt, no invented bonuses/amounts/promises - concrete "
     "offers only if the knowledge base above states them.\n"
     "- End with a light, easy-to-answer question that invites a reply.\n"
-    "- If photo candidates are listed and a photo fits the mood, you may attach "
-    "one by adding [[PHOTO:id]] on its own line (the message text becomes the "
-    "caption). Never promise a photo you are not attaching now.\n"
+    "- If photo candidates are listed and one fits the mood, you may attach a "
+    "photo or video by adding [[PHOTO:id]] on its own line (the message text "
+    "becomes the caption; when the id is a video, the caption must say it is "
+    "a video). Never promise a photo or video you are not attaching now.\n"
     "- If the SITE MAP section lists a page matching this message's call to "
     "action (come back and play -> a games/casino page, deposit -> the cashier, "
     "check the balance -> the account page), attach it as a button by adding "
@@ -2004,9 +2016,10 @@ _RETENTION_V2_TOUCH_TASK = (
     "helps; never re-introduce yourself.\n"
     "- Never state exact money amounts, and never invent bonuses/promises - "
     "concrete offers only if the knowledge base above states them.\n"
-    "- If photo candidates are listed and a photo fits the mood, you may attach "
-    "one by adding [[PHOTO:id]] on its own line (the message text becomes the "
-    "caption). Never promise a photo you are not attaching now.\n"
+    "- If photo candidates are listed and one fits the mood, you may attach a "
+    "photo or video by adding [[PHOTO:id]] on its own line (the message text "
+    "becomes the caption; when the id is a video, the caption must say it is "
+    "a video). Never promise a photo or video you are not attaching now.\n"
     "- If the SITE MAP section lists a page matching this message's call to "
     "action, you may attach it as a button by adding [[LINK:url]] on its own "
     "line, copying that ONE url exactly from the SITE MAP. Never paste the url "
@@ -2364,6 +2377,7 @@ _PHOTO_META_BALANCE = (
 def build_photo_meta_messages(image_data_url: str, vip_tiers: list[str],
                               max_stage: int,
                               library_counts: Optional[dict[str, dict[int, int]]] = None,
+                              is_video: bool = False,
                               ) -> list[dict[str, Any]]:
     """The OpenAI `messages` array for one photo-metadata generation call.
 
@@ -2375,6 +2389,9 @@ def build_photo_meta_messages(image_data_url: str, vip_tiers: list[str],
     is the library's current distribution: when passed, the task gains the
     balancing block that steers borderline ratings toward the under-filled
     levels so the library spreads evenly instead of clustering.
+    `is_video` marks the image as a representative FRAME of a short video —
+    the model rates the video by that frame (the safest single-look proxy),
+    and the note keeps it from describing the item as "a photo".
     """
     tiers = [str(t) for t in (vip_tiers or ["none"])]
     tier_list = ", ".join(f"{i} = {name}" for i, name in enumerate(tiers))
@@ -2391,6 +2408,12 @@ def build_photo_meta_messages(image_data_url: str, vip_tiers: list[str],
         task += _PHOTO_META_BALANCE.format(
             stage_counts=_fmt(library_counts.get("stage") or {}),
             level_counts=_fmt(library_counts.get("level") or {}, names=tiers))
+    if is_video:
+        task += (
+            "\n\nNOTE: the image you see is a representative FRAME extracted "
+            "from a short VIDEO. Rate and describe the VIDEO through this "
+            "frame - write the description as a video description (what she "
+            "is doing / wearing / where), never call it a photo.")
     return [
         {"role": "system", "content": _PHOTO_META_SYSTEM},
         {"role": "user", "content": [

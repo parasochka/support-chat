@@ -416,7 +416,7 @@ RETENTION_MAX_UPLOAD_BYTES: int = _env_int("RETENTION_MAX_UPLOAD_BYTES",
 RETENTION_DAILY_PHOTO_CAP: int = _env_int("RETENTION_DAILY_PHOTO_CAP", 5)
 RETENTION_PROACTIVE_COOLDOWN_MSGS: int = _env_int(
     "RETENTION_PROACTIVE_COOLDOWN_MSGS", 5)
-RETENTION_CANDIDATE_LIST_SIZE: int = _env_int("RETENTION_CANDIDATE_LIST_SIZE", 5)
+RETENTION_CANDIDATE_LIST_SIZE: int = _env_int("RETENTION_CANDIDATE_LIST_SIZE", 6)
 RETENTION_STAGE_ADVANCE_MIN_HOURS: int = _env_int(
     "RETENTION_STAGE_ADVANCE_MIN_HOURS", 12)
 RETENTION_MAX_STAGE: int = _env_int("RETENTION_MAX_STAGE", 5)
@@ -540,6 +540,15 @@ RETENTION_MEDIA_MAX_SIDE_PX: int = _env_int(
     "RETENTION_MEDIA_MAX_SIDE_PX", 2560)
 RETENTION_MEDIA_WEBP_QUALITY: int = _env_int(
     "RETENTION_MEDIA_WEBP_QUALITY", 90)
+# Video normalization (ffmpeg -> Telegram-friendly MP4/H.264). Deploy-level
+# constants on purpose (no admin knobs yet): 1080p-class longest side (a
+# vertical phone reel keeps its native 1080x1920 - photos are served at
+# Telegram's max resolution too, so video quality matches) + a CRF quality
+# target that still crushes the bloated source bitrate.
+RETENTION_MEDIA_VIDEO_MAX_SIDE_PX: int = _env_int(
+    "RETENTION_MEDIA_VIDEO_MAX_SIDE_PX", 1920)
+RETENTION_MEDIA_VIDEO_CRF: int = _env_int(
+    "RETENTION_MEDIA_VIDEO_CRF", 26)
 
 # Serve /docs, /redoc and /openapi.json (they describe the WHOLE API surface,
 # /admin included) — off by default; enable only on dev/stage deployments.

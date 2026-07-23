@@ -49,7 +49,7 @@ const PhotosTab = ({ productId }) => {
   // progress bar so the operator sees it moving and knows it hasn't stalled.
   const [genProgress, setGenProgress] = useState(null);
   const [normalizing, setNormalizing] = useState(false);
-  const [filters, setFilters] = useState({ q: '', stage: 'all', level: 'all', status: 'all' });
+  const [filters, setFilters] = useState({ q: '', stage: 'all', level: 'all', status: 'all', type: 'all' });
   const [page, setPage] = useState(1);
   // The product's real gate ranges — Stage 1..maxStage, Level 0..tiers-1 — so
   // the pickers below can only offer values the delivery gate can actually serve
@@ -151,6 +151,7 @@ const PhotosTab = ({ productId }) => {
     if (filters.status !== 'all' && Boolean(ph.active) !== (filters.status === 'active')) {
       return false;
     }
+    if (filters.type !== 'all' && (ph.media_type || 'photo') !== filters.type) return false;
     if (filters.stage !== 'all' && Number(ph.stage) !== Number(filters.stage)) return false;
     if (filters.level !== 'all' && Number(ph.level_min) !== Number(filters.level)) return false;
     if (filters.q) {
@@ -281,12 +282,12 @@ const PhotosTab = ({ productId }) => {
       <Card sx={{ mb: 2 }}>
         <CardContent>
           <Typography variant="h6" gutterBottom>
-            {t('Upload photos')}
+            {t('Upload photos & videos')}
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
             {rich(
               t(
-                'Pick any number of files at once. The fields below apply to every uploaded photo — leave them empty and use **Generate metadata** afterwards to have the AI fill the description, tags, explicitness stage and VIP level per photo.'
+                'Pick any number of files at once — photos and videos share one library and one delivery stream. The fields below apply to every uploaded item — leave them empty and use **Generate metadata** afterwards to have the AI fill the description, tags, explicitness stage and VIP level per item. Videos are re-encoded to a Telegram-friendly MP4 right after upload (a poster frame appears as the preview).'
               )
             )}
           </Typography>
@@ -358,7 +359,7 @@ const PhotosTab = ({ productId }) => {
               <input
                 hidden
                 type="file"
-                accept="image/*"
+                accept="image/*,video/*"
                 multiple
                 onChange={(e) => setFiles([...e.target.files])}
               />
@@ -415,6 +416,18 @@ const PhotosTab = ({ productId }) => {
                   {l}
                 </MenuItem>
               ))}
+            </TextField>
+            <TextField
+              select
+              size="small"
+              label={t('Type')}
+              value={filters.type}
+              onChange={(e) => setFilter({ type: e.target.value })}
+              sx={{ minWidth: 110 }}
+            >
+              <MenuItem value="all">{t('all')}</MenuItem>
+              <MenuItem value="photo">{t('photos')}</MenuItem>
+              <MenuItem value="video">{t('videos')}</MenuItem>
             </TextField>
             <TextField
               select
@@ -538,7 +551,7 @@ const PhotosTab = ({ productId }) => {
             >
               <CardContent sx={{ flexGrow: 1 }}>
                 <Box sx={{ position: 'relative' }}>
-                  <PhotoPreview photoId={ph.id} />
+                  <PhotoPreview photoId={ph.id} mediaType={ph.media_type} />
                   <Checkbox
                     checked={selected.has(ph.id)}
                     onChange={() => toggleSelect(ph.id)}
@@ -560,6 +573,9 @@ const PhotosTab = ({ productId }) => {
                   useFlexGap
                   sx={{ mt: 1 }}
                 >
+                  {ph.media_type === 'video' && (
+                    <Chip size="small" color="secondary" label={t('video')} />
+                  )}
                   <Chip size="small" variant="outlined" label={`${t('stage')} ${ph.stage}`} />
                   <Chip size="small" variant="outlined" label={`${t('level')} ${ph.level_min}+`} />
                   {(ph.tags || []).slice(0, 4).map((t) => (

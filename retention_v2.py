@@ -824,7 +824,8 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
     # A comfort touch never carries a photo or a play-CTA button.
     delivered, detail, link_attached = await delivery.deliver_draft(
         channel, ru, draft, header=header_line, session_id=session["id"],
-        photo_fallback_caption=retention.fallback_photo_caption(draft.lang),
+        photo_fallback_caption=retention.fallback_media_caption(
+            draft.lang, draft.photo_id, candidates),
         allow_photo=not comfort, allow_link=not comfort)
     if not delivered:
         log.warning("retention_v2_send_failed product=%s player=%s detail=%s",

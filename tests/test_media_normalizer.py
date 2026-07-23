@@ -176,3 +176,127 @@ def test_interval_reads_global_layer(monkeypatch):
     monkeypatch.setattr(settings, "retention",
                         lambda: {"media_normalize_interval_sec": 7200})
     assert media_normalizer.interval_sec() == 7200
+
+
+# --- video normalization ----------------------------------------------------
+
+def test_video_ref_helpers():
+    assert media_normalizer.is_video_ref("a.mp4")
+    assert media_normalizer.is_video_ref("a.MOV")
+    assert not media_normalizer.is_video_ref("a.webp")
+    assert not media_normalizer.is_video_ref(None)
+
+    # Normalized-once marker: the .tg.mp4 suffix ends the pipeline.
+    assert media_normalizer.video_needs_normalization("v.mov")
+    assert media_normalizer.video_needs_normalization("v.mp4")
+    assert not media_normalizer.video_needs_normalization("v.tg.mp4")
+    assert not media_normalizer.video_needs_normalization("photo.jpg")
+
+    assert media_normalizer.video_target_refs("v.mov") == (
+        "v.tg.mp4", "v.poster.webp")
+    assert media_normalizer.video_target_refs("v.tg.mp4") == (
+        "v.tg.mp4", "v.poster.webp")
+    assert media_normalizer.poster_ref_for("v.webm") == "v.poster.webp"
+    assert media_normalizer.poster_ref_for("photo.jpg") is None
+
+
+def test_video_scale_filter_no_upscale():
+    f = media_normalizer._video_scale_filter(1280)
+    assert "min(1280,iw)" in f and "min(1280,ih)" in f
+    assert "force_divisible_by=2" in f
+
+
+async def test_sweep_transcodes_video_and_extracts_poster(media_dir, fake_db,
+                                                          monkeypatch):
+    """A video upload is re-encoded to .tg.mp4 + poster, re-pointed, original
+    deleted — with ffmpeg stubbed out (not installed in CI)."""
+    _retention_cfg(monkeypatch)
+    src = media_dir / "p9_v.mov"
+    src.write_bytes(b"fake-video-bytes" * 1000)
+    calls = []
+
+    def fake_transcode(src_path, dst_path, *, max_side, crf):
+        calls.append(("transcode", src_path, dst_path, max_side, crf))
+        with open(dst_path, "wb") as fh:
+            fh.write(b"small-mp4")
+
+    def fake_poster(src_path, poster_path, *, max_side):
+        calls.append(("poster", src_path, poster_path))
+        with open(poster_path, "wb") as fh:
+            fh.write(b"poster")
+        return True
+
+    monkeypatch.setattr(media_normalizer, "normalize_video_file",
+                        fake_transcode)
+    monkeypatch.setattr(media_normalizer, "extract_poster", fake_poster)
+    fake = fake_db([{"id": 30, "storage_ref": "p9_v.mov"}])
+    stats = await media_normalizer.normalize_product_photos(1)
+    assert stats["normalized"] == 1 and stats["failed"] == 0
+    assert fake.repointed == {30: "p9_v.tg.mp4"}
+    assert not src.exists()
+    assert (media_dir / "p9_v.tg.mp4").exists()
+    assert (media_dir / "p9_v.poster.webp").exists()
+    assert calls[0][0] == "transcode" and calls[0][3] == \
+        config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX
+    # The poster is taken from the NORMALIZED file (the one that stays).
+    assert calls[1][0] == "poster" and calls[1][1].endswith("p9_v.tg.mp4")
+
+
+async def test_sweep_skips_normalized_video_but_backfills_poster(
+        media_dir, fake_db, monkeypatch):
+    _retention_cfg(monkeypatch)
+    done = media_dir / "p9_done.tg.mp4"
+    done.write_bytes(b"mp4")
+    posters = []
+
+    def fake_poster(src_path, poster_path, *, max_side):
+        posters.append(poster_path)
+        with open(poster_path, "wb") as fh:
+            fh.write(b"poster")
+        return True
+
+    monkeypatch.setattr(media_normalizer, "extract_poster", fake_poster)
+    fake = fake_db([{"id": 31, "storage_ref": "p9_done.tg.mp4"}])
+    stats = await media_normalizer.normalize_product_photos(1)
+    # No re-encode (normalized: 0), but the missing poster was backfilled.
+    assert stats["normalized"] == 0 and stats["failed"] == 0
+    assert not fake.repointed
+    assert done.exists()
+    assert posters and posters[0].endswith("p9_done.poster.webp")
+    # Second sweep: poster exists now — nothing to do.
+    posters.clear()
+    await media_normalizer.normalize_product_photos(1)
+    assert not posters
+
+
+async def test_sweep_failed_video_isolated(media_dir, fake_db, monkeypatch):
+    _retention_cfg(monkeypatch)
+    (media_dir / "p9_bad.mov").write_bytes(b"junk")
+
+    def boom(*a, **kw):
+        raise RuntimeError("ffmpeg failed: boom")
+
+    monkeypatch.setattr(media_normalizer, "normalize_video_file", boom)
+    fake = fake_db([{"id": 32, "storage_ref": "p9_bad.mov"}])
+    stats = await media_normalizer.normalize_product_photos(1)
+    assert stats["failed"] == 1 and not fake.repointed
+    assert (media_dir / "p9_bad.mov").exists()  # original never deleted
+
+
+def test_video_slot_cap():
+    import db as _db
+    assert _db._video_slot_cap(6) == 2   # the default feed: 4 photos + 2 videos
+    assert _db._video_slot_cap(5) == 2
+    assert _db._video_slot_cap(4) == 2   # never below 2 while the list has room
+    assert _db._video_slot_cap(3) == 1   # 2 photos + 1 video
+    assert _db._video_slot_cap(2) == 1
+    assert _db._video_slot_cap(1) == 0   # 1-slot list stays photo-first
+    assert _db._video_slot_cap(9) == 3   # larger lists scale at ~a third
+    assert _db._video_slot_cap(12) == 4
+    assert _db._video_slot_cap(0) == 0
+
+
+def test_candidate_list_default_is_six():
+    import config as _config
+    assert _config.RETENTION_CANDIDATE_LIST_SIZE == 6
+    assert settings.retention()["candidate_list_size"] == 6

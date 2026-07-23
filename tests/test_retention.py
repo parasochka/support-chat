@@ -151,6 +151,18 @@ def test_photo_candidates_directive():
     assert "YOUR APPEARANCE" in empty
 
 
+def test_photo_candidates_directive_media_type():
+    # Videos are labeled so the model words the caption for what is sent
+    # ("here's my video"), photos stay the default.
+    block = prompts._photo_candidates_directive([
+        {"id": 7, "stage": 2, "description": "dancing", "tags": [],
+         "media_type": "video"},
+        {"id": 8, "stage": 1, "description": "portrait", "tags": []},
+    ])
+    assert "- 7 | video | stage 2" in block
+    assert "- 8 | photo | stage 1" in block
+
+
 def test_build_retention_messages_shape():
     session = {"id": "s1", "user_context": {"full_name": "Andrey", "vip_level": "Gold"}}
     msgs = prompts.build_retention_messages(
@@ -222,7 +234,7 @@ def test_retention_returning_player_defers_to_continuity_block():
 def test_retention_settings_defaults():
     r = settings.retention()
     assert r["daily_photo_cap"] == 5
-    assert r["candidate_list_size"] == 5
+    assert r["candidate_list_size"] == 6
     assert r["stage_advance_msgs"] == [20, 40, 80, 160]
     assert "vip_tiers" in r and isinstance(r["max_stage_by_tier"], dict)
 
@@ -370,7 +382,8 @@ async def test_candidates_cooldown(monkeypatch):
 async def test_candidates_reactive_bypasses_cooldown(monkeypatch):
     seen = {}
 
-    async def _fake(product_id, rid, *, level_ordinal, max_stage, limit):
+    async def _fake(product_id, rid, *, level_ordinal, max_stage, limit,
+                    media=None):
         seen.update(level_ordinal=level_ordinal, max_stage=max_stage, limit=limit)
         return [{"id": 5}]
 
