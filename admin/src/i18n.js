@@ -1068,7 +1068,7 @@ const RU = {
   '{p} photo(s) and {v} video(s) uploaded': 'Загружено: фото — {p}, видео — {v}',
   'Processing on the server…': 'Обработка на сервере…',
   'Optimized: re-encoded to a Telegram-ready MP4': 'Оптимизировано: перекодировано в MP4 для Telegram',
-  'Optimized: re-encoded to WebP for delivery': 'Оптимизировано: пережато в WebP для отправки',
+  'Delivery-ready: stored as WebP': 'Готово к отправке: хранится в WebP',
   'Loading video…': 'Загрузка видео…',
   'active': 'активные',
   'inactive': 'неактивные',

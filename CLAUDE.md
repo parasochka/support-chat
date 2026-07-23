@@ -1091,15 +1091,24 @@ checklist lives in the admin — the **Retention → How it works** page.
   image): re-encoded ONCE to Telegram-friendly `<base>.tg.mp4` (H.264 + AAC, faststart, longest
   side `RETENTION_MEDIA_VIDEO_MAX_SIDE_PX`/1920 (a vertical 1080×1920 reel keeps native
   resolution; the CRF re-encode still shrinks a bloated source ~6-10×), CRF
-  `RETENTION_MEDIA_VIDEO_CRF`/26 — deploy env
+  `RETENTION_MEDIA_VIDEO_CRF`/23, preset `RETENTION_MEDIA_VIDEO_PRESET`/medium — deploy env
   constants, deliberately no admin knobs) plus a `<base>.poster.webp` frame (the admin grid
   preview via `GET …/photos/{id}/file?poster=1`, and the AI-metadata vision call rates the video
   by that frame — `build_photo_meta_messages(is_video=True)`); the `.tg.mp4` suffix is the
-  done-marker, and a normalized video still over Telegram's 50 MB bot cap is loudly logged.
+  done-marker, and a normalized video still over Telegram's 50 MB bot cap is loudly logged,
+  DROPPED from the candidate feed (`retention._sendable_media`; a cached `telegram_file_id`
+  keeps it offerable — id-sends don't re-upload) and, if a send is still attempted, delivered
+  as the caption-text fallback instead of silently failing the upload.
   Encodes run strictly one at a time at low OS priority (`nice`, `-threads 2`) so a bulk upload
-  never starves the serving process. **Normalization also runs IMMEDIATELY after an upload**: the
+  never starves the serving process; the advisory lock rides a DEDICATED connection
+  (`db.dedicated_connection`), never a pool slot — a minutes-long encode must not eat one of
+  the 10 request connections (and the pool's `command_timeout` would kill a blocking
+  `pg_advisory_lock` wait). **Normalization also runs IMMEDIATELY after an upload**: the
   upload endpoint fires `media_normalizer.schedule_product_normalization` (a background task
-  under the SAME advisory lock as the sweep, deduped per product), so new media is
+  under the SAME advisory lock as the sweep, deduped per product; an upload landing while a
+  run is in flight marks a RE-RUN — a pass that already listed the library can't see rows
+  created after it — and the fire-and-forget task is strongly referenced, the documented
+  create_task GC gotcha), so new media is
   delivery-ready in moments — the periodic sweep stays as the catch-up. **Normalization is
   ALWAYS ON and fully code-owned — there is deliberately NO admin knob and NO on/off switch**
   (the whole sweep loop is still gated by the deploy-wide `RETENTION_SCHEDULER_ENABLED`, which

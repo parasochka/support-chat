@@ -106,11 +106,12 @@ const readVideoDuration = (file) =>
     v.src = url;
   });
 
-// Has this row been through the media normalizer? Mirrors the backend's own
-// done-markers: a video is normalized exactly once to `.tg.mp4`
-// (media_normalizer._VIDEO_NORM_SUFFIX), a photo's normalized output is always
-// WebP. GIFs are deliberately left alone by the normalizer, so they never show
-// the mark.
+// Is this row stored in the DELIVERY format? For videos the `.tg.mp4` suffix
+// is authoritative (only the normalizer produces it). For photos the marker is
+// WebP — the normalizer's output format, which an already-small uploaded .webp
+// legitimately shares (the normalizer would leave it as-is), so the photo
+// tooltip says "stored as WebP", not "re-encoded". GIFs are deliberately left
+// alone by the normalizer and never show the mark.
 const isOptimized = (ph) => {
   const ref = (ph.storage_ref || '').toLowerCase();
   if (!ref) return false;
@@ -814,7 +815,7 @@ const PhotosTab = ({ productId }) => {
                       title={
                         ph.media_type === 'video'
                           ? t('Optimized: re-encoded to a Telegram-ready MP4')
-                          : t('Optimized: re-encoded to WebP for delivery')
+                          : t('Delivery-ready: stored as WebP')
                       }
                     >
                       <CheckCircleOutlinedIcon

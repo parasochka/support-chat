@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import html
 import logging
+import os
 import random
 import re
 import datetime as _dt
@@ -31,6 +32,7 @@ import chat_service
 import config
 import db
 import language
+import media_normalizer
 import player_sync
 import prompts
 import settings
@@ -252,6 +254,27 @@ def is_meaningful(text: str) -> bool:
 # ---------------------------------------------------------------------------
 # Photo candidate selection (pre-model)
 # ---------------------------------------------------------------------------
+def _sendable_media(cand: dict[str, Any]) -> bool:
+    """Drop a video the send path could not actually deliver: normalized but
+    still over Telegram's 50 MB bot-upload cap (the normalizer logged it
+    loudly). Offering it would make the model promise a video the player can
+    never receive. A cached telegram_file_id stays offerable — Telegram
+    already accepted the file once and sends by id don't re-upload. A missing
+    file is NOT dropped here: the send path delivers its text fallback and
+    logs, which is more diagnosable than a silently thinner candidate list.
+    """
+    if cand.get("media_type") != "video" or cand.get("telegram_file_id"):
+        return True
+    ref = os.path.basename(cand.get("storage_ref") or "")
+    if not ref:
+        return True
+    try:
+        size = os.path.getsize(os.path.join(config.RETENTION_MEDIA_DIR, ref))
+    except OSError:
+        return True
+    return size <= media_normalizer.TG_VIDEO_MAX_BYTES
+
+
 async def select_photo_candidates(product_id: int, ru: dict[str, Any],
                                   user_text: str, *,
                                   bypass_cooldown: bool = False,
@@ -292,12 +315,14 @@ async def select_photo_candidates(product_id: int, ru: dict[str, Any],
     unlocked = int(ru.get("unlocked_stage") or 1)
     # current stages + one teaser step ahead, never above the tier ceiling.
     max_stage = min(unlocked + 1, ceiling)
-    return await db.candidate_photos(
+    cands = await db.candidate_photos(
         product_id, int(ru["id"]),
         level_ordinal=level_ord, max_stage=max_stage,
         limit=int(cfg["candidate_list_size"]),
         media=media,
     )
+    # A few os.stat calls on the local media dir — cheap enough inline.
+    return [c for c in cands if _sendable_media(c)]
 
 
 async def intro_photo_due(ru: dict[str, Any]) -> bool:
@@ -1316,6 +1341,19 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
         # a multi-MB Volume read on the event loop stalls every concurrent turn.
         content = await asyncio.to_thread(_read_media, photo.get("storage_ref"))
         if content is None:
+            text_out = overflow_text or caption
+            if text_out and await _send_ai_text(client, chat_id, text_out,
+                                                reply_markup=reply_markup,
+                                                silent=silent):
+                return "text"
+            return None
+        if is_video and len(content) > media_normalizer.TG_VIDEO_MAX_BYTES:
+            # Normalized but still over Telegram's bot-upload cap (flagged
+            # loudly by the normalizer; candidates already drop such rows) —
+            # the upload WOULD fail, so deliver the caption as text instead
+            # of silently dropping an already-persisted turn.
+            log.warning("retention_video_over_tg_cap photo_id=%s bytes=%s",
+                        photo_id, len(content))
             text_out = overflow_text or caption
             if text_out and await _send_ai_text(client, chat_id, text_out,
                                                 reply_markup=reply_markup,

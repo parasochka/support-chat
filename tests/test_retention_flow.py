@@ -14,6 +14,7 @@ class FakeTelegram:
     def __init__(self, *a, **k):
         self.messages = []       # (chat_id, text, reply_markup)
         self.photos = []         # (chat_id, file_id, caption)
+        self.videos = []         # (chat_id, file_id-or-"uploaded", caption)
         self.answered = []
         self.subscribed = True   # what is_subscribed returns
 
@@ -34,6 +35,14 @@ class FakeTelegram:
 
     async def send_photo_bytes_verbose(self, chat_id, content, filename, **kwargs):
         return await self.send_photo_bytes(chat_id, content, filename, **kwargs), None, None
+
+    async def send_video_file_id_verbose(self, chat_id, file_id, **kwargs):
+        self.videos.append((chat_id, file_id, kwargs.get("caption")))
+        return {"ok": True}, None, None
+
+    async def send_video_bytes_verbose(self, chat_id, content, filename, **kwargs):
+        self.videos.append((chat_id, "uploaded", kwargs.get("caption")))
+        return {"video": {"file_id": "vidid"}}, None, None
 
     async def answer_callback(self, cb_id, text=None):
         self.answered.append(cb_id)
@@ -469,3 +478,75 @@ async def test_send_photo_splits_overlong_caption(monkeypatch):
     assert out == "photo"
     assert tg.photos[0] == (7, "cachedfile", None)        # captionless photo
     assert any(long_caption == m[1] for m in tg.messages)  # full text followed
+
+
+async def test_send_photo_unnormalized_video_falls_back_to_text(monkeypatch):
+    """The backstop mirror of db._VIDEO_SENDABLE_SQL: a raw, not-yet-transcoded
+    video reached directly (outside the candidate feed) must never be uploaded
+    to Telegram — the caption is delivered as a normal text message instead."""
+    tg = FakeTelegram()
+
+    async def _get_photo(pid):
+        return {"id": 5, "active": True, "media_type": "video",
+                "storage_ref": "raw.mov", "telegram_file_id": None}
+    monkeypatch.setattr(retention.db, "get_retention_photo", _get_photo)
+
+    ru = {"id": 10, "tg_user_id": 7}
+    out = await retention._send_photo(tg, PRODUCT, ru, 7, 5, "caption")
+    assert out == "text"
+    assert not tg.videos and not tg.photos  # nothing reached Telegram as media
+    assert any(m[1] == "caption" for m in tg.messages)
+
+
+async def test_send_photo_over_cap_video_falls_back_to_text(monkeypatch):
+    """A normalized video still over Telegram's 50 MB bot-upload cap would fail
+    the upload — the caption goes out as text instead of the turn silently
+    dropping (the normalizer already logged the row loudly)."""
+    tg = FakeTelegram()
+    monkeypatch.setattr(retention.media_normalizer, "TG_VIDEO_MAX_BYTES", 16)
+    monkeypatch.setattr(retention, "_read_media", lambda ref: b"x" * 32)
+
+    async def _get_photo(pid):
+        return {"id": 6, "active": True, "media_type": "video",
+                "storage_ref": "big.tg.mp4", "telegram_file_id": None}
+    monkeypatch.setattr(retention.db, "get_retention_photo", _get_photo)
+
+    ru = {"id": 10, "tg_user_id": 7}
+    out = await retention._send_photo(tg, PRODUCT, ru, 7, 6, "caption")
+    assert out == "text"
+    assert not tg.videos
+    assert any(m[1] == "caption" for m in tg.messages)
+
+
+async def test_candidates_drop_over_cap_videos(monkeypatch, tmp_path):
+    """select_photo_candidates filters out a video the send path could not
+    deliver (normalized but over the Telegram cap, no cached file_id); a cached
+    file_id keeps the row offerable and a missing file is left to the send
+    path's own text fallback."""
+    big = tmp_path / "big.tg.mp4"
+    big.write_bytes(b"x" * 32)
+    ok = tmp_path / "ok.tg.mp4"
+    ok.write_bytes(b"x" * 8)
+    monkeypatch.setattr(retention.config, "RETENTION_MEDIA_DIR", str(tmp_path))
+    monkeypatch.setattr(retention.media_normalizer, "TG_VIDEO_MAX_BYTES", 16)
+    rows = [
+        {"id": 1, "media_type": "video", "storage_ref": "big.tg.mp4",
+         "telegram_file_id": None},                      # over cap -> dropped
+        {"id": 2, "media_type": "video", "storage_ref": "ok.tg.mp4",
+         "telegram_file_id": None},                      # under cap -> kept
+        {"id": 3, "media_type": "video", "storage_ref": "gone.tg.mp4",
+         "telegram_file_id": None},                      # missing file -> kept
+        {"id": 4, "media_type": "video", "storage_ref": "big.tg.mp4",
+         "telegram_file_id": "cached"},                  # file_id -> kept
+        {"id": 5, "media_type": "photo", "storage_ref": "p.webp"},
+    ]
+
+    async def _fake(product_id, rid, *, level_ordinal, max_stage, limit,
+                    media=None):
+        return rows
+    monkeypatch.setattr(retention.db, "candidate_photos", _fake)
+
+    ru = {"id": 9, "photos_sent_today": 0, "photos_day": None,
+          "msgs_since_photo": 99, "unlocked_stage": 1, "vip_level": None}
+    out = await retention.select_photo_candidates(1, ru, "пришли видео")
+    assert [c["id"] for c in out] == [2, 3, 4, 5]

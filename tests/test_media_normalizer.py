@@ -6,6 +6,7 @@ and the code-owned (no-admin-knob) sweep cadence / always-on behaviour.
 """
 from __future__ import annotations
 
+import asyncio
 
 import pytest
 from PIL import Image
@@ -284,3 +285,37 @@ def test_candidate_list_default_is_six():
     import config as _config
     assert _config.RETENTION_CANDIDATE_LIST_SIZE == 6
     assert settings.retention()["candidate_list_size"] == 6
+
+
+async def test_post_upload_schedule_holds_ref_and_reruns(monkeypatch):
+    """The fire-and-forget post-upload run keeps a strong task reference (the
+    documented create_task GC gotcha), and a batch landing MID-RUN marks a
+    re-run — a pass that already listed the library can't see rows created
+    after it, so without the re-run that batch waited for the hourly sweep."""
+    runs = []
+    gate = asyncio.Event()
+
+    async def fake_locked(pid):
+        runs.append(pid)
+        await gate.wait()
+        return {}
+
+    monkeypatch.setattr(media_normalizer, "_run_product_locked", fake_locked)
+    media_normalizer.schedule_product_normalization(7)
+    await asyncio.sleep(0)  # let the task start: the first run is now in flight
+    assert media_normalizer._bg_tasks  # strong ref held while running
+    assert 7 in media_normalizer._pending_products
+    media_normalizer.schedule_product_normalization(7)  # an upload mid-run
+    gate.set()
+    for _ in range(50):
+        if not media_normalizer._pending_products:
+            break
+        await asyncio.sleep(0)
+    assert runs == [7, 7]  # the mid-run batch got its own pass
+    assert not media_normalizer._pending_products
+    # The done-callback runs one loop tick after the task finishes.
+    for _ in range(10):
+        if not media_normalizer._bg_tasks:
+            break
+        await asyncio.sleep(0)
+    assert not media_normalizer._bg_tasks  # done-callback dropped the ref

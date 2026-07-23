@@ -76,9 +76,10 @@ _VIDEO_NORM_SUFFIX = ".tg.mp4"
 _POSTER_SUFFIX = ".poster.webp"
 
 # Telegram's bot-upload hard cap; a normalized video still over it can never
-# be delivered, so the sweep flags it loudly (it stays stored — the operator
-# decides whether to trim/replace it).
-_TG_VIDEO_MAX_BYTES = 50 * 1024 * 1024
+# be delivered, so the sweep flags it loudly, the candidate feed drops it
+# (retention._sendable_media) and a direct send falls back to the caption as
+# text (it stays stored — the operator decides whether to trim/replace it).
+TG_VIDEO_MAX_BYTES = 50 * 1024 * 1024
 
 
 def interval_sec() -> int:
@@ -285,7 +286,7 @@ async def normalize_product_photos(product_id: int) -> dict[str, Any]:
                 await asyncio.to_thread(
                     extract_poster, new_path, poster_path,
                     max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX)
-                if os.path.getsize(new_path) > _TG_VIDEO_MAX_BYTES:
+                if os.path.getsize(new_path) > TG_VIDEO_MAX_BYTES:
                     log.warning(
                         "media_normalize_video_over_tg_cap photo_id=%s ref=%s "
                         "bytes=%s - Telegram bots cannot upload files over "
@@ -326,10 +327,17 @@ async def normalize_product_photos(product_id: int) -> dict[str, Any]:
     return stats
 
 
-# Products with an instant post-upload run already queued in THIS process —
-# a second upload while one runs just rides the queued sweep (the sweep
-# re-lists the library when it actually runs, so it picks up both batches).
+# Products with an instant post-upload run queued or in flight in THIS
+# process; _rerun_products marks the ones that got ANOTHER upload while their
+# run was already going — the run re-lists the library once more when it
+# finishes, because a pass that already called list_retention_photos cannot
+# see rows created after it.
 _pending_products: set[int] = set()
+_rerun_products: set[int] = set()
+# Strong refs to the fire-and-forget tasks: the event loop keeps only WEAK
+# references, so an unreferenced task can be garbage-collected mid-run (the
+# documented asyncio.create_task gotcha).
+_bg_tasks: set[asyncio.Task] = set()
 
 
 async def _run_product_locked(product_id: int) -> dict[str, Any]:
@@ -339,15 +347,22 @@ async def _run_product_locked(product_id: int) -> dict[str, Any]:
     never process a file concurrently with the hourly sweep (or another
     instance) — pg_advisory_lock WAITS here (unlike the sweep's try-lock):
     the upload already happened, the work must run, a short wait is fine.
+    The lock rides a DEDICATED connection (db.dedicated_connection), not a
+    pool slot: video encodes hold it for minutes, and the pool's
+    command_timeout would also kill a blocking pg_advisory_lock wait.
     """
-    pool = db.pool()
-    async with pool.acquire() as conn:
+    conn = await db.dedicated_connection()
+    try:
         await conn.execute("SELECT pg_advisory_lock($1)", _ADVISORY_LOCK_KEY)
         try:
             return await normalize_product_photos(product_id)
         finally:
             await conn.execute("SELECT pg_advisory_unlock($1)",
                                _ADVISORY_LOCK_KEY)
+    finally:
+        # Closing the session also releases the advisory lock, so a failed
+        # explicit unlock can never wedge the sweep for other instances.
+        await conn.close()
 
 
 def schedule_product_normalization(product_id: int) -> None:
@@ -356,28 +371,43 @@ def schedule_product_normalization(product_id: int) -> None:
     Called by the upload endpoint so photos are WebP'd and videos are
     MP4-transcoded (+ poster) within moments of landing, instead of waiting
     for the hourly sweep (which stays as the catch-up). Deduped per product
-    per process; any failure is logged and left for the periodic sweep.
+    per process — a batch landing while a run is in flight marks a re-run, so
+    it is still picked up immediately after the current pass; any failure is
+    logged and left for the periodic sweep.
     """
     if product_id in _pending_products:
+        _rerun_products.add(product_id)
         return
     _pending_products.add(product_id)
 
     async def _run() -> None:
         try:
-            await _run_product_locked(product_id)
+            while True:
+                _rerun_products.discard(product_id)
+                await _run_product_locked(product_id)
+                if product_id not in _rerun_products:
+                    break
         except Exception:  # noqa: BLE001 - the hourly sweep is the backstop
             log.exception("media_normalize_post_upload_failed product=%s",
                           product_id)
         finally:
             _pending_products.discard(product_id)
+            _rerun_products.discard(product_id)
 
-    asyncio.get_running_loop().create_task(_run())
+    task = asyncio.get_running_loop().create_task(_run())
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
 
 
 async def run_normalization() -> dict[str, Any]:
-    """One sweep across all products (advisory-locked, multi-instance safe)."""
-    pool = db.pool()
-    async with pool.acquire() as conn:
+    """One sweep across all products (advisory-locked, multi-instance safe).
+
+    The lock (and only the lock) rides a dedicated connection — a sweep with
+    video encodes can run for many minutes, and parking a pool slot for the
+    whole run would starve the 10-connection request pool.
+    """
+    conn = await db.dedicated_connection()
+    try:
         got = await conn.fetchval("SELECT pg_try_advisory_lock($1)",
                                   _ADVISORY_LOCK_KEY)
         if not got:
@@ -396,6 +426,8 @@ async def run_normalization() -> dict[str, Any]:
         finally:
             await conn.execute("SELECT pg_advisory_unlock($1)",
                                _ADVISORY_LOCK_KEY)
+    finally:
+        await conn.close()
 
 
 async def scheduler_loop() -> None:
