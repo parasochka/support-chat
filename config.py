@@ -422,7 +422,7 @@ RETENTION_MAX_UPLOAD_BYTES: int = _env_int("RETENTION_MAX_UPLOAD_BYTES",
 # the resolution / duration caps in the browser before the upload starts (the
 # server would have to decode every file to verify those, so they stay a
 # client-side guard — the Media tab is admin-only). Photos are downscaled to
-# `media_max_side_px` on delivery anyway, so the side cap only rejects absurd /
+# RETENTION_MEDIA_MAX_SIDE_PX on delivery anyway, so the side cap only rejects absurd /
 # decompression-bomb originals. Exposed via /admin/meta for the SPA + tooltip.
 RETENTION_MAX_PHOTO_BYTES: int = _env_int("RETENTION_MAX_PHOTO_BYTES",
                                           10 * 1024 * 1024)

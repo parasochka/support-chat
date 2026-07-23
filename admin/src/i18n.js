@@ -1301,25 +1301,12 @@ const RU = {
   'product #{id}': 'продукт #{id}',
 
   // ----- settings schema: fields missing from the dict (translated at render) -----
-  'Media normalization (photo storage)': 'Нормализация медиа (хранение фото)',
   'Play reminder every ~N replies': 'Приглашение играть примерно каждые N ответов',
   'Roughly every N-th of Nika’s Telegram replies weaves in a light in-context invitation to play, with a one-tap site button picked from the Site map (0 = off). The actual cadence drifts ±2 around N (…after 3, then 7, then 5…) so the pattern can’t be clocked.':
     'Примерно каждый N-й ответ Ники в Telegram содержит лёгкое приглашение поиграть с кнопкой сайта из Карты сайта в один тап (0 = выкл). Реальный интервал плавает ±2 вокруг N (…через 3, потом 7, потом 5…), чтобы закономерность нельзя было вычислить.',
   'Max messages per reply (burst)': 'Макс. сообщений на ответ (серия)',
   'A reply with blank lines is delivered as a burst of separate Telegram messages (with a typing pause between them). This caps the burst; longer replies collapse into the last message. 1 = always one message.':
     'Ответ с пустыми строками отправляется серией отдельных сообщений в Telegram (с паузой «печатает» между ними). Этот параметр ограничивает серию; лишнее сваливается в последнее сообщение. 1 = всегда одно сообщение.',
-  'Auto-normalize uploaded photos': 'Авто-нормализация загруженных фото',
-  'The periodic sweep re-encodes heavy uploads (multi-MB JPG/PNG) to WebP at Telegram-appropriate dimensions and DELETES the heavy originals — Telegram re-compresses photos anyway, so the originals only burn storage. GIFs are left alone.':
-    'Периодический проход пережимает тяжёлые загрузки (JPG/PNG в несколько МБ) в WebP под размеры Telegram и УДАЛЯЕТ тяжёлые оригиналы — Telegram всё равно пережимает фото, так что оригиналы только занимают место. GIF не трогаются.',
-  'Normalize sweep interval (sec)': 'Интервал прохода нормализации (сек)',
-  'How often the media sweep runs — ONE loop serves every product, so this is a deploy-wide (global) setting. Default 3600 (hourly). New uploads are also normalized immediately in the background; the sweep is the catch-up.':
-    'Как часто выполняется проход нормализации — ОДИН цикл обслуживает все продукты, поэтому это общесистемная (глобальная) настройка. По умолчанию 3600 (раз в час). Новые загрузки нормализуются сразу в фоне; проход — это подстраховка.',
-  'Max photo side (px)': 'Макс. сторона фото (px)',
-  'Longest side after normalization. Telegram re-compresses photos to ~2560 px anyway, so the default 2560 keeps full delivered quality at a fraction of the original file size.':
-    'Самая длинная сторона после нормализации. Telegram всё равно пережимает фото до ~2560 px, так что значение по умолчанию 2560 сохраняет полное качество доставки при заметно меньшем размере файла.',
-  'WebP quality (40–100)': 'Качество WebP (40–100)',
-  'Compression quality of the normalized WebP. The default 90 is visually lossless for chat photos; lower it only to save more space, raise it only if you see artifacts.':
-    'Качество сжатия нормализованного WebP. Значение по умолчанию 90 визуально без потерь для чат-фото; понижайте, только чтобы сэкономить место, повышайте — только если видите артефакты.',
   'Idle re-engagement pings': 'Пинги возврата неактивных',
   'The agent’s inactivity trigger: the Idle pings rules ladder («quiet N days → Nika writes first», Retention → Idle pings tab). Off = the agent reacts to casino events only; a quiet player is never written to.':
     'Триггер неактивности агента: лестница правил пингов («тишина N дней → Ника пишет первой», Ретеншен → Пинги неактивности). Выкл = агент реагирует только на события казино; замолчавшему игроку никто не пишет.',

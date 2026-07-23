@@ -67,7 +67,9 @@ const uploadWithProgress = (url, formData, onProgress) =>
   });
 
 const fmtMb = (bytes) => (bytes / (1024 * 1024)).toFixed(1);
-const mbInt = (bytes) => Math.round((bytes || 0) / (1024 * 1024));
+// '—' (not "0 MB") while /admin/meta hasn't answered — the tooltip must never
+// state a limit it doesn't know.
+const mbInt = (bytes) => (bytes ? Math.round(bytes / (1024 * 1024)) : '—');
 
 // Read a file's pixel dimensions in the browser (no upload). Resolves null on a
 // decode error so a corrupt/unsupported file falls through to the server rather
