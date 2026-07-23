@@ -720,6 +720,18 @@ async def create_photo(product_id: int = Form(...),
         limit = (config.RETENTION_MAX_VIDEO_BYTES if is_video
                  else config.RETENTION_MAX_PHOTO_BYTES)
         size = getattr(up, "size", None)
+        if size is None:
+            # Some clients send multipart parts without a per-part length, and
+            # Starlette then leaves .size unset — the spooled temp file still
+            # knows how many bytes were parsed, so the cap keeps enforcing.
+            try:
+                spool = up.file
+                pos = spool.tell()
+                spool.seek(0, os.SEEK_END)
+                size = spool.tell()
+                spool.seek(pos)
+            except Exception:  # noqa: BLE001 - the batch cap still bounds the request
+                size = None
         if size is not None and size > limit:
             kind = "video" if is_video else "photo"
             raise HTTPException(

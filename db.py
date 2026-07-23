@@ -64,6 +64,20 @@ def pool() -> asyncpg.Pool:
     return _pool
 
 
+async def dedicated_connection() -> asyncpg.Connection:
+    """One connection OUTSIDE the pool, for long-lived session state.
+
+    The media normalizer parks a session advisory lock on it for the whole
+    sweep — video encodes hold the lock for minutes, and parking that on a
+    pool connection would eat one of the 10 request slots (and the pool's
+    command_timeout would kill a blocking pg_advisory_lock wait). No
+    command_timeout on purpose. The caller MUST close() it; the advisory
+    lock is released with the connection even if the explicit unlock fails.
+    """
+    return await asyncpg.connect(dsn=config.DATABASE_URL,
+                                 timeout=config.DB_CONNECT_TIMEOUT_SEC)
+
+
 def _as_text(value: Any) -> Optional[str]:
     """Coerce a value bound to a TEXT column to str (None stays SQL NULL).
 
