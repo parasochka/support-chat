@@ -4077,12 +4077,29 @@ async def update_retention_photo(photo_id: int, **fields: Any
     return _row_to_photo(row) if row else None
 
 
-async def delete_retention_photo(photo_id: int) -> bool:
-    """Soft-delete (active=false) so existing view history stays valid."""
-    row = await _pool.fetchrow(
-        "UPDATE retention_photos SET active = FALSE, updated_at = now() "
-        "WHERE id = $1 RETURNING id", photo_id)
-    return row is not None
+async def delete_retention_photo(photo_id: int) -> Optional[dict[str, Any]]:
+    """Hard-delete a media row and its seen-photo ledger, in one transaction.
+
+    `retention_photo_views.photo_id` is a NOT NULL FK to `retention_photos`
+    without ON DELETE CASCADE, so the view rows are removed FIRST or the delete
+    would violate the constraint. Returns the deleted row's `{storage_ref,
+    media_type}` (so the caller can remove the on-disk binary + video poster) or
+    `None` when no such photo existed. (This used to be a soft-delete flipping
+    `active=false`, which left the row — and the file — in place; the admin
+    Delete button then only deactivated the item instead of removing it.)
+    """
+    async with _acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT storage_ref, media_type FROM retention_photos "
+                "WHERE id = $1", photo_id)
+            if row is None:
+                return None
+            await conn.execute(
+                "DELETE FROM retention_photo_views WHERE photo_id = $1", photo_id)
+            await conn.execute(
+                "DELETE FROM retention_photos WHERE id = $1", photo_id)
+    return {"storage_ref": row["storage_ref"], "media_type": row["media_type"]}
 
 
 def _video_slot_cap(limit: int) -> int:

@@ -1012,11 +1012,31 @@ async def normalize_photos(body: NormalizePhotosReq,
 @admin_router.delete("/photos/{photo_id}")
 async def delete_photo(photo_id: int,
                        admin=Depends(require_admin_write)) -> JSONResponse:
+    import media_normalizer
     photo = await db.get_retention_photo(photo_id)
     if photo is None:
         raise HTTPException(status_code=404, detail="Photo not found.")
     await admin_auth.require_product_write(admin, photo["product_id"])
-    await db.delete_retention_photo(photo_id)
+    # Hard-delete the row + its seen-photo ledger in one transaction, then remove
+    # the on-disk binary it left behind (a video also drops its poster frame).
+    deleted = await db.delete_retention_photo(photo_id)
+    if deleted:
+        refs = [deleted.get("storage_ref")]
+        if deleted.get("media_type") == "video":
+            refs.append(media_normalizer.poster_ref_for(
+                os.path.basename(deleted["storage_ref"]))
+                if deleted.get("storage_ref") else None)
+        for ref in refs:
+            if not ref:
+                continue
+            path = os.path.join(config.RETENTION_MEDIA_DIR, os.path.basename(ref))
+            try:
+                if os.path.exists(path):
+                    await asyncio.to_thread(os.remove, path)
+            except OSError:
+                # A stray file left on disk is harmless (the row is already
+                # gone); never fail the delete over a filesystem hiccup.
+                log.warning("photo_delete_file_unlink_failed path=%s", path)
     return JSONResponse(content={"ok": True})
 
 
