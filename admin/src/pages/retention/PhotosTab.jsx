@@ -158,6 +158,26 @@ const PhotosTab = ({ productId }) => {
       .catch((e) => notify(e.message || t('Load failed'), { type: 'error' }));
   }, [productId, notify]);
 
+  // After a video upload the normalizer transcodes in the background, so the
+  // fresh rows have no poster / “optimized” mark yet. Briefly re-poll the list
+  // until every video is normalized (bounded — a long encode still needs a
+  // manual refresh later).
+  const pollNormalization = useCallback(async () => {
+    for (let i = 0; i < 6; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r) => setTimeout(r, 5000));
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const { json } = await httpClient(`${API_URL}/admin/retention/photos?product_id=${productId}`);
+        const rows = json.items || [];
+        setItems(rows);
+        if (!rows.some((p) => (p.media_type || 'photo') === 'video' && !isOptimized(p))) break;
+      } catch {
+        break;
+      }
+    }
+  }, [productId]);
+
   useEffect(() => {
     load();
   }, [load]);
@@ -307,6 +327,7 @@ const PhotosTab = ({ productId }) => {
       setFiles([]);
       setFileErrors([]);
       load();
+      if (nVideos) pollNormalization();
     } catch (e) {
       // Network failure: without this the rejection escapes the click handler
       // and the operator gets no feedback at all. An abort mid-upload here is
@@ -783,7 +804,7 @@ const PhotosTab = ({ productId }) => {
             >
               <CardContent sx={{ flexGrow: 1 }}>
                 <Box sx={{ position: 'relative' }}>
-                  <PhotoPreview photoId={ph.id} mediaType={ph.media_type} />
+                  <PhotoPreview photoId={ph.id} mediaType={ph.media_type} storageRef={ph.storage_ref} />
                   <Checkbox
                     checked={selected.has(ph.id)}
                     onChange={() => toggleSelect(ph.id)}

@@ -86,3 +86,33 @@ async def test_delete_missing_photo_returns_none(monkeypatch):
     assert await db.delete_retention_photo(999) is None
     # Nothing deleted when the row doesn't exist.
     assert conn.executed == []
+
+
+async def test_delete_endpoint_unlinks_binary_and_poster(monkeypatch, tmp_path):
+    """The API layer of the hard delete: after the row is gone, the on-disk
+    binary is removed too — and a video also drops its poster frame."""
+    import api.retention as api_retention
+    import config
+
+    monkeypatch.setattr(config, "RETENTION_MEDIA_DIR", str(tmp_path))
+    (tmp_path / "clip.tg.mp4").write_bytes(b"v")
+    (tmp_path / "clip.poster.webp").write_bytes(b"p")
+
+    async def _get(pid):
+        return {"id": 42, "product_id": 1, "media_type": "video",
+                "storage_ref": "clip.tg.mp4"}
+    monkeypatch.setattr(api_retention.db, "get_retention_photo", _get)
+
+    async def _delete(pid):
+        return {"storage_ref": "clip.tg.mp4", "media_type": "video"}
+    monkeypatch.setattr(api_retention.db, "delete_retention_photo", _delete)
+
+    async def _scope(admin, product_id):
+        return None
+    monkeypatch.setattr(api_retention.admin_auth, "require_product_write",
+                        _scope)
+
+    resp = await api_retention.delete_photo(42, admin={"email": "t@x"})
+    assert resp.status_code == 200
+    assert not (tmp_path / "clip.tg.mp4").exists()
+    assert not (tmp_path / "clip.poster.webp").exists()

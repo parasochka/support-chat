@@ -1060,14 +1060,19 @@ checklist lives in the admin — the **Retention → How it works** page.
   reserves a **fixed video share** (`db._video_slot_cap` in `db.candidate_photos`):
   6 → 4 photos + 2 videos, and the share never drops below 2 while the list has room
   (4 → 2+2; only tiny lists shrink it: 3 → 2 photos + 1 video, 2 → 1+1, 1 → photo-only;
-  bigger lists scale at ~⅓). Photos fill unused video slots; a video that has not yet
+  bigger lists scale at ~⅓). The backfill is symmetric — photos fill unused video
+  slots AND spare photo slots go to further videos, so the feed only shrinks when
+  both kinds are exhausted; a video that has not yet
   been normalized (`storage_ref` not `.tg.mp4`) is NEVER offered or sent
-  (`db._VIDEO_SENDABLE_SQL` + a backstop in `retention._send_photo`), so a raw
+  (`db._VIDEO_SENDABLE_SQL` + a backstop in `retention._send_photo` via
+  `media_normalizer.is_normalized_video_ref`), so a raw
   multi-hundred-MB original can't reach Telegram before the transcode. The Layer-3
   candidate line carries the type (`id | photo-or-video | stage | …`) and the photo
   directive tells the model to word the caption for what is actually sent ("here's my
   video…"); an explicit video ask («пришли видео») bypasses the proactive cooldown via
-  the same `is_photo_request` stems (video words included). Idle-ladder rules take
+  the same `is_photo_request` stems AND (the video-worded stems,
+  `retention.is_video_request`) biases that turn's feed to videos-only, falling back
+  to the mixed feed when no unseen video is sendable. Idle-ladder rules take
   **`action: message | photo | video`** — `photo` = the mixed feed, `video` = videos
   only (`select_photo_candidates(media=…)`); the v2 agent's `photo` action uses the
   mixed feed too. It gates by `level_min` (VIP-tier ordinal) ×
@@ -1103,27 +1108,42 @@ checklist lives in the admin — the **Retention → How it works** page.
   served the pre-normalization copy forever); `retention._send_photo` passes those attrs plus a
   ≤320px JPEG thumbnail (from the poster, `media_normalizer.make_video_thumbnail`) to `sendVideo` —
   without explicit attrs Telegram may fail to detect them and deliver the video as a
-  download-first file with a squished 00:00 bubble. The sweep **self-heals** older rows: an
+  download-first file with a squished 00:00 bubble — and after a first upload it caches the
+  returned file_id ONLY if the row is unchanged since it was read (`updated_at` compare): an
+  upload racing the normalizer must not pin the pre-normalization binary. The sweep
+  **self-heals** older rows: an
   already-normalized `.tg.mp4` that probes with a non-square SAR (the pre-fix output) is
-  re-encoded in place with poster/attrs refresh + file_id drop, and a square one missing its attrs
-  gets them backfilled (file_id kept). Plus a `<base>.poster.webp` frame (the admin grid
+  re-encoded in place with poster/attrs refresh + file_id drop (the file_id is cleared BEFORE
+  the on-disk swap — `db.clear_photo_file_id` — so a crash mid-repair converges instead of
+  pinning the squished Telegram copy), and a square one missing its attrs gets them backfilled
+  with the file_id cleared as well (a pre-attrs upload may be pinned in the broken
+  download-first presentation, and a file_id send cannot attach attrs — one re-upload fixes
+  it). Plus a `<base>.poster.webp` frame (the admin grid
   preview via `GET …/photos/{id}/file?poster=1`, and the AI-metadata vision call rates the video
   by that frame — `build_photo_meta_messages(is_video=True)`); the `.tg.mp4` suffix is the
   done-marker, and a normalized video still over Telegram's 50 MB bot cap is loudly logged,
   DROPPED from the candidate feed (`retention._sendable_media`; a cached `telegram_file_id`
   keeps it offerable — id-sends don't re-upload) and, if a send is still attempted, delivered
   as the caption-text fallback instead of silently failing the upload.
-  Encodes run strictly one at a time at low OS priority (`nice`, `-threads 2`) so a bulk upload
-  never starves the serving process; the advisory lock rides a DEDICATED connection
+  Encodes run one at a time PER PRODUCT at low OS priority (`nice`, `-threads 2`) so a bulk
+  upload never starves the serving process: the advisory lock is the two-int
+  `(key, product_id)` form — one product's minutes-long sweep never delays another product's
+  instant post-upload run — and it rides a DEDICATED connection
   (`db.dedicated_connection`), never a pool slot — a minutes-long encode must not eat one of
   the 10 request connections (and the pool's `command_timeout` would kill a blocking
-  `pg_advisory_lock` wait). **Normalization also runs IMMEDIATELY after an upload**: the
+  `pg_advisory_lock` wait). The hourly sweep also removes **orphaned media-dir files**
+  (`media_normalizer._cleanup_orphans`: anything no row references — a crash-surviving raw
+  original, a deleted row's encode output, a failed repair's `.fix.mp4` tmp — once older than
+  a day; the age guard is what makes it safe to run unlocked next to in-flight encodes).
+  **Normalization also runs IMMEDIATELY after an upload**: the
   upload endpoint fires `media_normalizer.schedule_product_normalization` (a background task
-  under the SAME advisory lock as the sweep, deduped per product; an upload landing while a
-  run is in flight marks a RE-RUN — a pass that already listed the library can't see rows
-  created after it — and the fire-and-forget task is strongly referenced, the documented
+  under the SAME per-product advisory lock as the sweep, deduped per product; an upload landing
+  while a run is in flight marks a RE-RUN — a pass that already listed the library can't see
+  rows created after it — and the fire-and-forget task is strongly referenced, the documented
   create_task GC gotcha), so new media is
-  delivery-ready in moments — the periodic sweep stays as the catch-up. **Normalization is
+  delivery-ready in moments — the periodic sweep stays as the catch-up (the Media tab also
+  re-polls the list briefly after a video upload so posters/«optimized» marks appear without a
+  manual refresh). **Normalization is
   ALWAYS ON and fully code-owned — there is deliberately NO admin knob and NO on/off switch**
   (the whole sweep loop is still gated by the deploy-wide `RETENTION_SCHEDULER_ENABLED`, which
   governs every background worker). Every parameter is a deploy-level constant in `config.py`:
@@ -1132,7 +1152,8 @@ checklist lives in the admin — the **Retention → How it works** page.
   (`RETENTION_MEDIA_VIDEO_*`). The `retention` settings group and the admin Settings tab no
   longer carry any `media_*` normalization field. `POST /admin/retention/photos/normalize`
   runs one product's sweep immediately (API-only — no UI button; the always-on sweep + the
-  post-upload run make it unnecessary). **Upload limits.** The whole request body is capped by
+  post-upload run make it unnecessary), advisory-locked like every other pass — calling it
+  mid-sweep waits instead of double-encoding. **Upload limits.** The whole request body is capped by
   `RETENTION_MAX_UPLOAD_BYTES` (deploy env, default 512 MiB — sized for raw video originals),
   and each file is bounded by type: `RETENTION_MAX_PHOTO_BYTES` (10 MiB) +
   `RETENTION_MAX_PHOTO_SIDE_PX` (8000 px longest side) for photos, `RETENTION_MAX_VIDEO_BYTES`

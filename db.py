@@ -4041,6 +4041,19 @@ async def set_retention_video_normalized(photo_id: int, *, storage_ref: str,
     )
 
 
+async def clear_photo_file_id(photo_id: int) -> None:
+    """Drop a row's cached telegram_file_id on its own.
+
+    The SAR repair calls this BEFORE swapping the on-disk file: if the process
+    dies between the two, the next send re-uploads the (still-squished) file
+    and the next sweep re-probes non-square and repairs again — the repair
+    converges instead of leaving Telegram's broken copy pinned forever."""
+    await _pool.execute(
+        "UPDATE retention_photos SET telegram_file_id = NULL, "
+        "updated_at = now() WHERE id = $1", photo_id,
+    )
+
+
 async def set_retention_video_meta(photo_id: int, *, width: Optional[int],
                                    height: Optional[int],
                                    duration_sec: Optional[int],
@@ -4173,6 +4186,8 @@ def _video_slot_cap(limit: int) -> int:
 # Only a NORMALIZED video (re-encoded to the .tg.mp4 delivery format) is ever
 # offered as a candidate: a just-uploaded raw original (multi-hundred-MB .mov)
 # must not be uploadable to Telegram before the transcode finishes.
+# NB '.tg.mp4' is media_normalizer._VIDEO_NORM_SUFFIX — SQL can't import it,
+# keep the two in sync.
 _VIDEO_SENDABLE_SQL = "storage_ref LIKE '%.tg.mp4'"
 
 
@@ -4186,23 +4201,31 @@ async def candidate_photos(product_id: int, retention_user_id: int, *,
     small, fresh, on-tier candidate set. Photos and videos ride ONE stream
     with a fixed video share (see _video_slot_cap: the default list of 6 =
     4 photos + 2 videos, never below 2 videos while the list has room); when
-    there are fewer videos than the share, photos fill the freed slots.
+    there are fewer of one kind than its share, the other kind fills the freed
+    slots (the feed only shrinks when BOTH kinds are exhausted).
     `media='video'`/'photo' restricts the set to one kind (the idle ladder's
     explicit video-ping action) — a video-only list is NOT share-capped.
     Un-normalized videos are never offered.
     """
+    async def _fetch_videos(lim: int, offset: int = 0) -> list[asyncpg.Record]:
+        if lim <= 0:
+            return []
+        return await _pool.fetch(
+            f"SELECT {_PHOTO_COLS} FROM retention_photos "
+            "WHERE product_id = $1 AND active AND media_type = 'video' "
+            f"  AND {_VIDEO_SENDABLE_SQL} "
+            "  AND level_min <= $2 AND stage <= $3 "
+            "  AND id NOT IN (SELECT photo_id FROM retention_photo_views "
+            "                 WHERE retention_user_id = $4) "
+            "ORDER BY stage, views_count, sort_order, id "
+            "LIMIT $5 OFFSET $6",
+            product_id, level_ordinal, max_stage, retention_user_id,
+            lim, offset,
+        )
+
     video_limit = (limit if media == "video"
                    else min(_video_slot_cap(limit), limit))
-    videos = [] if media == "photo" else await _pool.fetch(
-        f"SELECT {_PHOTO_COLS} FROM retention_photos "
-        "WHERE product_id = $1 AND active AND media_type = 'video' "
-        f"  AND {_VIDEO_SENDABLE_SQL} "
-        "  AND level_min <= $2 AND stage <= $3 "
-        "  AND id NOT IN (SELECT photo_id FROM retention_photo_views "
-        "                 WHERE retention_user_id = $4) "
-        "ORDER BY stage, views_count, sort_order, id LIMIT $5",
-        product_id, level_ordinal, max_stage, retention_user_id, video_limit,
-    )
+    videos = [] if media == "photo" else await _fetch_videos(video_limit)
     photos = [] if media == "video" else await _pool.fetch(
         f"SELECT {_PHOTO_COLS} FROM retention_photos "
         "WHERE product_id = $1 AND active AND media_type <> 'video' "
@@ -4213,6 +4236,12 @@ async def candidate_photos(product_id: int, retention_user_id: int, *,
         product_id, level_ordinal, max_stage, retention_user_id,
         max(limit - len(videos), 0),
     )
+    # Symmetric backfill: a player who has seen every photo still gets a full
+    # feed of the remaining videos. The ORDER BY is total, so OFFSET skips
+    # exactly the rows fetched above.
+    if media is None and len(videos) + len(photos) < limit:
+        videos = list(videos) + await _fetch_videos(
+            limit - len(videos) - len(photos), offset=len(videos))
     merged = [_row_to_photo(r) for r in list(photos) + list(videos)]
     merged.sort(key=lambda p: (p.get("stage") or 0, p.get("views_count") or 0,
                                p.get("sort_order") or 0, p["id"]))
