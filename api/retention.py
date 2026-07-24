@@ -17,6 +17,7 @@ import asyncio
 import hmac
 import logging
 import os
+import shutil
 import uuid
 from typing import Any, Optional
 
@@ -751,15 +752,17 @@ async def create_photo(product_id: int = Form(...),
     photos = []
     for up, ext in zip(uploads, exts):
         storage_ref = f"{product_id}_{uuid.uuid4().hex}{ext}"
-        content = await up.read()
 
         # Off-thread: a multi-MB synchronous write onto the network Volume on
         # the event loop stalls every concurrent chat turn on the instance.
+        # Streamed from Starlette's parse spool in chunks — never the whole
+        # (possibly 100 MB video) file in memory at once.
         def _write(path: str = os.path.join(config.RETENTION_MEDIA_DIR,
                                             storage_ref),
-                   data: bytes = content) -> None:
+                   spool=up.file) -> None:
+            spool.seek(0)
             with open(path, "wb") as fh:
-                fh.write(data)
+                shutil.copyfileobj(spool, fh, 1024 * 1024)
 
         await asyncio.to_thread(_write)
         photo = await db.create_retention_photo(
@@ -1002,10 +1005,11 @@ async def normalize_photos(body: NormalizePhotosReq,
     """Run the media normalizer for one product NOW (an on-demand pass over the
     always-on hourly sweep): re-encode heavy JPG/PNG uploads to Telegram-sized
     WebP and delete the originals. API-only — there is no admin UI knob for
-    normalization."""
+    normalization. Advisory-locked like the sweep and the post-upload run, so
+    calling it mid-sweep waits instead of double-encoding the same files."""
     await admin_auth.require_product_write(admin, body.product_id)
     import media_normalizer
-    stats = await media_normalizer.normalize_product_photos(body.product_id)
+    stats = await media_normalizer._run_product_locked(body.product_id)
     return JSONResponse(content={"stats": stats})
 
 

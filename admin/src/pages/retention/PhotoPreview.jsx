@@ -7,11 +7,14 @@ import PlayCircleOutlineIcon from '@mui/icons-material/PlayCircleOutlined';
 import { API_URL, getToken } from '../../httpClient';
 import { t } from '../../i18n';
 
-// Session-lived cache of the fetched preview object URLs, keyed by photo id.
-// The binary is immutable per id, so once fetched a preview is reused across
-// re-renders, pagination and filter changes instead of re-downloading — the
-// slow-loading complaint. The URLs are intentionally never revoked: they live
-// for the tab's lifetime (bounded by how many distinct photos exist).
+// Session-lived cache of the fetched preview object URLs, keyed by photo id +
+// storage_ref: the normalizer RE-POINTS a row when it re-encodes (raw video →
+// .tg.mp4, jpg → webp), and the key change is what invalidates the stale
+// preview (a poster that 404'd before normalization is retried the same way).
+// Within one key the binary is immutable, so a fetched preview is reused
+// across re-renders, pagination and filter changes instead of re-downloading.
+// The URLs are intentionally never revoked: they live for the tab's lifetime
+// (bounded by how many distinct photos exist).
 const photoUrlCache = new Map();
 
 // Full video binaries fetched for the lightbox, cached the same way. Kept
@@ -32,13 +35,17 @@ const fetchMediaUrl = (photoId, { poster }) =>
 // image, not the multi-MB video binary — with a play badge overlaid. Clicking
 // a preview opens a minimal lightbox dialog: the full-size photo, or the
 // playable video (fetched on first open).
-const PhotoPreview = ({ photoId, mediaType }) => {
+const PhotoPreview = ({ photoId, mediaType, storageRef }) => {
   const isVideo = mediaType === 'video';
-  const [src, setSrc] = useState(() => photoUrlCache.get(photoId) || null);
+  const cacheKey = `${photoId}:${storageRef || ''}`;
+  const [src, setSrc] = useState(() => photoUrlCache.get(cacheKey) || null);
   const [open, setOpen] = useState(false);
-  const [videoSrc, setVideoSrc] = useState(() => videoUrlCache.get(photoId) || null);
+  const [videoSrc, setVideoSrc] = useState(() => videoUrlCache.get(cacheKey) || null);
   useEffect(() => {
-    const cached = photoUrlCache.get(photoId);
+    // A key change (the row was re-pointed) also invalidates a fetched video
+    // binary — the lightbox must not keep playing the pre-normalization copy.
+    setVideoSrc(videoUrlCache.get(cacheKey) || null);
+    const cached = photoUrlCache.get(cacheKey);
     if (cached) {
       setSrc(cached);
       return undefined;
@@ -47,7 +54,7 @@ const PhotoPreview = ({ photoId, mediaType }) => {
     fetchMediaUrl(photoId, { poster: isVideo })
       .then((url) => {
         if (url && !cancelled) {
-          photoUrlCache.set(photoId, url);
+          photoUrlCache.set(cacheKey, url);
           setSrc(url);
         }
       })
@@ -55,12 +62,12 @@ const PhotoPreview = ({ photoId, mediaType }) => {
     return () => {
       cancelled = true;
     };
-  }, [photoId, isVideo]);
+  }, [cacheKey, photoId, isVideo]);
   // The video binary is fetched lazily, on the first lightbox open — the grid
   // must never pull multi-MB files for rows the operator doesn't inspect.
   useEffect(() => {
     if (!open || !isVideo || videoSrc) return undefined;
-    const cached = videoUrlCache.get(photoId);
+    const cached = videoUrlCache.get(cacheKey);
     if (cached) {
       setVideoSrc(cached);
       return undefined;
@@ -69,7 +76,7 @@ const PhotoPreview = ({ photoId, mediaType }) => {
     fetchMediaUrl(photoId, { poster: false })
       .then((url) => {
         if (url && !cancelled) {
-          videoUrlCache.set(photoId, url);
+          videoUrlCache.set(cacheKey, url);
           setVideoSrc(url);
         }
       })
@@ -77,7 +84,7 @@ const PhotoPreview = ({ photoId, mediaType }) => {
     return () => {
       cancelled = true;
     };
-  }, [open, isVideo, videoSrc, photoId]);
+  }, [open, isVideo, videoSrc, cacheKey, photoId]);
   const frame = {
     width: '100%',
     height: 180,

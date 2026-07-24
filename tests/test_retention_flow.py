@@ -6,8 +6,11 @@ and the model call are monkeypatched; the assertions are on what the bot sends.
 """
 from __future__ import annotations
 
+from PIL import Image
+
 import chat_service
 import retention
+import translations
 
 
 class FakeTelegram:
@@ -15,6 +18,7 @@ class FakeTelegram:
         self.messages = []       # (chat_id, text, reply_markup)
         self.photos = []         # (chat_id, file_id, caption)
         self.videos = []         # (chat_id, file_id-or-"uploaded", caption)
+        self.video_kwargs = []   # kwargs of each send_video_bytes_verbose call
         self.answered = []
         self.subscribed = True   # what is_subscribed returns
 
@@ -42,6 +46,7 @@ class FakeTelegram:
 
     async def send_video_bytes_verbose(self, chat_id, content, filename, **kwargs):
         self.videos.append((chat_id, "uploaded", kwargs.get("caption")))
+        self.video_kwargs.append(kwargs)
         return {"video": {"file_id": "vidid"}}, None, None
 
     async def answer_callback(self, cb_id, text=None):
@@ -550,3 +555,128 @@ async def test_candidates_drop_over_cap_videos(monkeypatch, tmp_path):
           "msgs_since_photo": 99, "unlocked_stage": 1, "vip_level": None}
     out = await retention.select_photo_candidates(1, ru, "пришли видео")
     assert [c["id"] for c in out] == [2, 3, 4, 5]
+
+
+async def test_send_video_passes_attrs_and_thumbnail(monkeypatch, tmp_path):
+    """The send-side half of the download-first/00:00 fix: a first-time video
+    upload carries the probed width/height/duration and a JPEG thumbnail built
+    from the poster frame, and the returned file_id is cached."""
+    tg = FakeTelegram()
+    monkeypatch.setattr(retention.config, "RETENTION_MEDIA_DIR", str(tmp_path))
+    (tmp_path / "v.tg.mp4").write_bytes(b"mp4-bytes")
+    Image.new("RGB", (640, 640), (10, 20, 30)).save(
+        tmp_path / "v.poster.webp", "WEBP")
+
+    async def _get_photo(pid):
+        return {"id": 8, "active": True, "media_type": "video",
+                "storage_ref": "v.tg.mp4", "telegram_file_id": None,
+                "tg_width": 1080, "tg_height": 1920, "tg_duration_sec": 6,
+                "updated_at": "2026-07-24T00:00:00+00:00"}
+    monkeypatch.setattr(retention.db, "get_retention_photo", _get_photo)
+
+    async def _record(rid, photo_id, product_id, session_id=None):
+        pass
+    monkeypatch.setattr(retention.db, "record_retention_photo_view", _record)
+
+    cached = []
+
+    async def _set_fid(pid, fid):
+        cached.append((pid, fid))
+    monkeypatch.setattr(retention.db, "set_photo_file_id", _set_fid)
+
+    out = await retention._send_photo(tg, PRODUCT, {"id": 10, "tg_user_id": 7},
+                                      7, 8, "cap")
+    assert out == "photo"
+    kw = tg.video_kwargs[0]
+    assert kw["width"] == 1080 and kw["height"] == 1920 and kw["duration"] == 6
+    assert kw["thumbnail"] and kw["thumbnail"][:2] == b"\xff\xd8"  # JPEG magic
+    assert cached == [(8, "vidid")]  # row unchanged -> file_id cached
+
+
+async def test_send_photo_skips_stale_file_id_cache(monkeypatch, tmp_path):
+    """The upload raced the normalizer: the row changed (updated_at bumped)
+    while the bytes were in flight — caching the returned file_id would pin
+    the pre-normalization binary forever, so the cache write is skipped (the
+    next send re-uploads the current binary and caches that)."""
+    tg = FakeTelegram()
+    monkeypatch.setattr(retention.config, "RETENTION_MEDIA_DIR", str(tmp_path))
+    (tmp_path / "p.webp").write_bytes(b"img")
+
+    rows = iter([
+        {"id": 9, "active": True, "media_type": "photo",
+         "storage_ref": "p.webp", "telegram_file_id": None,
+         "updated_at": "2026-07-24T00:00:00+00:00"},
+        {"id": 9, "active": True, "media_type": "photo",
+         "storage_ref": "p.webp", "telegram_file_id": None,
+         "updated_at": "2026-07-24T00:05:00+00:00"},  # normalizer touched it
+    ])
+
+    async def _get_photo(pid):
+        return next(rows)
+    monkeypatch.setattr(retention.db, "get_retention_photo", _get_photo)
+
+    async def _record(rid, photo_id, product_id, session_id=None):
+        pass
+    monkeypatch.setattr(retention.db, "record_retention_photo_view", _record)
+
+    cached = []
+
+    async def _set_fid(pid, fid):
+        cached.append((pid, fid))
+    monkeypatch.setattr(retention.db, "set_photo_file_id", _set_fid)
+
+    out = await retention._send_photo(tg, PRODUCT, {"id": 10, "tg_user_id": 7},
+                                      7, 9, "cap")
+    assert out == "photo"      # the send itself succeeded
+    assert cached == []        # ...but the stale file_id was not cached
+
+
+async def test_video_ask_biases_candidates_to_videos(monkeypatch, tmp_path):
+    """«Пришли видео» gets a videos-only feed for the turn (the mixed feed's 2
+    video slots may hold none of the unseen videos); with no sendable unseen
+    video it falls back to the mixed feed, and a plain photo ask stays mixed."""
+    monkeypatch.setattr(retention.config, "RETENTION_MEDIA_DIR", str(tmp_path))
+    ru = {"id": 9, "photos_sent_today": 0, "photos_day": None,
+          "msgs_since_photo": 99, "unlocked_stage": 1, "vip_level": None}
+    video_row = {"id": 1, "media_type": "video", "storage_ref": "a.tg.mp4",
+                 "telegram_file_id": "fid"}
+    photo_row = {"id": 2, "media_type": "photo", "storage_ref": "p.webp"}
+    calls = []
+
+    async def _fake(product_id, rid, *, level_ordinal, max_stage, limit,
+                    media=None):
+        calls.append(media)
+        return [video_row] if media == "video" else [photo_row, video_row]
+    monkeypatch.setattr(retention.db, "candidate_photos", _fake)
+
+    out = await retention.select_photo_candidates(1, ru, "пришли видео")
+    assert calls == ["video"] and [c["id"] for c in out] == [1]
+
+    calls.clear()
+
+    async def _fake2(product_id, rid, *, level_ordinal, max_stage, limit,
+                     media=None):
+        calls.append(media)
+        return [] if media == "video" else [photo_row]
+    monkeypatch.setattr(retention.db, "candidate_photos", _fake2)
+    out = await retention.select_photo_candidates(1, ru, "хочу видео тебя")
+    assert calls == ["video", None] and [c["id"] for c in out] == [2]
+
+    calls.clear()
+    out = await retention.select_photo_candidates(1, ru, "пришли фото")
+    assert calls == [None] and [c["id"] for c in out] == [2]
+
+
+def test_fallback_media_caption_words_for_the_sent_kind():
+    """The captionless fallback is worded for what is actually sent — video
+    copy for a video id, photo copy otherwise (incl. no id at all)."""
+    cands = [{"id": 3, "media_type": "video"}, {"id": 4, "media_type": "photo"}]
+    video_texts = {translations.text(k, "en") for k in
+                   ("rtn_video_caption", "rtn_video_caption_2",
+                    "rtn_video_caption_3")}
+    photo_texts = {translations.text(k, "en") for k in
+                   ("rtn_photo_caption", "rtn_photo_caption_2",
+                    "rtn_photo_caption_3")}
+    assert retention.fallback_media_caption("en", 3, cands) in video_texts
+    assert retention.fallback_media_caption("en", 4, cands) in photo_texts
+    assert retention.fallback_media_caption("en", None, cands) in photo_texts

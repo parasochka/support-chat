@@ -246,6 +246,19 @@ def is_photo_request(text: str) -> bool:
     return bool(_PHOTO_REQUEST_RE.search(_normalize(text)))
 
 
+# The video-worded subset of the stems above: an explicitly VIDEO ask also
+# biases that turn's candidate feed to videos-only (select_photo_candidates) —
+# the mixed feed's 2 video slots may otherwise hold none of the unseen videos
+# and the model would answer a video ask with a photo.
+_VIDEO_REQUEST_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(s) for s in
+                        ("видео", "видос", "video", "vídeo")) + r")")
+
+
+def is_video_request(text: str) -> bool:
+    return bool(_VIDEO_REQUEST_RE.search(_normalize(text)))
+
+
 def is_meaningful(text: str) -> bool:
     """A message worth counting toward engagement/progression (>= 2 alnum)."""
     return sum(1 for c in (text or "") if c.isalnum()) >= 2
@@ -315,14 +328,24 @@ async def select_photo_candidates(product_id: int, ru: dict[str, Any],
     unlocked = int(ru.get("unlocked_stage") or 1)
     # current stages + one teaser step ahead, never above the tier ceiling.
     max_stage = min(unlocked + 1, ceiling)
-    cands = await db.candidate_photos(
-        product_id, int(ru["id"]),
-        level_ordinal=level_ord, max_stage=max_stage,
-        limit=int(cfg["candidate_list_size"]),
-        media=media,
-    )
-    # A few os.stat calls on the local media dir — cheap enough inline.
-    return [c for c in cands if _sendable_media(c)]
+    async def _fetch(kind: Optional[str]) -> list[dict[str, Any]]:
+        cands = await db.candidate_photos(
+            product_id, int(ru["id"]),
+            level_ordinal=level_ord, max_stage=max_stage,
+            limit=int(cfg["candidate_list_size"]),
+            media=kind,
+        )
+        # A few os.stat calls on the local media dir — cheap enough inline.
+        return [c for c in cands if _sendable_media(c)]
+
+    # An explicitly video-worded ask gets a videos-only feed for this turn,
+    # falling back to the normal mixed feed when no unseen video is sendable
+    # (the model then words its reply for what it can actually send).
+    if media is None and is_video_request(user_text):
+        vids = await _fetch("video")
+        if vids:
+            return vids
+    return await _fetch(media)
 
 
 async def intro_photo_due(ru: dict[str, Any]) -> bool:
@@ -1300,27 +1323,28 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
     photo_markup = None if overflow_text else reply_markup
     # Render the (model-generated) caption's light markup as Telegram HTML.
     caption_html = telegram_format.to_html(caption) if caption else None
-    photo = await db.get_retention_photo(photo_id)
-    if not photo or not photo.get("active"):
+
+    async def _fallback_text() -> Optional[str]:
+        # The media itself cannot go out — deliver the caption as a plain
+        # message so the already-persisted turn still reaches the player.
         text_out = overflow_text or caption
         if text_out and await _send_ai_text(client, chat_id, text_out,
                                             reply_markup=reply_markup,
                                             silent=silent):
             return "text"
         return None
+
+    photo = await db.get_retention_photo(photo_id)
+    if not photo or not photo.get("active"):
+        return await _fallback_text()
     is_video = photo.get("media_type") == "video"
     # Backstop mirror of db._VIDEO_SENDABLE_SQL: a raw, not-yet-transcoded
     # video original must never be uploaded to Telegram (it can be huge and
     # in a format Telegram won't stream). Candidates already exclude these;
     # this guards any other path that reaches a video row directly.
-    if is_video and not (photo.get("storage_ref") or "").lower().endswith(
-            ".tg.mp4") and not photo.get("telegram_file_id"):
-        text_out = overflow_text or caption
-        if text_out and await _send_ai_text(client, chat_id, text_out,
-                                            reply_markup=reply_markup,
-                                            silent=silent):
-            return "text"
-        return None
+    if is_video and not media_normalizer.is_normalized_video_ref(
+            photo.get("storage_ref")) and not photo.get("telegram_file_id"):
+        return await _fallback_text()
     file_id = photo.get("telegram_file_id")
     result = None
     err_code: Optional[int] = None
@@ -1341,12 +1365,7 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
         # a multi-MB Volume read on the event loop stalls every concurrent turn.
         content = await asyncio.to_thread(_read_media, photo.get("storage_ref"))
         if content is None:
-            text_out = overflow_text or caption
-            if text_out and await _send_ai_text(client, chat_id, text_out,
-                                                reply_markup=reply_markup,
-                                                silent=silent):
-                return "text"
-            return None
+            return await _fallback_text()
         if is_video and len(content) > media_normalizer.TG_VIDEO_MAX_BYTES:
             # Normalized but still over Telegram's bot-upload cap (flagged
             # loudly by the normalizer; candidates already drop such rows) —
@@ -1354,12 +1373,7 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
             # of silently dropping an already-persisted turn.
             log.warning("retention_video_over_tg_cap photo_id=%s bytes=%s",
                         photo_id, len(content))
-            text_out = overflow_text or caption
-            if text_out and await _send_ai_text(client, chat_id, text_out,
-                                                reply_markup=reply_markup,
-                                                silent=silent):
-                return "text"
-            return None
+            return await _fallback_text()
         send_bytes = (client.send_video_bytes_verbose if is_video
                       else client.send_photo_bytes_verbose)
         extra: dict[str, Any] = {}
@@ -1391,7 +1405,14 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
         new_file_id = (TelegramClient.extract_video_file_id(result) if is_video
                        else TelegramClient.extract_photo_file_id(result))
         if new_file_id:
-            await db.set_photo_file_id(photo_id, new_file_id)
+            # Cache only if the row is unchanged since we read it: the
+            # normalizer may have re-pointed/repaired the binary while this
+            # upload was in flight (every such write bumps updated_at), and
+            # caching then would pin the pre-normalization copy forever. The
+            # skip costs one re-upload on the next send.
+            fresh = await db.get_retention_photo(photo_id)
+            if fresh and fresh.get("updated_at") == photo.get("updated_at"):
+                await db.set_photo_file_id(photo_id, new_file_id)
     if result is not None:
         await db.record_retention_photo_view(int(ru["id"]), photo_id,
                                              product["id"], session_id)

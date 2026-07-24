@@ -7,6 +7,8 @@ and the code-owned (no-admin-knob) sweep cadence / always-on behaviour.
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 
 import pytest
 from PIL import Image
@@ -71,6 +73,7 @@ class _FakeDb:
         self.photos = photos
         self.repointed = {}
         self.video_meta = {}   # photo_id -> (w, h, dur, "cleared"/"kept")
+        self.file_id_cleared = []  # ids passed to clear_photo_file_id
         self.events = []
 
     async def list_retention_photos(self, product_id, **kw):
@@ -90,6 +93,9 @@ class _FakeDb:
             width, height, duration_sec,
             "cleared" if clear_file_id else "kept")
 
+    async def clear_photo_file_id(self, photo_id):
+        self.file_id_cleared.append(photo_id)
+
     async def log_admin_event(self, session_id, kind, payload, product_id=None):
         self.events.append((kind, payload, product_id))
 
@@ -100,7 +106,8 @@ def fake_db(monkeypatch):
         fake = _FakeDb(photos)
         for name in ("list_retention_photos", "set_retention_photo_storage_ref",
                      "set_retention_video_normalized",
-                     "set_retention_video_meta", "log_admin_event"):
+                     "set_retention_video_meta", "clear_photo_file_id",
+                     "log_admin_event"):
             monkeypatch.setattr(media_normalizer.db, name, getattr(fake, name))
         return fake
     return _install
@@ -308,18 +315,29 @@ async def test_sweep_repairs_anamorphic_normalized_video(media_dir, fake_db,
     monkeypatch.setattr(media_normalizer, "extract_poster", fake_poster)
     fake = fake_db([{"id": 40, "storage_ref": "p9_sar.tg.mp4",
                      "telegram_file_id": "old-id"}])
+    # The file_id must be dropped BEFORE the on-disk swap: a crash between the
+    # two leaves the squished file with no pin, so the repair converges on the
+    # next sweep instead of leaving Telegram's broken copy cached forever.
+    cleared_at = []
+
+    async def _clear(photo_id):
+        cleared_at.append((photo_id, done.read_bytes()))
+    monkeypatch.setattr(media_normalizer.db, "clear_photo_file_id", _clear)
     stats = await media_normalizer.normalize_product_photos(1)
     assert stats["normalized"] == 1 and stats["failed"] == 0
     assert done.read_bytes() == b"fixed-mp4"   # re-encoded in place
     assert not fake.repointed                  # the ref stays the same
     assert fake.video_meta == {40: (1440, 1920, 6, "cleared")}
+    assert cleared_at == [(40, b"anamorphic-mp4")]  # cleared pre-swap
     assert (media_dir / "p9_sar.poster.webp").read_bytes() == b"poster2"
 
 
 async def test_sweep_backfills_video_attrs(media_dir, fake_db, monkeypatch):
     """A video normalized before the attrs shipped gets its sendVideo attrs
-    probed and stored (file_id KEPT — the binary did not change); once the row
-    carries them, the sweep leaves it alone."""
+    probed and stored, and the cached file_id is CLEARED: the pre-attrs upload
+    may be pinned in the broken download-first/00:00 presentation, and a
+    file_id send cannot attach attrs — one re-upload with explicit attrs is
+    the fix. Once the row carries attrs, the sweep leaves it alone."""
     done = media_dir / "p9_meta.tg.mp4"
     done.write_bytes(b"mp4")
     (media_dir / "p9_meta.poster.webp").write_bytes(b"poster")
@@ -329,7 +347,7 @@ async def test_sweep_backfills_video_attrs(media_dir, fake_db, monkeypatch):
     fake = fake_db([{"id": 41, "storage_ref": "p9_meta.tg.mp4"}])
     stats = await media_normalizer.normalize_product_photos(1)
     assert stats["normalized"] == 0 and stats["failed"] == 0
-    assert fake.video_meta == {41: (1080, 1920, 8, "kept")}
+    assert fake.video_meta == {41: (1080, 1920, 8, "cleared")}
     # Attrs present -> the next sweep is a no-op.
     fake.photos[0].update(tg_width=1080, tg_height=1920)
     fake.video_meta.clear()
@@ -348,6 +366,80 @@ async def test_sweep_failed_video_isolated(media_dir, fake_db, monkeypatch):
     stats = await media_normalizer.normalize_product_photos(1)
     assert stats["failed"] == 1 and not fake.repointed
     assert (media_dir / "p9_bad.mov").exists()  # original never deleted
+
+
+async def test_orphan_cleanup(media_dir, fake_db, monkeypatch):
+    """Files no DB row references (crash/race leftovers — a surviving raw
+    original, a deleted row's encode output, a failed repair's tmp) are swept
+    once older than a day; referenced files and young files stay."""
+    fake_db([{"id": 1, "storage_ref": "p1_v.tg.mp4"}])
+
+    async def _products():
+        return [{"id": 1}]
+    monkeypatch.setattr(media_normalizer.db, "list_products", _products)
+
+    old_ts = time.time() - 2 * 86_400
+    orphan = media_dir / "p1_old.mov"          # crash leftover -> removed
+    orphan.write_bytes(b"x")
+    os.utime(orphan, (old_ts, old_ts))
+    young = media_dir / "p1_new.fix.mp4"       # in-flight-aged -> kept
+    young.write_bytes(b"x")
+    kept = media_dir / "p1_v.tg.mp4"           # referenced -> kept
+    kept.write_bytes(b"x")
+    os.utime(kept, (old_ts, old_ts))
+    poster = media_dir / "p1_v.poster.webp"    # implied by the video row
+    poster.write_bytes(b"x")
+    os.utime(poster, (old_ts, old_ts))
+
+    removed = await media_normalizer._cleanup_orphans()
+    assert removed == 1
+    assert not orphan.exists()
+    assert young.exists() and kept.exists() and poster.exists()
+
+
+async def test_sweep_locks_per_product(monkeypatch):
+    """The periodic sweep takes the (key, product_id) advisory lock per
+    product and SKIPS a product whose lock is busy (an instant post-upload run
+    in flight) instead of blocking or double-processing."""
+    class FakeConn:
+        def __init__(self):
+            self.unlocked = []
+
+        async def fetchval(self, sql, key, pid):
+            assert "pg_try_advisory_lock($1, $2)" in sql
+            return pid != 2  # product 2 is busy elsewhere
+
+        async def execute(self, sql, key, pid):
+            assert "pg_advisory_unlock($1, $2)" in sql
+            self.unlocked.append(pid)
+
+        async def close(self):
+            pass
+
+    conn = FakeConn()
+
+    async def _conn():
+        return conn
+    monkeypatch.setattr(media_normalizer.db, "dedicated_connection", _conn)
+
+    async def _products():
+        return [{"id": 1}, {"id": 2}]
+    monkeypatch.setattr(media_normalizer.db, "list_products", _products)
+
+    ran = []
+
+    async def _norm(pid):
+        ran.append(pid)
+        return {"checked": 1, "normalized": 0, "failed": 0, "bytes_saved": 0}
+    monkeypatch.setattr(media_normalizer, "normalize_product_photos", _norm)
+
+    async def _orphans():
+        return 0
+    monkeypatch.setattr(media_normalizer, "_cleanup_orphans", _orphans)
+
+    totals = await media_normalizer.run_normalization()
+    assert ran == [1] and conn.unlocked == [1]  # busy product skipped
+    assert totals["products"] == 1
 
 
 def test_video_slot_cap():
