@@ -380,6 +380,9 @@ CREATE TABLE IF NOT EXISTS retention_photos (
   storage_ref       TEXT,
   media_type        TEXT NOT NULL DEFAULT 'photo',  -- 'photo' | 'video'
   telegram_file_id  TEXT,
+  tg_width          INT,   -- video sendVideo attrs, probed at normalization
+  tg_height         INT,
+  tg_duration_sec   INT,
   description        TEXT NOT NULL DEFAULT '',
   tags              JSONB NOT NULL DEFAULT '[]',
   level_min         INT NOT NULL DEFAULT 0,   -- min VIP tier ordinal to unlock
@@ -638,6 +641,17 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         # attaching the same one on every play nudge (the rotation bug).
         "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS "
         "link_url TEXT",
+        # Video delivery attributes probed at normalization time (ffprobe) and
+        # passed explicitly to sendVideo: without them Telegram may fail to
+        # detect the geometry/duration and deliver the message as a
+        # download-first file with a squished 00:00 bubble. NULL for photos
+        # and for videos normalized before this shipped (the sweep backfills).
+        "ALTER TABLE retention_photos ADD COLUMN IF NOT EXISTS "
+        "tg_width INT",
+        "ALTER TABLE retention_photos ADD COLUMN IF NOT EXISTS "
+        "tg_height INT",
+        "ALTER TABLE retention_photos ADD COLUMN IF NOT EXISTS "
+        "tg_duration_sec INT",
         # Removed feature: system-prompt versioning + A/B. The prompt is now
         # sourced solely from prompts.py (the file is the single source of truth),
         # so drop the table and the per-session attribution column. Idempotent —
@@ -3997,15 +4011,51 @@ async def set_photo_file_id(photo_id: int, file_id: str) -> None:
 
 async def set_retention_photo_storage_ref(photo_id: int,
                                           storage_ref: str) -> None:
-    """Re-point a photo row at a new stored binary (the media normalizer).
+    """Re-point a PHOTO row at a new stored binary (the media normalizer).
 
     telegram_file_id is deliberately KEPT: it references the copy already on
     Telegram's servers, which stays valid — only future first-uploads read the
-    new file.
+    new file. (Photos only — Telegram re-compresses them anyway. Video
+    re-points go through set_retention_video_normalized, which CLEARS the
+    file_id: a video file_id pins the exact uploaded binary, so keeping it
+    would serve the pre-normalization copy forever.)
     """
     await _pool.execute(
         "UPDATE retention_photos SET storage_ref = $2, updated_at = now() "
         "WHERE id = $1", photo_id, storage_ref,
+    )
+
+
+async def set_retention_video_normalized(photo_id: int, *, storage_ref: str,
+                                         width: Optional[int],
+                                         height: Optional[int],
+                                         duration_sec: Optional[int]) -> None:
+    """Re-point a VIDEO row at its normalized binary, in one write: the new
+    storage_ref, the probed sendVideo attrs, and telegram_file_id cleared
+    (Telegram's cached copy is the old binary — the next send re-uploads)."""
+    await _pool.execute(
+        "UPDATE retention_photos SET storage_ref = $2, tg_width = $3, "
+        "tg_height = $4, tg_duration_sec = $5, telegram_file_id = NULL, "
+        "updated_at = now() WHERE id = $1",
+        photo_id, storage_ref, width, height, duration_sec,
+    )
+
+
+async def set_retention_video_meta(photo_id: int, *, width: Optional[int],
+                                   height: Optional[int],
+                                   duration_sec: Optional[int],
+                                   clear_file_id: bool = False) -> None:
+    """Store/refresh a video's probed sendVideo attrs on the row.
+
+    `clear_file_id=True` is the SAR-repair path: the on-disk binary was
+    re-encoded in place, so the file_id Telegram holds points at the broken
+    copy and must be dropped; the plain backfill keeps it."""
+    await _pool.execute(
+        "UPDATE retention_photos SET tg_width = $2, tg_height = $3, "
+        "tg_duration_sec = $4, "
+        "telegram_file_id = CASE WHEN $5 THEN NULL ELSE telegram_file_id END, "
+        "updated_at = now() WHERE id = $1",
+        photo_id, width, height, duration_sec, clear_file_id,
     )
 
 
@@ -4019,6 +4069,7 @@ def _row_to_photo(row: asyncpg.Record) -> dict[str, Any]:
 
 
 _PHOTO_COLS = ("id, product_id, storage_ref, media_type, telegram_file_id, "
+               "tg_width, tg_height, tg_duration_sec, "
                "description, tags, level_min, stage, category, sort_order, "
                "active, views_count, created_by, created_at, updated_at")
 

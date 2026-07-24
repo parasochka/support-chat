@@ -70,6 +70,7 @@ class _FakeDb:
     def __init__(self, photos):
         self.photos = photos
         self.repointed = {}
+        self.video_meta = {}   # photo_id -> (w, h, dur, "cleared"/"kept")
         self.events = []
 
     async def list_retention_photos(self, product_id, **kw):
@@ -77,6 +78,17 @@ class _FakeDb:
 
     async def set_retention_photo_storage_ref(self, photo_id, ref):
         self.repointed[photo_id] = ref
+
+    async def set_retention_video_normalized(self, photo_id, *, storage_ref,
+                                             width, height, duration_sec):
+        self.repointed[photo_id] = storage_ref
+        self.video_meta[photo_id] = (width, height, duration_sec, "cleared")
+
+    async def set_retention_video_meta(self, photo_id, *, width, height,
+                                       duration_sec, clear_file_id=False):
+        self.video_meta[photo_id] = (
+            width, height, duration_sec,
+            "cleared" if clear_file_id else "kept")
 
     async def log_admin_event(self, session_id, kind, payload, product_id=None):
         self.events.append((kind, payload, product_id))
@@ -86,13 +98,10 @@ class _FakeDb:
 def fake_db(monkeypatch):
     def _install(photos):
         fake = _FakeDb(photos)
-        monkeypatch.setattr(media_normalizer.db, "list_retention_photos",
-                            fake.list_retention_photos)
-        monkeypatch.setattr(media_normalizer.db,
-                            "set_retention_photo_storage_ref",
-                            fake.set_retention_photo_storage_ref)
-        monkeypatch.setattr(media_normalizer.db, "log_admin_event",
-                            fake.log_admin_event)
+        for name in ("list_retention_photos", "set_retention_photo_storage_ref",
+                     "set_retention_video_normalized",
+                     "set_retention_video_meta", "log_admin_event"):
+            monkeypatch.setattr(media_normalizer.db, name, getattr(fake, name))
         return fake
     return _install
 
@@ -188,10 +197,14 @@ def test_video_ref_helpers():
     assert media_normalizer.poster_ref_for("photo.jpg") is None
 
 
-def test_video_scale_filter_no_upscale():
+def test_video_scale_filter_display_terms_square_pixels():
+    """The scale runs in DISPLAY terms (iw*sar) and forces square pixels —
+    an anamorphic source would otherwise render squished in Telegram (which
+    ignores SAR) while looking fine in a browser (which honors it)."""
     f = media_normalizer._video_scale_filter(1280)
-    assert "min(1280,iw)" in f and "min(1280,ih)" in f
-    assert "force_divisible_by=2" in f
+    assert "min(1,min(1280/(iw*sar),1280/ih))" in f  # no upscale, display-term
+    assert f.endswith("setsar=1")
+    assert "/2)*2" in f  # even dimensions for yuv420p H.264
 
 
 async def test_sweep_transcodes_video_and_extracts_poster(media_dir, fake_db,
@@ -216,10 +229,16 @@ async def test_sweep_transcodes_video_and_extracts_poster(media_dir, fake_db,
     monkeypatch.setattr(media_normalizer, "normalize_video_file",
                         fake_transcode)
     monkeypatch.setattr(media_normalizer, "extract_poster", fake_poster)
+    monkeypatch.setattr(media_normalizer, "probe_video_meta",
+                        lambda p: {"width": 1080, "height": 1920,
+                                   "duration_sec": 6, "square_pixels": True})
     fake = fake_db([{"id": 30, "storage_ref": "p9_v.mov"}])
     stats = await media_normalizer.normalize_product_photos(1)
     assert stats["normalized"] == 1 and stats["failed"] == 0
     assert fake.repointed == {30: "p9_v.tg.mp4"}
+    # The probed sendVideo attrs land on the row and the cached file_id is
+    # dropped (the new binary is not the copy Telegram may hold).
+    assert fake.video_meta == {30: (1080, 1920, 6, "cleared")}
     assert not src.exists()
     assert (media_dir / "p9_v.tg.mp4").exists()
     assert (media_dir / "p9_v.poster.webp").exists()
@@ -253,6 +272,69 @@ async def test_sweep_skips_normalized_video_but_backfills_poster(
     posters.clear()
     await media_normalizer.normalize_product_photos(1)
     assert not posters
+
+
+async def test_sweep_repairs_anamorphic_normalized_video(media_dir, fake_db,
+                                                         monkeypatch):
+    """Self-heal: a .tg.mp4 from the pre-fix encoder carries the source's
+    non-square SAR (Telegram rendered it squished). The sweep re-encodes it in
+    place, refreshes the poster/attrs and DROPS the cached file_id — Telegram's
+    copy is the squished one."""
+    done = media_dir / "p9_sar.tg.mp4"
+    done.write_bytes(b"anamorphic-mp4")
+    (media_dir / "p9_sar.poster.webp").write_bytes(b"poster")
+    probes = []
+
+    def fake_probe(path):
+        probes.append(path)
+        if len(probes) == 1:  # pre-repair: anamorphic
+            return {"width": 1080, "height": 1920, "duration_sec": 6,
+                    "square_pixels": False}
+        return {"width": 1440, "height": 1920, "duration_sec": 6,
+                "square_pixels": True}
+
+    def fake_transcode(src, dst, **kw):
+        with open(dst, "wb") as fh:
+            fh.write(b"fixed-mp4")
+
+    def fake_poster(src, poster_path, **kw):
+        with open(poster_path, "wb") as fh:
+            fh.write(b"poster2")
+        return True
+
+    monkeypatch.setattr(media_normalizer, "probe_video_meta", fake_probe)
+    monkeypatch.setattr(media_normalizer, "normalize_video_file",
+                        fake_transcode)
+    monkeypatch.setattr(media_normalizer, "extract_poster", fake_poster)
+    fake = fake_db([{"id": 40, "storage_ref": "p9_sar.tg.mp4",
+                     "telegram_file_id": "old-id"}])
+    stats = await media_normalizer.normalize_product_photos(1)
+    assert stats["normalized"] == 1 and stats["failed"] == 0
+    assert done.read_bytes() == b"fixed-mp4"   # re-encoded in place
+    assert not fake.repointed                  # the ref stays the same
+    assert fake.video_meta == {40: (1440, 1920, 6, "cleared")}
+    assert (media_dir / "p9_sar.poster.webp").read_bytes() == b"poster2"
+
+
+async def test_sweep_backfills_video_attrs(media_dir, fake_db, monkeypatch):
+    """A video normalized before the attrs shipped gets its sendVideo attrs
+    probed and stored (file_id KEPT — the binary did not change); once the row
+    carries them, the sweep leaves it alone."""
+    done = media_dir / "p9_meta.tg.mp4"
+    done.write_bytes(b"mp4")
+    (media_dir / "p9_meta.poster.webp").write_bytes(b"poster")
+    monkeypatch.setattr(media_normalizer, "probe_video_meta",
+                        lambda p: {"width": 1080, "height": 1920,
+                                   "duration_sec": 8, "square_pixels": True})
+    fake = fake_db([{"id": 41, "storage_ref": "p9_meta.tg.mp4"}])
+    stats = await media_normalizer.normalize_product_photos(1)
+    assert stats["normalized"] == 0 and stats["failed"] == 0
+    assert fake.video_meta == {41: (1080, 1920, 8, "kept")}
+    # Attrs present -> the next sweep is a no-op.
+    fake.photos[0].update(tg_width=1080, tg_height=1920)
+    fake.video_meta.clear()
+    await media_normalizer.normalize_product_photos(1)
+    assert not fake.video_meta
 
 
 async def test_sweep_failed_video_isolated(media_dir, fake_db, monkeypatch):

@@ -290,10 +290,19 @@ class TelegramClient:
             self, chat_id: int, content: bytes, filename: str, *,
             caption: Optional[str] = None, parse_mode: Optional[str] = None,
             reply_markup: Optional[dict[str, Any]] = None,
-            disable_notification: bool = False
+            disable_notification: bool = False,
+            width: Optional[int] = None, height: Optional[int] = None,
+            duration: Optional[int] = None,
+            thumbnail: Optional[bytes] = None
             ) -> tuple[Optional[dict[str, Any]], Optional[int], Optional[str]]:
         """Upload a video from bytes (first send), surfacing (error_code,
-        description). Returns the result so the caller can cache the file_id."""
+        description). Returns the result so the caller can cache the file_id.
+
+        width/height/duration/thumbnail are passed through when known: without
+        explicit attrs Telegram sometimes fails to detect them and delivers
+        the message as a download-first file with a squished 00:00 bubble
+        (the attrs stick to the file, so file_id re-sends inherit them). The
+        thumbnail must already be Telegram-conformant (JPEG, <=320px)."""
         data: dict[str, Any] = {"chat_id": str(chat_id),
                                 "supports_streaming": "true"}
         if caption:
@@ -304,7 +313,15 @@ class TelegramClient:
             data["disable_notification"] = "true"
         if reply_markup is not None:
             data["reply_markup"] = json.dumps(reply_markup)
+        if width:
+            data["width"] = str(int(width))
+        if height:
+            data["height"] = str(int(height))
+        if duration:
+            data["duration"] = str(int(duration))
         files = {"video": (filename, content)}
+        if thumbnail:
+            files["thumbnail"] = ("thumbnail.jpg", thumbnail)
         j = await self._post("sendVideo", form_data=data, files=files)
         if j is None:
             return None, None, "request_failed"

@@ -32,9 +32,18 @@ Rules of the sweep (per product, inside its settings scope):
   never kills the sweep; the DB row is re-pointed only AFTER the new file is
   fully written, and the original is deleted only AFTER the row points away
   from it — a crash mid-sweep can leave an extra file, never a broken photo.
-- `telegram_file_id` is KEPT: it references the already-uploaded copy on
-  Telegram's side, which stays valid; only future first-uploads use the new
-  binary.
+- `telegram_file_id` is KEPT for photos (the already-uploaded copy stays
+  valid; Telegram re-compresses photos anyway) but CLEARED for videos on
+  every re-point/repair: a video file_id pins the exact binary Telegram
+  holds, so keeping it would serve the pre-normalization copy forever.
+- Videos are probed (ffprobe) after each encode: width/height/duration land
+  on the row (`tg_width`/`tg_height`/`tg_duration_sec`) and ride the
+  sendVideo call — without explicit attrs Telegram may fail to detect them
+  and deliver the message as a download-first file with 00:00 duration.
+  The encoder scales in DISPLAY terms and forces square pixels (setsar=1);
+  an already-normalized .tg.mp4 that still carries a non-square SAR (the
+  pre-fix output — rendered squished by Telegram) is re-encoded in place by
+  the sweep (self-heal), with a poster + attrs refresh.
 
 The loop runs from main.py lifespan under the same RETENTION_SCHEDULER_ENABLED
 deploy switch as the agent worker, under its own advisory lock (multi-instance
@@ -49,6 +58,7 @@ product's sweep on demand (API-only, no UI button).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -185,11 +195,77 @@ def _ffmpeg_cmd(args: list[str]) -> list[str]:
 
 
 def _video_scale_filter(max_side: int) -> str:
-    # min() keeps small inputs unscaled (no upscale); force_divisible_by=2 is
-    # required by yuv420p H.264. Single quotes protect the commas from
-    # ffmpeg's filter-graph parser.
-    return (f"scale=w='min({max_side},iw)':h='min({max_side},ih)':"
-            "force_original_aspect_ratio=decrease:force_divisible_by=2")
+    # Scale in DISPLAY terms (iw*sar, not raw storage width) and force square
+    # pixels on the output (setsar=1). An anamorphic source (SAR != 1) would
+    # otherwise pass its SAR through the encode: browsers honor it (the admin
+    # preview looked fine) but Telegram renders raw storage pixels, so the
+    # player saw a horizontally squished video. min(1, ...) keeps small inputs
+    # unscaled (no upscale); trunc(x/2)*2 keeps dimensions even for yuv420p
+    # H.264. Single quotes protect the commas from ffmpeg's filter-graph
+    # parser.
+    f = f"min(1,min({max_side}/(iw*sar),{max_side}/ih))"
+    return (f"scale=w='trunc({f}*iw*sar/2)*2':h='trunc({f}*ih/2)*2',"
+            "setsar=1")
+
+
+def probe_video_meta(path: str) -> Optional[dict[str, Any]]:
+    """ffprobe one video: {width, height, duration_sec, square_pixels}.
+
+    width/height are the STORAGE dimensions; `square_pixels` is False when the
+    stream carries a non-square sample aspect ratio (an anamorphic file — the
+    pre-fix normalizer let those through, and Telegram renders them squished).
+    Returns None when ffprobe fails — callers treat that as "nothing to say"
+    (no attrs stored, no repair), never as an error.
+    """
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0",
+           "-show_entries",
+           "stream=width,height,sample_aspect_ratio:format=duration",
+           "-of", "json", path]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            return None
+        parsed = json.loads(proc.stdout)
+        stream = (parsed.get("streams") or [{}])[0]
+        width, height = stream.get("width"), stream.get("height")
+        if not width or not height:
+            return None
+        duration = float((parsed.get("format") or {}).get("duration") or 0)
+        sar = (stream.get("sample_aspect_ratio") or "1:1").replace("/", ":")
+        square = sar in ("", "N/A", "0:1", "1:1")
+        return {"width": int(width), "height": int(height),
+                "duration_sec": max(1, round(duration)) if duration else None,
+                "square_pixels": square}
+    except Exception:  # noqa: BLE001 - probing is best-effort
+        return None
+
+
+def _meta_attrs(meta: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """probe_video_meta result -> db attr kwargs (all None when unprobed)."""
+    meta = meta or {}
+    return {"width": meta.get("width"), "height": meta.get("height"),
+            "duration_sec": meta.get("duration_sec")}
+
+
+def make_video_thumbnail(poster_bytes: bytes) -> Optional[bytes]:
+    """A Telegram-conformant video thumbnail from the poster frame.
+
+    Bot API requires JPEG, <=320px, <200 kB — the stored poster is a WebP at
+    delivery resolution, so it is downscaled/re-encoded here (at send time,
+    first upload only; file_id sends carry the thumbnail already). None on any
+    failure — the thumbnail is cosmetic, never worth failing a send over.
+    """
+    import io
+    from PIL import Image
+    try:
+        with Image.open(io.BytesIO(poster_bytes)) as im:
+            im = im.convert("RGB")
+            im.thumbnail((320, 320), Image.LANCZOS)
+            out = io.BytesIO()
+            im.save(out, "JPEG", quality=85)
+            return out.getvalue()
+    except Exception:  # noqa: BLE001 - cosmetic only
+        return None
 
 
 def normalize_video_file(src_path: str, dst_path: str, *, max_side: int,
@@ -268,11 +344,40 @@ async def normalize_product_photos(product_id: int) -> dict[str, Any]:
                 poster_path = os.path.join(config.RETENTION_MEDIA_DIR,
                                            poster_ref)
                 if not video_needs_normalization(safe):
-                    # Already normalized; backfill a missing poster only.
+                    meta = await asyncio.to_thread(probe_video_meta, path)
+                    if meta and not meta["square_pixels"]:
+                        # Self-heal: a .tg.mp4 produced by the pre-fix encoder
+                        # kept the source's non-square SAR (Telegram rendered
+                        # it squished). Re-encode in place to square pixels,
+                        # refresh the poster and DROP the cached file_id —
+                        # Telegram's copy is the squished one.
+                        tmp_path = path + ".fix.mp4"
+                        await asyncio.to_thread(
+                            normalize_video_file, path, tmp_path,
+                            max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX,
+                            crf=config.RETENTION_MEDIA_VIDEO_CRF,
+                            preset=config.RETENTION_MEDIA_VIDEO_PRESET)
+                        await asyncio.to_thread(os.replace, tmp_path, path)
+                        await asyncio.to_thread(
+                            extract_poster, path, poster_path,
+                            max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX)
+                        meta = await asyncio.to_thread(probe_video_meta, path)
+                        await db.set_retention_video_meta(
+                            photo["id"], **_meta_attrs(meta),
+                            clear_file_id=True)
+                        log.info("media_normalize_video_sar_repaired "
+                                 "photo_id=%s ref=%s", photo.get("id"), safe)
+                        stats["normalized"] += 1
+                        continue
+                    # Already fine; backfill a missing poster / missing attrs.
                     if not os.path.exists(poster_path):
                         await asyncio.to_thread(
                             extract_poster, path, poster_path,
                             max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX)
+                    if meta and not (photo.get("tg_width")
+                                     and photo.get("tg_height")):
+                        await db.set_retention_video_meta(
+                            photo["id"], **_meta_attrs(meta))
                     continue
                 new_path = os.path.join(config.RETENTION_MEDIA_DIR, new_ref)
                 old_size = os.path.getsize(path)
@@ -293,8 +398,12 @@ async def normalize_product_photos(product_id: int) -> dict[str, Any]:
                         "50 MB; trim or replace this video",
                         photo.get("id"), new_ref, os.path.getsize(new_path))
                 if new_ref != safe:
-                    await db.set_retention_photo_storage_ref(photo["id"],
-                                                             new_ref)
+                    meta = await asyncio.to_thread(probe_video_meta, new_path)
+                    # Re-point + store the sendVideo attrs + clear any cached
+                    # file_id in one write: the new binary is not the copy
+                    # Telegram may hold, so the next send must re-upload.
+                    await db.set_retention_video_normalized(
+                        photo["id"], storage_ref=new_ref, **_meta_attrs(meta))
                     _remove_quietly(path)
                 stats["normalized"] += 1
                 stats["bytes_saved"] += max(
