@@ -1362,12 +1362,29 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
             return None
         send_bytes = (client.send_video_bytes_verbose if is_video
                       else client.send_photo_bytes_verbose)
+        extra: dict[str, Any] = {}
+        if is_video:
+            # Explicit sendVideo attrs (probed at normalization) + a small
+            # JPEG thumbnail from the poster frame: without them Telegram can
+            # fail to detect the geometry/duration and deliver the video as a
+            # download-first file with a squished 00:00 bubble. All
+            # best-effort — a row normalized before the attrs shipped sends
+            # without them.
+            extra = {"width": photo.get("tg_width"),
+                     "height": photo.get("tg_height"),
+                     "duration": photo.get("tg_duration_sec")}
+            poster = await asyncio.to_thread(
+                _read_media,
+                media_normalizer.poster_ref_for(photo.get("storage_ref")))
+            if poster:
+                extra["thumbnail"] = await asyncio.to_thread(
+                    media_normalizer.make_video_thumbnail, poster)
         result, err_code, _ = await send_bytes(
             chat_id, content,
             photo.get("storage_ref") or ("video.mp4" if is_video
                                          else "photo.jpg"),
             caption=caption_html, parse_mode="HTML",
-            reply_markup=photo_markup, disable_notification=silent)
+            reply_markup=photo_markup, disable_notification=silent, **extra)
         if result is None and err_code == 403:
             await db.set_retention_unreachable(int(ru["id"]), True)
             return None

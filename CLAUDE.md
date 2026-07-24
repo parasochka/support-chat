@@ -1085,14 +1085,28 @@ checklist lives in the admin — the **Retention → How it works** page.
   re-encodes every .jpg/.png (and any oversized .webp) to WebP at
   `RETENTION_MEDIA_MAX_SIDE_PX` (default 2560) × `RETENTION_MEDIA_WEBP_QUALITY` (90), re-points the row
   (`db.set_retention_photo_storage_ref`) and **deletes the heavy original** — GIFs are left alone
-  (possibly animated), the cached `telegram_file_id` is KEPT (the already-uploaded copy stays
-  valid), and the row is re-pointed BEFORE the delete so a crash can orphan a file but never break
+  (possibly animated), the cached `telegram_file_id` is KEPT **for photos** (the already-uploaded
+  copy stays valid; a VIDEO re-point clears it — see below), and the row is re-pointed BEFORE the
+  delete so a crash can orphan a file but never break
   a photo. **Videos** normalize through the same module via **ffmpeg** (installed in the Docker
   image): re-encoded ONCE to Telegram-friendly `<base>.tg.mp4` (H.264 + AAC, faststart, longest
   side `RETENTION_MEDIA_VIDEO_MAX_SIDE_PX`/1920 (a vertical 1080×1920 reel keeps native
   resolution; the CRF re-encode still shrinks a bloated source ~6-10×), CRF
   `RETENTION_MEDIA_VIDEO_CRF`/23, preset `RETENTION_MEDIA_VIDEO_PRESET`/medium — deploy env
-  constants, deliberately no admin knobs) plus a `<base>.poster.webp` frame (the admin grid
+  constants, deliberately no admin knobs). The scale filter works in **DISPLAY terms and forces
+  square pixels** (`iw*sar` + `setsar=1`): an anamorphic source (SAR≠1) would otherwise pass its
+  SAR through — browsers honor it (the admin preview looked fine) but Telegram renders raw storage
+  pixels, so players got a horizontally squished video. After each encode the file is **ffprobe'd**
+  (`media_normalizer.probe_video_meta`) and width/height/duration land on the row
+  (`tg_width`/`tg_height`/`tg_duration_sec`, `db.set_retention_video_normalized` — which also
+  **clears `telegram_file_id`**: a video file_id pins the exact uploaded binary, so keeping it
+  served the pre-normalization copy forever); `retention._send_photo` passes those attrs plus a
+  ≤320px JPEG thumbnail (from the poster, `media_normalizer.make_video_thumbnail`) to `sendVideo` —
+  without explicit attrs Telegram may fail to detect them and deliver the video as a
+  download-first file with a squished 00:00 bubble. The sweep **self-heals** older rows: an
+  already-normalized `.tg.mp4` that probes with a non-square SAR (the pre-fix output) is
+  re-encoded in place with poster/attrs refresh + file_id drop, and a square one missing its attrs
+  gets them backfilled (file_id kept). Plus a `<base>.poster.webp` frame (the admin grid
   preview via `GET …/photos/{id}/file?poster=1`, and the AI-metadata vision call rates the video
   by that frame — `build_photo_meta_messages(is_video=True)`); the `.tg.mp4` suffix is the
   done-marker, and a normalized video still over Telegram's 50 MB bot cap is loudly logged,
