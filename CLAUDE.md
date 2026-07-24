@@ -1092,7 +1092,7 @@ checklist lives in the admin — the **Retention → How it works** page.
   image): re-encoded ONCE to Telegram-friendly `<base>.tg.mp4` (H.264 + AAC, faststart, longest
   side `RETENTION_MEDIA_VIDEO_MAX_SIDE_PX`/1920 (a vertical 1080×1920 reel keeps native
   resolution; the CRF re-encode still shrinks a bloated source ~6-10×), CRF
-  `RETENTION_MEDIA_VIDEO_CRF`/23, preset `RETENTION_MEDIA_VIDEO_PRESET`/medium — deploy env
+  `RETENTION_MEDIA_VIDEO_CRF`/26, preset `RETENTION_MEDIA_VIDEO_PRESET`/medium — deploy env
   constants, deliberately no admin knobs). The scale filter works in **DISPLAY terms and forces
   square pixels** (`iw*sar` + `setsar=1`): an anamorphic source (SAR≠1) would otherwise pass its
   SAR through — browsers honor it (the admin preview looked fine) but Telegram renders raw storage
