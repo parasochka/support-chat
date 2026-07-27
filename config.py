@@ -460,8 +460,11 @@ RETENTION_STAGE_UP_NOTIFY: bool = _env_bool("RETENTION_STAGE_UP_NOTIFY", True)
 # in-context invitation to come play on the site (with a one-tap site-map
 # button when a fitting page exists). 0 = the periodic nudge is off; the
 # model may still invite organically per the engagement directive.
+# Every 5 replies read as an advert in the live logs (an invitation landed
+# right after a confession and right after a boundary deflection), so the
+# default is spaced out; the nudge directive also skips those moments.
 RETENTION_PLAY_REMINDER_EVERY_MSGS: int = _env_int(
-    "RETENTION_PLAY_REMINDER_EVERY_MSGS", 5)
+    "RETENTION_PLAY_REMINDER_EVERY_MSGS", 8)
 # Introduction photo: a brand-new player (never received a photo) gets one
 # proactively within his first N meaningful messages — a "this is me, let's
 # get to know each other" opener so he learns from the start that chatting

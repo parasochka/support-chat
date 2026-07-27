@@ -191,15 +191,47 @@ def test_formatting_directive_in_layer1_core():
     core = prompts.get_system_core()
     assert "FORMATTING:" in core
     assert "Markdown" in core
-    assert "Always use light Markdown to structure the reply" in core
+    assert "Use light Markdown only where it genuinely helps" in core
     assert "Prefer plain text over structure" not in core
     # Must pin the model away from markup the widget can't render.
     assert "tables" in core
+    # Bold is for values the player must spot, not for decorating the opener
+    # (prod replies bolded "Sorry"/"Yes" and whole leading clauses).
+    assert "Bold ONLY concrete values" in core
 
     msgs = prompts.build_messages({"user_context": {}}, kb_block=None,
                                   history=[], user_text="hi", resolved_lang="en")
     assert "FORMATTING:" in msgs[0]["content"]
     assert "FORMATTING:" not in msgs[-1]["content"]
+
+
+def test_turn_budget_notice_is_layer3_and_only_near_the_cap():
+    """The wrap-up notice depends on the turn counter, so it must live in the
+    per-request user message (never the byte-stable core) and appear only on the
+    last turns before the hard message cap — otherwise a live conversation just
+    stops dead when the cap fires."""
+    core = prompts.get_system_core()
+    assert "CONVERSATION BUDGET" not in core
+
+    def user_msg(turns_left):
+        msgs = prompts.build_messages({"user_context": {}}, kb_block=None,
+                                      history=[], user_text="hi",
+                                      resolved_lang="en", turns_left=turns_left)
+        return msgs[-1]["content"]
+
+    # Comfortable budget (and the default None) → the prompt is unchanged.
+    assert "CONVERSATION BUDGET" not in user_msg(None)
+    assert "CONVERSATION BUDGET" not in user_msg(9)
+    # Nearing the cap → wrap up; on the final turn say so outright.
+    assert "CONVERSATION BUDGET" in user_msg(2)
+    assert "LAST reply" in user_msg(0)
+    # A cap already overshot must not produce a cheerful "1 more exchange".
+    assert "LAST reply" in user_msg(-3)
+    # The goodbye turn ends the chat by itself — no budget notice on top.
+    msgs = prompts.build_messages({"user_context": {}}, kb_block=None,
+                                  history=[], user_text="bye", resolved_lang="en",
+                                  closing=True, turns_left=0)
+    assert "CONVERSATION BUDGET" not in msgs[-1]["content"]
 
 
 def test_escalation_restraint_directive_in_layer1_core():

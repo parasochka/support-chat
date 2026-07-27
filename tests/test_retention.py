@@ -37,9 +37,9 @@ def test_retention_core_uses_telegram_formatting():
     core = prompts.get_retention_system_core()
     assert "FORMATTING (TELEGRAM)" in core
     assert "em dash" in core and "guillemet" in core.lower()
-    assert "Always use light Markdown" not in core
+    assert "light Markdown" not in core
     # the support core keeps asking for the widget's Markdown subset
-    assert "Always use light Markdown" in prompts.get_system_core()
+    assert "light Markdown" in prompts.get_system_core()
 
 
 def test_retention_core_has_own_tone_variable():

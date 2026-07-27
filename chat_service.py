@@ -250,6 +250,12 @@ async def handle_message(
         # personalization directive's complaint-reassurance allowance.
         ongoing=context_reset_id > 0 and not history,
         history_window=int(settings.general()["history_max_turns"]),
+        # Exchanges still available AFTER this reply: the cap fires on the turn
+        # whose prospective count reaches it (see `prospective_count` below), so
+        # the model gets a wrap-up notice on the last turns instead of the chat
+        # hitting the wall mid-conversation.
+        turns_left=(int(settings.general()["max_messages_per_session"])
+                    - (int(session.get("message_count", 0)) + 1)),
     )
     log.info(
         "chat_prompt_built session_id=%s topic_slug=%s history_turns=%s kb_chars=%s messages=%s",

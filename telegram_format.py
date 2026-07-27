@@ -30,6 +30,7 @@ _PUNCT_MAP = {
     "—": "-",   # — em dash
     "–": "-",   # – en dash
     "―": "-",   # ― horizontal bar
+    "‑": "-",   # ‑ non-breaking hyphen (U+2011) - looks like a hyphen, is not
     "«": '"',   # « left guillemet
     "»": '"',   # » right guillemet
     "‹": "'",   # ‹ single left angle quote

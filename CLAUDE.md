@@ -201,9 +201,10 @@ system prefix; only per-request data may sit after the (growing) history.
   invalidates the larger byte-stable Layer-1 prefix).
 - **Layer 3** — *only* per-request data lives in the **user message**: sanitized
   `user_context`, the personalization line, the resolved language directive, the topic-routing
-  catalogue, the conversation history, the new user turn, and the recency guardrails /
+  catalogue, the conversation history, the new user turn, the recency guardrails /
   forbidden-topics block (kept **last**, after the player's message, on purpose — an
-  anti-injection / anti-off-topic reminder bites hardest closest to the input).
+  anti-injection / anti-off-topic reminder bites hardest closest to the input), and — only
+  on the last turns before the message cap — the conversation-budget wrap-up notice.
 
 A STATIC rule goes into Layer 1 (so it is cached); a rule that needs per-request data goes
 into Layer 3 — **never** does per-request data enter the byte-stable Layer-1 block. **The whole
@@ -661,7 +662,14 @@ fires on the turn whose prospective count (current + 1) reaches `max_messages_pe
 technical limit that lives in the **`general`** settings group (the legacy
 `escalation.max_messages_per_session` DB override is still honoured as a fallback); the
 model-free fast path in `api/chat.py` is the cheap belt-and-suspenders for a session already
-at/over the cap — complementary, not a duplicate. The button URL is **per-language**: the
+at/over the cap — complementary, not a duplicate. **The cap no longer lands as a wall**: the
+model cannot see the counter, so a live conversation used to just stop dead on the capped turn.
+`chat_service` now passes `turns_left` (cap minus this turn's prospective count) into
+`build_messages`, and `prompts._turn_budget_directive` adds a Layer-3 wrap-up notice on the last
+`_TURN_BUDGET_NOTICE_TURNS` (2) turns — answer fully now, open no new threads, and hand off
+deliberately ([[ESCALATE]]) if the issue cannot be finished here. It is per-request, so it never
+touches the byte-stable Layer 1, and it is skipped on a `closing` turn (the goodbye directive
+already ends the chat). The button URL is **per-language**: the
 `contact_url` key in the translations registry (admin Translations tab — each language can point
 at its own contact form) — **the ONE home for the URL**. A legacy hidden value stored by early
 builds in `app_settings.general.contact_form_url` (the old Settings tab wrote it; the field then
