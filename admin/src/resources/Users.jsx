@@ -98,7 +98,7 @@ const PasswordWithGenerate = ({ source = 'password', label, helperText, validate
   };
 
   return (
-    <Stack direction="row" spacing={1} alignItems="flex-start" sx={{ width: '100%' }}>
+    <Stack direction="row" spacing={1} sx={{ alignItems: 'flex-start', width: '100%' }}>
       <TextInput
         source={source}
         type={revealed ? 'text' : 'password'}
@@ -138,7 +138,7 @@ export const UserList = () => {
           <FunctionField
             label={t('Access (role × scope)')}
             render={(r) => (
-              <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+              <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: 'wrap' }}>
                 {(r.memberships || []).length === 0 && (
                   <Chip size="small" variant="outlined" color="warning"
                         label={t('no access (no memberships)')} />
@@ -266,7 +266,7 @@ const MembershipsPanel = () => {
         </Table>
         </Box>
       )}
-      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+      <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
         <TextField_
           select
           size="small"

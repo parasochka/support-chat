@@ -53,14 +53,7 @@ const TextStats = ({ text, label, sx }) => {
   const cost = price != null ? (tokens * price) / 1_000_000 : null;
 
   return (
-    <Stack
-      direction="row"
-      spacing={1.5}
-      flexWrap="wrap"
-      useFlexGap
-      alignItems="baseline"
-      sx={{ my: 0.5, ...sx }}
-    >
+    <Stack direction="row" spacing={1.5} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'baseline', my: 0.5, ...sx }}>
       {label && (
         <Typography variant="caption" sx={{ fontWeight: 600 }}>
           {label}

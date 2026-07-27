@@ -508,6 +508,14 @@ const LAYOUT_SX = {
     mx: 'auto',
   },
   '& .RaLayout-content': { minWidth: 0, maxWidth: `min(${CONTENT_MAX}px, 100%)` },
+  // react-admin's list body is a flex item with the default `min-width: auto`,
+  // so one long unbreakable cell value grows it past the viewport — same
+  // failure mode as the wrappers above, one level deeper.
+  '& .RaList-main': { minWidth: 0 },
+  // …and its Datagrid can still be wider than the content column (the
+  // unresolved list is 8 columns). Scroll it inside its own card instead of
+  // widening the document.
+  '& .RaDatagrid-tableWrapper': { overflowX: 'auto' },
 };
 
 const AppLayout = ({ children }) => (

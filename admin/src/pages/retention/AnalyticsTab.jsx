@@ -17,6 +17,8 @@ import { FunnelBars, MiniBarChart, SeriesLineChart, TelegramCostCharts } from '.
 import { Kpi, RETENTION_FUNNEL_STEPS, RETENTION_TIMESERIES_SERIES } from '../../components/Kpi';
 import { t } from '../../i18n';
 import { fmtDateTime } from '../../lib/fmt';
+import { wideTableSx } from '../../lib/table';
+import useIsMobile from '../../lib/useIsMobile';
 
 // ---------------------------------------------------------------------------
 // Analytics tab — a date range over the retention KPIs, split into the
@@ -50,6 +52,7 @@ const latency = (s) => {
 };
 
 const OutcomeTable = ({ rows, firstLabel, renderFirst, minWidth = 640, empty }) => {
+  const isMobile = useIsMobile();
   if (!rows?.length) {
     return (
       <Typography variant="body2" color="text.secondary">
@@ -57,9 +60,30 @@ const OutcomeTable = ({ rows, firstLabel, renderFirst, minWidth = 640, empty }) 
       </Typography>
     );
   }
+  if (isMobile) {
+    // Six columns whose first one is a caption: squeezed onto a phone the text
+    // becomes a one-word-per-line ribbon and the last figures fall off the
+    // edge. One block per row instead, numbers on their own line.
+    return (
+      <Stack spacing={1}>
+        {rows.map((r, i) => (
+          <Box key={i} sx={{ borderTop: i ? 1 : 0, borderColor: 'divider', pt: i ? 1 : 0 }}>
+            <Typography variant="body2" component="div" sx={{ overflowWrap: 'anywhere' }}>
+              {renderFirst(r)}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" component="div">
+              {t('Sent')}: {r.sends} · {t('Replied')}: {r.replies} ({pct(r.reply_rate)}) ·{' '}
+              {t('Returned')}: {r.returns} · {t('Deposited')}: {r.deposits} · {t('Avg reply')}:{' '}
+              {latency(r.avg_reply_latency_sec)}
+            </Typography>
+          </Box>
+        ))}
+      </Stack>
+    );
+  }
   return (
     <Box sx={{ overflowX: 'auto' }}>
-      <Table size="small" sx={{ minWidth }}>
+      <Table size="small" sx={wideTableSx(minWidth)}>
         <TableHead>
           <TableRow>
             <TableCell>{firstLabel}</TableCell>
@@ -102,7 +126,7 @@ const EffectivenessSection = ({ data }) => {
           .replace('{r}', w?.reply_hours ?? 48)
           .replace('{c}', w?.conversion_hours ?? 72)}
       </Typography>
-      <Grid container spacing={2} alignItems="stretch" sx={{ mb: 2 }}>
+      <Grid container spacing={2} sx={{ mb: 2 }}>
         <KpiCard label={t('Proactive touches')} value={s?.sends} hint={t('messages the bot started')} />
         <KpiCard label={t('Answered')} value={s?.replies} hint={pct(s?.reply_rate)} />
         <KpiCard label={t('Came back')} value={s?.returns} hint={pct(s?.return_rate)} />
@@ -116,7 +140,7 @@ const EffectivenessSection = ({ data }) => {
           hint={t('windows elapsed — the rest may still change')}
         />
       </Grid>
-      <Grid container spacing={2} alignItems="stretch" sx={{ mb: 2 }}>
+      <Grid container spacing={2} sx={{ mb: 2 }}>
         <Grid size={{ xs: 12, lg: 6 }}>
           <Card sx={{ height: '100%' }}>
             <CardContent>
@@ -201,6 +225,7 @@ const EffectivenessSection = ({ data }) => {
 };
 
 const AnalyticsTab = ({ productId }) => {
+  const isMobile = useIsMobile();
   const notify = useNotify();
   const [range, setRange] = useState(defaultRange);
   const [overview, setOverview] = useState(null);
@@ -240,7 +265,7 @@ const AnalyticsTab = ({ productId }) => {
 
   return (
     <Box>
-      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
+      <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', mb: 2 }}>
         <TextField
           size="small"
           type="date"
@@ -265,7 +290,7 @@ const AnalyticsTab = ({ productId }) => {
       <Typography variant="h6" sx={{ mb: 1 }}>
         {t('Player base')}
       </Typography>
-      <Grid container spacing={2} alignItems="stretch" sx={{ mb: 2 }}>
+      <Grid container spacing={2} sx={{ mb: 2 }}>
         <KpiCard label={t('Linked players')} value={base?.total} hint={t('lifetime deeplink entries')} />
         <KpiCard label={t('Subscribed')} value={base?.subscribed} hint={t('passed the channel gate')} />
         <KpiCard label={t('Pings muted')} value={base?.pings_muted} hint={t('opted out via /stop')} />
@@ -275,7 +300,7 @@ const AnalyticsTab = ({ productId }) => {
       <Typography variant="h6" sx={{ mb: 1 }}>
         {t('In range')}
       </Typography>
-      <Grid container spacing={2} alignItems="stretch" sx={{ mb: 2 }}>
+      <Grid container spacing={2} sx={{ mb: 2 }}>
         <KpiCard label={t('Active players')} value={inRange?.active_users} hint={t('wrote in the range')} />
         <KpiCard label={t('New players')} value={inRange?.new_users} hint={t('first deeplink entry')} />
         <KpiCard label={t('Player messages')} value={inRange?.user_messages} />
@@ -309,7 +334,7 @@ const AnalyticsTab = ({ productId }) => {
         <TelegramCostCharts data={series} height={220} />
       </Box>
 
-      <Grid container spacing={2} alignItems="stretch" sx={{ mb: 2 }}>
+      <Grid container spacing={2} sx={{ mb: 2 }}>
         <Grid size={{ xs: 12, md: 7 }}>
           <Card sx={{ height: '100%' }}>
             <CardContent>
@@ -348,8 +373,30 @@ const AnalyticsTab = ({ productId }) => {
       <Typography variant="h6" sx={{ mb: 1 }}>
         {t('Linked players')} ({users.length})
       </Typography>
+      {isMobile ? (
+        <Stack spacing={1}>
+          {users.map((u, i) => (
+            <Card key={u.id ?? i} variant="outlined">
+              <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+                <Typography variant="subtitle2" sx={{ overflowWrap: 'anywhere' }}>
+                  {u.player_id} · {u.tg_username ? `@${u.tg_username}` : u.tg_user_id}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {u.entry_type} · {t('VIP')}: {u.vip_level || '—'} · {t('Stage')}:{' '}
+                  {u.unlocked_stage}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" component="div">
+                  {t('Msgs')}: {u.meaningful_msgs} · {t('Photos')}: {u.photos_total} ·{' '}
+                  {t('Manager')}: {u.manager_name || '—'}
+                  {u.last_active_at ? ` · ${fmtDateTime(u.last_active_at)}` : ''}
+                </Typography>
+              </CardContent>
+            </Card>
+          ))}
+        </Stack>
+      ) : (
       <Box sx={{ overflowX: 'auto' }}>
-        <Table size="small" sx={{ minWidth: 760 }}>
+        <Table size="small" sx={wideTableSx(760)}>
           <TableHead>
             <TableRow>
               <TableCell>{t('Player')}</TableCell>
@@ -386,6 +433,7 @@ const AnalyticsTab = ({ productId }) => {
           </TableBody>
         </Table>
       </Box>
+      )}
     </Box>
   );
 };

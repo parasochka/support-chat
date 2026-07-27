@@ -3,6 +3,8 @@ import { useNotify, usePermissions } from 'react-admin';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import Card from '@mui/material/Card';
+import CardContent from '@mui/material/CardContent';
 import Chip from '@mui/material/Chip';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
@@ -226,15 +228,7 @@ const IdlePingsTab = ({ productId }) => {
         )}
       </Alert>
 
-      <Stack
-        direction="row"
-        spacing={1}
-        alignItems="center"
-        justifyContent="space-between"
-        flexWrap="wrap"
-        useFlexGap
-        sx={{ mb: 1 }}
-      >
+      <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
         <Typography variant="h6">{t('Rules')}</Typography>
         {canWrite && (
           <Stack direction="row" spacing={1}>
@@ -259,6 +253,57 @@ const IdlePingsTab = ({ productId }) => {
           )}
         </Typography>
       )}
+      {isMobile ? (
+        // Ten columns per rule — a card per rule instead of a table a phone can
+        // only read by scrolling sideways.
+        <Stack spacing={1} sx={{ mb: 3 }}>
+          {rules.map((r) => (
+            <Card key={r.id} variant="outlined">
+              <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Typography variant="subtitle2" sx={{ overflowWrap: 'anywhere' }}>
+                    {r.name}
+                  </Typography>
+                  <Switch
+                    size="small"
+                    sx={{ ml: 'auto' }}
+                    checked={Boolean(r.enabled)}
+                    disabled={!canWrite}
+                    onChange={(e) => patchRule(r.id, { enabled: e.target.checked })}
+                  />
+                </Box>
+                <Typography variant="body2" color="text.secondary">
+                  {t(TRIGGER_LABELS[r.trigger_kind]) || r.trigger_kind} · {r.inactivity_days}
+                  {t('d')} · {r.action}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" component="div">
+                  {t('VIP tiers')}: {(r.vip_tiers || []).length ? r.vip_tiers.join(', ') : t('all')}
+                  {' · '}
+                  {t('Cooldown')}: {r.cooldown_days}d · {t('Priority')}: {r.priority}
+                  {stats[r.id]
+                    ? ` · ${Math.round((stats[r.id].reply_rate || 0) * 100)}% / ${stats[r.id].sends}`
+                    : ''}
+                </Typography>
+                {canWrite && (
+                  <Box sx={{ mt: 0.5 }}>
+                    <Button size="small" onClick={() => openEditor(r)}>
+                      {t('Edit')}
+                    </Button>
+                    <Button size="small" color="error" onClick={() => removeRule(r.id)}>
+                      {t('Delete')}
+                    </Button>
+                  </Box>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+          {rules.length === 0 && (
+            <Typography color="text.secondary" sx={{ py: 2 }}>
+              {t('No rules yet — quiet players are not re-engaged until a rule exists.')}
+            </Typography>
+          )}
+        </Stack>
+      ) : (
       <Box sx={{ overflowX: 'auto', mb: 3 }}>
         <Table size="small" sx={{ minWidth: 760 }}>
           <TableHead>
@@ -342,6 +387,7 @@ const IdlePingsTab = ({ productId }) => {
           </TableBody>
         </Table>
       </Box>
+      )}
 
       <Typography variant="h6" sx={{ mb: 1 }}>
         {t('Ledger')}
@@ -351,6 +397,44 @@ const IdlePingsTab = ({ productId }) => {
           'Every proactive-send attempt (idle rules AND event reactions): who was nudged, by which rule, and what it cost. Skipped rows explain why a candidate was passed over.'
         )}
       </Typography>
+      {isMobile ? (
+        <Stack spacing={1}>
+          {ledger.items.map((p) => (
+            <Card key={p.id} variant="outlined">
+              <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+                  <Chip
+                    size="small"
+                    label={p.status}
+                    color={STATUS_COLORS[p.status] || 'default'}
+                    variant="outlined"
+                  />
+                  <Typography variant="subtitle2" sx={{ overflowWrap: 'anywhere' }}>
+                    {p.full_name || (p.tg_username ? `@${p.tg_username}` : p.player_id) || '—'}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
+                    {fmtDateTime(p.created_at)}
+                  </Typography>
+                </Box>
+                <Typography variant="body2" color="text.secondary">
+                  {p.rule_name || '—'} · {p.action}
+                  {p.cost_usd ? ` · $${Number(p.cost_usd).toFixed(5)}` : ''}
+                </Typography>
+                {p.detail && (
+                  <Typography variant="caption" color="text.secondary" component="div" sx={{ overflowWrap: 'anywhere' }}>
+                    {p.detail}
+                  </Typography>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+          {ledger.items.length === 0 && (
+            <Typography color="text.secondary" sx={{ py: 2 }}>
+              {t('No proactive sends yet.')}
+            </Typography>
+          )}
+        </Stack>
+      ) : (
       <Box sx={{ overflowX: 'auto' }}>
         <Table size="small" sx={{ minWidth: 680 }}>
           <TableHead>
@@ -401,6 +485,7 @@ const IdlePingsTab = ({ productId }) => {
           </TableBody>
         </Table>
       </Box>
+      )}
       {pages > 1 && (
         <GridPagination count={ledger.total || 0} page={page} perPage={pageSize}
                         onPage={setPage} />

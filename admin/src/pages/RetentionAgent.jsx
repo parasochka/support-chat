@@ -33,6 +33,7 @@ import { t } from '../i18n';
 import rich from '../components/Rich';
 import { notifyError } from '../lib/notifyError';
 import { fmtDateTime } from '../lib/fmt';
+import useIsMobile from '../lib/useIsMobile';
 
 /**
  * The proactive agent (event-driven) — the one regime that writes to players
@@ -180,7 +181,7 @@ const StatusHeader = ({ status, onRefresh, onRun, canWrite, running }) => {
   return (
     <Card sx={{ mb: 2 }}>
       <CardContent>
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={WRAP_CHIPS_SX}>
+        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', ...WRAP_CHIPS_SX }}>
           <Chip
             label={status.v2_enabled ? t('Agent ENABLED') : t('Agent DISABLED (no proactive messages)')}
             color={status.v2_enabled ? 'success' : 'default'}
@@ -215,7 +216,7 @@ const StatusHeader = ({ status, onRefresh, onRun, canWrite, running }) => {
         </Stack>
         {/* Agent / worker liveness — derived from the durable tables, so it
             answers "is the agent actually running and what did it just do?" */}
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 1, ...WRAP_CHIPS_SX }}>
+        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', mt: 1, ...WRAP_CHIPS_SX }}>
           <Chip
             size="small"
             variant="outlined"
@@ -376,7 +377,7 @@ const Simulator = ({ status, onDone, canWrite }) => {
             {busy ? t('Sending…') : t('Inject event')}
           </Button>
         </Stack>
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 1, ...WRAP_CHIPS_SX }}>
+        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', mt: 1, ...WRAP_CHIPS_SX }}>
           <Typography variant="caption" color="text.secondary">
             {t('Sample payloads:')}
           </Typography>
@@ -426,10 +427,12 @@ const ClearAllButton = ({ label, onClear, canWrite }) => (
   </Tooltip>
 );
 
-const EventsTab = ({ events, canWrite, onDelete, onClear }) => (
+const EventsTab = ({ events, canWrite, onDelete, onClear }) => {
+  const isMobile = useIsMobile();
+  return (
   <Card>
     <CardContent>
-      <Stack direction="row" alignItems="center" sx={{ mb: 1 }}>
+      <Stack direction="row" sx={{ alignItems: 'center', mb: 1 }}>
         <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
           {t('The event log is also the state resolver’s memory (loss window, recent activity) — deleting rows rewrites that derived state. Meant for wiping simulator/test rows.')}
         </Typography>
@@ -439,6 +442,43 @@ const EventsTab = ({ events, canWrite, onDelete, onClear }) => (
           canWrite={canWrite}
         />
       </Stack>
+      {isMobile ? (
+        <Stack spacing={1}>
+          {(events?.items || []).map((e) => (
+            <Card key={e.id} variant="outlined">
+              <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Typography variant="subtitle2" component="code" sx={{ overflowWrap: 'anywhere' }}>
+                    {e.event_name}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
+                    {fmtDT(e.ts)}
+                  </Typography>
+                  <IconButton size="small" onClick={() => onDelete(e.id)} disabled={!canWrite}>
+                    <DeleteIcon fontSize="small" />
+                  </IconButton>
+                </Box>
+                <Typography variant="body2" color="text.secondary">
+                  {e.player_id} · {e.source} ·{' '}
+                  {e.processed_at ? fmtDT(e.processed_at) : t('queued')}
+                </Typography>
+                <Typography
+                  variant="caption"
+                  component="div"
+                  sx={{ fontFamily: 'monospace', overflowWrap: 'anywhere' }}
+                >
+                  {JSON.stringify(e.payload)}
+                </Typography>
+              </CardContent>
+            </Card>
+          ))}
+          {!(events?.items || []).length && (
+            <Typography variant="body2" color="text.secondary">
+              {rich(t('No events yet. The casino posts them to `POST /partner/{product_id}/event`, or inject one with the simulator above.'))}
+            </Typography>
+          )}
+        </Stack>
+      ) : (
       <Box sx={{ overflowX: 'auto' }}>
       <Table size="small" sx={{ minWidth: 720 }}>
         <TableHead>
@@ -488,14 +528,18 @@ const EventsTab = ({ events, canWrite, onDelete, onClear }) => (
         </TableBody>
       </Table>
       </Box>
+      )}
     </CardContent>
   </Card>
-);
+  );
+};
 
-const DecisionsTab = ({ decisions, canWrite, onDelete, onClear }) => (
+const DecisionsTab = ({ decisions, canWrite, onDelete, onClear }) => {
+  const isMobile = useIsMobile();
+  return (
   <Card>
     <CardContent>
-      <Stack direction="row" alignItems="center" sx={{ mb: 1 }}>
+      <Stack direction="row" sx={{ alignItems: 'center', mb: 1 }}>
         <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
           {t('Deleting a decision “refunds” its cost from today’s budget and re-arms the same-event cooldown for that event type — so a wiped test decision can be re-run immediately.')}
         </Typography>
@@ -505,6 +549,73 @@ const DecisionsTab = ({ decisions, canWrite, onDelete, onClear }) => (
           canWrite={canWrite}
         />
       </Stack>
+      {isMobile ? (
+        // Eleven columns; on a phone each decision becomes a card — action and
+        // outcome first, the reasoning underneath.
+        <Stack spacing={1}>
+          {(decisions?.items || []).map((d) => (
+            <Card key={d.id} variant="outlined">
+              <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 0.5 }}>
+                  <Chip size="small" label={d.action} color={ACTION_COLORS[d.action] || 'default'} />
+                  {d.dry_run && <Chip size="small" label={t('dry-run')} variant="outlined" />}
+                  <Typography variant="caption" component="code" sx={{ overflowWrap: 'anywhere' }}>
+                    {d.event_name}
+                  </Typography>
+                  <IconButton
+                    size="small"
+                    sx={{ ml: 'auto' }}
+                    onClick={() => onDelete(d.id)}
+                    disabled={!canWrite}
+                  >
+                    <DeleteIcon fontSize="small" />
+                  </IconButton>
+                </Box>
+                <Typography variant="body2" sx={{ mt: 0.5, overflowWrap: 'anywhere' }}>
+                  {d.full_name || d.player_id || '—'}
+                  {d.tg_username ? ` · @${d.tg_username}` : ''}
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+                  {d.reason || '—'}
+                  {d.intent ? ` · ${t('brief:')} ${d.intent}` : ''}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" component="div">
+                  {fmtDT(d.created_at)}
+                  {d.tone ? ` · ${d.tone}` : ''} · {fmtCost(d.cost_usd)}
+                  {' · '}
+                  {t('Delivered')}: {d.delivered ? t('yes') : d.detail || t('no')}
+                </Typography>
+                {d.delivered && (
+                  <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: 'wrap', mt: 0.5 }}>
+                    {d.replied_at && (
+                      <Chip
+                        size="small"
+                        color="success"
+                        variant="outlined"
+                        label={`${t('replied')}${d.reply_latency_sec != null ? ` ${fmtLatency(d.reply_latency_sec)}` : ''}`}
+                      />
+                    )}
+                    {d.deposit_at && <Chip size="small" color="success" label={t('deposited')} />}
+                    {!d.replied_at && !d.deposit_at && d.returned_at && (
+                      <Chip size="small" variant="outlined" label={t('came back')} />
+                    )}
+                    {!d.replied_at && !d.returned_at && !d.deposit_at && (
+                      <Typography variant="caption" color="text.secondary">
+                        {d.outcome_settled ? t('no reaction') : t('waiting…')}
+                      </Typography>
+                    )}
+                  </Stack>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+          {!(decisions?.items || []).length && (
+            <Typography variant="body2" color="text.secondary">
+              {t('No decisions yet — inject an event and press «Process queue now».')}
+            </Typography>
+          )}
+        </Stack>
+      ) : (
       <Box sx={{ overflowX: 'auto' }}>
       <Table size="small" sx={{ minWidth: 900 }}>
         <TableHead>
@@ -568,7 +679,7 @@ const DecisionsTab = ({ decisions, canWrite, onDelete, onClear }) => (
                 {!d.delivered ? (
                   ''
                 ) : (
-                  <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                  <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: 'wrap' }}>
                     {d.replied_at && (
                       <Chip
                         size="small"
@@ -615,9 +726,11 @@ const DecisionsTab = ({ decisions, canWrite, onDelete, onClear }) => (
         </TableBody>
       </Table>
       </Box>
+      )}
     </CardContent>
   </Card>
-);
+  );
+};
 
 // ---------------------------------------------------------------------------
 // System log — the durable retention_v2_* admin events (the admin-readable

@@ -41,7 +41,14 @@ const MobileList = ({ primaryText, secondaryText, tertiaryText, onRowClick }) =>
           sx={{ alignItems: 'flex-start', flexDirection: 'column', gap: 0.25, py: 1.25 }}
         >
           <ListItemText
-            sx={{ m: 0, width: '100%' }}
+            sx={{
+              m: 0,
+              width: '100%',
+              // A long unbreakable value (an email, a slug) would otherwise set
+              // the row's min-content width and push the whole list past a
+              // narrow screen.
+              '& .MuiListItemText-primary': { overflowWrap: 'anywhere' },
+            }}
             primary={primaryText(record)}
             secondary={
               <>
