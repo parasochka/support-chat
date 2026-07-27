@@ -1781,6 +1781,14 @@ Map of what lives where:
   and `sessions` each carry a `cost_usd_total` (summed from `ai_interaction_logs` via a join/CTE)
   rendered in the SPA tables. **Date ranges** are half-open and a date-only `to=YYYY-MM-DD` is
   made **inclusive** of that whole day (`api.admin._range` adds one day), so "today" isn't dropped.
+  **Every admin report keys `lang` on the CONVERSATION language, not the browser
+  locale** (`db._CONV_LANG_SQL` = `COALESCE(s.conv_lang, s.lang)`, shared by
+  `by_language`, `list_sessions` — including its `lang` filter — and
+  `unresolved_by_topic`). `chat_sessions.lang` is the browser locale fixed at session
+  create and never overwritten, so grouping on it reported the BROWSER mix: a player
+  on an en-US browser writing Russian was counted as English. The browser locale still
+  travels alongside as `ui_lang` (and `conv_lang` on the session detail), and the SPA
+  shows it in the conversation summary only when the player drifted away from it.
   The **Unresolved** queue lists engaged sessions that still need attention — both `escalated` and
   abandoned `open` chats with ≥1 user turn (resolved excluded), grouped by topic. It carries the
   **same per-session fields as the Sessions tab** (created, lang, status, msgs, cost) + the first

@@ -2656,6 +2656,17 @@ async def by_topic(dt_from: Any, dt_to: Any,
     return out
 
 
+# The language a session's CONVERSATION ran in, for every admin-facing report.
+# `chat_sessions.lang` is the BROWSER locale resolved once at session create and
+# deliberately never overwritten; `conv_lang` is the language the player actually
+# drifted to (persisted per turn from the model's [[LANG:xx]] sentinel). Reports
+# must key on the latter, falling back to the locale when the conversation never
+# drifted — otherwise a Russian-speaking player on an en-US browser is reported
+# as English. Kept as one constant so the session list, the unresolved queue and
+# the by-language breakdown can never disagree about what "lang" means.
+_CONV_LANG_SQL = "COALESCE(s.conv_lang, s.lang)"
+
+
 async def by_language(dt_from: Any, dt_to: Any,
                       product_ids: Optional[list[int]] = None
                       ) -> list[dict[str, Any]]:
@@ -2663,7 +2674,13 @@ async def by_language(dt_from: Any, dt_to: Any,
     scope, scope_cte = _scope_clauses(product_ids, args)
     rows = await _pool.fetch(
         f"WITH {_cost_cte(scope_cte)} "
-        "SELECT COALESCE(s.lang, 'unknown') AS lang, "
+        # The language the conversation actually ran in: `conv_lang` (the sticky
+        # answer language the player drifted to) when set, else the browser
+        # locale stored at session create. Grouping on `lang` alone reported the
+        # BROWSER mix — a player on an en-US browser who writes in Russian was
+        # counted as English, so the per-language view measured locales, not
+        # languages.
+        f"SELECT COALESCE({_CONV_LANG_SQL}, 'unknown') AS lang, "
         # Engaged sessions only — exclude greeting-only "zero" sessions (no OpenAI
         # call) so the per-language counts and escalation rates aren't diluted.
         "  COUNT(*) FILTER (WHERE s.message_count > 0) AS sessions, "
@@ -2672,7 +2689,7 @@ async def by_language(dt_from: Any, dt_to: Any,
         "FROM chat_sessions s LEFT JOIN costs ON costs.session_id = s.id "
         f"WHERE s.created_at >= $1 AND s.created_at < $2{scope} "
         "  AND s.consumer <> 'telegram' "
-        "GROUP BY COALESCE(s.lang, 'unknown') ORDER BY sessions DESC",
+        f"GROUP BY COALESCE({_CONV_LANG_SQL}, 'unknown') ORDER BY sessions DESC",
         *args,
     )
     return [
@@ -2700,7 +2717,9 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
     if topic:
         args.append(topic); where.append(f"t.slug = ${len(args)}")
     if lang:
-        args.append(lang); where.append(f"s.lang = ${len(args)}")
+        # Filter on the conversation language, matching the column the list
+        # shows and the by-language breakdown (see _CONV_LANG_SQL).
+        args.append(lang); where.append(f"{_CONV_LANG_SQL} = ${len(args)}")
     if status:
         args.append(status); where.append(f"s.status = ${len(args)}")
     if escalated is not None:
@@ -2723,7 +2742,8 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
     page_size = 25
     args2 = args + [page_size, (page - 1) * page_size]
     rows = await _pool.fetch(
-        f"SELECT s.id, s.lang, s.status, s.escalated, s.message_count, "
+        f"SELECT s.id, {_CONV_LANG_SQL} AS lang, s.lang AS ui_lang, "
+        f"  s.status, s.escalated, s.message_count, "
         f"  s.created_at, s.updated_at, t.slug AS topic, "
         f"  s.product_id, p.name AS product_name, "
         f"  COALESCE(c.cost_usd_total, 0) AS cost_usd_total "
@@ -2951,7 +2971,8 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any,
         ", unresolved AS ("
         "  SELECT COALESCE(t.slug, 'unknown') AS topic, "
         "    COALESCE(t.title, '{}'::jsonb) AS title, "
-        "    s.id AS session_id, s.lang, s.status, s.escalated, s.message_count, "
+        f"    s.id AS session_id, {_CONV_LANG_SQL} AS lang, s.lang AS ui_lang, "
+        "    s.status, s.escalated, s.message_count, "
         "    s.created_at, s.updated_at, "
         "    COALESCE(costs.cost_usd_total, 0) AS cost_usd_total, "
         "    ROW_NUMBER() OVER (PARTITION BY COALESCE(t.slug, 'unknown') "
@@ -2985,6 +3006,7 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any,
         g["sessions"].append({
             "session_id": str(r["session_id"]),
             "lang": r["lang"],
+            "ui_lang": r["ui_lang"],
             "status": r["status"],
             "escalated": r["escalated"],
             "message_count": r["message_count"],
@@ -4954,10 +4976,18 @@ async def insert_app_logs(items: list[dict[str, Any]]) -> None:
 
 
 async def prune_app_logs(keep: int = 5000) -> None:
-    """Keep only the newest `keep` rows (bounded table)."""
+    """Keep only the newest `keep` ROWS (bounded table).
+
+    Counts rows rather than doing id arithmetic (`MAX(id) - keep`): ids come
+    from a sequence, and a sequence has gaps (a rolled-back insert, the cached
+    block dropped on restart). With gaps the arithmetic cutoff spans FEWER than
+    `keep` rows, so the view silently kept less history than configured. The
+    subquery picks the id of the (keep+1)-th newest row — everything from there
+    down goes; with fewer than `keep` rows it returns NULL and nothing matches.
+    """
     await _pool.execute(
         "DELETE FROM app_logs WHERE id <= "
-        "(SELECT COALESCE(MAX(id), 0) - $1 FROM app_logs)",
+        "(SELECT id FROM app_logs ORDER BY id DESC OFFSET $1 LIMIT 1)",
         keep,
     )
 

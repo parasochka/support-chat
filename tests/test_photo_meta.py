@@ -47,6 +47,25 @@ def test_build_photo_meta_messages_balance_block():
     assert "independently of the stage" in text
 
 
+def test_description_is_demanded_in_first_person():
+    """The persona voices the description as her OWN words when she captions the
+    media, so a third-person description ("she holds...") makes her talk about
+    herself as someone else. Both the photo task and the video note must hold
+    the first person — the video note used to say "what she is doing", which is
+    what tipped the model into third person on video rows."""
+    photo = prompts.build_photo_meta_messages(
+        "data:image/jpeg;base64,AAA", _TIERS, max_stage=4)[1]["content"][0]["text"]
+    assert "FIRST PERSON" in photo
+    assert 'never "she"' in photo
+
+    video = prompts.build_photo_meta_messages(
+        "data:image/jpeg;base64,AAA", _TIERS, max_stage=4,
+        is_video=True)[1]["content"][0]["text"]
+    assert "what I am doing" in video
+    assert "FIRST PERSON" in video
+    assert "what she is doing" not in video
+
+
 def test_build_photo_meta_messages_live_config():
     """The exact live NikaBet ladder: stages 1-5, six tiers none..diamond
     (Level 0-5) - the prompt ranges must mirror the product settings."""

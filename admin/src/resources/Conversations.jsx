@@ -189,7 +189,12 @@ const SessionSummary = () => {
   const fields = [
     [t('Session'), record.id],
     [t('Topic'), record.topic],
-    [t('Language'), record.lang],
+    // The language the conversation ran in (conv_lang), like every other admin
+    // report. `lang` is the browser locale fixed at session create — shown only
+    // when the player drifted away from it, so the divergence stays visible.
+    [t('Language'), record.conv_lang && record.conv_lang !== record.lang
+      ? `${record.conv_lang} (${t('browser')}: ${record.lang})`
+      : (record.conv_lang || record.lang)],
     [t('Status'), record.status],
     [t('Escalated'), record.escalated ? t('yes') : t('no')],
     [t('Messages'), record.message_count],

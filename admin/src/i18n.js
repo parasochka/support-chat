@@ -420,6 +420,7 @@ const RU = {
   'Min messages': 'Мин. сообщений',
   'Topic slug': 'Слаг темы',
   'Language': 'Язык',
+  'browser': 'браузер',
   'From': 'С',
   'To': 'По',
   'Session': 'Сессия',

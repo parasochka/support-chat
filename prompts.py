@@ -2342,11 +2342,15 @@ _PHOTO_META_TASK = (
     "Catalogue this photo. Return a single JSON object with exactly these keys:\n"
     "- \"description\": 1-2 English sentences, concrete and factual (setting, "
     "outfit, pose, mood), written so the persona can ground a natural caption "
-    "on it. Use plain everyday words a person would use about themselves - "
-    "hair as colour + length (\"short pink hair\"), clothes in simple terms - "
-    "never haircut names (bob, pixie) or fashion-catalogue jargon (ribbed tank "
-    "dress): the persona speaks from this text and must not sound like a "
-    "product listing.\n"
+    "on it. Write it in the FIRST PERSON, as the woman in the shot describing "
+    "herself - \"I'm sitting on a wooden chair at sunset...\", never \"she\" or "
+    "\"a person\" or \"the video shows...\". The persona voices this text as her "
+    "own words, so a third-person description makes her talk about herself as "
+    "someone else. Use plain everyday words a person would use about "
+    "themselves - hair as colour + length (\"short pink hair\"), clothes in "
+    "simple terms - never haircut names (bob, pixie) or fashion-catalogue "
+    "jargon (ribbed tank dress): the persona speaks from this text and must "
+    "not sound like a product listing.\n"
     "- \"tags\": 3-8 short lowercase English tags (subject, setting, outfit, "
     "mood).\n"
     "- \"stage\": integer 1..{max_stage} - the explicitness ladder. 1 = "
@@ -2421,8 +2425,10 @@ def build_photo_meta_messages(image_data_url: str, vip_tiers: list[str],
         task += (
             "\n\nNOTE: the image you see is a representative FRAME extracted "
             "from a short VIDEO. Rate and describe the VIDEO through this "
-            "frame - write the description as a video description (what she "
-            "is doing / wearing / where), never call it a photo.")
+            "frame - write the description as a video description (what I am "
+            "doing / wearing / where), never call it a photo. Keep the FIRST "
+            "PERSON here too (\"in this video I'm walking along the beach...\") "
+            "- do not slip into \"she\" or \"the video shows\".")
     return [
         {"role": "system", "content": _PHOTO_META_SYSTEM},
         {"role": "user", "content": [
