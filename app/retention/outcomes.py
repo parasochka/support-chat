@@ -90,10 +90,18 @@ async def record_dialogue_turn(product_id: int, ru: dict[str, Any],
 
 async def run_product_attribution(product_id: int, *, force: bool = False
                                   ) -> dict[str, Any]:
-    """Settle this product's open attribution rows (paced; `force` skips it)."""
+    """Settle this product's open attribution rows (paced; `force` skips it).
+
+    A product this process has never swept is always due. NB the `None` check
+    rather than a `0.0` default: `time.monotonic()` counts from an arbitrary
+    epoch (boot on Linux), so on a freshly started machine `now - 0.0` is
+    itself smaller than the interval — a plain default would skip every
+    product's FIRST sweep for the first few minutes after a deploy.
+    """
     now = time.monotonic()
     interval = config.RETENTION_OUTCOME_SWEEP_INTERVAL_SEC
-    if not force and now - _last_sweep.get(product_id, 0.0) < interval:
+    last = _last_sweep.get(product_id)
+    if not force and last is not None and now - last < interval:
         return {"skipped": "paced"}
     _last_sweep[product_id] = now
     try:

@@ -70,6 +70,13 @@ async def test_dialogue_turn_recorded_only_when_measurable(monkeypatch):
 
 
 async def test_sweep_is_paced(monkeypatch):
+    """A never-swept product runs immediately; a just-swept one waits.
+
+    The "immediately" half is the regression guard: pacing used to default the
+    last-sweep stamp to 0.0, and time.monotonic() counts from boot — so on a
+    freshly started machine every product's FIRST sweep was skipped for the
+    whole interval (which is exactly how CI, on a fresh runner, caught it).
+    """
     calls = {"n": 0}
 
     async def _attribute(product_id, **kw):
@@ -77,15 +84,21 @@ async def test_sweep_is_paced(monkeypatch):
         return 3
 
     monkeypatch.setattr(db, "attribute_retention_outcomes", _attribute)
+    monkeypatch.setattr(outcomes.time, "monotonic", lambda: 12.0)  # just booted
     outcomes._last_sweep.pop(42, None)
     first = await outcomes.run_product_attribution(42)
     second = await outcomes.run_product_attribution(42)
     assert first == {"attributed": 3}
     assert second == {"skipped": "paced"}
     assert calls["n"] == 1
-    # …and the windows come from the deploy constants, not from a caller.
+    # `force` (the admin path) ignores the pacing entirely.
     forced = await outcomes.run_product_attribution(42, force=True)
     assert forced == {"attributed": 3} and calls["n"] == 2
+    # …and once the interval has elapsed it is due again.
+    monkeypatch.setattr(
+        outcomes.time, "monotonic",
+        lambda: 12.0 + config.RETENTION_OUTCOME_SWEEP_INTERVAL_SEC + 1)
+    assert await outcomes.run_product_attribution(42) == {"attributed": 3}
 
 
 async def test_sweep_swallows_errors(monkeypatch):
@@ -94,7 +107,8 @@ async def test_sweep_swallows_errors(monkeypatch):
 
     monkeypatch.setattr(db, "attribute_retention_outcomes", _boom)
     outcomes._last_sweep.pop(43, None)
-    assert await outcomes.run_product_attribution(43) == {"error": "sweep_failed"}
+    assert await outcomes.run_product_attribution(43, force=True) == {
+        "error": "sweep_failed"}
 
 
 def test_windows_are_deploy_constants():
