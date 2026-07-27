@@ -25,6 +25,7 @@ import { SettingsModule } from './Settings';
 import { t } from '../i18n';
 import { notifyError } from '../lib/notifyError';
 import { useReadOnly } from '../lib/useReadOnly';
+import { compactTableSx } from '../lib/table';
 
 /**
  * The one home for everything that CONFIGURES the retention bot: the Telegram
@@ -169,7 +170,11 @@ const ConfigTab = ({ productId }) => {
           {t('Register Telegram webhook')}
         </Button>
         {data.webhook_url && (
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{ mt: 1, overflowWrap: 'anywhere' }}
+          >
             {t('Webhook URL:')} <code>{data.webhook_url}</code>
           </Typography>
         )}
@@ -255,7 +260,7 @@ const ManagersTab = ({ productId }) => {
 
   return (
     <Box>
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
+      <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', mb: 2 }}>
         <TextField size="small" label={t('Display name')} value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
         <TextField size="small" label={t('Telegram username (without @)')} value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
         <Button variant="outlined" onClick={create} disabled={!form.display_name || !form.username || readOnly}>
@@ -263,7 +268,7 @@ const ManagersTab = ({ productId }) => {
         </Button>
       </Stack>
       <Box sx={{ overflowX: 'auto' }}>
-        <Table size="small">
+        <Table size="small" sx={compactTableSx}>
           <TableHead>
             <TableRow>
               <TableCell>{t('Name')}</TableCell>

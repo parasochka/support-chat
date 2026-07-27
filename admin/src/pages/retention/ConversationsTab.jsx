@@ -121,7 +121,7 @@ const ConversationsTab = ({ productId }) => {
         )}
       </Alert>
       {isAdmin && (
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+        <Stack direction="row" spacing={1} sx={{ alignItems: 'center', mb: 1 }}>
           <Button
             size="small"
             color="error"
@@ -140,7 +140,7 @@ const ConversationsTab = ({ productId }) => {
           {data.items.map((s) => (
             <Card key={s.id} variant="outlined" onClick={() => openTranscript(s.id)} sx={{ cursor: 'pointer' }}>
               <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
-                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
                   <Typography variant="subtitle2" sx={{ overflowWrap: 'anywhere' }}>
                     {s.full_name || s.player_id || '—'}
                     {s.tg_username ? ` · @${s.tg_username}` : s.tg_user_id ? ` · ${s.tg_user_id}` : ''}

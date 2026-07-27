@@ -198,7 +198,7 @@ const StackedBarChart = ({
  * cost_photo_usd per day).
  */
 export const TelegramCostCharts = ({ data, height = 200 }) => (
-  <Grid container spacing={2} alignItems="stretch">
+  <Grid container spacing={2}>
     <Grid size={{ xs: 12, md: 6 }}>
       <Card sx={{ height: '100%' }}>
         <CardContent>

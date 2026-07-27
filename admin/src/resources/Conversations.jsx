@@ -202,7 +202,7 @@ const SessionSummary = () => {
     [t('Created'), record.created_at && fmtDateTime(record.created_at)],
   ];
   return (
-    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+    <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap' }}>
       {fields
         .filter(([, v]) => v !== undefined && v !== null && v !== '')
         .map(([k, v]) => (

@@ -85,13 +85,7 @@ const SiteMapEditor = () => {
         <CardContent>
           {loaded &&
             rows.map((r, i) => (
-              <Stack
-                key={i}
-                direction={{ xs: 'column', md: 'row' }}
-                spacing={1}
-                alignItems={{ xs: 'stretch', md: 'flex-start' }}
-                sx={{ mb: 1.5 }}
-              >
+              <Stack key={i} direction={{ xs: 'column', md: 'row' }} spacing={1} sx={{ alignItems: { xs: 'stretch', md: 'flex-start' }, mb: 1.5 }}>
                 <TextField
                   label={t('Title')}
                   value={r.title}

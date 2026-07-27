@@ -218,7 +218,7 @@ const Field = ({ field, value, onChange, form, locked = false }) => {
   if (type === 'bool') {
     return (
       <Grid size={{ xs: 12, sm: 6 }}>
-        <Stack direction="row" alignItems="center" spacing={0.5}>
+        <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
           <FormControlLabel
             control={
               <Switch
@@ -541,7 +541,7 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
         </Typography>
         <Stack spacing={1} sx={{ mb: 2 }}>
           {supported.map((c) => (
-            <Stack key={c} direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Stack key={c} direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
               <Chip label={c} size="small" sx={{ minWidth: 52 }} />
               <TextField
                 size="small"
@@ -570,7 +570,7 @@ const LanguageEditor = ({ resolved, overrides, meta, onSaved, scopeLabel }) => {
         <Typography variant="subtitle2" gutterBottom>
           {t('Add a language')}
         </Typography>
-        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
           <TextField
             select
             size="small"
@@ -677,7 +677,7 @@ export const SettingsModule = ({ module }) => {
 
       <Accordion disableGutters sx={{ mb: 2 }}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-          <Stack direction="row" spacing={1} alignItems="center">
+          <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
             <HelpOutlineIcon fontSize="small" color="action" />
             <Typography variant="subtitle2">{t('How it works')}</Typography>
           </Stack>

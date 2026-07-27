@@ -11,6 +11,7 @@ import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
 import RequireProduct from '../components/RequireProduct';
 import { t } from '../i18n';
+import { wideTableSx } from '../lib/table';
 import rich from '../components/Rich';
 
 /**
@@ -156,7 +157,7 @@ const SupportGuideInner = () => (
             )}
           </P>
           <Box sx={{ overflowX: 'auto' }}>
-            <Table size="small" sx={{ minWidth: 640 }}>
+            <Table size="small" sx={wideTableSx(640)}>
               <TableHead>
                 <TableRow>
                   <TableCell>{t('What')}</TableCell>

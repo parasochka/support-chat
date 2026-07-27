@@ -22,7 +22,9 @@ import { API_URL, httpClient } from '../httpClient';
 import { scopeParams } from '../productScope';
 import { getScopeName } from '../productScope';
 import { t } from '../i18n';
+import { wideTableSx, nowrapCellSx } from '../lib/table';
 import { fmtDateTime } from '../lib/fmt';
+import useIsMobile from '../lib/useIsMobile';
 
 const LEVEL_COLOR = {
   ERROR: 'error',
@@ -47,6 +49,7 @@ const buildQuery = (params) => {
 // System (runtime) logs — the Railway logs mirrored in-app.
 // -------------------------------------------------------------------------
 const SystemLogs = () => {
+  const isMobile = useIsMobile();
   const [rows, setRows] = useState([]);
   const [level, setLevel] = useState('');
   const [q, setQ] = useState('');
@@ -77,7 +80,7 @@ const SystemLogs = () => {
 
   return (
     <Box>
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
+      <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', mb: 1.5 }}>
         <TextField
           select
           size="small"
@@ -103,11 +106,41 @@ const SystemLogs = () => {
         </Button>
       </Stack>
       {loading && <LinearProgress sx={{ mb: 1 }} />}
+      {isMobile ? (
+        // A log line is one long monospace string: squeezed into a third of a
+        // phone screen it becomes an unreadable ribbon, and left at its desktop
+        // width it hangs off the edge. Stacked cards give it the full width.
+        <Stack spacing={1}>
+          {rows.map((r) => (
+            <Card key={r.id} variant="outlined">
+              <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Chip size="small" color={LEVEL_COLOR[r.level] || 'default'} label={r.level} />
+                  <Typography variant="caption" color="text.secondary">
+                    {fmt(r.created_at)}
+                  </Typography>
+                </Box>
+                <Typography
+                  variant="body2"
+                  sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: 'monospace', fontSize: 12 }}
+                >
+                  {r.message}
+                </Typography>
+              </CardContent>
+            </Card>
+          ))}
+          {!rows.length && !loading && (
+            <Typography color="text.secondary" sx={{ py: 2 }}>
+              {t('No logs match the filter.')}
+            </Typography>
+          )}
+        </Stack>
+      ) : (
       <Box sx={{ overflowX: 'auto' }}>
-        <Table size="small" sx={{ minWidth: 640 }}>
+        <Table size="small" sx={wideTableSx(640)}>
           <TableHead>
             <TableRow>
-              <TableCell sx={{ whiteSpace: 'nowrap' }}>{t('Time')}</TableCell>
+              <TableCell sx={nowrapCellSx}>{t('Time')}</TableCell>
               <TableCell>{t('Level')}</TableCell>
               <TableCell>{t('Message')}</TableCell>
             </TableRow>
@@ -115,7 +148,7 @@ const SystemLogs = () => {
           <TableBody>
             {rows.map((r) => (
               <TableRow key={r.id}>
-                <TableCell sx={{ whiteSpace: 'nowrap', verticalAlign: 'top' }}>
+                <TableCell sx={{ ...nowrapCellSx, verticalAlign: 'top' }}>
                   {fmt(r.created_at)}
                 </TableCell>
                 <TableCell sx={{ verticalAlign: 'top' }}>
@@ -138,6 +171,7 @@ const SystemLogs = () => {
           </TableBody>
         </Table>
       </Box>
+      )}
       {hasMore && (
         <Button
           sx={{ mt: 1 }}
@@ -188,7 +222,7 @@ const ActivityLog = () => {
         )}
         {getScopeName() ? ` (${getScopeName()})` : ''}
       </Typography>
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
+      <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', mb: 1.5 }}>
         <TextField
           size="small"
           label={t('Search (actor, action)')}
@@ -202,10 +236,10 @@ const ActivityLog = () => {
       </Stack>
       {loading && <LinearProgress sx={{ mb: 1 }} />}
       <Box sx={{ overflowX: 'auto' }}>
-        <Table size="small" sx={{ minWidth: 680 }}>
+        <Table size="small" sx={wideTableSx(680)}>
           <TableHead>
             <TableRow>
-              <TableCell sx={{ whiteSpace: 'nowrap' }}>{t('Time')}</TableCell>
+              <TableCell sx={nowrapCellSx}>{t('Time')}</TableCell>
               <TableCell>{t('Who')}</TableCell>
               <TableCell>{t('Action')}</TableCell>
               <TableCell>{t('Product')}</TableCell>
@@ -214,7 +248,7 @@ const ActivityLog = () => {
           <TableBody>
             {rows.map((r) => (
               <TableRow key={r.id}>
-                <TableCell sx={{ whiteSpace: 'nowrap' }}>{fmt(r.created_at)}</TableCell>
+                <TableCell sx={nowrapCellSx}>{fmt(r.created_at)}</TableCell>
                 <TableCell sx={{ wordBreak: 'break-all' }}>
                   {r.actor_email}
                   {r.actor_role && (

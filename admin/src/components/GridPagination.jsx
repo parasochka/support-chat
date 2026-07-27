@@ -13,15 +13,7 @@ const GridPagination = ({ count, page, perPage, onPage, unit = t('items') }) => 
   const from = count === 0 ? 0 : (page - 1) * perPage + 1;
   const to = Math.min(page * perPage, count);
   return (
-    <Stack
-      direction="row"
-      alignItems="center"
-      justifyContent="space-between"
-      flexWrap="wrap"
-      useFlexGap
-      spacing={1}
-      sx={{ mt: 2, px: 1 }}
-    >
+    <Stack direction="row" useFlexGap spacing={1} sx={{ flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', mt: 2, px: 1 }}>
       <Typography variant="body2" color="text.secondary">
         {from}–{to} {t('of')} {count} {unit}
       </Typography>

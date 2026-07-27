@@ -7,6 +7,7 @@ import TextField from '@mui/material/TextField';
 import { generateSecret } from '../lib/secrets';
 import SetBadge from './SetBadge';
 import { t } from '../i18n';
+import useIsMobile from '../lib/useIsMobile';
 
 /**
  * A write-only secret input with an explicit "configured?" state.
@@ -36,11 +37,27 @@ const SecretField = ({
   // Generated values render as visible text (the operator must copy them);
   // hand-typed values stay masked.
   const [revealed, setRevealed] = useState(false);
+  const isMobile = useIsMobile();
 
   const generate = () => {
     setRevealed(true);
     onGenerate(generateSecret());
   };
+
+  const actions = (
+    <>
+      {onGenerate && (
+        <Button size="small" onClick={generate} sx={{ whiteSpace: 'nowrap' }}>
+          {t('Generate')}
+        </Button>
+      )}
+      {onClear && set && (
+        <Button size="small" color="warning" onClick={onClear}>
+          {t('Clear')}
+        </Button>
+      )}
+    </>
+  );
 
   return (
     <Box>
@@ -58,27 +75,30 @@ const SecretField = ({
         autoComplete="new-password"
         helperText={helperText}
         slotProps={{
+          // The floating label spans the whole field and ignores the end
+          // adornment, so a long label (every Russian one here) ran UNDER the
+          // Generate/Clear buttons on a narrow screen. Pinning it shrunk keeps
+          // it on the border line, clear of the adornment at any width.
+          inputLabel: { shrink: true },
           input: {
+            // On a phone the buttons move OUT of the field (below it): inside a
+            // ~380px input they crowd the label and leave no room for the value.
             endAdornment: (
               <InputAdornment position="end">
-                <Stack direction="row" spacing={0.5} alignItems="center">
+                <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
                   <SetBadge set={set} />
-                  {onGenerate && (
-                    <Button size="small" onClick={generate} sx={{ whiteSpace: 'nowrap' }}>
-                      {t('Generate')}
-                    </Button>
-                  )}
-                  {onClear && set && (
-                    <Button size="small" color="warning" onClick={onClear}>
-                      {t('Clear')}
-                    </Button>
-                  )}
+                  {!isMobile && actions}
                 </Stack>
               </InputAdornment>
             ),
           },
         }}
       />
+      {isMobile && (onGenerate || (onClear && set)) && (
+        <Stack direction="row" spacing={0.5} sx={{ justifyContent: 'flex-end', mt: -0.5 }}>
+          {actions}
+        </Stack>
+      )}
     </Box>
   );
 };

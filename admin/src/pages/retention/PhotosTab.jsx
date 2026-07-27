@@ -566,7 +566,7 @@ const PhotosTab = ({ productId }) => {
               />
             </Grid>
           </Grid>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
+          <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
             <Button variant="outlined" component="label">
               {files.length
                 ? t('{n} files chosen').replace('{n}', files.length)
@@ -634,7 +634,7 @@ const PhotosTab = ({ productId }) => {
               files + creating the catalogue rows. */}
           {uploading && uploadProgress && (
             <Box sx={{ mt: 1.5 }}>
-              <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
+              <Stack direction="row" sx={{ justifyContent: 'space-between', mb: 0.5 }}>
                 <Typography variant="caption" color="text.secondary">
                   {uploadProgress.loaded >= uploadProgress.total
                     ? t('Processing on the server…')
@@ -663,13 +663,7 @@ const PhotosTab = ({ productId }) => {
 
       <Card sx={{ mb: 2 }}>
         <CardContent>
-          <Stack
-            direction="row"
-            spacing={1}
-            alignItems="center"
-            flexWrap="wrap"
-            useFlexGap
-          >
+          <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
             <TextField
               size="small"
               label={t('Search (description, tags, category)')}
@@ -735,14 +729,7 @@ const PhotosTab = ({ productId }) => {
           {/* Action row: short, single-word buttons (the full explanation is an
               (i) tooltip) so they never wrap to a ragged two-line shape, and a
               live progress bar under the row while a batch runs. */}
-          <Stack
-            direction="row"
-            spacing={1}
-            alignItems="center"
-            flexWrap="wrap"
-            useFlexGap
-            sx={{ mt: 1.5, '& .MuiButton-root': { whiteSpace: 'nowrap' } }}
-          >
+          <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', mt: 1.5, '& .MuiButton-root': { whiteSpace: 'nowrap' } }}>
             <Button size="small" onClick={selectAllVisible} disabled={!visible.length}>
               {t('Select all')}
             </Button>
@@ -786,7 +773,7 @@ const PhotosTab = ({ productId }) => {
               the operator sees N/total advance. */}
           {generating && genProgress && (
             <Box sx={{ mt: 1.5 }}>
-              <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
+              <Stack direction="row" sx={{ justifyContent: 'space-between', mb: 0.5 }}>
                 <Typography variant="caption" color="text.secondary">
                   {t('Generating metadata…')}
                 </Typography>
@@ -808,7 +795,7 @@ const PhotosTab = ({ productId }) => {
           {t('No photos yet — upload the first ones above.')}
         </Typography>
       )}
-      <Grid container spacing={2} alignItems="stretch">
+      <Grid container spacing={2}>
         {pageItems.map((ph) => (
           <Grid size={{ xs: 12, sm: 6, md: 4 }} key={ph.id}>
             <Card
@@ -837,13 +824,7 @@ const PhotosTab = ({ productId }) => {
                     }}
                   />
                 </Box>
-                <Stack
-                  direction="row"
-                  spacing={0.5}
-                  flexWrap="wrap"
-                  useFlexGap
-                  sx={{ mt: 1 }}
-                >
+                <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: 'wrap', mt: 1 }}>
                   {/* Quiet done-marker: this file has been through the media
                       normalizer (WebP / Telegram MP4) and is delivery-ready.
                       The "video" indicator is intentionally omitted — the
@@ -958,14 +939,7 @@ const PhotosTab = ({ productId }) => {
                       )}
                     </TextField>
                   </Stack>
-                  <Stack
-                    direction="row"
-                    spacing={1}
-                    alignItems="center"
-                    justifyContent="space-between"
-                    flexWrap="wrap"
-                    useFlexGap
-                  >
+                  <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
                     <FormControlLabel
                       control={
                         <Switch

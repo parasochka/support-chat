@@ -108,7 +108,7 @@ const Quality = () => {
           page at ~620px and the whole document scrolled sideways on a phone
           (mobile browsers then shrink-to-fit and everything renders tiny).
           `minmax(0, 1fr)` columns can shrink below the inputs' intrinsic width,
-          so the row always fits: 2 columns on phones, 4 from `sm` up. */}
+          so the row always fits: 2 columns on phones, 4 from `md` up. */}
       <Box
         sx={{
           display: 'grid',
@@ -177,7 +177,7 @@ const Quality = () => {
         )}
       </Box>
 
-      <Grid container spacing={2} alignItems="stretch" sx={{ mb: 2 }}>
+      <Grid container spacing={2} sx={{ mb: 2 }}>
         <Kpi size={{ xs: 6, sm: 4, md: 3 }} label={t('Reviewed')} value={overview?.reviews} hint={t('conversations in range')} />
         <Kpi
           size={{ xs: 6, sm: 4, md: 3 }}
@@ -196,7 +196,7 @@ const Quality = () => {
         />
       </Grid>
 
-      <Grid container spacing={2} alignItems="stretch" sx={{ mb: 2 }}>
+      <Grid container spacing={2} sx={{ mb: 2 }}>
         <Grid size={{ xs: 12, md: 6 }}>
           <Card sx={{ height: '100%' }}>
             <CardContent>

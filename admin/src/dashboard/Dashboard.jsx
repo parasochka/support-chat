@@ -24,6 +24,7 @@ import { getProductId, scopeParams } from '../productScope';
 import RequireProduct from '../components/RequireProduct';
 import { t } from '../i18n';
 import { Kpi, RETENTION_FUNNEL_STEPS, RETENTION_TIMESERIES_SERIES } from '../components/Kpi';
+import { compactTableSx } from '../lib/table';
 
 const pct = (v) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`);
 const num = (v) => (v == null ? '—' : String(v));
@@ -50,15 +51,7 @@ const ChartPanel = ({ title, series, colorOffset, format, axisFormat }) => {
     <Grid size={{ xs: 12, md: 6 }}>
       <Card sx={{ height: '100%' }}>
         <CardContent>
-          <Stack
-            direction="row"
-            alignItems="center"
-            justifyContent="space-between"
-            flexWrap="wrap"
-            useFlexGap
-            spacing={1}
-            sx={{ mb: 1 }}
-          >
+          <Stack direction="row" useFlexGap spacing={1} sx={{ flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
             <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
               {title}
             </Typography>
@@ -90,7 +83,7 @@ const BreakdownTable = ({ title, rows, nameLabel, nameOf }) => (
           {title}
         </Typography>
         <Box sx={{ overflowX: 'auto' }}>
-          <Table size="small">
+          <Table size="small" sx={compactTableSx}>
             <TableHead>
               <TableRow>
                 <TableCell>{nameLabel}</TableCell>
@@ -182,7 +175,7 @@ const SupportBlock = () => {
   return (
     <>
       {/* Row 1 — sessions & engagement (6 tiles). */}
-      <Grid container spacing={2} alignItems="stretch">
+      <Grid container spacing={2}>
         <Kpi label={t('Sessions (30d)')} value={num(overview?.sessions_total)} />
         <Kpi
           label={t('Engaged')}
@@ -213,7 +206,7 @@ const SupportBlock = () => {
       {/* Row 2 — AI, cost & performance (6 tiles). The gap-based Grid container
           carries no outer margin, so without an explicit top margin the two
           KPI rows touch. */}
-      <Grid container spacing={2} sx={{ mt: 2 }} alignItems="stretch">
+      <Grid container spacing={2} sx={{ mt: 2 }}>
         <Kpi
           label={t('Cost (USD)')}
           value={usd(overview?.cost_usd_total)}
@@ -258,7 +251,7 @@ const SupportBlock = () => {
         />
       </Grid>
 
-      <Grid container spacing={2} sx={{ mt: 2 }} alignItems="stretch">
+      <Grid container spacing={2} sx={{ mt: 2 }}>
         {CHARTS.map(([metric, title, format, axisFormat], i) => (
           <ChartPanel
             key={metric}
@@ -271,7 +264,7 @@ const SupportBlock = () => {
         ))}
       </Grid>
 
-      <Grid container spacing={2} sx={{ mt: 2 }} alignItems="stretch">
+      <Grid container spacing={2} sx={{ mt: 2 }}>
         <BreakdownTable
           title={t('By topic')}
           rows={topics}
@@ -327,7 +320,7 @@ const RetentionBlock = () => {
 
   return (
     <>
-      <Grid container spacing={2} alignItems="stretch">
+      <Grid container spacing={2}>
         <Kpi
           label={t('Linked players')}
           value={num(base?.total)}
@@ -349,7 +342,7 @@ const RetentionBlock = () => {
           hint={t('TG turns + photo metadata')}
         />
       </Grid>
-      <Grid container spacing={2} sx={{ mt: 2 }} alignItems="stretch">
+      <Grid container spacing={2} sx={{ mt: 2 }}>
         <Grid size={{ xs: 12, md: 6 }}>
           <Card sx={{ height: '100%' }}>
             <CardContent>

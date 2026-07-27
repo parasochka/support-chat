@@ -28,6 +28,7 @@ import { API_URL, httpClient } from '../httpClient';
 import { t } from '../i18n';
 import rich from '../components/Rich';
 import { notifyError } from '../lib/notifyError';
+import { compactTableSx } from '../lib/table';
 
 const mono = { fontFamily: 'monospace', fontSize: 13 };
 
@@ -217,7 +218,7 @@ const Mcp = () => {
               'The key is created with global scope so the agent can read the deploy-wide system logs (they have no product to scope by) and switch between products on its own. Choose the role: admin lets it edit content and settings, manager makes it strictly read-only.'
             )}
           </Typography>
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
             <TextField
               size="small"
               label={t('Key name')}
@@ -256,7 +257,7 @@ const Mcp = () => {
           <Typography variant="h6" gutterBottom>
             {t('2. Options')}
           </Typography>
-          <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
             <TextField
               select
               size="small"
@@ -348,7 +349,7 @@ const Mcp = () => {
                 </AccordionSummary>
                 <AccordionDetails sx={{ p: 0 }}>
                   <Box sx={{ overflowX: 'auto' }}>
-                    <Table size="small">
+                    <Table size="small" sx={compactTableSx}>
                       <TableHead>
                         <TableRow>
                           <TableCell>{t('Tool')}</TableCell>

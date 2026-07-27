@@ -181,7 +181,7 @@ const ApiKeys = () => {
           <Typography variant="h6" gutterBottom>
             {t('Create key')}
           </Typography>
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
             <TextField
               size="small"
               label={t('Name (what uses it)')}
@@ -263,6 +263,49 @@ const ApiKeys = () => {
         </CardContent>
       </Card>
 
+      {isMobile ? (
+        // Eight columns do not fit a phone: one card per key instead.
+        <Stack spacing={1}>
+          {keys.map((k) => (
+            <Card key={k.id} variant="outlined">
+              <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+                  <Typography variant="subtitle2" sx={{ overflowWrap: 'anywhere' }}>
+                    {k.name}
+                  </Typography>
+                  <Chip size="small" label={k.role} variant="outlined" />
+                  <Switch
+                    size="small"
+                    sx={{ ml: 'auto' }}
+                    checked={Boolean(k.active)}
+                    onChange={(e) => patch(k.id, { active: e.target.checked })}
+                  />
+                </Box>
+                <Typography component="div" sx={{ ...mono, mt: 0.5 }}>
+                  sak_…{k.token_hint}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {scopeLabel(k)}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" component="div">
+                  {t('Last used')}: {k.last_used_at ? fmtDateTime(k.last_used_at) : t('never')}
+                  {' · '}
+                  {t('Created')}: {fmtDateTime(k.created_at)}
+                  {k.created_by ? ` · ${k.created_by}` : ''}
+                </Typography>
+                <Button size="small" color="error" sx={{ mt: 0.5 }} onClick={() => remove(k.id, k.name)}>
+                  {t('Delete')}
+                </Button>
+              </CardContent>
+            </Card>
+          ))}
+          {keys.length === 0 && (
+            <Typography color="text.secondary" sx={{ py: 2 }}>
+              {t('No API keys yet — create the first one above.')}
+            </Typography>
+          )}
+        </Stack>
+      ) : (
       <Box sx={{ overflowX: 'auto' }}>
         <Table size="small">
           <TableHead>
@@ -323,6 +366,7 @@ const ApiKeys = () => {
           </TableBody>
         </Table>
       </Box>
+      )}
 
       <Dialog open={!!minted} onClose={() => setMinted(null)} maxWidth="sm" fullWidth fullScreen={isMobile}>
         <DialogTitle>{t('Key created — copy the token now')}</DialogTitle>

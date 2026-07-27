@@ -121,14 +121,7 @@ const ProductCard = ({ product, onChanged }) => {
     <Card variant="outlined" sx={{ mb: 2 }}>
       <CardContent>
         {/* --- identity row ------------------------------------------------ */}
-        <Stack
-          direction="row"
-          spacing={1}
-          alignItems="center"
-          flexWrap="wrap"
-          useFlexGap
-          sx={{ mb: 2 }}
-        >
+        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', mb: 2 }}>
           <TextField
             size="small"
             value={name}
@@ -194,7 +187,7 @@ const ProductCard = ({ product, onChanged }) => {
           margin="dense"
           slotProps={{ input: { readOnly: true, sx: mono } }}
         />
-        <Stack direction="row" spacing={1} sx={{ mt: 1, mb: 2 }} flexWrap="wrap" useFlexGap>
+        <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', mt: 1, mb: 2 }} useFlexGap>
           <Button
             size="small"
             variant="outlined"
@@ -217,14 +210,7 @@ const ProductCard = ({ product, onChanged }) => {
             "Each client domain runs its own Turnstile widget (create it as an Invisible widget in the Cloudflare dashboard) — set that widget's site key here (the secret key goes into Secrets below). Leave empty to fall back to the deploy env keys. Verification is advisory: if Turnstile is blocked or unreachable for a player, the check is skipped and the other anti-spam layers still apply."
           )}
         </Typography>
-        <Stack
-          direction="row"
-          spacing={1}
-          alignItems="center"
-          flexWrap="wrap"
-          useFlexGap
-          sx={{ mb: 2 }}
-        >
+        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', mb: 2 }}>
           <TextField
             size="small"
             label={t('Turnstile site key')}
@@ -252,14 +238,7 @@ const ProductCard = ({ product, onChanged }) => {
           </Button>
         </Stack>
 
-        <Stack
-          direction="row"
-          spacing={1}
-          alignItems="center"
-          flexWrap="wrap"
-          useFlexGap
-          sx={{ mb: 2 }}
-        >
+        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', mb: 2 }}>
           <TextField
             size="small"
             label={t('Site URL (home page)')}
@@ -345,14 +324,7 @@ const NewProductForm = ({ partnerId, onChanged }) => {
   };
 
   return (
-    <Stack
-      direction="row"
-      spacing={1}
-      alignItems="center"
-      flexWrap="wrap"
-      useFlexGap
-      sx={{ pt: 1 }}
-    >
+    <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', pt: 1 }}>
       <TextField
         size="small"
         label={t('New product slug')}
@@ -400,13 +372,7 @@ const PartnerCard = ({ partner, onChanged }) => {
   return (
     <Card sx={{ mb: 3 }}>
       <CardContent>
-        <Stack
-          direction="row"
-          spacing={1}
-          alignItems="center"
-          flexWrap="wrap"
-          useFlexGap
-        >
+        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
           <TextField
             size="small"
             value={name}
@@ -484,14 +450,7 @@ const Structure = () => {
     <Box sx={{ p: 2 }}>
       <Title title={t('Structure')} />
       {structure.global_role === 'admin' && (
-        <Stack
-          direction="row"
-          spacing={1}
-          alignItems="center"
-          flexWrap="wrap"
-          useFlexGap
-          sx={{ mb: 2 }}
-        >
+        <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', mb: 2 }}>
           <TextField
             size="small"
             label={t('New partner slug')}
