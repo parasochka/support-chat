@@ -53,7 +53,15 @@ checklist lives in the admin — the **Retention → How it works** page.
   `consumer='telegram'` entirely; the Telegram chats live in their own **Retention →
   Conversations** page (`GET /admin/retention/sessions` → `db.list_retention_sessions`, joined
   with the `retention_users` identity + summed cost; the transcript opens via the shared
-  `GET /admin/session/{id}`, same scope check). **Deleting a Telegram conversation
+  `GET /admin/session/{id}`, same scope check). The transcript interleaves the **media
+  delivered in that session** (`db.session_detail`'s `photos` — the `retention_photo_views`
+  rows joined to the library) with the messages by timestamp, each rendered by the SAME
+  `PhotoPreview` component the Media grid uses: the query returns `media_type` +
+  `storage_ref` per item, so a VIDEO shows its extracted poster frame (`?poster=1`) with a
+  play badge (clicking plays it) and is labelled «video» — without those two fields the
+  transcript asked for the video binary as an `<img>` and painted a broken thumbnail. Any
+  new media kind must carry its type through this query for the same reason.
+  **Deleting a Telegram conversation
   (`DELETE /admin/session/{id}` → `db.delete_session`) also PURGES the linked player**: after
   the transcript rows (chat_messages / session-linked ai_interaction_logs / admin_events /
   chat_sessions) go, `_purge_retention_player` deletes that player's `retention_photo_views`,
