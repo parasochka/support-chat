@@ -195,16 +195,19 @@ const Quality = () => {
               'Runs the judge over finished conversations that have no verdict yet (within the daily cap). The filters only narrow the list of stored verdicts below.'
             )}
           >
-            <span>
+            {/* inline-flex wrapper: a bare <span> is blockified as a flex item
+                and its line box adds descender space under the inline-block
+                button, so the button rendered a few px above the row's centre. */}
+            <Box component="span" sx={{ display: 'inline-flex' }}>
               <Button
                 variant="outlined"
                 onClick={runNow}
                 disabled={running}
-                sx={{ minWidth: 170, whiteSpace: 'nowrap' }}
+                sx={{ height: 40, minWidth: 170, whiteSpace: 'nowrap' }}
               >
                 {running ? t('Reviewing…') : t('Review now')}
               </Button>
-            </span>
+            </Box>
           </Tooltip>
         )}
       </Stack>
