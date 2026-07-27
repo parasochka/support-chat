@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Title, useNotify } from 'react-admin';
 import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
 import Chip from '@mui/material/Chip';
 import Dialog from '@mui/material/Dialog';
+import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
 import Grid from '@mui/material/Grid';
@@ -25,6 +27,7 @@ import { Kpi } from '../components/Kpi';
 import GridPagination from '../components/GridPagination';
 import { t } from '../i18n';
 import { fmtDateTime } from '../lib/fmt';
+import useIsMobile from '../lib/useIsMobile';
 
 // ---------------------------------------------------------------------------
 // Quality — the AI judge's verdicts on finished conversations (both facades).
@@ -50,6 +53,7 @@ const qs = (params) =>
 
 const Quality = () => {
   const notify = useNotify();
+  const isMobile = useIsMobile();
   const [range, setRange] = useState(defaultRange);
   const [filters, setFilters] = useState({ consumer: '', tag: '', max_score: '' });
   const [overview, setOverview] = useState(null);
@@ -98,9 +102,22 @@ const Quality = () => {
         )}
       </Typography>
 
-      {/* The four filters share the full content width equally; minWidth lets
-          them wrap into fewer columns on narrow screens instead of crushing. */}
-      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
+      {/* The filters are a GRID, not a wrapping flex row: `flexWrap`/`alignItems`
+          are MUI *system* props, which <Stack> no longer accepts (only sx does),
+          so the old row never wrapped — four fields with minWidth 145 pinned the
+          page at ~620px and the whole document scrolled sideways on a phone
+          (mobile browsers then shrink-to-fit and everything renders tiny).
+          `minmax(0, 1fr)` columns can shrink below the inputs' intrinsic width,
+          so the row always fits: 2 columns on phones, 4 from `sm` up. */}
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', md: 'repeat(4, minmax(0, 1fr))' },
+          gap: 1,
+          alignItems: 'center',
+          mb: 2,
+        }}
+      >
         <TextField
           size="small"
           type="date"
@@ -108,7 +125,6 @@ const Quality = () => {
           value={range.from}
           onChange={(e) => e.target.value && setRange({ ...range, from: e.target.value })}
           slotProps={{ inputLabel: { shrink: true } }}
-          sx={{ flex: '1 1 0', minWidth: 145 }}
         />
         <TextField
           size="small"
@@ -117,7 +133,6 @@ const Quality = () => {
           value={range.to}
           onChange={(e) => e.target.value && setRange({ ...range, to: e.target.value })}
           slotProps={{ inputLabel: { shrink: true } }}
-          sx={{ flex: '1 1 0', minWidth: 145 }}
         />
         <TextField
           size="small"
@@ -128,7 +143,6 @@ const Quality = () => {
             setPage(1);
             setFilters({ ...filters, consumer: e.target.value });
           }}
-          sx={{ flex: '1 1 0', minWidth: 145 }}
         >
           <MenuItem value="">{t('All')}</MenuItem>
           <MenuItem value="web">{t('Support widget')}</MenuItem>
@@ -143,7 +157,6 @@ const Quality = () => {
             setPage(1);
             setFilters({ ...filters, max_score: e.target.value });
           }}
-          sx={{ flex: '1 1 0', minWidth: 145 }}
         >
           <MenuItem value="">{t('Any')}</MenuItem>
           {[1, 2, 3, 4].map((n) => (
@@ -159,9 +172,10 @@ const Quality = () => {
               setPage(1);
               setFilters({ ...filters, tag: '' });
             }}
+            sx={{ gridColumn: '1 / -1', justifySelf: 'start', maxWidth: '100%' }}
           />
         )}
-      </Stack>
+      </Box>
 
       <Grid container spacing={2} alignItems="stretch" sx={{ mb: 2 }}>
         <Kpi size={{ xs: 6, sm: 4, md: 3 }} label={t('Reviewed')} value={overview?.reviews} hint={t('conversations in range')} />
@@ -242,6 +256,55 @@ const Quality = () => {
         </Grid>
       </Grid>
 
+      {isMobile ? (
+        // Card rows on phones — the same pattern the other list views use. The
+        // 760px table cut the Summary column (the actual verdict) off the screen
+        // edge, which is the one thing this queue exists to show.
+        <Stack spacing={1} sx={{ mb: 1 }}>
+          {list.items.map((r) => (
+            <Card
+              key={r.id}
+              variant="outlined"
+              onClick={() => setOpen(r)}
+              sx={{ cursor: 'pointer' }}
+            >
+              <CardContent sx={{ py: 1.25, '&:last-child': { pb: 1.25 } }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+                  <Chip
+                    size="small"
+                    label={r.score ?? '—'}
+                    color={SCORE_COLORS[r.score] || 'default'}
+                    variant="outlined"
+                  />
+                  <Typography variant="subtitle2">
+                    {r.consumer === 'telegram' ? t('Telegram') : t('Widget')}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
+                    {fmtDateTime(r.created_at)}
+                  </Typography>
+                </Box>
+                <Typography variant="body2" sx={{ mt: 0.5, overflowWrap: 'anywhere' }}>
+                  {r.summary}
+                </Typography>
+                {(r.tags || []).length > 0 && (
+                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 0.75 }}>
+                    {r.tags.map((tag) => (
+                      <Chip key={tag} size="small" variant="outlined" label={tag} />
+                    ))}
+                  </Box>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+          {list.items.length === 0 && (
+            <Typography color="text.secondary" sx={{ py: 2 }}>
+              {t(
+                'Nothing reviewed yet. The judge runs automatically in the background over finished conversations.'
+              )}
+            </Typography>
+          )}
+        </Stack>
+      ) : (
       <Box sx={{ overflowX: 'auto' }}>
         <Table size="small" sx={{ minWidth: 760 }}>
           <TableHead>
@@ -290,9 +353,16 @@ const Quality = () => {
           </TableBody>
         </Table>
       </Box>
+      )}
       <GridPagination count={list.total || 0} page={page} perPage={pageSize} onPage={setPage} />
 
-      <Dialog open={Boolean(open)} onClose={() => setOpen(null)} maxWidth="md" fullWidth>
+      <Dialog
+        open={Boolean(open)}
+        onClose={() => setOpen(null)}
+        maxWidth="md"
+        fullWidth
+        fullScreen={isMobile}
+      >
         <DialogTitle>
           {t('Review')} · {open?.score ?? '—'}/5
         </DialogTitle>
@@ -354,6 +424,11 @@ const Quality = () => {
             </Stack>
           )}
         </DialogContent>
+        {/* Full-screen on a phone has no backdrop to tap — the button is the
+            only way out there. */}
+        <DialogActions>
+          <Button onClick={() => setOpen(null)}>{t('Close')}</Button>
+        </DialogActions>
       </Dialog>
     </Box>
   );
