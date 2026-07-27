@@ -1585,13 +1585,6 @@ const RU = {
   'Telegram bot': 'Telegram-бот',
   'Score at most': 'Оценка не выше',
   'Any': 'Любая',
-  'Review now': 'Проверить',
-  'Runs the judge over finished conversations that have no verdict yet (within the daily cap). The filters only narrow the list of stored verdicts below.':
-    'Запускает ИИ-аудитора по завершённым диалогам, у которых ещё нет вердикта (в пределах дневного лимита). Фильтры лишь сужают список уже сохранённых проверок ниже.',
-  'Reviewing…': 'Проверяем…',
-  'Pass skipped:': 'Проход пропущен:',
-  'Reviewed {n} conversations': 'Проверено диалогов: {n}',
-  'Review pass failed': 'Проход аудита не удался',
   'Reviewed': 'Проверено',
   'conversations in range': 'диалогов за период',
   'Average score': 'Средняя оценка',
@@ -1614,8 +1607,8 @@ const RU = {
   'Summary': 'Итог',
   'Telegram': 'Telegram',
   'Widget': 'Виджет',
-  'Nothing reviewed yet. The judge runs in the background over finished conversations; with a product selected you can also run a pass now.':
-    'Пока ничего не проверено. Аудитор работает в фоне по завершённым диалогам; если выбран продукт, можно запустить проход вручную.',
+  'Nothing reviewed yet. The judge runs automatically in the background over finished conversations.':
+    'Пока ничего не проверено. Аудитор автоматически проверяет завершённые диалоги в фоне.',
   'Review': 'Аудит',
   'Issues': 'Проблемы',
   'Conversation': 'Диалог',

@@ -149,8 +149,7 @@ async def _topic_slug(topic_id: Any) -> Optional[str]:
     return None
 
 
-async def run_product_reviews(product: dict[str, Any], *,
-                              limit: Optional[int] = None) -> dict[str, Any]:
+async def run_product_reviews(product: dict[str, Any]) -> dict[str, Any]:
     """Review this product's pending conversations, honouring its daily cap."""
     pid = int(product["id"])
     tenancy.set_current_product(pid)
@@ -164,7 +163,7 @@ async def run_product_reviews(product: dict[str, Any], *,
     budget = daily_max - done_today
     if budget <= 0:
         return {"skipped": "daily_max_reached"}
-    batch = min(budget, int(limit or 10))
+    batch = min(budget, _PASS_BATCH)
     sessions = await db.sessions_for_review(
         pid, min_messages=int(cfg.get("quality_review_min_messages") or 4),
         idle_minutes=config.QUALITY_REVIEW_IDLE_MINUTES, limit=batch)
@@ -211,6 +210,9 @@ async def run_due_reviews() -> dict[str, Any]:
 
 # Arbitrary but stable advisory-lock key for the review sweep ("QREV").
 _ADVISORY_LOCK_KEY = 0x51524556
+
+# Conversations judged per product per sweep tick — the daily cap still wins.
+_PASS_BATCH = 10
 
 
 async def scheduler_loop() -> None:

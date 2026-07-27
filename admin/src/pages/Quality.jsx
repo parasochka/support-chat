@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Title, useNotify, usePermissions } from 'react-admin';
+import { Title, useNotify } from 'react-admin';
 import Box from '@mui/material/Box';
-import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
 import Chip from '@mui/material/Chip';
@@ -21,11 +20,10 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { API_URL, httpClient } from '../httpClient';
-import { getProductId, scopeParams } from '../productScope';
+import { scopeParams } from '../productScope';
 import { Kpi } from '../components/Kpi';
 import GridPagination from '../components/GridPagination';
 import { t } from '../i18n';
-import { notifyError } from '../lib/notifyError';
 import { fmtDateTime } from '../lib/fmt';
 
 // ---------------------------------------------------------------------------
@@ -52,16 +50,12 @@ const qs = (params) =>
 
 const Quality = () => {
   const notify = useNotify();
-  const { permissions } = usePermissions();
-  const canWrite = permissions === 'admin';
-  const productId = getProductId();
   const [range, setRange] = useState(defaultRange);
   const [filters, setFilters] = useState({ consumer: '', tag: '', max_score: '' });
   const [overview, setOverview] = useState(null);
   const [list, setList] = useState({ items: [], total: 0 });
   const [page, setPage] = useState(1);
   const [open, setOpen] = useState(null); // the review whose detail is shown
-  const [running, setRunning] = useState(false);
   const pageSize = 25;
 
   const loadOverview = useCallback(() => {
@@ -92,30 +86,6 @@ const Quality = () => {
     loadList();
   }, [loadList]);
 
-  const runNow = async () => {
-    setRunning(true);
-    try {
-      const { json } = await httpClient(`${API_URL}/admin/quality/run`, {
-        method: 'POST',
-        body: JSON.stringify({ product_id: productId }),
-      });
-      if (json.skipped) {
-        notify(`${t('Pass skipped:')} ${json.skipped}`, { type: 'warning' });
-      } else {
-        notify(
-          t('Reviewed {n} conversations').replace('{n}', json.reviewed ?? 0),
-          { type: 'success' }
-        );
-      }
-      loadOverview();
-      loadList();
-    } catch (e) {
-      notifyError(notify, e, t('Review pass failed'));
-    } finally {
-      setRunning(false);
-    }
-  };
-
   const taxonomy = overview?.taxonomy || [];
   const tagHelp = (tag) => taxonomy.find((x) => x.tag === tag)?.description || tag;
 
@@ -128,6 +98,8 @@ const Quality = () => {
         )}
       </Typography>
 
+      {/* The four filters share the full content width equally; minWidth lets
+          them wrap into fewer columns on narrow screens instead of crushing. */}
       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
         <TextField
           size="small"
@@ -136,7 +108,7 @@ const Quality = () => {
           value={range.from}
           onChange={(e) => e.target.value && setRange({ ...range, from: e.target.value })}
           slotProps={{ inputLabel: { shrink: true } }}
-          sx={{ width: 145 }}
+          sx={{ flex: '1 1 0', minWidth: 145 }}
         />
         <TextField
           size="small"
@@ -145,7 +117,7 @@ const Quality = () => {
           value={range.to}
           onChange={(e) => e.target.value && setRange({ ...range, to: e.target.value })}
           slotProps={{ inputLabel: { shrink: true } }}
-          sx={{ width: 145 }}
+          sx={{ flex: '1 1 0', minWidth: 145 }}
         />
         <TextField
           size="small"
@@ -156,7 +128,7 @@ const Quality = () => {
             setPage(1);
             setFilters({ ...filters, consumer: e.target.value });
           }}
-          sx={{ width: 120 }}
+          sx={{ flex: '1 1 0', minWidth: 145 }}
         >
           <MenuItem value="">{t('All')}</MenuItem>
           <MenuItem value="web">{t('Support widget')}</MenuItem>
@@ -171,7 +143,7 @@ const Quality = () => {
             setPage(1);
             setFilters({ ...filters, max_score: e.target.value });
           }}
-          sx={{ width: 120 }}
+          sx={{ flex: '1 1 0', minWidth: 145 }}
         >
           <MenuItem value="">{t('Any')}</MenuItem>
           {[1, 2, 3, 4].map((n) => (
@@ -188,27 +160,6 @@ const Quality = () => {
               setFilters({ ...filters, tag: '' });
             }}
           />
-        )}
-        {canWrite && productId && (
-          <Tooltip
-            title={t(
-              'Runs the judge over finished conversations that have no verdict yet (within the daily cap). The filters only narrow the list of stored verdicts below.'
-            )}
-          >
-            {/* inline-flex wrapper: a bare <span> is blockified as a flex item
-                and its line box adds descender space under the inline-block
-                button, so the button rendered a few px above the row's centre. */}
-            <Box component="span" sx={{ display: 'inline-flex' }}>
-              <Button
-                variant="outlined"
-                onClick={runNow}
-                disabled={running}
-                sx={{ height: 40, minWidth: 170, whiteSpace: 'nowrap' }}
-              >
-                {running ? t('Reviewing…') : t('Review now')}
-              </Button>
-            </Box>
-          </Tooltip>
         )}
       </Stack>
 
@@ -330,7 +281,7 @@ const Quality = () => {
                 <TableCell colSpan={5}>
                   <Typography color="text.secondary" sx={{ py: 2 }}>
                     {t(
-                      'Nothing reviewed yet. The judge runs in the background over finished conversations; with a product selected you can also run a pass now.'
+                      'Nothing reviewed yet. The judge runs automatically in the background over finished conversations.'
                     )}
                   </Typography>
                 </TableCell>

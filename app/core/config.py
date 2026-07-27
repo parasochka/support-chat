@@ -584,7 +584,7 @@ RETENTION_OUTCOME_SWEEP_BATCH: int = _env_int(
 QUALITY_REVIEW_INTERVAL_SEC: int = _env_int("QUALITY_REVIEW_INTERVAL_SEC", 1800)
 QUALITY_REVIEW_IDLE_MINUTES: int = _env_int("QUALITY_REVIEW_IDLE_MINUTES", 60)
 QUALITY_REVIEW_ENABLED: bool = _env_bool("QUALITY_REVIEW_ENABLED", True)
-QUALITY_REVIEW_DAILY_MAX: int = _env_int("QUALITY_REVIEW_DAILY_MAX", 25)
+QUALITY_REVIEW_DAILY_MAX: int = _env_int("QUALITY_REVIEW_DAILY_MAX", 100)
 QUALITY_REVIEW_MIN_MESSAGES: int = _env_int("QUALITY_REVIEW_MIN_MESSAGES", 4)
 # Media normalizer (media_normalizer.py): the periodic sweep that re-encodes
 # uploaded retention photos to WebP at Telegram-appropriate dimensions and
