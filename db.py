@@ -2799,10 +2799,15 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
         "WHERE session_id = $1 AND type = 'topic_switch' ORDER BY id ASC",
         session_id,
     )
-    # Photos delivered in this (Telegram retention) session, so the transcript
-    # can render the sent image inline alongside its caption message.
+    # Media (photos AND videos) delivered in this (Telegram retention) session,
+    # so the transcript can render the sent item inline alongside its caption
+    # message. `media_type` + `storage_ref` ride along because the admin preview
+    # renders the two kinds differently: a video shows its extracted poster
+    # frame (?poster=1), not the video binary — without the type the transcript
+    # requested a video as an <img> and painted a broken image.
     photos = await _pool.fetch(
-        "SELECT v.photo_id, v.viewed_at, p.description, p.stage, p.level_min "
+        "SELECT v.photo_id, v.viewed_at, p.description, p.stage, p.level_min, "
+        "p.media_type, p.storage_ref "
         "FROM retention_photo_views v "
         "JOIN retention_photos p ON p.id = v.photo_id "
         "WHERE v.session_id = $1 ORDER BY v.id ASC",
@@ -2828,6 +2833,8 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
             "description": r["description"],
             "stage": r["stage"],
             "level_min": r["level_min"],
+            "media_type": r["media_type"] or "photo",
+            "storage_ref": r["storage_ref"],
             "created_at": r["viewed_at"].isoformat(),
         }
     # Cost is summed from ai_interaction_logs (the canonical OpenAI-spend source,
