@@ -110,6 +110,54 @@ const RU = {
   'API keys': 'API-ключи',
   'Chat settings': 'Настройки чата',
 
+  // ----- System -> MCP -----
+  'Global administrators only': 'Только для глобальных администраторов',
+  'Connecting an agent mints a credential over the whole deployment, so this page is limited to accounts with global scope.':
+    'Подключение агента создаёт доступ ко всему деплою, поэтому страница доступна только аккаунтам с глобальной областью.',
+  'MCP (Model Context Protocol) lets an AI agent — Claude Code, for instance — call this admin API directly: read the runtime logs, inspect the assembled prompt of any product, look through conversations, and (optionally) edit the knowledge base, prompt variables and settings. The server ships in the repository under `mcp_server/`; it authenticates with a service key, so the agent sees exactly what that key allows and every change is recorded in System → Logs → Activity.':
+    'MCP (Model Context Protocol) позволяет ИИ-агенту — например, Claude Code — обращаться к этому админ-API напрямую: читать логи, смотреть собранный промпт любого продукта, разбирать диалоги и (по желанию) править базу знаний, переменные промпта и настройки. Сервер лежит в репозитории в `mcp_server/`; он авторизуется сервисным ключом, поэтому агент видит ровно то, что разрешает ключ, а каждое изменение попадает в Система → Логи → Активность.',
+  '1. Mint a key for the agent': '1. Создайте ключ для агента',
+  'The key is created with global scope so the agent can read the deploy-wide system logs (they have no product to scope by) and switch between products on its own. Choose the role: admin lets it edit content and settings, manager makes it strictly read-only.':
+    'Ключ создаётся с глобальной областью, чтобы агент мог читать общедеплойные системные логи (у них нет привязки к продукту) и сам переключаться между продуктами. Выберите роль: admin разрешает править контент и настройки, manager делает доступ строго на чтение.',
+  'Key name': 'Название ключа',
+  'Key created — the token is shown once, copy the config below.':
+    'Ключ создан — токен показывается один раз, скопируйте конфиг ниже.',
+  'The token below is shown ONCE and cannot be recovered. Copy the configuration now; if it is lost, delete the key in System → API keys and mint a new one.':
+    'Токен ниже показывается ОДИН раз и не восстанавливается. Скопируйте конфигурацию сейчас; если потеряете — удалите ключ в Система → API-ключи и создайте новый.',
+  '2. Options': '2. Параметры',
+  'Default product (optional)': 'Продукт по умолчанию (необязательно)',
+  'Used when the agent calls a tool without a product_id.':
+    'Используется, когда агент вызывает инструмент без product_id.',
+  '— none, the agent picks each time —': '— нет, агент выбирает каждый раз —',
+  'Expose the write tools': 'Включить инструменты записи',
+  'Show player names and emails': 'Показывать имена и e-mail игроков',
+  'With the write tools hidden the agent never even sees them. Player names and emails are masked in transcripts and session lists by default; the messages themselves are always shown.':
+    'Со скрытыми инструментами записи агент их вообще не видит. Имена и e-mail игроков в транскриптах и списках сессий по умолчанию маскируются; сами сообщения показываются всегда.',
+  '3. Point the agent at it': '3. Подключите агента',
+  'Run the server from a checkout of the repository (it needs `python3` and `httpx`, nothing else). Either drop this into `.mcp.json` at the project root, or run the CLI command below once.':
+    'Сервер запускается из копии репозитория (нужны только `python3` и `httpx`). Либо положите это в `.mcp.json` в корне проекта, либо один раз выполните команду ниже.',
+  'or, one-off from the terminal': 'или разово из терминала',
+  'Create a key above and the real token appears in these snippets.':
+    'Создайте ключ выше — и в сниппетах появится настоящий токен.',
+  'What the agent can do': 'Что умеет агент',
+  'tools': 'инструментов',
+  'write': 'на запись',
+  'Tool': 'Инструмент',
+  'What it does': 'Что делает',
+  'Endpoint': 'Эндпоинт',
+  'Good to know': 'Что важно знать',
+  '**The key is the real boundary.** The agent has no database access — it calls the same endpoints this panel does, so its role × scope is enforced server-side. A manager key physically cannot write.':
+    '**Границу задаёт ключ.** У агента нет доступа к базе — он вызывает те же эндпоинты, что и эта панель, поэтому его роль × область проверяются на сервере. Ключ с ролью manager физически не может ничего записать.',
+  '**Destructive operations are not exposed.** There is no tool for deleting users, products, sessions or media, for rotating widget keys or for reading secrets — the API only ever returns whether a secret is set.':
+    '**Разрушительных операций нет.** Нет инструментов для удаления пользователей, продуктов, сессий или медиа, для ротации виджет-ключей и для чтения секретов — API отдаёт только признак «секрет задан».',
+  '**Everything is traceable.** Each write arrives as `apikey:<name>` in System → Logs → Activity, so an agent-made change is distinguishable from a human one.':
+    '**Всё прослеживается.** Каждая запись попадает в Система → Логи → Активность как `apikey:<название>`, поэтому изменение агента отличимо от человеческого.',
+  'Revoke access at any time by switching the key off or deleting it in System → API keys — it applies on the agent’s very next request.':
+    'Отозвать доступ можно в любой момент — выключите или удалите ключ в Система → API-ключи, это применится уже к следующему запросу агента.',
+  'Copied': 'Скопировано',
+  'Copy failed — select the text manually.': 'Не удалось скопировать — выделите текст вручную.',
+  'Copy': 'Копировать',
+
   // ----- common chrome -----
   'Loading…': 'Загрузка…',
   'Save': 'Сохранить',

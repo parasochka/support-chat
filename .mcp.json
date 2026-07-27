@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "MCP server exposing this service's admin API to an AI agent (Claude Code).",
+    "Set SUPPORT_ADMIN_URL and SUPPORT_ADMIN_KEY in your shell (or the Claude Code",
+    "environment) before starting a session — the admin panel's System -> MCP page",
+    "mints the key and prints this block filled in. Optional: SUPPORT_ADMIN_PRODUCT_ID",
+    "(default product), SUPPORT_ADMIN_ALLOW_WRITES=0 (read-only),",
+    "SUPPORT_ADMIN_REDACT_PII=0 (show player names/emails)."
+  ],
+  "mcpServers": {
+    "support-admin": {
+      "command": "python3",
+      "args": ["-m", "mcp_server"],
+      "env": {
+        "SUPPORT_ADMIN_URL": "${SUPPORT_ADMIN_URL:-}",
+        "SUPPORT_ADMIN_KEY": "${SUPPORT_ADMIN_KEY:-}",
+        "SUPPORT_ADMIN_PRODUCT_ID": "${SUPPORT_ADMIN_PRODUCT_ID:-}",
+        "SUPPORT_ADMIN_ALLOW_WRITES": "${SUPPORT_ADMIN_ALLOW_WRITES:-1}",
+        "SUPPORT_ADMIN_REDACT_PII": "${SUPPORT_ADMIN_REDACT_PII:-1}"
+      }
+    }
+  }
+}

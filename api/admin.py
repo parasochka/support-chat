@@ -800,6 +800,36 @@ async def audit_log(product_id: Optional[int] = None, partner_id: Optional[int] 
 
 
 # ---------------------------------------------------------------------------
+# MCP — the tool catalogue an AI agent gets over the Model Context Protocol.
+#
+# The server itself (mcp_server/) is a standalone CLIENT of this API: it holds a
+# service key (`sak_…`) and calls the very endpoints above, so it inherits every
+# scope check unchanged. This endpoint exists so the System → MCP page can
+# render what the agent can actually do straight from the code — a hand-copied
+# list in the SPA would drift the first time a tool is added.
+# ---------------------------------------------------------------------------
+@router.get("/mcp/manifest")
+async def mcp_manifest(admin=Depends(require_admin)) -> JSONResponse:
+    """The MCP tool catalogue + the env contract for wiring the server up."""
+    from mcp_server import catalog as mcp_catalog
+    from mcp_server import client as mcp_client
+    # Setup is a hub-level operation (it mints a credential and points an agent
+    # at the whole deployment), so it follows the System → Logs rule.
+    _require_global_viewer(admin)
+    payload = mcp_catalog.manifest(allow_writes=True)
+    payload["env"] = {
+        "url": mcp_client.ENV_URL,
+        "key": mcp_client.ENV_KEY,
+        "product_id": mcp_client.ENV_PRODUCT,
+        "allow_writes": mcp_client.ENV_ALLOW_WRITES,
+        "timeout_sec": mcp_client.ENV_TIMEOUT,
+        "max_response_chars": mcp_client.ENV_MAX_CHARS,
+        "redact_pii": mcp_client.ENV_REDACT,
+    }
+    return JSONResponse(content=payload)
+
+
+# ---------------------------------------------------------------------------
 # User management — named accounts + scope memberships (multi-tenancy)
 #
 # An account is an email + password; WHAT it may touch is its memberships

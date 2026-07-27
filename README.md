@@ -143,6 +143,40 @@ them in the admin. There is **no seed step**: on a fresh/empty database, create 
 their KB from the admin panel; runtime settings fall back to env → built-in defaults until
 overridden.
 
+## MCP — connect an AI agent to the admin API
+
+`mcp_server/` is a Model Context Protocol server that lets an agent (Claude Code and
+friends) work with a running deployment: read the runtime logs, inspect the assembled
+prompt of any product, go through conversations and the retention agent's decisions, and —
+with an `admin`-role key — edit the knowledge base, prompt variables, translations, site map
+and settings.
+
+It is a standalone **client** of this service: it holds a service API key (`sak_…`) and
+calls the same `/admin/*` endpoints the panel does, so the key's role × scope is enforced
+server-side and every write lands in the audit trail as `apikey:<name>`. It imports nothing
+from the service and needs no dependency beyond `httpx`.
+
+Set it up from the admin panel — **System → MCP** mints the key and prints the config
+filled in — or by hand:
+
+```bash
+export SUPPORT_ADMIN_URL=https://your-deployment.example
+export SUPPORT_ADMIN_KEY=sak_...            # System → MCP, or System → API keys
+claude mcp add support-admin \
+  -e SUPPORT_ADMIN_URL=$SUPPORT_ADMIN_URL -e SUPPORT_ADMIN_KEY=$SUPPORT_ADMIN_KEY \
+  -- python3 -m mcp_server
+```
+
+The repo's `.mcp.json` already declares the server, so exporting the two variables before
+starting a session is enough. Optional knobs: `SUPPORT_ADMIN_PRODUCT_ID` (default product
+for tools called without one), `SUPPORT_ADMIN_ALLOW_WRITES=0` (hide the write tools
+entirely), `SUPPORT_ADMIN_REDACT_PII=0` (stop masking player names/emails),
+`SUPPORT_ADMIN_MAX_RESPONSE_CHARS`, `SUPPORT_ADMIN_TIMEOUT_SEC`.
+
+Deleting users, products, sessions or media, rotating widget keys and reading secrets have
+**no tool** — the agent's whole surface is the curated catalogue in `mcp_server/catalog.py`,
+plus a read-only `admin_get` escape hatch bounded to `/admin/*`.
+
 ## Deploy
 
 Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the CMD reads
