@@ -8,8 +8,8 @@ from Cloudflare (a definitive bot signal, not a loading problem).
 """
 from __future__ import annotations
 
-import antispam
-import config
+from app.chat import antispam
+from app.core import config
 
 
 class _FakeResp:

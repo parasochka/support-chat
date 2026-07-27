@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import json
 
-import db
-import prompts
-from api import retention as api_retention
+from app.core import db
+from app.ai import prompts
+from app.api import retention as api_retention
 
 # A caller with GLOBAL admin reach (the shape require_admin builds).
 _ADMIN = {

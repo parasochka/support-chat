@@ -1,7 +1,7 @@
 import types
 
-import config
-import main
+from app.core import config
+from app import main
 
 
 def test_app_has_retention_routes():

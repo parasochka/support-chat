@@ -6,9 +6,9 @@ byte-stability invariant is preserved when no pages are configured.
 """
 from __future__ import annotations
 
-import prompts
-import settings
-import tenancy
+from app.ai import prompts
+from app.core import settings
+from app.core import tenancy
 
 
 PAGES = [

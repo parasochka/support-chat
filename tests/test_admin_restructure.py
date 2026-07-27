@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import pytest
 
-import openai_client
-import retention
-import settings
+from app.ai import openai_client
+from app.retention import retention
+from app.core import settings
 
 
 # ---------------------------------------------------------------------------

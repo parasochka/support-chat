@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import types
 
-import openai_client
+from app.ai import openai_client
 
 _MOD = openai_client._openai_mod  # the (stubbed in tests) openai module
 

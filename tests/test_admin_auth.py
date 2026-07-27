@@ -8,11 +8,11 @@ import types
 import pytest
 from fastapi import HTTPException
 
-import antispam
-import auth
-import config
-import db
-from api import admin_auth
+from app.chat import antispam
+from app.core import auth
+from app.core import config
+from app.core import db
+from app.api import admin_auth
 
 
 @pytest.fixture(autouse=True)

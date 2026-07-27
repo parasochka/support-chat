@@ -1,7 +1,7 @@
 """Password hashing for named admin users: salted PBKDF2, constant-time verify."""
 from __future__ import annotations
 
-import auth
+from app.core import auth
 
 
 def test_hash_roundtrips_and_verifies():

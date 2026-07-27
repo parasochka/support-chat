@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-import language
-import settings
+from app.i18n import language
+from app.core import settings
 
 
 @pytest.fixture(autouse=True)

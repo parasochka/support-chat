@@ -13,9 +13,9 @@ import time
 import pytest
 from PIL import Image
 
-import config
-import media_normalizer
-import settings
+from app.core import config
+from app.retention import media_normalizer
+from app.core import settings
 
 
 def _make_image(path: str, size: tuple[int, int], fmt: str) -> None:
@@ -443,7 +443,7 @@ async def test_sweep_locks_per_product(monkeypatch):
 
 
 def test_video_slot_cap():
-    import db as _db
+    from app.core import db as _db
     assert _db._video_slot_cap(6) == 2   # the default feed: 4 photos + 2 videos
     assert _db._video_slot_cap(5) == 2
     assert _db._video_slot_cap(4) == 2   # never below 2 while the list has room
@@ -456,7 +456,7 @@ def test_video_slot_cap():
 
 
 def test_candidate_list_default_is_six():
-    import config as _config
+    from app.core import config as _config
     assert _config.RETENTION_CANDIDATE_LIST_SIZE == 6
     assert settings.retention()["candidate_list_size"] == 6
 

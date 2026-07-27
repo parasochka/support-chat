@@ -8,10 +8,10 @@ are on how the reply is decoded and what gets persisted.
 """
 from __future__ import annotations
 
-import chat_service
-import db
-import openai_client
-import prompts
+from app.chat import chat_service
+from app.core import db
+from app.ai import openai_client
+from app.ai import prompts
 
 
 def _fake_result(text: str):

@@ -10,12 +10,12 @@ description: >-
 
 # add-admin-endpoint
 
-Every `/admin/*` route mounts under `router` in `api/admin.py` (or
-`api/retention.py` for Telegram), which already carries
+Every `/admin/*` route mounts under `router` in `app/api/admin.py` (or
+`app/api/retention.py` for Telegram), which already carries
 `dependencies=[Depends(require_admin)]`. Authorization is NOT "is admin
 somewhere" — it's scoped to the product/partner the route touches.
 
-## 1. Authorize through the choke points (`api/admin_auth.py`)
+## 1. Authorize through the choke points (`app/api/admin_auth.py`)
 
 - **Read** route → `admin = Depends(require_admin)`, then filter data by scope
   with `resolve_scope_filter(admin, product_id, partner_id)` (returns the

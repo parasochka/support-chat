@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import asyncio
 
-import chat_service
-import db
-import escalation
-import openai_client
+from app.chat import chat_service
+from app.core import db
+from app.chat import escalation
+from app.ai import openai_client
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,7 @@ def test_model_failure_returns_nudge_and_does_not_escalate(monkeypatch):
         async def complete(self, *a, **k):
             raise TimeoutError("provider down")
 
-    import kb as kb_mod
+    from app.ai import kb as kb_mod
     monkeypatch.setattr(db, "get_topic_by_id", _get_topic)
     monkeypatch.setattr(db, "get_history", _get_history)
     monkeypatch.setattr(db, "persist_turn", _persist)

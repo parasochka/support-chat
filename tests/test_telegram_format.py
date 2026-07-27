@@ -1,5 +1,5 @@
 """Outgoing Telegram text shaping: punctuation scrub + light HTML markup."""
-import telegram_format as tf
+from app.retention import telegram_format as tf
 
 
 # --- normalize_punctuation --------------------------------------------------
@@ -74,7 +74,7 @@ def test_to_html_strips_preexisting_stash_sentinels():
     """A model reply that echoes the private-use stash sentinels must not crash
     the unstash pass (stash[int(idx)] IndexError) — the whole turn would be lost
     after it was already persisted. The sentinels are stripped defensively."""
-    import telegram_format as _tf
+    from app.retention import telegram_format as _tf
     poisoned = f"echo {_tf._SENT_OPEN}42{_tf._SENT_CLOSE} back"
     out = _tf.to_html(poisoned)  # must not raise
     assert _tf._SENT_OPEN not in out and _tf._SENT_CLOSE not in out

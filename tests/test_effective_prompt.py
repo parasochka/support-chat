@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import json
 
-import db
-import prompts
-import settings
-from api import admin
+from app.core import db
+from app.ai import prompts
+from app.core import settings
+from app.api import admin
 
 # A caller with GLOBAL admin reach (the shape require_admin builds).
 _ADMIN = {

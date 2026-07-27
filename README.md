@@ -118,12 +118,22 @@ behavioural directive), the selected topic's KB block (Layer 2), and only per-re
 player context, language directive, topic routing, history, the new turn (Layer 3, in the
 user message). The whole model-facing prompt is English for token efficiency; the language
 directive still makes the model **answer in the player's language**, and the KB may be in any
-language. The prompt WORDING is the file **`prompts.py`** (the single source of truth) — a
+language. The prompt WORDING is the file **`app/ai/prompts.py`** (the single source of truth) — a
 dry template that is not editable from the admin; the admin **Prompt** tab shows a read-only
 view of the assembled prompt, and its **Prompt variables** sub-tab edits the `{placeholder}`
 values (persona name, brand, products, tone of voice) that uniquify the template per brand.
 The data layer is direct `asyncpg` (no ORM, no migration files): the schema *is*
 `db.init_db()`. See `CLAUDE.md` for the full design and the invariants.
+
+## Repository layout
+
+All backend Python lives in the `app/` package: `app/main.py` (the FastAPI entry point),
+`app/api/` (HTTP routes), `app/core/` (config, settings, data layer, tenancy, auth),
+`app/ai/` (the prompt template, OpenAI client, KB), `app/i18n/` (language + translations),
+`app/chat/` (the support-chat flow) and `app/retention/` (the Telegram retention bot).
+Around it at the repo root: `admin/` (the React Admin SPA), `frontend/` (the no-build
+widget, test page and integration docs), `mcp_server/` (the admin-API MCP facade),
+`scripts/` (preflight + checks) and `tests/`.
 
 ## Run
 
@@ -135,7 +145,7 @@ SUPPORT_CHAT_TEST_MODE=1 python -m pytest -q
 pip install -r requirements.txt
 export DATABASE_URL=postgresql://user:pass@localhost:5432/supportchat
 export OPENAI_API_KEY=sk-... SESSION_JWT_SECRET=$(openssl rand -hex 32)
-uvicorn main:app --reload --port 8080   # test page at http://localhost:8080/
+uvicorn app.main:app --reload --port 8080   # test page at http://localhost:8080/
 ```
 
 The database is the source of truth for runtime settings and the KB once the owner edits
@@ -262,5 +272,5 @@ settings group (defaults seeded from `RETENTION_*` env). Setup checklist: the ad
 
 Most operational knobs (rate limits, cooldowns, model tuning, escalation thresholds,
 session TTL, body cap, etc.) are tunable live from the admin **Settings** tab and only need
-an env var to seed an initial value. True secrets stay in env. See `config.py` for the full
-list.
+an env var to seed an initial value. True secrets stay in env. See `app/core/config.py` for
+the full list.

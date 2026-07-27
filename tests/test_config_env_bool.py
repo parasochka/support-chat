@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-import config
+from app.core import config
 
 
 def test_env_bool_truthy(monkeypatch):

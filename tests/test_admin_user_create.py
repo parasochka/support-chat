@@ -11,10 +11,10 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-import auth
-import db
-from api import admin as admin_api
-from api.admin import UserCreate, UserUpdate
+from app.core import auth
+from app.core import db
+from app.api import admin as admin_api
+from app.api.admin import UserCreate, UserUpdate
 
 
 # A caller with GLOBAL admin reach (the membership shape require_admin builds).

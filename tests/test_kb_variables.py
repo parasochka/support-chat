@@ -2,8 +2,8 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
-import db
-import kb
+from app.core import db
+from app.ai import kb
 
 
 def test_row_to_kb_variable_serializes_datetime():

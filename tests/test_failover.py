@@ -5,8 +5,8 @@ import asyncio
 
 import pytest
 
-import config
-import openai_client
+from app.core import config
+from app.ai import openai_client
 
 
 def _make_resp(text: str, tin=10, tout=5, cached=0, finish=None):

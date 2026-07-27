@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-import prompts
-from api.retention import _clamp_photo_gate, _parse_photo_meta
+from app.ai import prompts
+from app.api.retention import _clamp_photo_gate, _parse_photo_meta
 
 _TIERS = ["none", "bronze", "silver", "gold"]
 

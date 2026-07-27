@@ -5,10 +5,10 @@ test needs to reach past them.
 """
 from __future__ import annotations
 
-import prompts
-import retention
-import settings
-import telegram_transport as tt
+from app.ai import prompts
+from app.retention import retention
+from app.core import settings
+from app.retention import telegram_transport as tt
 
 
 # ---------------------------------------------------------------------------

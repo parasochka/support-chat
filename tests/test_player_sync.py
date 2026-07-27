@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import socket
 
-import player_sync
+from app.retention import player_sync
 import pytest
 
 

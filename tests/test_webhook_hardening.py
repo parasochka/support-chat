@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import asyncio
 
-import db
-import retention
+from app.core import db
+from app.retention import retention
 
 
 def _msg_update(update_id: int, user_id: int, text: str) -> dict:

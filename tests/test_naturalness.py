@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import datetime as _dt
 
-import prompts
-import retention
-import retention_idle
-import settings
+from app.ai import prompts
+from app.retention import retention
+from app.retention import retention_idle
+from app.core import settings
 
 
 # --- multi-message reply bursts (blank-line split at the send site) ---------
@@ -85,8 +85,8 @@ def test_global_only_fields_ignore_product_layer(monkeypatch):
 
 
 def test_worker_interval_reads_global_even_in_product_scope(monkeypatch):
-    import retention_v2
-    import tenancy
+    from app.retention import retention_v2
+    from app.core import tenancy
     monkeypatch.setattr(settings, "_cache",
                         {"retention": {"worker_interval_sec": 77}})
     monkeypatch.setattr(settings, "_product_cache",
@@ -123,7 +123,7 @@ def test_idle_days_for_triggers():
 
 
 async def test_match_rule_priority_tiers_and_cooldown(monkeypatch):
-    import db as _db
+    from app.core import db as _db
     fired: list[tuple[int, int]] = []
 
     async def _recently(rid, rule_id, cooldown_days):
@@ -158,7 +158,7 @@ async def test_match_rule_never_cascades_down_the_ladder(monkeypatch):
     21, … at min-gap pace). The SAME rung stays re-fireable (its own cooldown
     governs), and the memory resets with the player's next activity (the DB
     helper is keyed on last_active_at)."""
-    import db as _db
+    from app.core import db as _db
 
     async def _recently(rid, rule_id, cooldown_days):
         return False  # per-rule cooldowns all clean — the cascade's precondition
@@ -206,7 +206,7 @@ async def test_idle_anti_cascade_anchors_on_the_trigger_clock(monkeypatch):
     last_active_at but not the casino silence; anchoring the memory on
     last_active_at wiped it and let the ladder reverse-cascade to exactly the
     player who is still engaging."""
-    import db as _db
+    from app.core import db as _db
     seen = {}
 
     async def _recently(rid, rule_id, cooldown_days):

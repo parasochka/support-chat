@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-import config
-import prompts
-import settings
+from app.core import config
+from app.ai import prompts
+from app.core import settings
 
 
 @pytest.fixture(autouse=True)

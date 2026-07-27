@@ -10,9 +10,9 @@ from __future__ import annotations
 import json
 import types
 
-import config
-import main
-import settings
+from app.core import config
+from app import main
+from app.core import settings
 
 
 def _request(headers: dict, *, method="POST", path="/api/chat/message"):

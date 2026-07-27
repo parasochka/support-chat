@@ -7,7 +7,7 @@ cached SYSTEM_CORE prefix must stay byte-identical.
 """
 from __future__ import annotations
 
-import prompts
+from app.ai import prompts
 
 
 _TOPICS = [

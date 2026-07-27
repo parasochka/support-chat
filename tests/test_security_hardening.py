@@ -12,10 +12,10 @@ from __future__ import annotations
 import json
 import time
 
-import auth
-import config
+from app.core import auth
+from app.core import config
 import pytest
-from api import retention
+from app.api import retention
 
 
 # --- 1. non-ASCII constant-time compare -----------------------------------

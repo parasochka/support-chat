@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-import config
-import secretbox
+from app.core import config
+from app.core import secretbox
 
 
 def test_roundtrip():

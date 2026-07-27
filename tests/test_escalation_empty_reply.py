@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import asyncio
 
-import chat_service
-import db
-import kb
-import openai_client
+from app.chat import chat_service
+from app.core import db
+from app.ai import kb
+from app.ai import openai_client
 
 
 def test_control_only_escalation_gets_visible_handoff_copy(monkeypatch):

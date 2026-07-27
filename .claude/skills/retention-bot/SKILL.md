@@ -563,7 +563,7 @@ checklist lives in the admin — the **Retention → How it works** page.
   `retention` settings group as its Parameters tab; legacy
   `/settings?module=retention` and `/retention?tab=config|managers` links
   redirect there), and **Analytics**;
-  API under `/admin/retention/*` (`api/retention.py`, guarded per
+  API under `/admin/retention/*` (`app/api/retention.py`, guarded per
   product) + the `retention` group via the generic `/admin/settings/retention`. Retention copy
   (menu/gate/handoff strings, `rtn_*` keys) is in the translations registry (scope `retention`).
   **Prompt preview** (`GET /admin/retention/effective-prompt`, the SPA's Retention → Prompt

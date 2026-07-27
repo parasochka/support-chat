@@ -7,8 +7,8 @@ silently on the first 429, and never loops unboundedly.
 """
 from __future__ import annotations
 
-import telegram_transport
-from telegram_transport import TelegramClient
+from app.retention import telegram_transport
+from app.retention.telegram_transport import TelegramClient
 
 
 class _FakeResp:

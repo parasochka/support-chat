@@ -7,7 +7,7 @@ the Layer-3 user message.
 """
 from __future__ import annotations
 
-import prompts
+from app.ai import prompts
 
 
 def test_system_core_is_stable_string():

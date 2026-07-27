@@ -9,10 +9,10 @@ accurate answer from the history.
 """
 import pytest
 
-import chat_service
-import prompts
-import retention
-import settings
+from app.chat import chat_service
+from app.ai import prompts
+from app.retention import retention
+from app.core import settings
 
 
 # ---------------------------------------------------------------------------
