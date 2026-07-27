@@ -293,9 +293,17 @@ const ConversationsTab = ({ productId }) => {
                     sx={{ maxWidth: '80%', alignSelf: 'flex-end', width: { xs: 180, sm: 240 } }}
                   >
                     <Typography variant="caption" color="text.secondary">
-                      {t('photo')} · {fmtDateTime(item.created_at)}
+                      {item.media_type === 'video' ? t('video') : t('photo')}
+                      {' · '}{fmtDateTime(item.created_at)}
                     </Typography>
-                    <PhotoPreview photoId={item.photo_id} />
+                    {/* A video previews as its poster frame with a play badge
+                        (same component as the Media grid) — requesting the
+                        video binary as an image painted a broken thumbnail. */}
+                    <PhotoPreview
+                      photoId={item.photo_id}
+                      mediaType={item.media_type}
+                      storageRef={item.storage_ref}
+                    />
                     {item.description && (
                       <Typography variant="caption" color="text.secondary" display="block">
                         {item.description}
