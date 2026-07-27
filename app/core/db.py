@@ -508,6 +508,80 @@ CREATE TABLE IF NOT EXISTS retention_v2_decisions (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- OUTCOME ATTRIBUTION -------------------------------------------------
+-- ONE row per TOUCH the bot delivered: a proactive agent/idle message, a
+-- delivered photo/video, a message carrying a site-map CTA button. The
+-- dimensions (what kind of touch it was) are denormalized onto the row on
+-- purpose: retention_events are pruned and a photo may be deleted, so an
+-- attribution recomputed later would silently change — the row must stay
+-- readable on its own. The outcome fields are filled by the attribution sweep
+-- (retention/outcomes.py) once the windows elapse; `closed` marks a row the
+-- sweep is done with.
+CREATE TABLE IF NOT EXISTS retention_outcomes (
+  id                BIGSERIAL PRIMARY KEY,
+  product_id        INT NOT NULL REFERENCES products(id),
+  retention_user_id BIGINT REFERENCES retention_users(id),
+  player_id         TEXT,
+  session_id        UUID,
+  kind              TEXT NOT NULL,           -- 'proactive' | 'dialogue'
+  -- dimensions (NULL when not applicable)
+  -- ON DELETE SET NULL: the admin may clear the decision ledger for
+  -- live-testing cleanup, and that must neither fail on this FK nor erase the
+  -- record that a real message reached a real player (the same "detach, keep
+  -- the history" rule the event log's links follow).
+  decision_id       BIGINT REFERENCES retention_v2_decisions(id) ON DELETE SET NULL,
+  rule_id           BIGINT,                  -- idle rung (retention_rules.id)
+  event_name        TEXT,                    -- casino event / 'idle:<kind>'
+  action            TEXT,                    -- 'message' | 'photo'
+  tone              TEXT,
+  photo_id          BIGINT,                  -- media delivered with this touch
+  media_type        TEXT,                    -- 'photo' | 'video'
+  link_url          TEXT,                    -- site-map CTA button attached
+  cost_usd          NUMERIC(12, 6),          -- model cost of the touch
+  sent_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- outcome (attribution sweep)
+  replied_at        TIMESTAMPTZ,
+  reply_latency_sec INT,
+  player_msgs       INT NOT NULL DEFAULT 0,  -- player turns inside the window
+  returned_at       TIMESTAMPTZ,             -- any casino activity after the touch
+  deposit_at        TIMESTAMPTZ,
+  closed            BOOLEAN NOT NULL DEFAULT FALSE,
+  attributed_at     TIMESTAMPTZ,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_retention_outcomes_product
+  ON retention_outcomes(product_id, sent_at);
+CREATE INDEX IF NOT EXISTS idx_retention_outcomes_open
+  ON retention_outcomes(product_id, sent_at) WHERE NOT closed;
+CREATE INDEX IF NOT EXISTS idx_retention_outcomes_player
+  ON retention_outcomes(product_id, player_id, sent_at);
+CREATE INDEX IF NOT EXISTS idx_retention_outcomes_photo
+  ON retention_outcomes(photo_id) WHERE photo_id IS NOT NULL;
+
+-- QUALITY REVIEW ------------------------------------------------------
+-- The LLM-as-judge verdict on ONE finished conversation (support widget or
+-- Telegram). One row per review; a conversation is re-reviewed only when it
+-- grew since (reviewed_msg_count), so the pass is idempotent per state.
+CREATE TABLE IF NOT EXISTS conversation_reviews (
+  id                BIGSERIAL PRIMARY KEY,
+  product_id        INT NOT NULL REFERENCES products(id),
+  session_id        UUID NOT NULL,
+  consumer          TEXT NOT NULL DEFAULT 'web',   -- 'web' | 'telegram'
+  score             INT,                      -- 1..5 overall quality
+  tags              JSONB NOT NULL DEFAULT '[]',   -- taxonomy slugs
+  summary           TEXT NOT NULL DEFAULT '',
+  issues            JSONB NOT NULL DEFAULT '[]',   -- [{quote, why}]
+  kb_gaps           JSONB NOT NULL DEFAULT '[]',   -- player questions the KB missed
+  reviewed_msg_count INT NOT NULL DEFAULT 0,
+  model             TEXT,
+  cost_usd          NUMERIC(12, 6),
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_reviews_product
+  ON conversation_reviews(product_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_reviews_session
+  ON conversation_reviews(session_id);
+
 -- MACHINE ADMIN CREDENTIALS -------------------------------------------
 -- Service API keys for the /admin API (an external master admin panel, a
 -- partner backend). Bearer 'sak_...' tokens; only the SHA-256 hash is stored.
@@ -1795,6 +1869,14 @@ async def get_default_product() -> Optional[dict[str, Any]]:
     return _row_to_product(row) if row else None
 
 
+async def list_active_products() -> list[dict[str, Any]]:
+    """Every active product — the sweep set of workers that are not
+    retention-specific (the quality reviewer covers both facades)."""
+    rows = await _pool.fetch(
+        f"SELECT {_PRODUCT_COLS} FROM products WHERE active ORDER BY id")
+    return [_row_to_product(r) for r in rows]
+
+
 async def list_retention_products() -> list[dict[str, Any]]:
     """Active products running the retention bot (the ping worker's sweep set)."""
     rows = await _pool.fetch(
@@ -2886,6 +2968,13 @@ async def _purge_retention_player(conn, product_id: Optional[int],
         "DELETE FROM retention_pings WHERE retention_user_id = ANY($1::bigint[])",
         ids,
     )
+    # The attribution ledger is per-player analytics like the two above — it
+    # goes with the player (leaving it behind would keep a deleted player's
+    # touches in the effectiveness cuts).
+    await conn.execute(
+        "DELETE FROM retention_outcomes WHERE retention_user_id = ANY($1::bigint[])",
+        ids,
+    )
     # The agent's decision ledger references the player with a NULLABLE FK —
     # detach (the audit rows themselves stay: they are product-level history,
     # and deleting them would rewrite today's budget / cooldown state).
@@ -2941,6 +3030,16 @@ async def delete_session(session_id: str) -> bool:
             )
             await conn.execute(
                 "DELETE FROM admin_events WHERE session_id = $1", session_id
+            )
+            # Session-keyed analytics: the judge's verdict and any attribution
+            # rows opened by turns of this conversation.
+            await conn.execute(
+                "DELETE FROM conversation_reviews WHERE session_id = $1",
+                session_id
+            )
+            await conn.execute(
+                "DELETE FROM retention_outcomes WHERE session_id = $1",
+                session_id
             )
             await conn.execute(
                 "DELETE FROM chat_sessions WHERE id = $1", session_id
@@ -3734,9 +3833,15 @@ async def list_retention_v2_decisions(product_id: int, page: int = 1,
         "SELECT COUNT(*) FROM retention_v2_decisions WHERE product_id = $1",
         product_id)
     rows = await _pool.fetch(
-        "SELECT d.*, u.tg_username, u.full_name "
+        # The attribution row (when the touch was actually delivered) rides
+        # along, so the ledger answers "did it work?" next to "what did we
+        # decide?" — the two halves of one decision.
+        "SELECT d.*, u.tg_username, u.full_name, "
+        "  o.replied_at, o.reply_latency_sec, o.returned_at, o.deposit_at, "
+        "  o.closed AS outcome_settled "
         "FROM retention_v2_decisions d "
         "LEFT JOIN retention_users u ON u.id = d.retention_user_id "
+        "LEFT JOIN retention_outcomes o ON o.decision_id = d.id "
         "WHERE d.product_id = $1 ORDER BY d.id DESC LIMIT $2 OFFSET $3",
         product_id, page_size, offset,
     )
@@ -3747,6 +3852,10 @@ async def list_retention_v2_decisions(product_id: int, page: int = 1,
         for k in ("retention_user_id", "event_pk"):
             if d.get(k) is not None:
                 d[k] = int(d[k])
+        for k in ("replied_at", "returned_at", "deposit_at"):
+            d[k] = _iso(d.get(k))
+        if d.get("reply_latency_sec") is not None:
+            d["reply_latency_sec"] = int(d["reply_latency_sec"])
         for k in ("state", "guard"):
             d[k] = _json_value(d[k]) or {}
         if d.get("cost_usd") is not None:
@@ -3905,6 +4014,464 @@ async def retention_v2_cost_today(product_id: int) -> float:
         product_id,
     )
     return float(val or 0)
+
+
+# ---------------------------------------------------------------------------
+# Outcome attribution — "did the touch work?"
+#
+# Every delivered touch (proactive message, photo/video, CTA-carrying reply)
+# writes one retention_outcomes row at send time; the sweep below fills in what
+# happened afterwards. The dimensions are denormalized onto the row because the
+# sources are transient (retention_events are pruned, media can be deleted), so
+# a later recomputation would silently change history.
+# ---------------------------------------------------------------------------
+async def record_retention_outcome(
+        product_id: int, *, retention_user_id: Optional[int],
+        player_id: Optional[str], kind: str,
+        session_id: Optional[str] = None,
+        decision_id: Optional[int] = None, rule_id: Optional[int] = None,
+        event_name: Optional[str] = None, action: Optional[str] = None,
+        tone: Optional[str] = None, photo_id: Optional[int] = None,
+        media_type: Optional[str] = None, link_url: Optional[str] = None,
+        cost_usd: Optional[float] = None) -> int:
+    """Open one attribution row for a touch that was actually delivered."""
+    row = await _pool.fetchrow(
+        "INSERT INTO retention_outcomes (product_id, retention_user_id, "
+        " player_id, session_id, kind, decision_id, rule_id, event_name, "
+        " action, tone, photo_id, media_type, link_url, cost_usd) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) "
+        "RETURNING id",
+        product_id, retention_user_id, player_id, session_id, kind,
+        decision_id, rule_id, event_name, action, tone, photo_id, media_type,
+        link_url, cost_usd,
+    )
+    return int(row["id"])
+
+
+async def attribute_retention_outcomes(
+        product_id: int, *, reply_window_hours: int,
+        conversion_window_hours: int, limit: int = 500) -> int:
+    """Fill the outcome fields of this product's open rows. Returns rows touched.
+
+    One statement: for each open row, look forward from `sent_at` for (a) the
+    player's own messages in ANY session of his Telegram identity — the idle
+    rollover opens a new session, so keying on the session would lose the reply
+    — and (b) casino events in the conversion window. A row is `closed` once
+    both windows have elapsed, after which the sweep never looks at it again
+    (which is also what makes the effectiveness numbers stable).
+    """
+    window = max(int(reply_window_hours), int(conversion_window_hours))
+    result = await _pool.execute(
+        "WITH open AS ("
+        "  SELECT o.id, o.product_id, o.player_id, o.sent_at, ru.tg_user_id "
+        "  FROM retention_outcomes o "
+        "  LEFT JOIN retention_users ru ON ru.id = o.retention_user_id "
+        "  WHERE o.product_id = $1 AND NOT o.closed "
+        "  ORDER BY o.id LIMIT $5"
+        ") "
+        "UPDATE retention_outcomes t SET "
+        "  replied_at = COALESCE(t.replied_at, rep.first_reply), "
+        "  reply_latency_sec = COALESCE(t.reply_latency_sec, "
+        "    CASE WHEN rep.first_reply IS NOT NULL "
+        "         THEN EXTRACT(EPOCH FROM rep.first_reply - t.sent_at)::int "
+        "    END), "
+        "  player_msgs = GREATEST(t.player_msgs, COALESCE(rep.msgs, 0)), "
+        "  returned_at = COALESCE(t.returned_at, conv.returned_at), "
+        "  deposit_at = COALESCE(t.deposit_at, conv.deposit_at), "
+        "  closed = now() >= t.sent_at + make_interval(hours => $4), "
+        "  attributed_at = now() "
+        "FROM open o "
+        "LEFT JOIN LATERAL ("
+        "  SELECT MIN(m.created_at) AS first_reply, COUNT(*) AS msgs "
+        "  FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id "
+        "  WHERE o.tg_user_id IS NOT NULL AND s.product_id = o.product_id "
+        "    AND s.tg_user_id = o.tg_user_id AND m.role = 'user' "
+        "    AND m.created_at > o.sent_at "
+        "    AND m.created_at <= o.sent_at + make_interval(hours => $2)"
+        ") rep ON TRUE "
+        "LEFT JOIN LATERAL ("
+        "  SELECT MIN(e.ts) FILTER (WHERE e.event_name = 'deposit_confirmed') "
+        "           AS deposit_at, "
+        "         MIN(e.ts) AS returned_at "
+        "  FROM retention_events e "
+        "  WHERE o.player_id IS NOT NULL AND o.player_id <> '' "
+        "    AND e.product_id = o.product_id AND e.player_id = o.player_id "
+        "    AND e.ts > o.sent_at "
+        "    AND e.ts <= o.sent_at + make_interval(hours => $3)"
+        ") conv ON TRUE "
+        "WHERE t.id = o.id",
+        product_id, int(reply_window_hours), int(conversion_window_hours),
+        window, int(limit),
+    )
+    return _affected(result)
+
+
+async def recent_touch_outcomes(product_id: int, player_id: str,
+                                limit: int = 6) -> list[dict[str, Any]]:
+    """This player's last proactive touches WITH how he reacted — the feedback
+    the agent's decision call reads before choosing to write again."""
+    if not player_id:
+        return []
+    rows = await _pool.fetch(
+        "SELECT sent_at, event_name, action, tone, photo_id, link_url, "
+        "       replied_at, reply_latency_sec, player_msgs, deposit_at, "
+        "       returned_at, closed "
+        "FROM retention_outcomes "
+        "WHERE product_id = $1 AND player_id = $2 AND kind = 'proactive' "
+        "ORDER BY sent_at DESC LIMIT $3",
+        product_id, player_id, int(limit),
+    )
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        out.append({
+            "sent_at": _iso(r["sent_at"]),
+            "event_name": r["event_name"],
+            "action": r["action"],
+            "tone": r["tone"],
+            "with_photo": r["photo_id"] is not None,
+            "with_link": bool(r["link_url"]),
+            "replied": r["replied_at"] is not None,
+            "reply_latency_sec": (int(r["reply_latency_sec"])
+                                  if r["reply_latency_sec"] is not None else None),
+            "player_msgs": int(r["player_msgs"] or 0),
+            "deposited": r["deposit_at"] is not None,
+            "returned": r["returned_at"] is not None,
+            "settled": bool(r["closed"]),
+        })
+    return out
+
+
+# The aggregate every effectiveness cut shares: sends, replies, conversions and
+# what they cost. `closed` rows only would hide today's activity entirely, so
+# the counts cover everything and `settled` says how much of it is final.
+_OUTCOME_AGG = (
+    "COUNT(*)::int AS sends, "
+    "COUNT(*) FILTER (WHERE o.closed)::int AS settled, "
+    "COUNT(*) FILTER (WHERE o.replied_at IS NOT NULL)::int AS replies, "
+    "COUNT(*) FILTER (WHERE o.returned_at IS NOT NULL)::int AS returns, "
+    "COUNT(*) FILTER (WHERE o.deposit_at IS NOT NULL)::int AS deposits, "
+    "AVG(o.reply_latency_sec) FILTER (WHERE o.replied_at IS NOT NULL) "
+    "  AS avg_reply_latency_sec, "
+    "COALESCE(SUM(o.cost_usd), 0) AS cost_usd"
+)
+
+
+def _outcome_stats(row: asyncpg.Record) -> dict[str, Any]:
+    sends = int(row["sends"] or 0)
+    replies = int(row["replies"] or 0)
+    returns = int(row["returns"] or 0)
+    deposits = int(row["deposits"] or 0)
+    latency = row["avg_reply_latency_sec"]
+    return {
+        "sends": sends,
+        "settled": int(row["settled"] or 0),
+        "replies": replies,
+        "returns": returns,
+        "deposits": deposits,
+        "reply_rate": round(replies / sends, 3) if sends else None,
+        "return_rate": round(returns / sends, 3) if sends else None,
+        "deposit_rate": round(deposits / sends, 3) if sends else None,
+        "avg_reply_latency_sec": (round(float(latency)) if latency is not None
+                                  else None),
+        "cost_usd": round(float(row["cost_usd"] or 0), 6),
+    }
+
+
+async def outcome_summary(product_id: int, dt_from: Any, dt_to: Any
+                          ) -> dict[str, Any]:
+    """Product-level totals + cost per outcome (the 'what did it buy us' tile).
+
+    Cost rides on proactive rows only (a dialogue reply's cost belongs to the
+    conversation, not to the CTA it happened to carry), so the per-outcome
+    figures are computed over proactive touches alone.
+    """
+    row = await _pool.fetchrow(
+        f"SELECT {_OUTCOME_AGG} FROM retention_outcomes o "
+        "WHERE o.product_id = $1 AND o.sent_at >= $2 AND o.sent_at < $3 "
+        "  AND o.kind = 'proactive'",
+        product_id, dt_from, dt_to,
+    )
+    stats = _outcome_stats(row)
+    cost = stats["cost_usd"]
+    stats["cost_per_reply_usd"] = (round(cost / stats["replies"], 4)
+                                   if stats["replies"] else None)
+    stats["cost_per_return_usd"] = (round(cost / stats["returns"], 4)
+                                    if stats["returns"] else None)
+    stats["cost_per_deposit_usd"] = (round(cost / stats["deposits"], 4)
+                                     if stats["deposits"] else None)
+    dialog = await _pool.fetchrow(
+        f"SELECT {_OUTCOME_AGG} FROM retention_outcomes o "
+        "WHERE o.product_id = $1 AND o.sent_at >= $2 AND o.sent_at < $3 "
+        "  AND o.kind = 'dialogue'",
+        product_id, dt_from, dt_to,
+    )
+    return {"proactive": stats, "dialogue": _outcome_stats(dialog)}
+
+
+async def outcome_by_media(product_id: int, dt_from: Any, dt_to: Any,
+                           limit: int = 100) -> list[dict[str, Any]]:
+    """Effectiveness per delivered photo/video (both facades: a photo sent in
+    dialogue counts exactly like one sent proactively)."""
+    rows = await _pool.fetch(
+        f"SELECT o.photo_id, {_OUTCOME_AGG}, "
+        "  MAX(p.media_type) AS media_type, MAX(p.description) AS description, "
+        "  MAX(p.storage_ref) AS storage_ref, MAX(p.stage) AS stage, "
+        "  BOOL_OR(p.active) AS active "
+        "FROM retention_outcomes o "
+        "LEFT JOIN retention_photos p ON p.id = o.photo_id "
+        "WHERE o.product_id = $1 AND o.sent_at >= $2 AND o.sent_at < $3 "
+        "  AND o.photo_id IS NOT NULL "
+        "GROUP BY o.photo_id ORDER BY COUNT(*) DESC, o.photo_id LIMIT $4",
+        product_id, dt_from, dt_to, int(limit),
+    )
+    return [{"photo_id": int(r["photo_id"]),
+             "media_type": r["media_type"] or "photo",
+             "description": r["description"] or "",
+             "storage_ref": r["storage_ref"],
+             "stage": int(r["stage"]) if r["stage"] is not None else None,
+             "active": bool(r["active"]) if r["active"] is not None else None,
+             **_outcome_stats(r)} for r in rows]
+
+
+async def outcome_by_link(product_id: int, dt_from: Any, dt_to: Any,
+                          limit: int = 50) -> list[dict[str, Any]]:
+    """Effectiveness per site-map CTA page the bot buttoned up."""
+    rows = await _pool.fetch(
+        f"SELECT o.link_url, {_OUTCOME_AGG} FROM retention_outcomes o "
+        "WHERE o.product_id = $1 AND o.sent_at >= $2 AND o.sent_at < $3 "
+        "  AND o.link_url IS NOT NULL AND o.link_url <> '' "
+        "GROUP BY o.link_url ORDER BY COUNT(*) DESC, o.link_url LIMIT $4",
+        product_id, dt_from, dt_to, int(limit),
+    )
+    return [{"link_url": r["link_url"], **_outcome_stats(r)} for r in rows]
+
+
+async def outcome_by_idle_rule(product_id: int, dt_from: Any, dt_to: Any
+                               ) -> list[dict[str, Any]]:
+    """Effectiveness per idle-ladder rung (which day thresholds bring players
+    back and which are dead weight)."""
+    rows = await _pool.fetch(
+        f"SELECT o.rule_id, {_OUTCOME_AGG}, "
+        "  MAX(r.name) AS name, MAX(r.inactivity_days) AS inactivity_days, "
+        "  MAX(r.trigger_kind) AS trigger_kind, MAX(r.action) AS action, "
+        "  BOOL_OR(r.enabled) AS enabled "
+        "FROM retention_outcomes o "
+        "LEFT JOIN retention_rules r ON r.id = o.rule_id "
+        "WHERE o.product_id = $1 AND o.sent_at >= $2 AND o.sent_at < $3 "
+        "  AND o.rule_id IS NOT NULL "
+        "GROUP BY o.rule_id ORDER BY MAX(r.inactivity_days) NULLS LAST, o.rule_id",
+        product_id, dt_from, dt_to,
+    )
+    return [{"rule_id": int(r["rule_id"]), "name": r["name"] or "(deleted rule)",
+             "inactivity_days": (int(r["inactivity_days"])
+                                 if r["inactivity_days"] is not None else None),
+             "trigger_kind": r["trigger_kind"], "action": r["action"],
+             "enabled": bool(r["enabled"]) if r["enabled"] is not None else None,
+             **_outcome_stats(r)} for r in rows]
+
+
+async def outcome_by_event(product_id: int, dt_from: Any, dt_to: Any
+                           ) -> list[dict[str, Any]]:
+    """Effectiveness per proactive trigger (casino event / idle kind)."""
+    rows = await _pool.fetch(
+        f"SELECT COALESCE(o.event_name, '(none)') AS event_name, {_OUTCOME_AGG} "
+        "FROM retention_outcomes o "
+        "WHERE o.product_id = $1 AND o.sent_at >= $2 AND o.sent_at < $3 "
+        "  AND o.kind = 'proactive' "
+        "GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 40",
+        product_id, dt_from, dt_to,
+    )
+    return [{"event_name": r["event_name"], **_outcome_stats(r)} for r in rows]
+
+
+async def top_links_by_outcome(product_id: int, limit: int = 3,
+                               min_sends: int = 3) -> list[str]:
+    """The CTA pages that actually pulled players back — fed to the play-nudge
+    directive so link rotation prefers what works. Needs a few settled sends
+    before a page counts (one lucky click is not evidence)."""
+    rows = await _pool.fetch(
+        "SELECT link_url, COUNT(*) AS sends, "
+        "  COUNT(*) FILTER (WHERE replied_at IS NOT NULL "
+        "                     OR returned_at IS NOT NULL) AS hits "
+        "FROM retention_outcomes "
+        "WHERE product_id = $1 AND link_url IS NOT NULL AND link_url <> '' "
+        "  AND closed "
+        "GROUP BY link_url HAVING COUNT(*) >= $2 "
+        "ORDER BY (COUNT(*) FILTER (WHERE replied_at IS NOT NULL "
+        "                             OR returned_at IS NOT NULL) + 1.0) "
+        "         / (COUNT(*) + 2.0) DESC, COUNT(*) DESC LIMIT $3",
+        product_id, int(min_sends), int(limit),
+    )
+    return [r["link_url"] for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Quality review — the LLM-as-judge verdict on a finished conversation
+# ---------------------------------------------------------------------------
+async def sessions_for_review(product_id: int, *, min_messages: int,
+                              idle_minutes: int, limit: int = 20
+                              ) -> list[dict[str, Any]]:
+    """Finished conversations of this product that still need a verdict.
+
+    "Finished" = closed by the player/backend (resolved or escalated) OR simply
+    dormant (`idle_minutes` since the last turn) — a widget chat is usually
+    abandoned rather than closed, and a Telegram chat has no close button at
+    all. A conversation is re-reviewed only after it has GROWN since its last
+    verdict, so a stable transcript is never paid for twice. Oldest first, so
+    a backlog drains in order instead of starving on the newest chats.
+    """
+    rows = await _pool.fetch(
+        "SELECT s.id, s.consumer, s.lang, s.status, s.escalated, "
+        "       s.message_count, s.topic_id "
+        "FROM chat_sessions s "
+        "LEFT JOIN conversation_reviews r ON r.session_id = s.id "
+        "WHERE s.product_id = $1 AND s.message_count >= $2 "
+        "  AND (s.status IN ('resolved', 'escalated') "
+        "       OR s.updated_at < now() - make_interval(mins => $3)) "
+        "  AND (r.id IS NULL OR r.reviewed_msg_count < s.message_count) "
+        "ORDER BY s.updated_at LIMIT $4",
+        product_id, int(min_messages), int(idle_minutes), int(limit),
+    )
+    return [{"id": str(r["id"]), "consumer": r["consumer"], "lang": r["lang"],
+             "status": r["status"], "escalated": bool(r["escalated"]),
+             "message_count": int(r["message_count"] or 0),
+             "topic_id": r["topic_id"]} for r in rows]
+
+
+async def upsert_conversation_review(
+        product_id: int, session_id: str, *, consumer: str,
+        score: Optional[int], tags: list[str], summary: str,
+        issues: list[dict[str, Any]], kb_gaps: list[str],
+        reviewed_msg_count: int, model: Optional[str] = None,
+        cost_usd: Optional[float] = None) -> int:
+    """Store (or refresh) the verdict for one conversation."""
+    row = await _pool.fetchrow(
+        "INSERT INTO conversation_reviews (product_id, session_id, consumer, "
+        " score, tags, summary, issues, kb_gaps, reviewed_msg_count, model, "
+        " cost_usd) "
+        "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8::jsonb, $9, $10, "
+        "        $11) "
+        "ON CONFLICT (session_id) DO UPDATE SET "
+        "  consumer = EXCLUDED.consumer, score = EXCLUDED.score, "
+        "  tags = EXCLUDED.tags, summary = EXCLUDED.summary, "
+        "  issues = EXCLUDED.issues, kb_gaps = EXCLUDED.kb_gaps, "
+        "  reviewed_msg_count = EXCLUDED.reviewed_msg_count, "
+        "  model = EXCLUDED.model, cost_usd = EXCLUDED.cost_usd, "
+        "  created_at = now() "
+        "RETURNING id",
+        product_id, session_id, consumer, score, json.dumps(tags or []),
+        summary, json.dumps(issues or []), json.dumps(kb_gaps or []),
+        int(reviewed_msg_count), model, cost_usd,
+    )
+    return int(row["id"])
+
+
+async def reviews_today(product_id: int) -> int:
+    """Reviews written since midnight UTC — the judge's daily cap reads this
+    (same UTC day boundary as the retention budget)."""
+    val = await _pool.fetchval(
+        "SELECT COUNT(*) FROM conversation_reviews WHERE product_id = $1 "
+        "AND created_at >= date_trunc('day', now() at time zone 'utc') "
+        "                  at time zone 'utc'",
+        product_id,
+    )
+    return int(val or 0)
+
+
+def _row_to_review(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    d["id"] = int(d["id"])
+    d["session_id"] = str(d["session_id"])
+    for k in ("tags", "issues", "kb_gaps"):
+        d[k] = _json_value(d.get(k)) or []
+    if d.get("score") is not None:
+        d["score"] = int(d["score"])
+    if d.get("cost_usd") is not None:
+        d["cost_usd"] = float(d["cost_usd"])
+    d["created_at"] = _iso(d["created_at"])
+    return d
+
+
+async def list_conversation_reviews(dt_from: Any, dt_to: Any, *,
+                                    product_ids: Optional[list[int]] = None,
+                                    consumer: Optional[str] = None,
+                                    tag: Optional[str] = None,
+                                    max_score: Optional[int] = None,
+                                    page: int = 1, page_size: int = 50
+                                    ) -> dict[str, Any]:
+    """The reviews list for the admin Quality page (worst first, then newest).
+
+    `product_ids` follows the dashboard convention: None = the caller's whole
+    scope, an empty list = match nothing.
+    """
+    where = ["r.created_at >= $1", "r.created_at < $2"]
+    args: list[Any] = [dt_from, dt_to]
+    if product_ids is not None:
+        args.append(product_ids)
+        where.append(f"r.product_id = ANY(${len(args)}::int[])")
+    if consumer:
+        args.append(consumer)
+        where.append(f"r.consumer = ${len(args)}")
+    if tag:
+        args.append(tag)
+        # Containment rather than the `?` key operator: the parameter's type is
+        # unambiguous here (and it is the GIN-indexable form).
+        where.append(f"r.tags @> jsonb_build_array(${len(args)}::text)")
+    if max_score is not None:
+        args.append(int(max_score))
+        where.append(f"r.score <= ${len(args)}")
+    clause = " AND ".join(where)
+    total = await _pool.fetchval(
+        f"SELECT COUNT(*) FROM conversation_reviews r WHERE {clause}", *args)
+    args.extend([int(page_size), max(int(page) - 1, 0) * int(page_size)])
+    rows = await _pool.fetch(
+        f"SELECT r.*, p.name AS product_name FROM conversation_reviews r "
+        "LEFT JOIN products p ON p.id = r.product_id "
+        f"WHERE {clause} ORDER BY r.score NULLS LAST, r.created_at DESC "
+        f"LIMIT ${len(args) - 1} OFFSET ${len(args)}",
+        *args,
+    )
+    return {"items": [_row_to_review(r) for r in rows], "total": int(total or 0)}
+
+
+async def quality_overview(dt_from: Any, dt_to: Any, *,
+                           product_ids: Optional[list[int]] = None
+                           ) -> dict[str, Any]:
+    """Score/tag/KB-gap aggregates behind the Quality page header."""
+    where = ["created_at >= $1", "created_at < $2"]
+    args: list[Any] = [dt_from, dt_to]
+    if product_ids is not None:
+        args.append(product_ids)
+        where.append(f"product_id = ANY(${len(args)}::int[])")
+    clause = " AND ".join(where)
+    head = await _pool.fetchrow(
+        "SELECT COUNT(*)::int AS reviews, AVG(score) AS avg_score, "
+        "  COUNT(*) FILTER (WHERE score <= 2)::int AS poor, "
+        "  COUNT(*) FILTER (WHERE score >= 4)::int AS good, "
+        "  COUNT(*) FILTER (WHERE consumer = 'telegram')::int AS telegram, "
+        "  COALESCE(SUM(cost_usd), 0) AS cost_usd "
+        f"FROM conversation_reviews WHERE {clause}", *args)
+    tags = await _pool.fetch(
+        "SELECT tag, COUNT(*)::int AS count FROM conversation_reviews, "
+        "  LATERAL jsonb_array_elements_text(tags) AS tag "
+        f"WHERE {clause} GROUP BY tag ORDER BY count DESC LIMIT 25", *args)
+    gaps = await _pool.fetch(
+        "SELECT gap, COUNT(*)::int AS count, MAX(session_id::text) AS example "
+        "FROM conversation_reviews, "
+        "  LATERAL jsonb_array_elements_text(kb_gaps) AS gap "
+        f"WHERE {clause} GROUP BY gap ORDER BY count DESC LIMIT 25", *args)
+    avg = head["avg_score"]
+    return {
+        "reviews": int(head["reviews"] or 0),
+        "avg_score": round(float(avg), 2) if avg is not None else None,
+        "poor": int(head["poor"] or 0),
+        "good": int(head["good"] or 0),
+        "telegram": int(head["telegram"] or 0),
+        "cost_usd": round(float(head["cost_usd"] or 0), 6),
+        "tags": [{"tag": r["tag"], "count": r["count"]} for r in tags],
+        "kb_gaps": [{"question": r["gap"], "count": r["count"],
+                     "session_id": r["example"]} for r in gaps],
+    }
 
 
 async def persist_ping_turn(session_id: str, assistant_text: str,
@@ -4195,6 +4762,20 @@ async def delete_retention_photo(photo_id: int) -> Optional[dict[str, Any]]:
     return {"storage_ref": row["storage_ref"], "media_type": row["media_type"]}
 
 
+# Measured effectiveness of one media item, as a candidate-ordering key:
+# the smoothed share of its deliveries the player answered (Laplace prior, so
+# an unproven item scores a neutral 0.5 and a single lucky send can't jump the
+# queue). Settled rows only — a photo sent an hour ago has not had its chance
+# yet and must not count as a failure.
+_PHOTO_OUTCOME_SCORE_SQL = (
+    "(SELECT (COUNT(*) FILTER (WHERE o.replied_at IS NOT NULL) + 1.0) "
+    "        / (COUNT(*) + 2.0) "
+    "   FROM retention_outcomes o "
+    "  WHERE o.photo_id = retention_photos.id AND o.closed)::float8 "
+    "AS outcome_score"
+)
+
+
 def _video_slot_cap(limit: int) -> int:
     """How many candidate slots videos may occupy in the mixed feed.
 
@@ -4240,13 +4821,14 @@ async def candidate_photos(product_id: int, retention_user_id: int, *,
         if lim <= 0:
             return []
         return await _pool.fetch(
-            f"SELECT {_PHOTO_COLS} FROM retention_photos "
+            f"SELECT {_PHOTO_COLS}, {_PHOTO_OUTCOME_SCORE_SQL} "
+            "FROM retention_photos "
             "WHERE product_id = $1 AND active AND media_type = 'video' "
             f"  AND {_VIDEO_SENDABLE_SQL} "
             "  AND level_min <= $2 AND stage <= $3 "
             "  AND id NOT IN (SELECT photo_id FROM retention_photo_views "
             "                 WHERE retention_user_id = $4) "
-            "ORDER BY stage, views_count, sort_order, id "
+            "ORDER BY stage, views_count, outcome_score DESC, sort_order, id "
             "LIMIT $5 OFFSET $6",
             product_id, level_ordinal, max_stage, retention_user_id,
             lim, offset,
@@ -4256,12 +4838,14 @@ async def candidate_photos(product_id: int, retention_user_id: int, *,
                    else min(_video_slot_cap(limit), limit))
     videos = [] if media == "photo" else await _fetch_videos(video_limit)
     photos = [] if media == "video" else await _pool.fetch(
-        f"SELECT {_PHOTO_COLS} FROM retention_photos "
+        f"SELECT {_PHOTO_COLS}, {_PHOTO_OUTCOME_SCORE_SQL} "
+        "FROM retention_photos "
         "WHERE product_id = $1 AND active AND media_type <> 'video' "
         "  AND level_min <= $2 AND stage <= $3 "
         "  AND id NOT IN (SELECT photo_id FROM retention_photo_views "
         "                 WHERE retention_user_id = $4) "
-        "ORDER BY stage, views_count, sort_order, id LIMIT $5",
+        "ORDER BY stage, views_count, outcome_score DESC, sort_order, id "
+        "LIMIT $5",
         product_id, level_ordinal, max_stage, retention_user_id,
         max(limit - len(videos), 0),
     )
@@ -4272,7 +4856,11 @@ async def candidate_photos(product_id: int, retention_user_id: int, *,
         videos = list(videos) + await _fetch_videos(
             limit - len(videos) - len(photos), offset=len(videos))
     merged = [_row_to_photo(r) for r in list(photos) + list(videos)]
+    # Same key as the SQL ORDER BY (the two feeds are merged in Python, so the
+    # per-query ordering alone would not survive): stage, then freshness, then
+    # measured effectiveness, then the librarian's manual order.
     merged.sort(key=lambda p: (p.get("stage") or 0, p.get("views_count") or 0,
+                               -float(p.get("outcome_score") or 0.5),
                                p.get("sort_order") or 0, p["id"]))
     return merged
 

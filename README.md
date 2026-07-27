@@ -261,6 +261,15 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `RETENTION_SUB_CACHE_TTL_SEC` | no | `600` | Default for `retention.subscription_cache_ttl_sec` — how long a positive channel-subscription check is cached (0 = re-check on every message). |
 | `RETENTION_V2_LOSS_COMFORT_HOURS` | no | `24` | Default for `retention.v2_loss_comfort_hours` — after a big-loss signal: empathetic tone only, no play CTA, no photos, no links for this many hours. |
 | `RETENTION_V2_LOSS_HIGH_USD` | no | `100.0` | Default for `retention.v2_loss_high_usd` — 24h net loss that marks the player critical and starts the comfort window. |
+| `RETENTION_OUTCOME_REPLY_WINDOW_HOURS` | no | `48` | Outcome attribution: how long after a delivered touch a player message still counts as a reply. Deploy-level (not per product) — it defines what the stored numbers MEAN, so changing it per tenant would make the history incomparable. |
+| `RETENTION_OUTCOME_CONVERSION_WINDOW_HOURS` | no | `72` | Same, for coming back to the casino / depositing after a touch (a deposit follows with more lag than a chat reply). |
+| `RETENTION_OUTCOME_SWEEP_INTERVAL_SEC` | no | `300` | How often the attribution sweep settles open outcome rows per product (it rides the retention worker tick; this only paces it). |
+| `RETENTION_OUTCOME_SWEEP_BATCH` | no | `500` | Max open outcome rows one sweep pass settles per product. |
+| `QUALITY_REVIEW_ENABLED` | no | `true` | Default for `general.quality_review_enabled` — the LLM-as-judge pass that scores finished conversations (both facades). The verdicts feed the admin Quality page; the judge never changes anything itself. |
+| `QUALITY_REVIEW_DAILY_MAX` | no | `25` | Default for `general.quality_review_daily_max` — cost cap: reviews per product per UTC day (0 = pause). |
+| `QUALITY_REVIEW_MIN_MESSAGES` | no | `4` | Default for `general.quality_review_min_messages` — shorter conversations are skipped (nothing to judge in a one-liner). |
+| `QUALITY_REVIEW_INTERVAL_SEC` | no | `1800` | How often the review worker sweeps (deploy constant; gated by `RETENTION_SCHEDULER_ENABLED` like every background worker). |
+| `QUALITY_REVIEW_IDLE_MINUTES` | no | `60` | How long a conversation must be quiet to count as "finished" when it was never explicitly closed (a widget chat is usually abandoned, a Telegram chat has no close button). |
 | `EXPOSE_API_DOCS` | no | — | Set to `1` to publish `/docs`, `/redoc` and `/openapi.json` (they describe the whole surface, `/admin` included, so they are **disabled by default**). Dev/stage only. |
 
 The retention bot's per-product config (bot token, channel, player-API key) lives on the

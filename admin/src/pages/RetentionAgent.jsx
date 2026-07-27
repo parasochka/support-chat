@@ -65,6 +65,13 @@ const WRAP_CHIPS_SX = {
 const fmtDT = (iso) => fmtDateTime(iso) || '—';
 const fmtCost = (v) =>
   v == null ? '—' : `$${Number(v).toFixed(4)}`;
+// How fast the player answered a proactive touch (attribution ledger).
+const fmtLatency = (s) => {
+  if (s == null) return '';
+  if (s < 90) return `${s}s`;
+  if (s < 5400) return `${Math.round(s / 60)}m`;
+  return `${Math.round(s / 3600)}h`;
+};
 
 const ACTION_COLORS = {
   message: 'success',
@@ -510,6 +517,7 @@ const DecisionsTab = ({ decisions, canWrite, onDelete, onClear }) => (
             <TableCell>{t('Why / brief')}</TableCell>
             <TableCell>{t('Guards')}</TableCell>
             <TableCell>{t('Delivered')}</TableCell>
+            <TableCell>{t('Result')}</TableCell>
             <TableCell align="right">{t('Cost')}</TableCell>
             <TableCell />
           </TableRow>
@@ -553,6 +561,36 @@ const DecisionsTab = ({ decisions, canWrite, onDelete, onClear }) => (
                   (d.guard?.comfort ? t('comfort window') : t('clear'))}
               </TableCell>
               <TableCell>{d.delivered ? t('yes') : d.detail || t('no')}</TableCell>
+              {/* Measured outcome of THIS touch (attribution ledger): what the
+                  player did in the hours after it. Blank when nothing was
+                  sent; "—" while the window is still open. */}
+              <TableCell>
+                {!d.delivered ? (
+                  ''
+                ) : (
+                  <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                    {d.replied_at && (
+                      <Chip
+                        size="small"
+                        color="success"
+                        variant="outlined"
+                        label={`${t('replied')}${d.reply_latency_sec != null ? ` ${fmtLatency(d.reply_latency_sec)}` : ''}`}
+                      />
+                    )}
+                    {d.deposit_at && (
+                      <Chip size="small" color="success" label={t('deposited')} />
+                    )}
+                    {!d.replied_at && !d.deposit_at && d.returned_at && (
+                      <Chip size="small" variant="outlined" label={t('came back')} />
+                    )}
+                    {!d.replied_at && !d.returned_at && !d.deposit_at && (
+                      <Typography variant="caption" color="text.secondary">
+                        {d.outcome_settled ? t('no reaction') : t('waiting…')}
+                      </Typography>
+                    )}
+                  </Stack>
+                )}
+              </TableCell>
               <TableCell align="right">{fmtCost(d.cost_usd)}</TableCell>
               <TableCell align="right">
                 <Tooltip title={t('Delete this decision')}>
@@ -567,7 +605,7 @@ const DecisionsTab = ({ decisions, canWrite, onDelete, onClear }) => (
           ))}
           {!(decisions?.items || []).length && (
             <TableRow>
-              <TableCell colSpan={10}>
+              <TableCell colSpan={11}>
                 <Typography variant="body2" color="text.secondary">
                   {t('No decisions yet — inject an event and press «Process queue now».')}
                 </Typography>

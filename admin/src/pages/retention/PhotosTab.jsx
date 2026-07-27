@@ -151,6 +151,8 @@ const PhotosTab = ({ productId }) => {
   // the pickers below can only offer values the delivery gate can actually serve
   // (no stage 0 or 6, no VIP tier past the last one).
   const [gate, setGate] = useState({ tiers: ['none'], maxStage: 5 });
+  // photo_id -> measured outcome row (sends / replies / reply_rate)
+  const [stats, setStats] = useState({});
 
   const load = useCallback(() => {
     httpClient(`${API_URL}/admin/retention/photos?product_id=${productId}`)
@@ -181,6 +183,22 @@ const PhotosTab = ({ productId }) => {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Measured effectiveness per media item (the attribution ledger), merged
+  // into the grid by id: which photos and videos actually earn a reply. Its
+  // own request so the hot media-list query stays untouched.
+  useEffect(() => {
+    const from = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    httpClient(`${API_URL}/admin/retention/effectiveness?product_id=${productId}&from=${from}`)
+      .then(({ json }) => {
+        const map = {};
+        (json.media || []).forEach((m) => {
+          map[m.photo_id] = m;
+        });
+        setStats(map);
+      })
+      .catch(() => setStats({}));
+  }, [productId]);
 
   useEffect(() => {
     httpClient(`${API_URL}/admin/settings?product_id=${productId}`)
@@ -851,6 +869,29 @@ const PhotosTab = ({ productId }) => {
                   )}
                   <Chip size="small" variant="outlined" label={`${t('stage')} ${ph.stage}`} />
                   <Chip size="small" variant="outlined" label={`${t('level')} ${ph.level_min}+`} />
+                  {/* Measured effectiveness (attribution ledger): how often a
+                      player answered after receiving this item. Absent until
+                      it has been delivered at least once. */}
+                  {stats[ph.id] && (
+                    <Tooltip
+                      title={t('Answered after {r} of {n} deliveries (measured over the last 90 days).')
+                        .replace('{r}', stats[ph.id].replies)
+                        .replace('{n}', stats[ph.id].sends)}
+                    >
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        color={
+                          stats[ph.id].reply_rate >= 0.5
+                            ? 'success'
+                            : stats[ph.id].reply_rate <= 0.15
+                              ? 'default'
+                              : 'primary'
+                        }
+                        label={`${t('reply')} ${Math.round((stats[ph.id].reply_rate || 0) * 100)}% · ${stats[ph.id].sends}`}
+                      />
+                    </Tooltip>
+                  )}
                 </Stack>
                 <Stack spacing={1.5} sx={{ mt: 1.5 }}>
                   <TextField

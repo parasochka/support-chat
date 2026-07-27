@@ -34,6 +34,7 @@ GROUPS = (
     ("prompt", "Prompt — the assembled prompt and its brand variables"),
     ("content", "Content — knowledge base, translations, site map"),
     ("retention", "Retention — the Telegram bot and its proactive agent"),
+    ("quality", "Quality — the AI judge's verdicts on finished conversations"),
     ("settings", "Settings — the hot-reloaded runtime knobs"),
     ("raw", "Raw — the escape hatch for anything not listed above"),
 )
@@ -492,6 +493,50 @@ TOOLS: tuple = (
         method="GET", path="/admin/retention/sessions",
         params=(_PAGE, _PAGE_SIZE),
         product="query!", redactable=True,
+    ),
+    Tool(
+        name="retention_effectiveness",
+        group="retention",
+        description="What the bot's proactive touches actually achieved "
+                    "(outcome attribution): replies, returns to the casino and "
+                    "deposits after each touch, with cost per reply/return/"
+                    "deposit, broken down per photo or video, per site-map CTA "
+                    "page, per idle-ladder rung and per trigger event.",
+        method="GET", path="/admin/retention/effectiveness",
+        params=(_FROM, _TO),
+        product="query!",
+    ),
+    Tool(
+        name="quality_overview",
+        group="quality",
+        description="AI-judge verdicts on finished conversations (support "
+                    "widget + Telegram): average score, how many were poor, the "
+                    "tag counts of what goes wrong, and the top knowledge-base "
+                    "gaps players ran into.",
+        method="GET", path="/admin/quality/overview",
+        params=(_FROM, _TO),
+        product="query",
+    ),
+    Tool(
+        name="quality_reviews",
+        group="quality",
+        description="The reviewed conversations themselves, worst score first: "
+                    "score, tags, one-line summary, quoted issues and KB gaps. "
+                    "Filter by `consumer` (web/telegram), `tag` or `max_score`; "
+                    "open a transcript with `session_transcript`.",
+        method="GET", path="/admin/quality/reviews",
+        params=(_FROM, _TO,
+                Param("consumer", "string",
+                      "Channel filter: 'web' (support widget) or 'telegram'.",
+                      enum=("web", "telegram")),
+                Param("tag", "string",
+                      "Only reviews carrying this taxonomy tag, e.g. 'kb_gap', "
+                      "'wrong_answer', 'player_frustrated'."),
+                Param("max_score", "integer",
+                      "Only reviews scored at most this (1..5) — the triage "
+                      "queue."),
+                _PAGE, _PAGE_SIZE),
+        product="query", redactable=True,
     ),
 
     # ------------------------------------------------------------------ raw

@@ -556,6 +556,36 @@ RETENTION_IDLE_SWEEP_INTERVAL_SEC: int = _env_int(
 # delivery, retention._split_reply_parts). Extra chunks collapse into the
 # last part; 1 = never split.
 RETENTION_MAX_REPLY_PARTS: int = _env_int("RETENTION_MAX_REPLY_PARTS", 3)
+# OUTCOME ATTRIBUTION (retention/outcomes.py): every touch the bot sends —
+# a proactive agent/idle message, a delivered photo or video, a message
+# carrying a site-map CTA button — gets one retention_outcomes row, and a
+# sweep fills in what happened afterwards: did the player answer, did he come
+# back, did he deposit. The windows are deploy-level constants (like the media
+# normalizer's): they define the MEANING of the stored numbers, so changing
+# them per product would make the stored history incomparable. The reply
+# window matches the 48h the retention overview's ping-reply-rate already
+# uses; the conversion window is longer because a deposit follows a nudge with
+# more lag than a chat reply does.
+RETENTION_OUTCOME_REPLY_WINDOW_HOURS: int = _env_int(
+    "RETENTION_OUTCOME_REPLY_WINDOW_HOURS", 48)
+RETENTION_OUTCOME_CONVERSION_WINDOW_HOURS: int = _env_int(
+    "RETENTION_OUTCOME_CONVERSION_WINDOW_HOURS", 72)
+# How often the attribution sweep runs per product (it rides the retention
+# worker tick, this only paces it) and how many open rows one pass settles.
+RETENTION_OUTCOME_SWEEP_INTERVAL_SEC: int = _env_int(
+    "RETENTION_OUTCOME_SWEEP_INTERVAL_SEC", 300)
+RETENTION_OUTCOME_SWEEP_BATCH: int = _env_int(
+    "RETENTION_OUTCOME_SWEEP_BATCH", 500)
+# QUALITY REVIEW (ai/reviewer.py): the LLM-as-judge pass that scores finished
+# conversations (support widget AND Telegram). The cadence + the dormancy
+# threshold that makes an open conversation reviewable are deploy constants;
+# the on/off switch, the daily cap and the minimum length are admin settings
+# (the `general` group) because they are cost dials the owner tunes.
+QUALITY_REVIEW_INTERVAL_SEC: int = _env_int("QUALITY_REVIEW_INTERVAL_SEC", 1800)
+QUALITY_REVIEW_IDLE_MINUTES: int = _env_int("QUALITY_REVIEW_IDLE_MINUTES", 60)
+QUALITY_REVIEW_ENABLED: bool = _env_bool("QUALITY_REVIEW_ENABLED", True)
+QUALITY_REVIEW_DAILY_MAX: int = _env_int("QUALITY_REVIEW_DAILY_MAX", 25)
+QUALITY_REVIEW_MIN_MESSAGES: int = _env_int("QUALITY_REVIEW_MIN_MESSAGES", 4)
 # Media normalizer (media_normalizer.py): the periodic sweep that re-encodes
 # uploaded retention photos to WebP at Telegram-appropriate dimensions and
 # deletes the heavy originals. Normalization is ALWAYS ON and fully code-owned —

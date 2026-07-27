@@ -217,6 +217,29 @@ Map of what lives where:
   context. The profile is **ignored** when a handshake secret is set (the host site is
   authoritative then). This is the single seam for "manage the test player on test, the real
   site supplies it later".
+- **Quality — the AI judge's verdicts** (`app/api/quality.py`, `/admin/quality/*`;
+  the SPA's **Common → Quality** page, `pages/Quality.jsx`): the read + run surface
+  over `conversation_reviews`, written by the background LLM-as-judge pass
+  (`app/ai/reviewer.py`, spec in CLAUDE.md). `GET /overview` (score distribution,
+  tag counts from the closed `prompts.REVIEW_TAGS` taxonomy — shipped alongside the
+  data as `taxonomy` so the page never duplicates it —, the top KB gaps) and
+  `GET /reviews` (worst score first, filters: consumer/tag/max_score) follow the
+  dashboard scope convention (`resolve_scope_filter`: no selection = the caller's
+  whole accessible scope). The two triggers are WRITES on one product because they
+  spend its OpenAI budget: `POST /run` (a pass now, still bounded by the product's
+  daily cap) and `POST /review/{session_id}` (judge one chat), both behind
+  `require_admin_write` + `require_product_write`. The judge never edits anything —
+  the page is a triage queue, not an actor. Knobs live in the `general` settings
+  group (`quality_review_enabled` / `_daily_max` / `_min_messages`), so they show up
+  on the System-settings surface like every other group field.
+- **Effectiveness** (`GET /admin/retention/effectiveness`, product-scoped): the
+  attribution ledger's four cuts (media / CTA pages / idle rungs / triggers) plus
+  the summary with cost per reply, return and deposit. Deliberately NOT
+  scope-aggregated — the rows are that product's own media/pages/rules and do not
+  merge across brands. Rendered in Retention → Analytics, and merged by id into the
+  Media grid (a reply-rate chip) and the Idle rules table (a Replies column); the
+  Decisions ledger gets the per-decision outcome via its own LEFT JOIN in
+  `db.list_retention_v2_decisions`.
 - **Admin SPA** (`admin/` at the repo root): a React Admin (marmelab) + Vite app.
   The two-stage Dockerfile builds it (node stage → `admin/dist`) and `main.py`
   serves it at `/admin` (hash router; hashed assets under `/admin/assets`,

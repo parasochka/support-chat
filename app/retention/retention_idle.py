@@ -33,6 +33,7 @@ from app.chat import chat_service
 from app.core import config
 from app.core import db
 from app.retention import delivery
+from app.retention import outcomes
 from app.retention import retention
 from app.retention import retention_v2
 
@@ -226,9 +227,9 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
     dry_run = bool(cfg.get("v2_dry_run"))
     lang = retention.resolve_user_lang(ru)
 
-    async def _ledger(**overrides: Any) -> None:
+    async def _ledger(**overrides: Any) -> int:
         """One decisions-ledger row per attempt; only the outcome fields vary."""
-        await db.insert_retention_v2_decision(
+        return await db.insert_retention_v2_decision(
             pid, retention_user_id=rid, player_id=ru.get("player_id"),
             trigger_kind="idle", event_pk=None,
             event_name=f"idle:{rule.get('trigger_kind')}",
@@ -271,6 +272,10 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
         reason=reason,
         intent=rule.get("intent") or "",
         photo_candidates=candidates,
+        # Measured feedback: a ladder rung firing at a player who ignored the
+        # previous rungs must not reuse the same angle.
+        touch_history=await retention_v2._touch_history(
+            pid, ru.get("player_id") or ""),
     )
     if draft is None:
         await _ledger(dry_run=False, delivered=False, detail="model_error",
@@ -295,8 +300,19 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
                                    link_url=draft.link_url if link_attached else None)
         await db.record_retention_ping(pid, rid, rule_id, action, "sent",
                                        detail=rule.get("name"), cost_usd=cost)
-        await _ledger(dry_run=False, delivered=True, detail=rule.get("name"),
-                      cost_usd=cost)
+        decision_id = await _ledger(dry_run=False, delivered=True,
+                                    detail=rule.get("name"), cost_usd=cost)
+        # Attribution row, carrying the RUNG that fired — this is what makes
+        # "which ladder step actually brings players back" answerable.
+        sent_photo_id = (draft.photo_id
+                         if detail != "photo_fallback_text" else None)
+        await outcomes.record(
+            pid, ru, kind="proactive", session_id=session["id"],
+            decision_id=decision_id, rule_id=rule_id,
+            event_name=f"idle:{rule.get('trigger_kind')}", action=action,
+            photo_id=sent_photo_id,
+            media_type=retention_v2._media_type_of(candidates, sent_photo_id),
+            link_url=draft.link_url if link_attached else None, cost_usd=cost)
         await db.log_admin_event(
             session["id"], "retention_ping",
             {"rule_id": rule_id, "rule": rule.get("name"), "action": action,

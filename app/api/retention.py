@@ -1516,6 +1516,41 @@ async def timeseries(product_id: Optional[int] = None,
         "series": await db.retention_timeseries(scope, dt_from, dt_to)})
 
 
+@admin_router.get("/effectiveness")
+async def effectiveness(product_id: int,
+                        from_: Optional[str] = Query(default=None, alias="from"),
+                        to: Optional[str] = None,
+                        admin=Depends(require_admin)) -> JSONResponse:
+    """What the bot's touches actually achieved, from the attribution ledger.
+
+    Four cuts over one range — the summary (with cost per reply / return /
+    deposit), per media item, per site-map CTA page and per idle-ladder rung —
+    plus the windows the numbers are measured over, so the page can say what
+    "reply rate" means without hard-coding the deploy constants.
+
+    Per-product (not scope-aggregated): every cut is a list of that product's
+    own media/pages/rules, which do not merge across brands.
+    """
+    from app.api.admin import _range
+    await admin_auth.require_product_read(admin, product_id)
+    dt_from, dt_to = _range(from_, to)
+    summary, media, links, rules, events = await asyncio.gather(
+        db.outcome_summary(product_id, dt_from, dt_to),
+        db.outcome_by_media(product_id, dt_from, dt_to),
+        db.outcome_by_link(product_id, dt_from, dt_to),
+        db.outcome_by_idle_rule(product_id, dt_from, dt_to),
+        db.outcome_by_event(product_id, dt_from, dt_to),
+    )
+    return JSONResponse(content={
+        "summary": summary, "media": media, "links": links,
+        "idle_rules": rules, "events": events,
+        "windows": {
+            "reply_hours": config.RETENTION_OUTCOME_REPLY_WINDOW_HOURS,
+            "conversion_hours": config.RETENTION_OUTCOME_CONVERSION_WINDOW_HOURS,
+        },
+    })
+
+
 @admin_router.get("/users")
 async def users(product_id: int, limit: int = 100, offset: int = 0,
                 admin=Depends(require_admin)) -> JSONResponse:

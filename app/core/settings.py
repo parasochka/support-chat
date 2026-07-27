@@ -365,6 +365,15 @@ def general() -> dict[str, Any]:
         "history_max_turns": db_v.get("history_max_turns", config.HISTORY_MAX_TURNS),
         "contact_form_url": db_v.get("contact_form_url", config.CONTACT_FORM_URL),
         "body_max_bytes": db_v.get("body_max_bytes", config.BODY_MAX_BYTES),
+        # Quality review (the LLM-as-judge pass over finished conversations,
+        # ai/reviewer.py). Both facades, hence `general` rather than a
+        # bot-specific group; the cadence itself is a deploy constant.
+        "quality_review_enabled": db_v.get("quality_review_enabled",
+                                           config.QUALITY_REVIEW_ENABLED),
+        "quality_review_daily_max": db_v.get("quality_review_daily_max",
+                                             config.QUALITY_REVIEW_DAILY_MAX),
+        "quality_review_min_messages": db_v.get(
+            "quality_review_min_messages", config.QUALITY_REVIEW_MIN_MESSAGES),
     }
 
 
@@ -583,6 +592,9 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_int(value, "max_messages_per_session", 1, 10_000)
         _require_int(value, "history_max_turns", 1, 200)
         _require_int(value, "body_max_bytes", 1_024, 104_857_600)  # 1 KiB..100 MiB
+        _require_bool(value, "quality_review_enabled")
+        _require_int(value, "quality_review_daily_max", 0, 5_000)  # 0 = off
+        _require_int(value, "quality_review_min_messages", 2, 1_000)
         # Legacy: the per-language contact URL now lives in translations
         # (`contact_url`); this field is still accepted so old writes don't 400.
         if "contact_form_url" in value:

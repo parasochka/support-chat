@@ -702,6 +702,15 @@ async def handle_retention_message(
     # Periodic play reminder: every N-th reply carries the Layer-3 nudge task
     # (a light in-context invitation to play + a one-tap site-map button).
     nudge = play_nudge_due(session.get("message_count", 0), str(session_id))
+    # On a nudge turn only: the CTA pages whose buttons actually earned a
+    # response (attribution ledger) — a tie-breaker for the rotation, which
+    # otherwise picks blind. One cheap query every ~5th turn, best-effort.
+    nudge_links: list[str] = []
+    if nudge and product_id is not None:
+        try:
+            nudge_links = await db.top_links_by_outcome(int(product_id))
+        except Exception:  # noqa: BLE001 - a hint is never worth a failed turn
+            nudge_links = []
     messages = prompts.build_retention_messages(
         session=session,
         kb_block=kb_block,
@@ -711,6 +720,7 @@ async def handle_retention_message(
         photo_candidates=candidates,
         previous_history=previous_history or None,
         play_nudge=nudge,
+        nudge_links=nudge_links,
         intro_photo=intro_photo,
         appearance=appearance,
         progression=progression,
@@ -808,6 +818,7 @@ async def generate_retention_ping(
     occasion: Optional[str] = None,
     comfort: bool = False,
     stage_up: Optional[dict[str, Any]] = None,
+    touch_history: Optional[list[dict[str, Any]]] = None,
 ) -> Optional[PingDraft]:
     """Generate ONE proactive message: a matched ping rule (time-based), —
     with `occasion` set — a Retention-v2 event reaction (`comfort` hardens the
@@ -842,6 +853,9 @@ async def generate_retention_ping(
         comfort=comfort,
         stage_up=stage_up,
         previous_history=previous_history or None,
+        # Measured feedback: when his last touches went unanswered, the writer
+        # is told to change the approach instead of repeating it.
+        touch_history=touch_history,
         # A proactive touch is where a wrong time-of-day flourish stings most
         # ("enjoy your evening" at 10:00) — give the model the audience clock.
         tz_offset_hours=settings.retention()["quiet_hours_utc_offset"],
