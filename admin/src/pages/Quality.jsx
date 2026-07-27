@@ -9,6 +9,7 @@ import Dialog from '@mui/material/Dialog';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
 import Grid from '@mui/material/Grid';
+import Link from '@mui/material/Link';
 import MenuItem from '@mui/material/MenuItem';
 import Stack from '@mui/material/Stack';
 import Table from '@mui/material/Table';
@@ -115,7 +116,6 @@ const Quality = () => {
     }
   };
 
-  const pages = Math.max(1, Math.ceil((list.total || 0) / pageSize));
   const taxonomy = overview?.taxonomy || [];
   const tagHelp = (tag) => taxonomy.find((x) => x.tag === tag)?.description || tag;
 
@@ -136,6 +136,7 @@ const Quality = () => {
           value={range.from}
           onChange={(e) => e.target.value && setRange({ ...range, from: e.target.value })}
           slotProps={{ inputLabel: { shrink: true } }}
+          sx={{ width: 145 }}
         />
         <TextField
           size="small"
@@ -144,6 +145,7 @@ const Quality = () => {
           value={range.to}
           onChange={(e) => e.target.value && setRange({ ...range, to: e.target.value })}
           slotProps={{ inputLabel: { shrink: true } }}
+          sx={{ width: 145 }}
         />
         <TextField
           size="small"
@@ -154,7 +156,7 @@ const Quality = () => {
             setPage(1);
             setFilters({ ...filters, consumer: e.target.value });
           }}
-          sx={{ minWidth: 140 }}
+          sx={{ width: 120 }}
         >
           <MenuItem value="">{t('All')}</MenuItem>
           <MenuItem value="web">{t('Support widget')}</MenuItem>
@@ -169,7 +171,7 @@ const Quality = () => {
             setPage(1);
             setFilters({ ...filters, max_score: e.target.value });
           }}
-          sx={{ minWidth: 140 }}
+          sx={{ width: 120 }}
         >
           <MenuItem value="">{t('Any')}</MenuItem>
           {[1, 2, 3, 4].map((n) => (
@@ -188,9 +190,22 @@ const Quality = () => {
           />
         )}
         {canWrite && productId && (
-          <Button variant="outlined" onClick={runNow} disabled={running}>
-            {running ? t('Reviewing…') : t('Review now')}
-          </Button>
+          <Tooltip
+            title={t(
+              'Runs the judge over finished conversations that have no verdict yet (within the daily cap). The filters only narrow the list of stored verdicts below.'
+            )}
+          >
+            <span>
+              <Button
+                variant="outlined"
+                onClick={runNow}
+                disabled={running}
+                sx={{ minWidth: 170, whiteSpace: 'nowrap' }}
+              >
+                {running ? t('Reviewing…') : t('Review now')}
+              </Button>
+            </span>
+          </Tooltip>
         )}
       </Stack>
 
@@ -221,7 +236,7 @@ const Quality = () => {
                 {t('What goes wrong')}
               </Typography>
               {overview?.tags?.length ? (
-                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, minWidth: 0 }}>
                   {overview.tags.map((x) => (
                     <Tooltip key={x.tag} title={tagHelp(x.tag)}>
                       <Chip
@@ -236,7 +251,7 @@ const Quality = () => {
                       />
                     </Tooltip>
                   ))}
-                </Stack>
+                </Box>
               ) : (
                 <Typography variant="body2" color="text.secondary">
                   {t('No reviews in this range yet.')}
@@ -255,14 +270,14 @@ const Quality = () => {
                 {t('Questions players asked that the KB could not answer — the shortlist for the next KB edit.')}
               </Typography>
               {overview?.kb_gaps?.length ? (
-                <Stack spacing={0.5}>
+                <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
                   {overview.kb_gaps.map((g, i) => (
-                    <Typography key={i} variant="body2">
+                    <Typography key={i} component="li" variant="body2" sx={{ mb: 0.5 }}>
                       {g.count > 1 ? `${g.count}× ` : ''}
                       {g.question}
                     </Typography>
                   ))}
-                </Stack>
+                </Box>
               ) : (
                 <Typography variant="body2" color="text.secondary">
                   {t('None found in this range.')}
@@ -297,11 +312,11 @@ const Quality = () => {
                 </TableCell>
                 <TableCell>{r.consumer === 'telegram' ? t('Telegram') : t('Widget')}</TableCell>
                 <TableCell>
-                  <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
                     {(r.tags || []).map((tag) => (
                       <Chip key={tag} size="small" variant="outlined" label={tag} />
                     ))}
-                  </Stack>
+                  </Box>
                 </TableCell>
                 <TableCell>{r.summary}</TableCell>
                 <TableCell>{fmtDateTime(r.created_at)}</TableCell>
@@ -321,7 +336,7 @@ const Quality = () => {
           </TableBody>
         </Table>
       </Box>
-      <GridPagination page={page} pages={pages} total={list.total} onChange={setPage} />
+      <GridPagination count={list.total || 0} page={page} perPage={pageSize} onPage={setPage} />
 
       <Dialog open={Boolean(open)} onClose={() => setOpen(null)} maxWidth="md" fullWidth>
         <DialogTitle>
@@ -331,13 +346,13 @@ const Quality = () => {
           {open && (
             <Stack spacing={2}>
               <Typography variant="body1">{open.summary}</Typography>
-              <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
                 {(open.tags || []).map((tag) => (
                   <Tooltip key={tag} title={tagHelp(tag)}>
                     <Chip size="small" label={tag} />
                   </Tooltip>
                 ))}
-              </Stack>
+              </Box>
               {(open.issues || []).length > 0 && (
                 <Box>
                   <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
@@ -370,7 +385,15 @@ const Quality = () => {
                 </Box>
               )}
               <Typography variant="caption" color="text.secondary">
-                {t('Conversation')}: {open.session_id}
+                {t('Conversation')}:{' '}
+                <Link
+                  href={`#/sessions/${open.session_id}/show`}
+                  target="_blank"
+                  rel="noopener"
+                  underline="hover"
+                >
+                  {open.session_id}
+                </Link>
                 {open.product_name ? ` · ${open.product_name}` : ''}
                 {open.model ? ` · ${open.model}` : ''}
               </Typography>
