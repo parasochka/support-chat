@@ -37,6 +37,7 @@ import SupportAgentIcon from '@mui/icons-material/SupportAgent';
 import PersonSearchIcon from '@mui/icons-material/PersonSearch';
 import PhotoLibraryIcon from '@mui/icons-material/PhotoLibrary';
 import EditNoteIcon from '@mui/icons-material/EditNote';
+import HubIcon from '@mui/icons-material/Hub';
 
 import polyglotI18nProvider from 'ra-i18n-polyglot';
 import englishMessages from 'ra-language-english';
@@ -123,6 +124,7 @@ const Dashboard = lazyPage(() => import('./dashboard/Dashboard'));
 const Account = lazyPage(() => import('./pages/Account'));
 const ApiKeys = lazyPage(() => import('./pages/ApiKeys'));
 const Logs = lazyPage(() => import('./pages/Logs'));
+const Mcp = lazyPage(() => import('./pages/Mcp'));
 const Prompt = lazyPage(() => import('./pages/Prompt'));
 const Retention = lazyPage(() => import('./pages/Retention'));
 const RetentionSettings = lazyPage(() => import('./pages/RetentionSettings'));
@@ -460,6 +462,11 @@ const AppMenu = () => {
         {permissions === 'admin' && (
           <Menu.Item to="/api-keys" primaryText={t('API keys')} leftIcon={<VpnKeyIcon />} />
         )}
+        {/* MCP — wiring an AI agent to this admin API. Global-scope only
+            server-side (it mints a deploy-wide credential), like Logs. */}
+        {permissions === 'admin' && (
+          <Menu.Item to="/mcp" primaryText={t('MCP')} leftIcon={<HubIcon />} />
+        )}
       </CollapsibleSection>
     </Menu>
   );
@@ -577,6 +584,7 @@ const App = () => (
       <Route path="/api-keys" element={<ApiKeys />} />
       <Route path="/account" element={<Account />} />
       <Route path="/logs" element={<Logs />} />
+      <Route path="/mcp" element={<Mcp />} />
     </CustomRoutes>
   </Admin>
 );

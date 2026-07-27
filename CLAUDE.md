@@ -1963,6 +1963,41 @@ Map of what lives where:
     admin sees everything in reach); hub-global actions (user mgmt, system
     settings) show only to a global viewer. NB only admins can mutate today, so
     audit actors are admins — the manager/admin split is future-proofing.
+- **MCP — the agent-facing facade of the admin API** (`mcp_server/`, the
+  **System → MCP** page). A Model Context Protocol server (stdio, newline-
+  delimited JSON-RPC 2.0) that lets an AI agent read the logs, inspect the
+  assembled prompt of any product, walk conversations + the retention agent's
+  decisions, and — with an `admin`-role key — edit KB, prompt variables,
+  translations, site map and settings. It is a **standalone CLIENT**: it holds a
+  service key (`sak_…`), calls the same `/admin/*` endpoints the SPA does over
+  HTTPS, and imports NOTHING from the service (no `db`, no `config`, no
+  `settings`) — so every authorization decision stays at the `require_admin`
+  choke point and a write is audited as `apikey:<name>` like any other machine
+  caller. Hand-rolled on stdlib + `httpx` (the `auth.py` JWT precedent): no new
+  runtime dependency, and the protocol layer is a pure dict-in/dict-out
+  `MCPServer.handle()` that pytest drives without a subprocess
+  (`tests/test_mcp_server.py`). Structure: `catalog.py` is the ONE declarative
+  tool table (name, endpoint, params + where each rides — query/path/body/local),
+  `client.py` the HTTP seam (it turns 401/403/404/422 into an actionable
+  sentence), `server.py` the dispatcher. **The catalogue is curated, not
+  generated**: ~90 admin routes would cost more context than they are worth, so
+  ~20 task-shaped tools cover the real work plus ONE `admin_get` escape hatch,
+  bounded to paths under `/admin/` (an admin credential must not be pointable at
+  the public chat API). **Destructive and credential surfaces are absent by
+  construction** — no DELETE anywhere in the catalogue, nothing under
+  `/users`, `/api-keys`, `/secrets` or `widget-key` (a test pins this). Player
+  identity (`email`, `full_name`, `tg_username`, …) is masked in the payloads of
+  transcript/session tools unless `redact_pii=false`; message TEXT is never
+  touched (it is the thing being debugged). Env contract:
+  `SUPPORT_ADMIN_URL`/`_KEY` (required), `_PRODUCT_ID` (default product for
+  tools called without one), `_ALLOW_WRITES=0` (write tools are not merely
+  refused — they are never listed, so the model spends no context on them),
+  `_REDACT_PII`, `_MAX_RESPONSE_CHARS`, `_TIMEOUT_SEC`. `GET
+  /admin/mcp/manifest` re-exports `catalog.manifest()` so the System → MCP page
+  (key minting + copyable `.mcp.json` / `claude mcp add`) renders the tool list
+  from the code and can never drift; the page is global-scope only, like Logs.
+  Adding a tool = one `Tool(...)` row in `catalog.py` (the page and the manifest
+  follow automatically).
 - **Sidebar IA — flat sections, one entry per surface** (`admin/src/App.jsx`):
   four collapsible sections and NO page-wide tab strips (the earlier cascading
   hubs — Support's Content entry with its `RouteTabs` strip and the retention
@@ -1974,7 +2009,7 @@ Map of what lives where:
   **Retention**: How it works · Knowledge base · Prompt · Media · Proactive
   agent (events/decisions/idle pings/logs/guide tabs) · Conversations · Settings
   (`/retention-settings`) · Analytics. **System**: Structure · Settings · Logs ·
-  Users · API keys. All sidebar entries share one 40px icon column (RA's
+  Users · API keys · MCP. All sidebar entries share one 40px icon column (RA's
   MenuItemLink width) so labels align.
 
 §16 decisions: unresolved analysis = topic-grouped (no embeddings); contact form =
