@@ -198,12 +198,9 @@ bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию
   <tr><td><span class="tag get">GET</span><code>/admin/quality/reviews</code></td>
       <td>Список вердиктов (худшие первыми). Фильтры: <code>consumer</code>,
           <code>tag</code>, <code>max_score</code>, пагинация.</td></tr>
-  <tr><td><span class="tag post">POST</span><code>/admin/quality/run</code></td>
-      <td>Прогнать проход по продукту сейчас (в пределах дневного лимита). Только админ.</td></tr>
-  <tr><td><span class="tag post">POST</span><code>/admin/quality/review/{session_id}</code></td>
-      <td>Оценить один диалог немедленно. Только админ с правом записи на продукт.</td></tr>
 </table>
-<p class="muted">Судья ничего не меняет сам — он только пишет вердикты. Включение и дневной
+<p class="muted">Судья ничего не меняет сам — он только пишет вердикты и работает полностью
+автоматически (фоновый воркер; ручного перезапуска нет). Включение и дневной
 лимит живут в группе настроек <code>general</code>
 (<code>quality_review_enabled</code>, <code>quality_review_daily_max</code>,
 <code>quality_review_min_messages</code>).</p>

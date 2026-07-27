@@ -266,7 +266,7 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `RETENTION_OUTCOME_SWEEP_INTERVAL_SEC` | no | `300` | How often the attribution sweep settles open outcome rows per product (it rides the retention worker tick; this only paces it). |
 | `RETENTION_OUTCOME_SWEEP_BATCH` | no | `500` | Max open outcome rows one sweep pass settles per product. |
 | `QUALITY_REVIEW_ENABLED` | no | `true` | Default for `general.quality_review_enabled` — the LLM-as-judge pass that scores finished conversations (both facades). The verdicts feed the admin Quality page; the judge never changes anything itself. |
-| `QUALITY_REVIEW_DAILY_MAX` | no | `25` | Default for `general.quality_review_daily_max` — cost cap: reviews per product per UTC day (0 = pause). |
+| `QUALITY_REVIEW_DAILY_MAX` | no | `100` | Default for `general.quality_review_daily_max` — cost cap: reviews per product per UTC day (0 = pause). |
 | `QUALITY_REVIEW_MIN_MESSAGES` | no | `4` | Default for `general.quality_review_min_messages` — shorter conversations are skipped (nothing to judge in a one-liner). |
 | `QUALITY_REVIEW_INTERVAL_SEC` | no | `1800` | How often the review worker sweeps (deploy constant; gated by `RETENTION_SCHEDULER_ENABLED` like every background worker). |
 | `QUALITY_REVIEW_IDLE_MINUTES` | no | `60` | How long a conversation must be quiet to count as "finished" when it was never explicitly closed (a widget chat is usually abandoned, a Telegram chat has no close button). |
