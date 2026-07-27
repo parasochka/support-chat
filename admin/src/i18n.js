@@ -1585,7 +1585,9 @@ const RU = {
   'Telegram bot': 'Telegram-бот',
   'Score at most': 'Оценка не выше',
   'Any': 'Любая',
-  'Review now': 'Проверить сейчас',
+  'Review now': 'Проверить',
+  'Runs the judge over finished conversations that have no verdict yet (within the daily cap). The filters only narrow the list of stored verdicts below.':
+    'Запускает ИИ-аудитора по завершённым диалогам, у которых ещё нет вердикта (в пределах дневного лимита). Фильтры лишь сужают список уже сохранённых проверок ниже.',
   'Reviewing…': 'Проверяем…',
   'Pass skipped:': 'Проход пропущен:',
   'Reviewed {n} conversations': 'Проверено диалогов: {n}',
