@@ -33,6 +33,7 @@ import ReportProblemIcon from '@mui/icons-material/ReportProblem';
 import SettingsIcon from '@mui/icons-material/Settings';
 import TranslateIcon from '@mui/icons-material/Translate';
 import MapIcon from '@mui/icons-material/Map';
+import FactCheckIcon from '@mui/icons-material/FactCheck';
 import SupportAgentIcon from '@mui/icons-material/SupportAgent';
 import PersonSearchIcon from '@mui/icons-material/PersonSearch';
 import PhotoLibraryIcon from '@mui/icons-material/PhotoLibrary';
@@ -132,6 +133,7 @@ const EscalationKeywords = lazyPage(() => import('./pages/EscalationKeywords'));
 const TestProfile = lazyPage(() => import('./pages/TestProfile'));
 const RetentionAgent = lazyPage(() => import('./pages/RetentionAgent'));
 const Settings = lazyPage(() => import('./pages/Settings'));
+const Quality = lazyPage(() => import('./pages/Quality'));
 const SiteMap = lazyPage(() => import('./pages/SiteMap'));
 const Structure = lazyPage(() => import('./pages/Structure'));
 const SupportGuide = lazyPage(() => import('./pages/SupportGuide'));
@@ -407,6 +409,14 @@ const AppMenu = () => {
           icon={<MapIcon fontSize="small" />}
           active={(location) => location.pathname.startsWith('/site-map')}
         />
+        {/* The AI judge's verdicts on finished conversations of BOTH bots —
+            a read-only triage queue, hence Common rather than either bot. */}
+        <SubItem
+          to="/quality"
+          label={t('Quality')}
+          icon={<FactCheckIcon fontSize="small" />}
+          active={(location) => location.pathname.startsWith('/quality')}
+        />
         <SubItem
           to="/escalation-keywords"
           label={t('Escalation keywords')}
@@ -573,6 +583,7 @@ const App = () => (
       <Route path="/test-profile" element={<TestProfile />} />
       <Route path="/translations" element={<Translations />} />
       <Route path="/site-map" element={<SiteMap />} />
+      <Route path="/quality" element={<Quality />} />
       <Route path="/settings" element={<Settings />} />
       <Route path="/structure" element={<Structure />} />
       <Route path="/support-guide" element={<SupportGuide />} />

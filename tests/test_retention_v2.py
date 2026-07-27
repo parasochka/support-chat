@@ -583,7 +583,7 @@ async def test_process_event_live_sends_and_ledgers(monkeypatch):
 
     async def _send(product, ru, evt, decision, *, comfort, cfg):
         sent["comfort"] = comfort
-        return True, 0.003, None
+        return True, 0.003, None, {"session_id": "s-1"}
 
     monkeypatch.setattr(db, "get_retention_user_by_player", _ru_get)
     monkeypatch.setattr(db, "player_net_loss_24h", _loss)
@@ -666,7 +666,7 @@ async def test_send_touch_header_carries_occasion_phrase(monkeypatch):
     decision = {"action": "message", "tone": "warm", "intent": "hi",
                 "reason": "r"}
 
-    ok, cost, detail = await retention_v2._send_touch(
+    ok, cost, detail, _facts = await retention_v2._send_touch(
         {"id": 1}, _ru(), _evt(), decision, comfort=False, cfg=_cfg())
     assert ok is True and detail is None
     # The occasion rides in the HEADER line as a human phrase (rtn_trig_*,

@@ -18,6 +18,7 @@ import TableCell from '@mui/material/TableCell';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { API_URL, httpClient } from '../httpClient';
 import useIsMobile from '../lib/useIsMobile';
@@ -65,6 +66,9 @@ const IdlePingsTab = ({ productId }) => {
   const [editing, setEditing] = useState(null); // EMPTY_RULE-shaped, id when editing
   const [running, setRunning] = useState(false);
   const [agent, setAgent] = useState(null); // /v2/status snapshot
+  // rule_id -> measured outcome (sends / replies / returns) from the
+  // attribution ledger: which rungs actually bring players back.
+  const [stats, setStats] = useState({});
   const pageSize = 50;
 
   const loadRules = useCallback(() => {
@@ -93,6 +97,21 @@ const IdlePingsTab = ({ productId }) => {
     httpClient(`${API_URL}/admin/retention/v2/status?product_id=${productId}`)
       .then(({ json }) => setAgent(json))
       .catch(() => {});
+  }, [productId]);
+
+  // Per-rung effectiveness over the last 90 days — a ladder step that never
+  // earns a reply is dead weight, and this is the only place it shows.
+  useEffect(() => {
+    const from = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    httpClient(`${API_URL}/admin/retention/effectiveness?product_id=${productId}&from=${from}`)
+      .then(({ json }) => {
+        const map = {};
+        (json.idle_rules || []).forEach((r) => {
+          map[r.rule_id] = r;
+        });
+        setStats(map);
+      })
+      .catch(() => setStats({}));
   }, [productId]);
 
   const openEditor = (rule) =>
@@ -252,6 +271,7 @@ const IdlePingsTab = ({ productId }) => {
               <TableCell>{t('VIP tiers')}</TableCell>
               <TableCell align="right">{t('Cooldown')}</TableCell>
               <TableCell align="right">{t('Priority')}</TableCell>
+              <TableCell align="right">{t('Replies (90d)')}</TableCell>
               <TableCell />
             </TableRow>
           </TableHead>
@@ -275,6 +295,27 @@ const IdlePingsTab = ({ productId }) => {
                 </TableCell>
                 <TableCell align="right">{r.cooldown_days}d</TableCell>
                 <TableCell align="right">{r.priority}</TableCell>
+                <TableCell align="right">
+                  {stats[r.id] ? (
+                    <Tooltip
+                      title={t('{rep} replies and {ret} returns to the casino out of {n} sends.')
+                        .replace('{rep}', stats[r.id].replies)
+                        .replace('{ret}', stats[r.id].returns)
+                        .replace('{n}', stats[r.id].sends)}
+                    >
+                      <span>
+                        {Math.round((stats[r.id].reply_rate || 0) * 100)}%
+                        <Typography component="span" variant="caption" color="text.secondary">
+                          {' '}/ {stats[r.id].sends}
+                        </Typography>
+                      </span>
+                    </Tooltip>
+                  ) : (
+                    <Typography component="span" variant="caption" color="text.secondary">
+                      —
+                    </Typography>
+                  )}
+                </TableCell>
                 <TableCell>
                   {canWrite && (
                     <>
@@ -291,7 +332,7 @@ const IdlePingsTab = ({ productId }) => {
             ))}
             {rules.length === 0 && (
               <TableRow>
-                <TableCell colSpan={9}>
+                <TableCell colSpan={10}>
                   <Typography color="text.secondary" sx={{ py: 2 }}>
                     {t('No rules yet — quiet players are not re-engaged until a rule exists.')}
                   </Typography>

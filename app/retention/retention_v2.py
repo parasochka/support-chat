@@ -42,6 +42,7 @@ from app.core import db
 from app.retention import delivery
 from app.ai import openai_client
 from app.ai import prompts
+from app.retention import outcomes
 from app.retention import retention
 from app.core import settings
 from app.core import tenancy
@@ -303,6 +304,13 @@ async def run_product_events(product: dict[str, Any], *,
             stats["idle_failed"] = idle.get("failed", 0)
     except Exception:  # noqa: BLE001 - the idle sweep must not wedge the events
         log.exception("retention_idle_sweep_failed product=%s", pid)
+    # Attribution: settle the outcome rows whose windows have elapsed. Runs on
+    # NO switch of its own — measuring what already went out is never something
+    # a product opts out of — and is self-paced (minutes, not worker ticks).
+    # Its helper swallows its own errors, so a broken sweep can't wedge here.
+    attributed = await outcomes.run_product_attribution(pid)
+    if attributed.get("attributed"):
+        stats["attributed"] = attributed["attributed"]
     return stats
 
 
@@ -521,15 +529,17 @@ async def _decide(product_id: int, ru: dict[str, Any], evt: dict[str, Any],
     success or failure — lands in ai_interaction_logs (invariant §4,
     session_id=NULL like the photo-metadata calls)."""
     player_id = ru.get("player_id") or ""
-    recent, history = await asyncio.gather(
+    recent, history, touches = await asyncio.gather(
         db.recent_retention_events_for_player(product_id, player_id, limit=8),
         _history_tail(ru),
+        _touch_history(product_id, player_id),
     )
     messages = prompts.build_retention_v2_decision_messages(
         state=state, event=evt, recent_events=recent,
         history_tail=history,
         allowed_actions=guard["allowed_actions"],
-        constraints=guard["constraints"])
+        constraints=guard["constraints"],
+        touch_history=touches)
     client = await openai_client.client_for_product(product_id)
     try:
         result = await client.complete(messages)
@@ -547,6 +557,19 @@ async def _decide(product_id: int, ru: dict[str, Any], evt: dict[str, Any],
         result.tokens_out, result.cached_in, cost, result.latency_ms,
         True, None, product_id=product_id)
     return parse_decision(result.text, guard["allowed_actions"]), float(cost or 0)
+
+
+async def _touch_history(product_id: int, player_id: str
+                         ) -> list[dict[str, Any]]:
+    """This player's last proactive touches WITH their measured outcome — the
+    feedback the decision prompt weighs ("the last three went unanswered").
+    Best-effort: the agent still decides without it."""
+    if not player_id:
+        return []
+    try:
+        return await db.recent_touch_outcomes(product_id, player_id, limit=6)
+    except Exception:  # noqa: BLE001 - feedback is best-effort context
+        return []
 
 
 async def _history_tail(ru: dict[str, Any]) -> list[dict[str, Any]]:
@@ -671,18 +694,28 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
     action = decision["action"]
     delivered = False
     detail: Optional[str] = None
+    facts: dict[str, Any] = {}
     total_cost = decision_cost
     if action in ("message", "photo") and not dry_run:
-        delivered, send_cost, detail = await _send_touch(
+        delivered, send_cost, detail, facts = await _send_touch(
             product, ru, evt, decision, comfort=guard["comfort"], cfg=cfg)
         total_cost += send_cost
-    await db.insert_retention_v2_decision(
+    decision_id = await db.insert_retention_v2_decision(
         pid, retention_user_id=int(ru["id"]), player_id=player_id,
         trigger_kind="event", event_pk=evt["id"],
         event_name=evt.get("event_name"), state=state, guard=guard,
         action=action, intent=decision["intent"], tone=decision["tone"],
         reason=decision["reason"], dry_run=dry_run, delivered=delivered,
         detail=detail, cost_usd=total_cost)
+    # Attribution: a touch that actually went out opens an outcome row, so the
+    # next decision for this player can read what he did with the last one.
+    if delivered:
+        await outcomes.record(
+            pid, ru, kind="proactive", session_id=facts.get("session_id"),
+            decision_id=decision_id, event_name=evt.get("event_name"),
+            action=action, tone=decision["tone"],
+            photo_id=facts.get("photo_id"), media_type=facts.get("media_type"),
+            link_url=facts.get("link_url"), cost_usd=total_cost)
     await db.log_admin_event(
         None, "retention_v2_decision",
         {"event": evt.get("event_name"), "action": action,
@@ -707,6 +740,18 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
 # model-facing occasion line, the CHROME may name the amount (the player just
 # saw the exact number in their cashier; the phrase confirming "which deposit"
 # is what makes the note read as personal, not cryptic).
+def _media_type_of(candidates: list[dict[str, Any]],
+                   photo_id: Optional[int]) -> Optional[str]:
+    """The kind of media that was actually sent ('photo'/'video'), read off the
+    candidate row the model picked — the attribution cut splits by it."""
+    if photo_id is None:
+        return None
+    for c in candidates or []:
+        if int(c.get("id", 0)) == int(photo_id):
+            return c.get("media_type") or "photo"
+    return None
+
+
 def _trigger_detail(evt: dict[str, Any]) -> str:
     name = str(evt.get("event_name") or "")
     p = evt.get("payload") or {}
@@ -777,19 +822,25 @@ def _proactive_header(lang: str, evt: dict[str, Any], *,
 async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
                       evt: dict[str, Any], decision: dict[str, Any], *,
                       comfort: bool, cfg: dict[str, Any]
-                      ) -> tuple[bool, float, Optional[str]]:
+                      ) -> tuple[bool, float, Optional[str], dict[str, Any]]:
     """Generate + deliver the agent-decided touch. Returns
-    (delivered, generation_cost_usd, detail)."""
+    (delivered, generation_cost_usd, detail, facts).
+
+    `facts` is what the touch actually carried (session, media, CTA link) — the
+    caller opens the attribution row with it once the decision row exists.
+    """
     pid = int(product["id"])
     rid = int(ru["id"])
+    facts: dict[str, Any] = {}
     token = await db.get_product_telegram_token(pid)
     if not token:
-        return False, 0.0, "no_bot_token"
+        return False, 0.0, "no_bot_token", facts
     lang = retention.resolve_user_lang(ru)
     session = await retention._ensure_session(pid, ru, lang)
     if session is None:
-        return False, 0.0, "no_session"
+        return False, 0.0, "no_session", facts
     session["user_context"] = retention._user_context_from_ru(ru)
+    facts["session_id"] = session["id"]
 
     candidates: list[dict[str, Any]] = []
     if decision["action"] == "photo" and not comfort:
@@ -799,11 +850,12 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
     occasion = occasion_for(evt)
     draft = await chat_service.generate_retention_ping(
         session, idle_days=0, reason="", intent=decision["intent"],
-        photo_candidates=candidates, occasion=occasion, comfort=comfort)
+        photo_candidates=candidates, occasion=occasion, comfort=comfort,
+        touch_history=await _touch_history(pid, ru.get("player_id") or ""))
     if draft is None:
         await db.record_retention_ping(pid, rid, None, decision["action"],
                                        "failed", detail="v2:model_error")
-        return False, 0.0, "model_error"
+        return False, 0.0, "model_error", facts
     gen_cost = float(draft.ai_meta.get("cost_usd") or 0)
 
     # The trigger + occasion travel with the turn: persisted on the message row
@@ -844,7 +896,14 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
         await db.record_retention_ping(
             pid, rid, None, decision["action"], "sent",
             detail=sent_detail, cost_usd=gen_cost)
-        return True, gen_cost, None
+        # A photo that fell back to text was NOT delivered as media, so it must
+        # not be attributed as one (it would count as a failed photo).
+        if draft.photo_id is not None and detail != "photo_fallback_text":
+            facts["photo_id"] = draft.photo_id
+            facts["media_type"] = _media_type_of(candidates, draft.photo_id)
+        if link_attached:
+            facts["link_url"] = draft.link_url
+        return True, gen_cost, None, facts
 
     # Generated but undelivered: the cost still lands in ai_interaction_logs.
     await delivery.account_undelivered_generation(
@@ -853,4 +912,4 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
     await db.record_retention_ping(pid, rid, None, decision["action"],
                                    "failed", detail=f"v2:{detail}",
                                    cost_usd=gen_cost)
-    return False, gen_cost, detail
+    return False, gen_cost, detail, facts

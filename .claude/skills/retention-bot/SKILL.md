@@ -539,6 +539,32 @@ checklist lives in the admin — the **Retention → How it works** page.
   `product_id`/`partner_id` — omitted, they aggregate the caller's whole accessible scope
   (the global dashboard's retention block), following the support dashboard's
   `resolve_scope_filter` convention.
+- **OUTCOME ATTRIBUTION (`outcomes.py`, `retention_outcomes`)** — the measured
+  feedback loop: one row per DELIVERED touch (agent event reaction, idle ping,
+  a photo/video actually sent — a caption-only fallback is NOT media —, or a
+  dialogue reply carrying a CTA button), dimensions denormalized onto the row
+  (event / rule_id / tone / photo_id + media_type / link_url / cost /
+  decision_id), then a self-paced sweep from the worker tick fills
+  `replied_at` + `reply_latency_sec` + `player_msgs` (the player's messages in
+  ANY session of his Telegram identity — the idle rollover opens a new one, so
+  keying on the session would lose the reply), `returned_at` and `deposit_at`
+  from the canonical event feed, and `closed` once both deploy-constant windows
+  elapse (`RETENTION_OUTCOME_REPLY_WINDOW_HOURS` / `..._CONVERSION_WINDOW_HOURS`
+  — they define what the numbers MEAN, hence not per-product). Recording is
+  best-effort by contract (`outcomes.record` swallows everything: analytics
+  never breaks a send). Feeds four things: the agent's decision prompt +
+  the ping writer's hint (`prompts._touch_history_block` /
+  `_touch_feedback_hint` — Layer 3, so the cores stay byte-stable), the photo
+  candidate ordering (`db._PHOTO_OUTCOME_SCORE_SQL`, smoothed reply rate as a
+  tiebreak AFTER stage and freshness), the nudge's link hint
+  (`db.top_links_by_outcome` → `prompts._proven_links_line`, a HINT the rotation
+  rule still outranks), and the admin cuts
+  (`GET /admin/retention/effectiveness`: summary with cost per reply/return/
+  deposit + per media / per CTA page / per idle rung / per trigger, shown in
+  Retention → Analytics, as a chip in the Media grid, as a column on the Idle
+  rules table and as the «Result» column of the Decisions ledger). A deleted
+  Telegram conversation purges the player's outcome rows with the rest of his
+  footprint. Tests: `tests/test_outcomes.py`.
 - **Admin**: the sidebar **Retention** section — one menu entry per surface, no
   page-wide tab strip: **How it works** (the section's landing page, an in-page
   2-tab strip: **Setup guide** — the checklist that replaced

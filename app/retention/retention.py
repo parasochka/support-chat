@@ -33,6 +33,7 @@ from app.core import config
 from app.core import db
 from app.i18n import language
 from app.retention import media_normalizer
+from app.retention import outcomes
 from app.retention import player_sync
 from app.ai import prompts
 from app.core import settings
@@ -1215,6 +1216,9 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
                                     "url": reply.link_url}]])
 
     # Media delivery (file_id cache; first send uploads + caches the id).
+    sent_photo_id: Optional[int] = None
+    media_type: Optional[str] = None
+    delivered = False
     if reply.photo_id is not None:
         # Never send a bare image/video: fall back to a short localized caption
         # when the model returned media with no text — worded for what is
@@ -1224,12 +1228,28 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
         is_video = bool(chosen) and chosen.get("media_type") == "video"
         caption = reply.reply or (fallback_video_caption(reply.lang) if is_video
                                   else fallback_photo_caption(reply.lang))
-        await _send_photo(client, product, ru, pu.chat_id, reply.photo_id,
-                          caption, session_id=session["id"],
-                          reply_markup=markup)
+        kind = await _send_photo(client, product, ru, pu.chat_id,
+                                 reply.photo_id, caption,
+                                 session_id=session["id"],
+                                 reply_markup=markup)
+        delivered = kind is not None
+        # Only a real media delivery is attributed as one — the caption-only
+        # fallback ("text") delivered a message, not a photo.
+        if kind == "photo":
+            sent_photo_id = reply.photo_id
+            media_type = "video" if is_video else "photo"
     elif reply.reply:
-        await _send_ai_text(client, pu.chat_id, reply.reply,
-                            reply_markup=markup)
+        delivered = bool(await _send_ai_text(client, pu.chat_id, reply.reply,
+                                             reply_markup=markup))
+
+    # Attribution: a reactive turn is measured only when it carried something
+    # with an outcome — media, or a site-map CTA button. Best-effort, and never
+    # in the way of the turn itself.
+    if delivered:
+        await outcomes.record_dialogue_turn(
+            int(product["id"]), ru, session["id"], photo_id=sent_photo_id,
+            media_type=media_type,
+            link_url=reply.link_url if markup is not None else None)
 
     # Stage progression gate (model hint + backend gate). A real advance is
     # celebrated with a follow-up persona note (settings-gated) so the player

@@ -96,6 +96,9 @@ export const GROUP_FIELDS = {
     { name: 'max_messages_per_session', label: 'Max messages / session', type: 'int', min: 1, max: 10000, module: 'support', help: 'Message cap before the session hands off to a human.' },
     { name: 'history_max_turns', label: 'History turns to model', type: 'int', min: 1, max: 200, module: 'support', help: 'Recent turns fed into the prompt history (full transcript is always stored).' },
     { name: 'body_max_bytes', label: 'Max request body (bytes)', type: 'int', min: 1024, max: 104857600, globalOnly: true, help: 'Largest accepted request body (1 KiB … 100 MiB).' },
+    { name: 'quality_review_enabled', label: 'Quality review (AI judge)', type: 'bool', help: 'Score finished conversations (support + Telegram) with a cheap AI pass. Results live on the Quality page.' },
+    { name: 'quality_review_daily_max', label: 'Quality reviews / day', type: 'int', min: 0, max: 5000, help: 'Cost cap: how many conversations the judge may review per day for this product (0 = pause).' },
+    { name: 'quality_review_min_messages', label: 'Min messages to review', type: 'int', min: 2, max: 1000, help: 'Shorter conversations are skipped — there is nothing to judge in a one-liner.' },
   ],
   // NB: `v2_decision_events` is deliberately ABSENT here — the trigger set is
   // not meant to be edited from the panel (the agent's Triggers tab was

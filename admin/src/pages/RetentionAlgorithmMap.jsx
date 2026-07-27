@@ -331,6 +331,20 @@ const FLOWS = [
         knobs: [{ label: t('Decisions ledger'), href: AGENT }],
         module: 'db.py',
       },
+      {
+        id: 'attribution',
+        kind: 'store',
+        label: t('Outcome attribution (the feedback loop)'),
+        note: t('measures what the touch achieved'),
+        details: t(
+          'Every DELIVERED touch opens an outcome row; a sweep then looks forward from it: did the player answer and how fast, did he come back to the casino, did he deposit. It feeds three things — the agent\'s next decision for this player (a streak of unanswered touches pushes it toward silence), the photo and CTA-page ordering (what earns replies goes first), and the effectiveness tables in Analytics with cost per reply, return and deposit.'
+        ),
+        knobs: [
+          { label: t('Effectiveness tables'), href: '#/retention?tab=analytics' },
+          { label: t('Result column of the Decisions ledger'), href: AGENT },
+        ],
+        module: 'outcomes.py · db.py',
+      },
     ],
   },
   {
@@ -390,6 +404,16 @@ const FLOWS = [
         ),
         knobs: [{ label: t('Idle send ledger'), href: '#/retention-agent?tab=idle' }],
         module: 'db.py',
+      },
+      {
+        id: 'attribution2',
+        kind: 'store',
+        label: t('Outcome attribution per rung'),
+        details: t(
+          'Idle pings are attributed like every other touch, carrying the RUNG that fired — which is what makes "does the 30-day step actually bring anyone back?" answerable, per rule, in the Replies column here and in the Analytics effectiveness tables.'
+        ),
+        knobs: [{ label: t('Effectiveness tables'), href: '#/retention?tab=analytics' }],
+        module: 'outcomes.py',
       },
     ],
   },

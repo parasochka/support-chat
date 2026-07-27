@@ -35,6 +35,171 @@ const KpiCard = (props) => <Kpi size={{ xs: 6, sm: 4, md: 3 }} {...props} />;
 const TIMESERIES_SERIES = RETENTION_TIMESERIES_SERIES;
 const FUNNEL_STEPS = RETENTION_FUNNEL_STEPS;
 
+// --- effectiveness (the attribution ledger) --------------------------------
+// Every delivered touch opens an outcome row; a sweep fills in what the player
+// did next. These little tables are the four cuts of that one ledger — which
+// media, which CTA page, which idle rung and which trigger actually earn a
+// reply / a return / a deposit, and what that costs.
+const pct = (v) => (v == null ? '—' : `${(v * 100).toFixed(0)}%`);
+const money = (v) => (v == null ? '—' : `$${Number(v).toFixed(4)}`);
+const latency = (s) => {
+  if (s == null) return '—';
+  if (s < 90) return `${s}s`;
+  if (s < 5400) return `${Math.round(s / 60)}m`;
+  return `${Math.round(s / 3600)}h`;
+};
+
+const OutcomeTable = ({ rows, firstLabel, renderFirst, minWidth = 640, empty }) => {
+  if (!rows?.length) {
+    return (
+      <Typography variant="body2" color="text.secondary">
+        {empty}
+      </Typography>
+    );
+  }
+  return (
+    <Box sx={{ overflowX: 'auto' }}>
+      <Table size="small" sx={{ minWidth }}>
+        <TableHead>
+          <TableRow>
+            <TableCell>{firstLabel}</TableCell>
+            <TableCell align="right">{t('Sent')}</TableCell>
+            <TableCell align="right">{t('Replied')}</TableCell>
+            <TableCell align="right">{t('Returned')}</TableCell>
+            <TableCell align="right">{t('Deposited')}</TableCell>
+            <TableCell align="right">{t('Avg reply')}</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((r, i) => (
+            <TableRow key={i}>
+              <TableCell>{renderFirst(r)}</TableCell>
+              <TableCell align="right">{r.sends}</TableCell>
+              <TableCell align="right">
+                {r.replies} <Typography component="span" variant="caption" color="text.secondary">({pct(r.reply_rate)})</Typography>
+              </TableCell>
+              <TableCell align="right">{r.returns}</TableCell>
+              <TableCell align="right">{r.deposits}</TableCell>
+              <TableCell align="right">{latency(r.avg_reply_latency_sec)}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </Box>
+  );
+};
+
+const EffectivenessSection = ({ data }) => {
+  const s = data?.summary?.proactive;
+  const w = data?.windows;
+  return (
+    <>
+      <Typography variant="h6" sx={{ mb: 0.5 }}>
+        {t('Effectiveness (what the touches achieved)')}
+      </Typography>
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+        {t('Every delivered touch is measured: a reply within {r}h, a return to the casino or a deposit within {c}h.')
+          .replace('{r}', w?.reply_hours ?? 48)
+          .replace('{c}', w?.conversion_hours ?? 72)}
+      </Typography>
+      <Grid container spacing={2} alignItems="stretch" sx={{ mb: 2 }}>
+        <KpiCard label={t('Proactive touches')} value={s?.sends} hint={t('messages the bot started')} />
+        <KpiCard label={t('Answered')} value={s?.replies} hint={pct(s?.reply_rate)} />
+        <KpiCard label={t('Came back')} value={s?.returns} hint={pct(s?.return_rate)} />
+        <KpiCard label={t('Deposited after')} value={s?.deposits} hint={pct(s?.deposit_rate)} />
+        <KpiCard label={t('Cost per reply')} value={money(s?.cost_per_reply_usd)} hint={t('proactive AI spend / replies')} />
+        <KpiCard label={t('Cost per return')} value={money(s?.cost_per_return_usd)} />
+        <KpiCard label={t('Cost per deposit')} value={money(s?.cost_per_deposit_usd)} />
+        <KpiCard
+          label={t('Settled')}
+          value={s?.settled}
+          hint={t('windows elapsed — the rest may still change')}
+        />
+      </Grid>
+      <Grid container spacing={2} alignItems="stretch" sx={{ mb: 2 }}>
+        <Grid size={{ xs: 12, lg: 6 }}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+                {t('Media')}
+              </Typography>
+              <OutcomeTable
+                rows={data?.media}
+                firstLabel={t('Photo / video')}
+                empty={t('No media delivered in this range yet.')}
+                renderFirst={(r) => (
+                  <>
+                    #{r.photo_id} · {r.media_type}
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      {(r.description || t('(deleted)')).slice(0, 70)}
+                    </Typography>
+                  </>
+                )}
+              />
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid size={{ xs: 12, lg: 6 }}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+                {t('Site pages (CTA buttons)')}
+              </Typography>
+              <OutcomeTable
+                rows={data?.links}
+                firstLabel={t('Page')}
+                minWidth={560}
+                empty={t('No CTA buttons attached in this range yet.')}
+                renderFirst={(r) => r.link_url}
+              />
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid size={{ xs: 12, lg: 6 }}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+                {t('Idle ladder rungs')}
+              </Typography>
+              <OutcomeTable
+                rows={data?.idle_rules}
+                firstLabel={t('Rule')}
+                minWidth={560}
+                empty={t('No idle pings fired in this range yet.')}
+                renderFirst={(r) => (
+                  <>
+                    {r.name}
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      {r.inactivity_days != null ? `${r.inactivity_days}d · ` : ''}
+                      {r.trigger_kind || ''} {r.enabled === false ? `· ${t('disabled')}` : ''}
+                    </Typography>
+                  </>
+                )}
+              />
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid size={{ xs: 12, lg: 6 }}>
+          <Card sx={{ height: '100%' }}>
+            <CardContent>
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+                {t('Triggers')}
+              </Typography>
+              <OutcomeTable
+                rows={data?.events}
+                firstLabel={t('Trigger')}
+                minWidth={560}
+                empty={t('No proactive touches in this range yet.')}
+                renderFirst={(r) => r.event_name}
+              />
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+    </>
+  );
+};
+
 const AnalyticsTab = ({ productId }) => {
   const notify = useNotify();
   const [range, setRange] = useState(defaultRange);
@@ -42,6 +207,7 @@ const AnalyticsTab = ({ productId }) => {
   const [funnel, setFunnel] = useState(null);
   const [series, setSeries] = useState([]);
   const [users, setUsers] = useState([]);
+  const [effect, setEffect] = useState(null);
 
   useEffect(() => {
     const qs = `product_id=${productId}&from=${range.from}&to=${range.to}`;
@@ -54,6 +220,9 @@ const AnalyticsTab = ({ productId }) => {
     httpClient(`${API_URL}/admin/retention/timeseries?${qs}`)
       .then(({ json }) => setSeries(json.series || []))
       .catch(() => setSeries([]));
+    httpClient(`${API_URL}/admin/retention/effectiveness?${qs}`)
+      .then(({ json }) => setEffect(json))
+      .catch(() => setEffect(null));
   }, [productId, range, notify]);
 
   useEffect(() => {
@@ -124,6 +293,8 @@ const AnalyticsTab = ({ productId }) => {
           hint={t('TG dialog + photo metadata')}
         />
       </Grid>
+
+      <EffectivenessSection data={effect} />
 
       <Card sx={{ mb: 2 }}>
         <CardContent>

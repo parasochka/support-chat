@@ -23,6 +23,7 @@ from app.api import admin as admin_api
 from app.api import admin_auth as admin_auth_api
 from app.api import chat as chat_api
 from app.api import health as health_api
+from app.api import quality as quality_api
 from app.api import retention as retention_api
 
 logging.basicConfig(
@@ -151,7 +152,9 @@ async def lifespan(app: FastAPI):
     # sweep), so multiple instances never double-send.
     agent_task = None
     media_task = None
+    review_task = None
     if config.RETENTION_SCHEDULER_ENABLED:
+        from app.ai import reviewer
         from app.retention import media_normalizer
         from app.retention import retention_v2
         agent_task = asyncio.create_task(retention_v2.scheduler_loop())
@@ -160,6 +163,11 @@ async def lifespan(app: FastAPI):
         # deleted). Same deploy switch as the agent worker; normalization is
         # always-on and fully code-owned (no admin knob, no per-product switch).
         media_task = asyncio.create_task(media_normalizer.scheduler_loop())
+        # Quality review: the LLM-as-judge pass over finished conversations
+        # (both facades). Same deploy switch — it governs every background
+        # worker — with the per-product on/off + daily cap in the `general`
+        # settings group.
+        review_task = asyncio.create_task(reviewer.scheduler_loop())
     # Periodic settings-cache refresh: the in-process cache is reloaded on a
     # local admin write, but a write made by ANOTHER instance (or directly in
     # the DB) was invisible until restart — the "I changed a setting and
@@ -172,7 +180,8 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        for task in (agent_task, media_task, refresh_task, log_task):
+        for task in (agent_task, media_task, review_task, refresh_task,
+                     log_task):
             if task is None:
                 continue
             task.cancel()
@@ -334,6 +343,7 @@ app.include_router(admin_auth_api.router)   # /admin/login + require_admin
 app.include_router(admin_api.router)        # /admin/* data + management (guarded)
 app.include_router(retention_api.public_router)  # telegram webhook + deeplink + CRM
 app.include_router(retention_api.admin_router)    # /admin/retention/* (guarded)
+app.include_router(quality_api.router)            # /admin/quality/* (guarded)
 
 
 # --- static frontend --------------------------------------------------------

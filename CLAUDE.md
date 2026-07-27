@@ -24,18 +24,19 @@ app/
 ├── main.py        # FastAPI app: lifespan, middleware, routers, static mounts
 ├── api/           # HTTP layer: chat.py (public Chat API), admin.py,
 │                  #   admin_auth.py (authz choke points), retention.py,
-│                  #   client_ip.py, health.py
+│                  #   quality.py (AI-judge surface), client_ip.py, health.py
 ├── core/          # platform: config.py (env), settings.py (hot-reloaded knobs),
 │                  #   db.py (data layer), tenancy.py (product scope), auth.py
 │                  #   (JWT + handshake), secretbox.py, metrics.py, logcapture.py
 ├── ai/            # model-facing: prompts.py (THE prompt template),
-│                  #   openai_client.py (two-key failover), kb.py, starter_kb.py
+│                  #   openai_client.py (two-key failover), kb.py, starter_kb.py,
+│                  #   reviewer.py (LLM-as-judge quality pass)
 ├── i18n/          # language.py (resolution), translations.py (copy registry)
 ├── chat/          # support flow: chat_service.py, escalation.py, antispam.py
 └── retention/     # Telegram bot: retention.py, retention_v2.py,
                    #   retention_idle.py, telegram_transport.py,
                    #   telegram_format.py, delivery.py, media_normalizer.py,
-                   #   player_sync.py
+                   #   player_sync.py, outcomes.py (attribution ledger)
 admin/             # React Admin SPA (its own Vite build)
 frontend/          # no-build widget + test page + integration docs (static)
 mcp_server/        # admin-API MCP facade (`python -m mcp_server`, .mcp.json)
@@ -910,11 +911,78 @@ A **second front-end over the same AI core**: a Telegram bot where Nika runs
 retention only (engagement + photos), plus the event-driven proactive agent and
 the idle-ping ladder. Modules: `retention.py`, `retention_v2.py`,
 `retention_idle.py`, `telegram_transport.py`, `telegram_format.py`, `delivery.py`,
-`media_normalizer.py`, `player_sync.py`. **The full spec is the `retention-bot`
-skill (`.claude/skills/retention-bot/SKILL.md`) — load it before touching any of
-those modules, the bot's behaviour/copy, proactive or idle messaging, retention
-media, or the retention KB/prompt variables.** All invariants below hold for
-retention turns too.
+`media_normalizer.py`, `player_sync.py`, `outcomes.py`. **The full spec is the
+`retention-bot` skill (`.claude/skills/retention-bot/SKILL.md`) — load it before
+touching any of those modules, the bot's behaviour/copy, proactive or idle
+messaging, retention media, or the retention KB/prompt variables.** All
+invariants below hold for retention turns too.
+
+### OUTCOME ATTRIBUTION — the measured feedback loop (`app/retention/outcomes.py`)
+The stack could always say what it SPENT and what it SENT; this is what says
+whether the sending WORKED, and it is the data every "which X performs" surface
+reads. **One `retention_outcomes` row per DELIVERED touch** — an agent event
+reaction, an idle-ladder ping, a photo/video handed to the player, or a dialogue
+reply carrying a site-map CTA button (a plain text answer inside a live chat has
+no outcome to attribute: the player is already talking). The row carries the
+touch's DIMENSIONS denormalized (event / idle rung / tone / photo / link / cost)
+on purpose — `retention_events` are pruned and media can be deleted, so an
+attribution recomputed later would silently change. A **sweep** (`run_product_attribution`,
+riding the retention worker tick, self-paced, no switch of its own — measuring
+what already went out is not something a product opts out of) then fills in what
+happened: did the player answer and how fast, how much he wrote, did he come back
+to the casino, did he deposit. Windows are DEPLOY constants
+(`RETENTION_OUTCOME_REPLY_WINDOW_HOURS` 48 / `..._CONVERSION_WINDOW_HOURS` 72):
+they define what the stored numbers MEAN, so a per-product override would make the
+history incomparable. A row whose windows elapsed is `closed` and never re-read —
+that is what makes the figures stable. Recording is **best-effort by contract**
+(`outcomes.record` swallows everything): analytics must never break a send that
+already reached the player. Reads: `db.recent_touch_outcomes` (the agent's
+feedback, below), `db.outcome_summary/_by_media/_by_link/_by_idle_rule/_by_event`
+(the admin cuts + cost per reply/return/deposit), `db.top_links_by_outcome` (the
+nudge's link hint) and `db._PHOTO_OUTCOME_SCORE_SQL`, which orders the photo
+candidate feed by a **smoothed** reply rate (Laplace prior: an unproven item
+scores a neutral 0.5, so one lucky send can't jump the queue) *after* stage and
+freshness — the model still chooses, it just sees the better performers first.
+Deleting a Telegram conversation purges the player's outcome rows with the rest of
+his analytics footprint. Tests: `tests/test_outcomes.py`.
+
+**The loop closes in the prompt.** The decision system prompt always said "if the
+last proactive touches went unanswered, lean to silence" — the agent had no way
+to know. Now `_decide` passes the player's last touches WITH their measured
+reaction into `prompts.build_retention_v2_decision_messages`
+(`prompts._touch_history_block`: "deposit_confirmed / message (celebrate) -> HE
+ANSWERED in 4 min, 3 messages; he deposited afterwards"), and the ping WRITER gets
+the actionable half (`prompts._touch_feedback_hint`) only when two-plus settled
+touches in a row went unanswered: change the angle, do not repeat what already
+failed. Both are Layer 3 (per-request data — never the byte-stable core), both
+degrade to nothing when there is no history, and the touch lines are
+machine-generated from the ledger, so no player-written text enters them. The
+play-nudge's link rotation gets the same treatment: `prompts._proven_links_line`
+adds the CTA pages that actually earned responses as an explicit **hint, not an
+order** (the rotation rule and fitting the moment still win) — it only breaks the
+tie the blind rotation was guessing at.
+
+### QUALITY REVIEW — the LLM-as-judge over finished conversations (`app/ai/reviewer.py`)
+A cheap background pass that reads FINISHED conversations of **both** facades
+(support widget + Telegram) and stores one verdict each: a 1..5 score, tags from
+the CLOSED `prompts.REVIEW_TAGS` taxonomy (closed on purpose — free-form tags
+cannot be counted, and "which failure mode is most common this week" is the whole
+point), a one-line summary, quoted issues and the player questions the KB could
+not answer. The wording lives in `prompts.build_conversation_review_messages`
+(single source of truth, with a per-facade framing: routing support OUT is correct
+for retention Nika and wrong for the widget). **It changes nothing** — the
+verdicts feed the admin **Common → Quality** page (`/admin/quality/*`,
+`app/api/quality.py`), where a human decides what to fix; an automated judge that
+edited the KB or the settings would be a second, unreviewable author. Bounded by
+construction: "finished" = resolved/escalated or dormant `QUALITY_REVIEW_IDLE_MINUTES`,
+long enough to judge (`general.quality_review_min_messages`), at most
+`general.quality_review_daily_max` per product per UTC day, and a chat is
+re-reviewed only after it GREW since its last verdict (`reviewed_msg_count`, unique
+per session). Runs on the product's own keys/model group; every call lands in
+`ai_interaction_logs` with `session_id=NULL` (invariant §4) so the reviewed
+session's own per-turn costs stay clean. Worker started from `main.py` lifespan
+under `RETENTION_SCHEDULER_ENABLED` (the deploy switch for every background
+worker), advisory-locked. Tests: `tests/test_quality_review.py`.
 
 ## Invariants (these break silently — do not violate)
 
