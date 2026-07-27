@@ -12,9 +12,9 @@ Design constraints:
     are dropped rather than growing memory without bound.
 
 The handler sits on the ROOT logger so it captures EVERY application module —
-they all log via `logging.getLogger(__name__)` ("api.chat", "chat_service",
-"retention", "openai_client", …), which are siblings of the service logger, not
-its descendants. A denylist filter drops framework/third-party noise (uvicorn's
+they all log via `logging.getLogger(__name__)` ("app.api.chat",
+"app.chat.chat_service", "app.retention.retention", "app.ai.openai_client", …),
+which are siblings of the service logger, not its descendants. A denylist filter drops framework/third-party noise (uvicorn's
 per-request access log, httpx, asyncpg, …) so the volume stays meaningful
 (escalations, failovers, retention decisions, warnings, errors) rather than one
 row per HTTP request.

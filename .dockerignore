@@ -1,8 +1,11 @@
 .git
 .gitignore
-__pycache__/
-*.pyc
-*.pyo
+# NB dockerignore patterns are anchored to the context root (unlike .gitignore),
+# so nested caches (app/**/__pycache__, mcp_server/__pycache__) need the **/.
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.ruff_cache/
 .pytest_cache/
 .venv/
 venv/

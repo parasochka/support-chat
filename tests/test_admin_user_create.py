@@ -1,6 +1,6 @@
 """Users tab create/update path: the handler must hash the password itself.
 
-Regression: `api/admin.py` called `auth.hash_password(...)` without importing
+Regression: `app/api/admin.py` called `auth.hash_password(...)` without importing
 `auth`, so every "Create user" (and password update) raised NameError → an
 unhandled 500 in the Users tab. These tests exercise the handlers with the DB
 helpers stubbed, so a missing import (or any pre-DB crash) fails the suite

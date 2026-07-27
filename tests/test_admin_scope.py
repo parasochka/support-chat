@@ -1,6 +1,6 @@
 """Membership-based admin authorization: global / partner / product scopes.
 
-The helpers in api/admin_auth.py answer "what may this account read/write?"
+The helpers in app/api/admin_auth.py answer "what may this account read/write?"
 from its admin_memberships rows; these tests pin the reach rules — a product
 manager can't read a sibling product, a partner admin covers all the partner's
 products, a global account covers everything.

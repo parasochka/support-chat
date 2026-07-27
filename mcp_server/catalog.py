@@ -3,7 +3,7 @@
 Every tool is a thin, named projection of an existing `/admin/*` endpoint: the
 MCP server never talks to Postgres and never re-implements an authorization
 rule. It sends `Authorization: Bearer sak_…` to the deployed service and lets
-`api/admin_auth.require_admin` + the scope helpers decide what the key may see
+`app/api/admin_auth.require_admin` + the scope helpers decide what the key may see
 and touch (invariant: authorization decisions live at the API choke points, not
 in a client).
 

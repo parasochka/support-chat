@@ -14,9 +14,10 @@ in-app form, no live agent).
 
 ## Project layout
 
-All backend Python lives in the **`app/` package**; the repo root carries only
-config, docs, and the non-Python surfaces. This file refers to modules by bare
-name (`db.py`, `prompts.py`, …) — resolve them against this map:
+All backend Python lives in the **`app/` package**; the repo root carries the
+config files, docs, and the sibling surfaces (admin SPA, widget, MCP facade,
+scripts, tests). This file refers to modules by bare name (`db.py`,
+`prompts.py`, …) — resolve them against this map:
 
 ```
 app/
@@ -178,7 +179,7 @@ SUPPORT_CHAT_TEST_MODE=1 python -m pytest -q
 
 # Run one test file / one test
 SUPPORT_CHAT_TEST_MODE=1 python -m pytest tests/test_failover.py -q
-SUPPORT_CHAT_TEST_MODE=1 python -m pytest tests/test_antispam.py::test_rate_limit -q
+SUPPORT_CHAT_TEST_MODE=1 python -m pytest tests/test_antispam.py::test_rate_limit_blocks_past_threshold -q
 ```
 
 **Test gotcha:** `conftest.py` stubs only `openai` and `asyncpg`. `httpx` and `pydantic`

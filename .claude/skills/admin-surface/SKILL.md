@@ -136,7 +136,7 @@ Map of what lives where:
   is surfaced per row: `by-topic`, `by-language`,
   and `sessions` each carry a `cost_usd_total` (summed from `ai_interaction_logs` via a join/CTE)
   rendered in the SPA tables. **Date ranges** are half-open and a date-only `to=YYYY-MM-DD` is
-  made **inclusive** of that whole day (`api.admin._range` adds one day), so "today" isn't dropped.
+  made **inclusive** of that whole day (`app.api.admin._range` adds one day), so "today" isn't dropped.
   **Every admin report keys `lang` on the CONVERSATION language, not the browser
   locale** (`db._CONV_LANG_SQL` = `COALESCE(s.conv_lang, s.lang)`, shared by
   `by_language`, `list_sessions` — including its `lang` filter — and
@@ -169,7 +169,7 @@ Map of what lives where:
   renders with ARE admin-editable — see "Prompt variables" above and the **Prompt → Prompt
   variables** sub-tab (`GET/PUT /admin/prompt-variables`), which also hosts the escalation
   keyword lists (over the `escalation` settings group) and the test player profile blocks.
-  **Read-only effective-prompt view** (`api.admin._build_effective_preview` +
+  **Read-only effective-prompt view** (`app.api.admin._build_effective_preview` +
   `GET /admin/effective-prompt`, the **Prompt → Preview** sub-tab in the SPA): so the owner can
   always SEE the whole assembled prompt, this endpoint reuses `prompts.build_messages` with a
   sample player + a sample specialized topic's KB and returns the complete prompt split into the
@@ -205,7 +205,7 @@ Map of what lives where:
   `user_context`; raw browser context is ignored. No secret ⇒ dev behaviour. The
   injection sanitizer runs in every mode.
 - **Test player profile** (`settings.test_profile`/`validate_test_profile`,
-  `app_settings['test_profile']`, `api.admin` `GET/PUT /admin/test-profile`, the **Common →
+  `app_settings['test_profile']`, `app.api.admin` `GET/PUT /admin/test-profile`, the **Common →
   Test player profile** page — the old Test sandbox tab, then a block on Prompt variables,
   now its own page in the shared Common section):
   in test/dev (**no** `WIDGET_HANDSHAKE_SECRET`) there is no host
