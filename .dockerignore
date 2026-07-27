@@ -1,8 +1,11 @@
 .git
 .gitignore
-__pycache__/
-*.pyc
-*.pyo
+# NB dockerignore patterns are anchored to the context root (unlike .gitignore),
+# so nested caches (app/**/__pycache__, mcp_server/__pycache__) need the **/.
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.ruff_cache/
 .pytest_cache/
 .venv/
 venv/
@@ -16,10 +19,7 @@ admin/.env.local
 # Local retention media uploads never belong in the image (real media lives on
 # the Railway Volume mounted at RETENTION_MEDIA_DIR).
 media/
-# Keep .md out of the image EXCEPT the docs the app renders at runtime:
-# main.py reads CLAUDE.md on every request to render the root test page, and
-# README.md is its byte-identical mirror. Excluding them left the <pre> block
-# empty in production (CLAUDE.md was never in the image).
+# Docs never ship in the image: nothing reads them at runtime (the root test
+# page serves the static frontend/test.html; the old CLAUDE.md-rendering route
+# is long gone).
 *.md
-!CLAUDE.md
-!README.md

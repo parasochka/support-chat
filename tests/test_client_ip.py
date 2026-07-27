@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import types
 
-import config
-from api.client_ip import client_ip
+from app.core import config
+from app.api.client_ip import client_ip
 
 
 def _req(xff=None, peer="10.0.0.1"):

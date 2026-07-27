@@ -13,14 +13,14 @@ import datetime as _dt
 
 import pytest
 
-import config
-import db
-import player_sync
-import prompts
-import retention_v2
-import settings
-import tenancy
-import translations
+from app.core import config
+from app.core import db
+from app.retention import player_sync
+from app.ai import prompts
+from app.retention import retention_v2
+from app.core import settings
+from app.core import tenancy
+from app.i18n import translations
 
 
 def _iso_days_ago(days: float) -> str:
@@ -617,9 +617,9 @@ def test_occasion_for_safe_details_only():
 
 
 def _patch_send_env(monkeypatch, sent, persisted):
-    import chat_service
-    import delivery
-    import retention
+    from app.chat import chat_service
+    from app.retention import delivery
+    from app.retention import retention
 
     async def _token(pid):
         return "tok"
@@ -766,7 +766,7 @@ async def test_idle_sweep_runs_even_with_agent_disabled(monkeypatch):
     """`idle_pings_enabled` is its OWN switch: turning the event agent off
     (v2_enabled=False) must not silently kill the idle ladder — the admin
     sees two independent toggles."""
-    import retention_idle
+    from app.retention import retention_idle
     called = {}
     monkeypatch.setattr(settings, "retention",
                         lambda: _cfg(v2_enabled=False, idle_pings_enabled=True))

@@ -9,13 +9,13 @@ import types
 
 import pytest
 
-import antispam
-import auth
-import config
-import db
-import kb
-import tenancy
-from api import chat as chat_api
+from app.chat import antispam
+from app.core import auth
+from app.core import config
+from app.core import db
+from app.ai import kb
+from app.core import tenancy
+from app.api import chat as chat_api
 
 _DEFAULT = {"id": 1, "partner_id": 1, "slug": "default", "name": "Default",
             "active": True}

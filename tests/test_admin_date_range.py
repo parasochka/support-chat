@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from api import admin
+from app.api import admin
 
 
 def test_range_includes_date_only_to_day():

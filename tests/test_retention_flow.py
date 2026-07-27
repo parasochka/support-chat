@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from PIL import Image
 
-import chat_service
-import retention
-import translations
+from app.chat import chat_service
+from app.retention import retention
+from app.i18n import translations
 
 
 class FakeTelegram:

@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import re
 
-import db
-import settings
-import starter_kb
-from prompts import PROMPT_VARIABLES
+from app.core import db
+from app.core import settings
+from app.ai import starter_kb
+from app.ai.prompts import PROMPT_VARIABLES
 
 _LANGS = ("en", "ru", "es", "tr", "pt")
 
@@ -103,7 +103,7 @@ def test_starter_retention_prompt_variables_full_registry_with_brand():
     new product needs its own retention seed — without it the bot resolves to
     the registry defaults (or the original tenant's global overrides) and
     introduces itself under another brand."""
-    from prompts import RETENTION_PROMPT_VARIABLES
+    from app.ai.prompts import RETENTION_PROMPT_VARIABLES
 
     values = starter_kb.starter_retention_prompt_variables("Lucky Casino")
     assert set(values) == {key for key, _d, _v, _r in RETENTION_PROMPT_VARIABLES}
@@ -116,7 +116,7 @@ def test_starter_retention_prompt_variables_full_registry_with_brand():
 
 
 def test_starter_retention_prompt_variables_blank_name_falls_back():
-    from prompts import RETENTION_PROMPT_VARIABLES
+    from app.ai.prompts import RETENTION_PROMPT_VARIABLES
 
     values = starter_kb.starter_retention_prompt_variables("")
     defaults = {key: default for key, _d, default, _r in RETENTION_PROMPT_VARIABLES}

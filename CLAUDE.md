@@ -12,6 +12,44 @@ hot-reloaded tuning, KB editing, and the signed front-end handshake are all buil
 (see "Admin / management" below). Escalation is a contact-button hand-off (no
 in-app form, no live agent).
 
+## Project layout
+
+All backend Python lives in the **`app/` package**; the repo root carries the
+config files, docs, and the sibling surfaces (admin SPA, widget, MCP facade,
+scripts, tests). This file refers to modules by bare name (`db.py`,
+`prompts.py`, …) — resolve them against this map:
+
+```
+app/
+├── main.py        # FastAPI app: lifespan, middleware, routers, static mounts
+├── api/           # HTTP layer: chat.py (public Chat API), admin.py,
+│                  #   admin_auth.py (authz choke points), retention.py,
+│                  #   client_ip.py, health.py
+├── core/          # platform: config.py (env), settings.py (hot-reloaded knobs),
+│                  #   db.py (data layer), tenancy.py (product scope), auth.py
+│                  #   (JWT + handshake), secretbox.py, metrics.py, logcapture.py
+├── ai/            # model-facing: prompts.py (THE prompt template),
+│                  #   openai_client.py (two-key failover), kb.py, starter_kb.py
+├── i18n/          # language.py (resolution), translations.py (copy registry)
+├── chat/          # support flow: chat_service.py, escalation.py, antispam.py
+└── retention/     # Telegram bot: retention.py, retention_v2.py,
+                   #   retention_idle.py, telegram_transport.py,
+                   #   telegram_format.py, delivery.py, media_normalizer.py,
+                   #   player_sync.py
+admin/             # React Admin SPA (its own Vite build)
+frontend/          # no-build widget + test page + integration docs (static)
+mcp_server/        # admin-API MCP facade (`python -m mcp_server`, .mcp.json)
+scripts/           # preflight.sh, check_invariants.py, docs_check.py
+tests/             # pytest suite (conftest.py stubs openai/asyncpg)
+```
+
+Imports use the package paths (`from app.core import db`); the deploy entry
+point is `uvicorn app.main:app` (Dockerfile CMD). Static assets (`frontend/`,
+`admin/dist`) and the local `media/` default stay at the REPO root —
+`app/main.py` and `app/core/config.py` resolve them via a repo-root anchor
+(two/three levels up from `__file__`), so moving a module means re-checking
+those anchors.
+
 ## MULTI-TENANCY (partners → products) — the commercial-product backbone
 
 The service is **multi-tenant**: **partners** own casino **products**, and nearly
@@ -79,7 +117,7 @@ in mind for every change:
   restricted to HUMAN admin accounts within their scope (a leaked key cannot
   mint keys). `/openapi.json`, `/docs`, `/redoc` are NOT served unless
   `EXPOSE_API_DOCS=1`.
-- **Authorization** (`api/admin_auth.py`): accounts (`admin_users`) get roles via
+- **Authorization** (`app/api/admin_auth.py`): accounts (`admin_users`) get roles via
   `admin_memberships` — one role per scope: `global`, `partner` (all its products)
   or `product`; role `admin` writes within the scope, `manager` reads. All checks
   go through `require_admin` (loads memberships per request) + the scope helpers
@@ -141,7 +179,7 @@ SUPPORT_CHAT_TEST_MODE=1 python -m pytest -q
 
 # Run one test file / one test
 SUPPORT_CHAT_TEST_MODE=1 python -m pytest tests/test_failover.py -q
-SUPPORT_CHAT_TEST_MODE=1 python -m pytest tests/test_antispam.py::test_rate_limit -q
+SUPPORT_CHAT_TEST_MODE=1 python -m pytest tests/test_antispam.py::test_rate_limit_blocks_past_threshold -q
 ```
 
 **Test gotcha:** `conftest.py` stubs only `openai` and `asyncpg`. `httpx` and `pydantic`
@@ -175,8 +213,8 @@ when invoking modules outside pytest.
   F/E9 only; line length and semicolons off) — don't broaden it into a restyle.
 - **`scripts/docs_check.py`** (skill `/docs-check`) is the manual replacement for
   the removed docs-sync: it diffs the working tree vs `origin/main` and flags the
-  docs a change of that shape usually needs — architecture `.py`/`api/` →
-  `CLAUDE.md`; `config.py` → the README env table; a public API file → its
+  docs a change of that shape usually needs — architecture `.py`/`app/api/` →
+  `CLAUDE.md`; `app/core/config.py` → the README env table; a public API file → its
   `frontend/integration-*.html` page; any integration/widget change →
   `frontend/test.html`. Advisory (exit 0), since whether an edit warrants a doc
   change is a judgment call.
@@ -530,7 +568,7 @@ bound when the client is built, so a `model` write also calls `openai_client.res
 rebuild the singleton (no effect on the OpenAI-side prefix cache). API keys themselves stay
 secrets in env.
 
-### Anti-spam gate order (`antispam.py`, enforced in `api/chat.py`)
+### Anti-spam gate order (`antispam.py`, enforced in `app/api/chat.py`)
 `POST /api/chat/message` checks in this exact order: verify session token (401) →
 **open-session check (409 `session_closed` if resolved/escalated)** → IP rate-limit (429 + log)
 → cooldown (429) → input length (400) → **low-content guard** → injection scan (always audits;
@@ -553,7 +591,7 @@ unsampled. The **request-body cap** middleware (main.py) also rejects chunked bo
 (no `Content-Length` + `Transfer-Encoding` ⇒ 411) — a chunked request would otherwise bypass the
 declared-length check entirely and still be buffered whole by the JSON parser.
 
-The **IP key** comes from `api/client_ip.py` `client_ip()`, which trusts `X-Forwarded-For` **only**
+The **IP key** comes from `app/api/client_ip.py` `client_ip()`, which trusts `X-Forwarded-For` **only**
 when the immediate socket peer (the TCP source, which a public client cannot forge) is in
 `config.TRUSTED_PROXY_IPS`; then it reads `TRUSTED_PROXY_COUNT` hops from the RIGHT. The default
 trust list is the **private/reserved ranges** (RFC1918 + CGNAT + loopback/ULA), so on Railway/most
@@ -661,7 +699,7 @@ from two places. The constants in `escalation.py` are only the built-in defaults
 fires on the turn whose prospective count (current + 1) reaches `max_messages_per_session` — a
 technical limit that lives in the **`general`** settings group (the legacy
 `escalation.max_messages_per_session` DB override is still honoured as a fallback); the
-model-free fast path in `api/chat.py` is the cheap belt-and-suspenders for a session already
+model-free fast path in `app/api/chat.py` is the cheap belt-and-suspenders for a session already
 at/over the cap — complementary, not a duplicate. **The cap no longer lands as a wall**: the
 model cannot see the counter, so a live conversation used to just stop dead on the capped turn.
 `chat_service` now passes `turns_left` (cap minus this turn's prospective count) into
@@ -713,7 +751,7 @@ just resends), logs the failed call to `ai_interaction_logs` (invariant §4) and
 killed every live conversation.
 
 **A HARD hand-off ends the bot conversation.** Once a session is `status='escalated'` (or
-`resolved`), `api/chat.py` `_ensure_open_session` rejects further mutating turns (`/message`,
+`resolved`), `app/api/chat.py` `_ensure_open_session` rejects further mutating turns (`/message`,
 `/topic`, `/escalate`) with **HTTP 409 `session_closed`** — only an `open` session is chatable.
 The widget mirrors this: on an `escalation.active` turn with `final !== false` it shows the
 contact card and then calls `endConversation()` (hides the composer, drops the local session
@@ -850,7 +888,7 @@ bubbles/finish button there.
    it also **rejects** the turn with HTTP 400 before the model call, so a jailbreak burns no
    tokens — **except** when the message is ALSO a keyword-escalation trigger
    (`escalation.keyword_trigger`: complaint / fraud / ask-for-a-human): the injection gate
-   in `api/chat.py` runs BEFORE the pre-model SOFT escalation, so it deliberately does NOT
+   in `app/api/chat.py` runs BEFORE the pre-model SOFT escalation, so it deliberately does NOT
    hard-block such a message (it would swallow the human hand-off) — it flows through to be
    escalated instead, the audit row still recording the injection signal. `SYSTEM_CORE` +
    the Layer-3 guardrails remain the substantive defence.
@@ -909,7 +947,7 @@ translations, the test player profile, Logs + audit, the MCP facade
 `admin-surface` skill (`.claude/skills/admin-surface/SKILL.md`) — load it before
 adding or changing an `/admin/*` endpoint, touching admin authorization or
 scoping, or editing the admin SPA.** Authorization always goes through the
-`api/admin_auth.py` choke points (`require_admin` + the scope helpers).
+`app/api/admin_auth.py` choke points (`require_admin` + the scope helpers).
 
 §16 decisions: unresolved analysis = topic-grouped (no embeddings); contact form =
 host-site button only; admin auth = named `admin_users` accounts only (email + password,
@@ -928,7 +966,7 @@ settings/secrets/KB/copy, the header switcher. When extending, keep these rules:
   `model`, `language`) — resolvable at both the global and the product layer. When
   adding a knob, put it in the group it belongs to (or `general`), never hard-code
   it, so both layers keep working.
-- **Authorization decisions go through the `api/admin_auth.py` choke points**
+- **Authorization decisions go through the `app/api/admin_auth.py` choke points**
   (`require_admin` + the scope helpers). A new admin route must authorize against
   the product/partner it touches — never trust a bare "is admin somewhere" check
   (`require_admin_write` alone is only the coarse pre-filter).

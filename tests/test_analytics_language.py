@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import datetime as dt
 
-import db
-import settings
-import translations
+from app.core import db
+from app.core import settings
+from app.i18n import translations
 
 
 class FakePool:

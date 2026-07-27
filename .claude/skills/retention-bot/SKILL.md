@@ -235,7 +235,7 @@ checklist lives in the admin — the **Retention → How it works** page.
   mixed feed too. It gates by `level_min` (VIP-tier ordinal) ×
   `stage` (explicitness). **Both values are bounded to the product's real ranges on EVERY write**
   — `stage` to 1..`max_stage`, `level_min` to 0..(last tier ordinal) — whether the value is
-  AI-generated OR hand-entered/API-posted (`api.retention._clamp_photo_gate`, applied in
+  AI-generated OR hand-entered/API-posted (`app.api.retention._clamp_photo_gate`, applied in
   `create_photo` + `update_photo`; the SPA Media pickers offer only in-range choices), so a
   photo can never gate outside what the delivery gate can serve (no stage 0/6, no tier past the
   ladder). The first send uploads the binary from the media dir (Railway Volume,
@@ -333,7 +333,7 @@ checklist lives in the admin — the **Retention → How it works** page.
   group, using the prompt in `prompts.build_photo_meta_messages` (wording in `prompts.py`, the
   single source of truth), and fills `description`/`tags`/`stage`/`level_min`; the reply is
   strict JSON, parsed + **clamped against the product's real `vip_tiers`/`max_stage`**
-  (`api.retention._parse_photo_meta`, sharing the same bounds as the write-time
+  (`app.api.retention._parse_photo_meta`, sharing the same bounds as the write-time
   `_clamp_photo_gate`) so a hallucinated number can never unlock a photo beyond
   the delivery gate, every call lands in `ai_interaction_logs` (invariant §4, `session_id=NULL`),
   and one failed photo never kills the batch. Descriptions are demanded in plain everyday words
@@ -563,7 +563,7 @@ checklist lives in the admin — the **Retention → How it works** page.
   `retention` settings group as its Parameters tab; legacy
   `/settings?module=retention` and `/retention?tab=config|managers` links
   redirect there), and **Analytics**;
-  API under `/admin/retention/*` (`api/retention.py`, guarded per
+  API under `/admin/retention/*` (`app/api/retention.py`, guarded per
   product) + the `retention` group via the generic `/admin/settings/retention`. Retention copy
   (menu/gate/handoff strings, `rtn_*` keys) is in the translations registry (scope `retention`).
   **Prompt preview** (`GET /admin/retention/effective-prompt`, the SPA's Retention → Prompt

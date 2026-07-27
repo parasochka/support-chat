@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-import config
+from app.core import config
 
 
 def _set(monkeypatch, *, production, test_mode, db_remote,

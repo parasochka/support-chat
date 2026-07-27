@@ -54,7 +54,7 @@ def check_translation_completeness() -> None:
     everyone, and a DEFAULTS key not in KEYS is dead copy. (contact_url is the
     documented en-only key, so it is exempt from the orphan check.)
     """
-    import translations as t
+    from app.i18n import translations as t
 
     registry = {k for (k, _scope, _desc) in t.KEYS}
     english = set(t.DEFAULTS.get("en", {}))
@@ -86,7 +86,7 @@ def check_prompt_core_byte_stable() -> None:
     by a pytest test, so a per-request leak into the retention Layer-1 slipped the
     static gate the /preflight skill leans on.
     """
-    import prompts
+    from app.ai import prompts
 
     for name, fn in (("support", prompts.get_system_core),
                      ("retention", prompts.get_retention_system_core)):
@@ -108,7 +108,7 @@ def check_settings_groups_have_ui() -> None:
     in the panel. `escalation` (edited on the Prompt page) and `language` (its
     own editor) are the two documented exceptions.
     """
-    import settings
+    from app.core import settings
 
     schema = (ROOT / "admin" / "pages" / "settingsSchema.js")
     if not schema.exists():

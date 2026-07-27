@@ -281,7 +281,7 @@ def test_manifest_matches_the_served_tools():
 
 def test_the_admin_manifest_endpoint_serves_the_same_catalogue():
     """The System → MCP page renders from this, so it must not drift."""
-    import api.admin as admin_api
+    from app.api import admin as admin_api
     paths = [r.path for r in admin_api.router.routes]
     assert "/admin/mcp/manifest" in paths
     payload = catalog.manifest(allow_writes=True)

@@ -7,12 +7,12 @@ and the HTML menu framing.
 """
 from __future__ import annotations
 
-import chat_service
-import db
-import openai_client
-import prompts
-import retention
-import settings
+from app.chat import chat_service
+from app.core import db
+from app.ai import openai_client
+from app.ai import prompts
+from app.retention import retention
+from app.core import settings
 
 PAGES = [
     {"title": "Slots", "url": "https://nikabet.example/slots",

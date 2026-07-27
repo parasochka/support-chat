@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-import auth
-import config
+from app.core import auth
+from app.core import config
 
 
 @pytest.fixture(autouse=True)

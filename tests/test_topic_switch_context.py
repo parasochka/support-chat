@@ -8,10 +8,10 @@ the pre-switch conversation.
 """
 from __future__ import annotations
 
-import chat_service
-import db
-import kb
-import openai_client
+from app.chat import chat_service
+from app.core import db
+from app.ai import kb
+from app.ai import openai_client
 
 
 def _wire(monkeypatch, *, captured):

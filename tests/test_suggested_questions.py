@@ -13,8 +13,8 @@ ride in the byte-stable Layer-1 core.
 """
 from __future__ import annotations
 
-import chat_service
-import prompts
+from app.chat import chat_service
+from app.ai import prompts
 
 
 # ---------------------------------------------------------------------------

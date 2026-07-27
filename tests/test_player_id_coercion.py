@@ -7,7 +7,7 @@ a TEXT column raised DataError and 500'd session create / the retention link.
 """
 from __future__ import annotations
 
-import db
+from app.core import db
 
 
 def test_as_text_coerces_scalars_keeps_none_and_structures():

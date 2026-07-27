@@ -72,7 +72,7 @@ import importlib.util as ilu
 # scripts/check_invariants.py uses) so prompts is importable outside pytest.
 ilu.spec_from_file_location("_cf", "tests/conftest.py").loader.exec_module(
     ilu.module_from_spec(ilu.spec_from_file_location("_cf", "tests/conftest.py")))
-import prompts
+from app.ai import prompts
 print("========== SUPPORT LAYER-1 ==========\n" + prompts.get_system_core())
 print("\n========== RETENTION LAYER-1 ==========\n" + prompts.get_retention_system_core())
 PY
@@ -80,7 +80,7 @@ PY
 
 For the full picture including Layer 3 as sent, the admin previews assemble it:
 `GET /admin/effective-prompt` (support) and `GET /admin/retention/effective-prompt`
-(retention) — same builders the model uses (`api.admin._build_effective_preview`).
+(retention) — same builders the model uses (`app.api.admin._build_effective_preview`).
 
 ## 2. Hunt for contradictions (the actual research)
 

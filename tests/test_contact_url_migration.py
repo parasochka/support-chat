@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 
-import db
+from app.core import db
 
 PID = 7  # the default product id used in these tests
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-import config
-import openai_client
+from app.core import config
+from app.ai import openai_client
 
 
 @pytest.fixture(autouse=True)

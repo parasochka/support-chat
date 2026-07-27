@@ -8,11 +8,11 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-import auth
-import chat_service
-import db
-import kb
-from api import chat as chat_api
+from app.core import auth
+from app.chat import chat_service
+from app.core import db
+from app.ai import kb
+from app.api import chat as chat_api
 
 
 def _payload(resp):

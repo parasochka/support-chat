@@ -2,7 +2,7 @@
 name: admin-surface
 description: >-
   Map of the admin/management surface of this service: admin auth and the roles
-  and memberships model (api/admin_auth.py, auth.py), user management, the
+  and memberships model (app/api/admin_auth.py, auth.py), user management, the
   hot-reloaded settings groups and their global-only fields, the dashboard data
   API and its support-only aggregation rules, KB and KB-variable editing, the
   read-only effective-prompt preview, the translations tab, the test player
@@ -19,13 +19,13 @@ description: >-
 This is the lazily-loaded companion to the root `CLAUDE.md`. The shared
 architecture (multi-tenancy, settings resolution, prompt layering) and the
 numbered invariants live there and still apply - authorization decisions in
-particular must go through the `api/admin_auth.py` choke points.
+particular must go through the `app/api/admin_auth.py` choke points.
 
 ## Admin / management
 
 Map of what lives where:
 
-- **Admin auth + roles** (`api/admin_auth.py`, `auth.py`): `POST /admin/login` **requires `email`
+- **Admin auth + roles** (`app/api/admin_auth.py`, `auth.py`): `POST /admin/login` **requires `email`
   + password** — every admin signs in as a named `admin_users` account. The password is checked
   against the salted **PBKDF2-HMAC-SHA256** hash in `admin_users`
   (`auth.hash_password`/`verify_password`, stdlib only) → the user's stored role; a missing email
@@ -48,7 +48,7 @@ Map of what lives where:
   ~100ms CPU burn never blocks the event loop. `GET /admin/me` returns the caller's role/email so
   the SPA can role-gate its UI (managers lose the Settings / Users tabs and all edit controls —
   cosmetic; the server is authoritative).
-- **User management** (`api/admin.py` `/admin/users*`, the **Users** tab, admins only):
+- **User management** (`app/api/admin.py` `/admin/users*`, the **Users** tab, admins only):
   CRUD over `admin_users` (email + password) **plus the membership editor** — WHAT an account
   may touch is its `admin_memberships` (role `admin`/`manager` × scope global/partner/product).
   The SPA create form picks the initial role × scope (partner/product pickers fed by
@@ -113,7 +113,7 @@ Map of what lives where:
   vars (`CORS_ALLOW_ORIGINS`, `TRUSTED_PROXY_COUNT`) — stay in Railway env. There is no seed:
   an empty `app_settings` resolves through env → default, and the owner's first write to a
   group persists that override in the DB.
-- **Dashboard data API** (`api/admin.py` + `db.py` aggregation + `metrics.py` derived
+- **Dashboard data API** (`app/api/admin.py` + `db.py` aggregation + `metrics.py` derived
   rates): overview/timeseries/by-topic/by-language/sessions/session/unresolved.
   `resolution_rate` is a documented PROXY (counts "not escalated", incl. abandoned →
   `sessions_open` tracked separately). **The support dashboard is SUPPORT-only: every
@@ -136,7 +136,7 @@ Map of what lives where:
   is surfaced per row: `by-topic`, `by-language`,
   and `sessions` each carry a `cost_usd_total` (summed from `ai_interaction_logs` via a join/CTE)
   rendered in the SPA tables. **Date ranges** are half-open and a date-only `to=YYYY-MM-DD` is
-  made **inclusive** of that whole day (`api.admin._range` adds one day), so "today" isn't dropped.
+  made **inclusive** of that whole day (`app.api.admin._range` adds one day), so "today" isn't dropped.
   **Every admin report keys `lang` on the CONVERSATION language, not the browser
   locale** (`db._CONV_LANG_SQL` = `COALESCE(s.conv_lang, s.lang)`, shared by
   `by_language`, `list_sessions` — including its `lang` filter — and
@@ -152,7 +152,7 @@ Map of what lives where:
   mirrors them). **Timestamps render in the viewer's local timezone** — the API returns tz-aware
   ISO strings and the SPA formats them client-side via `fmtDateTime`/`toLocaleString` (a UTC `06:00`
   shows as `09:00` for a UTC+3 admin), so the dashboard always reads in the operator's own time.
-- **KB Variables sub-tab** (`api/admin.py` `/admin/kb/variables`, the **Knowledge base →
+- **KB Variables sub-tab** (`app/api/admin.py` `/admin/kb/variables`, the **Knowledge base →
   Variables** sub-view in the SPA): list + edit the admin-managed `{placeholder}` registry (see
   "KB variables" above). Read returns `updated_at` as an isoformat string so `JSONResponse` can
   serialize it.
@@ -169,7 +169,7 @@ Map of what lives where:
   renders with ARE admin-editable — see "Prompt variables" above and the **Prompt → Prompt
   variables** sub-tab (`GET/PUT /admin/prompt-variables`), which also hosts the escalation
   keyword lists (over the `escalation` settings group) and the test player profile blocks.
-  **Read-only effective-prompt view** (`api.admin._build_effective_preview` +
+  **Read-only effective-prompt view** (`app.api.admin._build_effective_preview` +
   `GET /admin/effective-prompt`, the **Prompt → Preview** sub-tab in the SPA): so the owner can
   always SEE the whole assembled prompt, this endpoint reuses `prompts.build_messages` with a
   sample player + a sample specialized topic's KB and returns the complete prompt split into the
@@ -179,7 +179,7 @@ Map of what lives where:
   it still renders Layer 1 + the Layer-3 block, never breaking the page. (Layer 2, the per-topic
   KB, is the one prompt input still edited in the admin — in the Knowledge-base tab — because
   it's answer content, not instructions.)
-- **Translations tab** (`translations.py`, `api/admin.py` `GET/PUT /admin/translations`, public
+- **Translations tab** (`translations.py`, `app/api/admin.py` `GET/PUT /admin/translations`, public
   `GET /api/chat/i18n`): per-language editing of every user-facing widget string — chrome copy,
   server-generated service replies, the per-language escalation contact-button URL (the
   `contact_url` key, http(s)-validated; empty = no button link — only the default product
@@ -192,7 +192,7 @@ Map of what lives where:
   bots' actual voice without wading through technical fallbacks. A new registry key lands in a
   bot-messages block automatically unless it is added to `SERVICE_KEYS` (do that for any new
   error/guard nudge). The admin panel itself stays English.
-- **KB editing** (`db.*` helpers, `api/admin.py` `/admin/kb/*`): **one KB text per topic**,
+- **KB editing** (`db.*` helpers, `app/api/admin.py` `/admin/kb/*`): **one KB text per topic**,
   single-language. `GET /admin/kb/content?topic_id=` reads it, `PUT /admin/kb/content` sets it
   (updates the topic's active entry in place, or inserts one), `DELETE /admin/kb/content?topic_id=`
   soft-clears it (`active=false`). No versioning, no per-language entries — the Layer-3 language
@@ -200,12 +200,12 @@ Map of what lives where:
 - **Escalation** (`escalation.build_payload`): returns the localized contact-button payload
   (copy AND the per-language button URL from the translations registry). No ticket snapshot,
   no Telegram notifier — the hand-off is the contact button only.
-- **Signed handshake** (`auth.sign_handshake`/`verify_handshake`, `api/chat.create_session`):
+- **Signed handshake** (`auth.sign_handshake`/`verify_handshake`, `app/api/chat.create_session`):
   with `WIDGET_HANDSHAKE_SECRET` set, only a valid signed blob is trusted for
   `user_context`; raw browser context is ignored. No secret ⇒ dev behaviour. The
   injection sanitizer runs in every mode.
 - **Test player profile** (`settings.test_profile`/`validate_test_profile`,
-  `app_settings['test_profile']`, `api.admin` `GET/PUT /admin/test-profile`, the **Common →
+  `app_settings['test_profile']`, `app.api.admin` `GET/PUT /admin/test-profile`, the **Common →
   Test player profile** page — the old Test sandbox tab, then a block on Prompt variables,
   now its own page in the shared Common section):
   in test/dev (**no** `WIDGET_HANDSHAKE_SECRET`) there is no host

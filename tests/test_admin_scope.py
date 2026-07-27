@@ -1,6 +1,6 @@
 """Membership-based admin authorization: global / partner / product scopes.
 
-The helpers in api/admin_auth.py answer "what may this account read/write?"
+The helpers in app/api/admin_auth.py answer "what may this account read/write?"
 from its admin_memberships rows; these tests pin the reach rules — a product
 manager can't read a sibling product, a partner admin covers all the partner's
 products, a global account covers everything.
@@ -10,8 +10,8 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-import db
-from api import admin_auth
+from app.core import db
+from app.api import admin_auth
 
 
 def _admin(*memberships, email="u@example.com"):
@@ -110,7 +110,7 @@ async def test_product_admin_cannot_manage_global_account(monkeypatch):
     """User management reach: every membership of the target must lie inside
     the caller's admin reach — so a product admin can never touch a global
     account (or an orphan account with no memberships)."""
-    from api import admin as admin_api
+    from app.api import admin as admin_api
     product_admin = _admin(("product", 11, "admin"))
     global_user_ms = [{"scope_type": "global", "partner_id": None,
                        "product_id": None, "role": "manager"}]

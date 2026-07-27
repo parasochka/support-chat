@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import asyncio
 
-import escalation
-import retention
+from app.chat import escalation
+from app.retention import retention
 
 
 def _run(coro):
@@ -34,7 +34,7 @@ def test_retention_on_routes_button_to_the_bot(monkeypatch):
 
     async def _get_product(pid):
         return product
-    monkeypatch.setattr("db.get_product", _get_product)
+    monkeypatch.setattr("app.core.db.get_product", _get_product)
 
     captured = {}
 
@@ -68,7 +68,7 @@ def test_retention_off_falls_back_to_static_contact_url(monkeypatch):
 
     async def _get_product(pid):
         return product
-    monkeypatch.setattr("db.get_product", _get_product)
+    monkeypatch.setattr("app.core.db.get_product", _get_product)
 
     def _boom(*a, **k):
         raise AssertionError("create_deeplink must not run when retention is off")
@@ -89,7 +89,7 @@ def test_inactive_product_falls_back(monkeypatch):
 
     async def _get_product(pid):
         return product
-    monkeypatch.setattr("db.get_product", _get_product)
+    monkeypatch.setattr("app.core.db.get_product", _get_product)
 
     def _boom(*a, **k):
         raise AssertionError("inactive product -> no deeplink mint")
@@ -106,7 +106,7 @@ def test_retention_on_but_no_bot_falls_back(monkeypatch):
 
     async def _get_product(pid):
         return product
-    monkeypatch.setattr("db.get_product", _get_product)
+    monkeypatch.setattr("app.core.db.get_product", _get_product)
 
     def _boom(*a, **k):
         raise AssertionError("no bot -> no deeplink mint")
@@ -124,7 +124,7 @@ def test_mint_failure_degrades_to_static(monkeypatch):
 
     async def _get_product(pid):
         return product
-    monkeypatch.setattr("db.get_product", _get_product)
+    monkeypatch.setattr("app.core.db.get_product", _get_product)
 
     async def _create_deeplink(prod, context, escalation, lang=None):  # noqa: A002
         raise RuntimeError("db down")
@@ -141,7 +141,7 @@ def test_no_product_scope_is_static(monkeypatch):
     payload and never touches the DB."""
     def _boom(*a, **k):
         raise AssertionError("must not resolve a product without a product_id")
-    monkeypatch.setattr("db.get_product", _boom)
+    monkeypatch.setattr("app.core.db.get_product", _boom)
 
     payload = _run(escalation.build_payload_for_session(
         _session(product_id=None), "ru"))

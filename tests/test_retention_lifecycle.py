@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import datetime as dt
 
-import prompts
-import retention
-import settings
+from app.ai import prompts
+from app.retention import retention
+from app.core import settings
 
 
 def _session(**over):

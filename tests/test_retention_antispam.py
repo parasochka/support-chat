@@ -7,10 +7,10 @@ and the word-boundary photo-request matcher.
 """
 from __future__ import annotations
 
-import antispam
-import chat_service
-import retention
-import settings
+from app.chat import antispam
+from app.chat import chat_service
+from app.retention import retention
+from app.core import settings
 
 
 class FakeTelegram:

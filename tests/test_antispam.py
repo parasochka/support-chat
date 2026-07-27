@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-import antispam
-import config
+from app.chat import antispam
+from app.core import config
 
 
 @pytest.fixture(autouse=True)

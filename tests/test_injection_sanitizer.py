@@ -1,7 +1,7 @@
 """user_context sanitizer: injection markers zero the field; others are kept/capped."""
 from __future__ import annotations
 
-import prompts
+from app.ai import prompts
 
 
 def test_clean_fields_preserved():

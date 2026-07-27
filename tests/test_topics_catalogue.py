@@ -8,9 +8,9 @@ from __future__ import annotations
 import json
 import types
 
-import config
-import db
-from api import chat as chat_api
+from app.core import config
+from app.core import db
+from app.api import chat as chat_api
 
 _PRODUCT = {"id": 1, "slug": "default", "name": "Default product", "active": True}
 

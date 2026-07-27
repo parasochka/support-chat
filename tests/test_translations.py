@@ -12,11 +12,11 @@ import types
 
 import pytest
 
-import antispam
-import chat_service
-import escalation
-import settings
-import translations
+from app.chat import antispam
+from app.chat import chat_service
+from app.chat import escalation
+from app.core import settings
+from app.i18n import translations
 
 
 @pytest.fixture(autouse=True)
@@ -70,7 +70,7 @@ def test_server_consumers_read_the_registry():
 
 
 def test_contact_url_is_per_language_with_general_fallback(monkeypatch):
-    import config
+    from app.core import config
     # No per-language URL configured -> the deploy-level default (legacy
     # general.contact_form_url override, then env CONTACT_FORM_URL). Applies
     # here because there is no product scope (= the default/pre-tenancy scope).
@@ -94,8 +94,8 @@ def test_contact_url_env_fallback_is_default_product_only(monkeypatch):
     must apply ONLY to the boot-seeded default product, never leak into another
     partner's product (their players would get the wrong brand's contact link).
     """
-    import config
-    import tenancy
+    from app.core import config
+    from app.core import tenancy
 
     monkeypatch.setattr(config, "CONTACT_FORM_URL", "https://x/default")
     token = tenancy.set_current_product(None)
@@ -137,8 +137,8 @@ def _req(ip="9.9.9.9"):
 
 
 async def test_public_i18n_endpoint(monkeypatch):
-    import db
-    from api import chat as chat_api
+    from app.core import db
+    from app.api import chat as chat_api
 
     async def fake_default_product():
         return {"id": 1, "slug": "default", "active": True}

@@ -10,7 +10,7 @@ but a destructive delete is worth pinning.
 """
 from __future__ import annotations
 
-import db
+from app.core import db
 
 
 class _Tx:
@@ -91,8 +91,8 @@ async def test_delete_missing_photo_returns_none(monkeypatch):
 async def test_delete_endpoint_unlinks_binary_and_poster(monkeypatch, tmp_path):
     """The API layer of the hard delete: after the row is gone, the on-disk
     binary is removed too — and a video also drops its poster frame."""
-    import api.retention as api_retention
-    import config
+    from app.api import retention as api_retention
+    from app.core import config
 
     monkeypatch.setattr(config, "RETENTION_MEDIA_DIR", str(tmp_path))
     (tmp_path / "clip.tg.mp4").write_bytes(b"v")

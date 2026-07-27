@@ -6,7 +6,7 @@ a tiny fake connection that records the executed statements.
 """
 from __future__ import annotations
 
-import db
+from app.core import db
 
 
 class _Tx:

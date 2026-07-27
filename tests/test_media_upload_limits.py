@@ -9,8 +9,8 @@ import types
 import pytest
 from fastapi import HTTPException
 
-import api.retention as api_retention
-import config
+from app.api import retention as api_retention
+from app.core import config
 
 
 def _upload(name: str, size: int = 10, spooled: bool = False):

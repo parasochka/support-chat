@@ -12,11 +12,11 @@ from __future__ import annotations
 import json
 import types
 
-import antispam
-import auth
-import chat_service
-import db
-from api import chat as chat_api
+from app.chat import antispam
+from app.core import auth
+from app.chat import chat_service
+from app.core import db
+from app.api import chat as chat_api
 
 
 # ---------------------------------------------------------------------------

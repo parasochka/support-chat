@@ -4,9 +4,9 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-import auth
-import db
-from api import admin_auth
+from app.core import auth
+from app.core import db
+from app.api import admin_auth
 
 
 def _stub_user(monkeypatch, role, active=True):

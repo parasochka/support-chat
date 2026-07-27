@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-import settings
-import tenancy
+from app.core import settings
+from app.core import tenancy
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +40,7 @@ def test_product_overrides_global_field_level(monkeypatch):
 
 
 def test_env_default_when_no_layers(monkeypatch):
-    import config
+    from app.core import config
     monkeypatch.setattr(config, "MESSAGE_COOLDOWN_SEC", 2)
     tenancy.set_current_product(3)
     assert settings.antispam()["cooldown_sec"] == 2
@@ -77,7 +77,7 @@ def test_translations_merge_per_language(monkeypatch):
 def test_prompt_core_varies_per_product_but_stable_within(monkeypatch):
     """Layer 1 renders per product (each casino gets its brand) and stays
     byte-stable between requests WITHIN one product scope."""
-    import prompts
+    from app.ai import prompts
     monkeypatch.setattr(settings, "_cache", {})
     monkeypatch.setattr(settings, "_product_cache",
                         {1: {"prompt_variables": {"brand_name": "AlphaBet"}},

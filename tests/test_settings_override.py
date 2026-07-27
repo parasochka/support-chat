@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-import config
-import settings
+from app.core import config
+from app.core import settings
 
 
 @pytest.fixture(autouse=True)
@@ -48,7 +48,7 @@ def test_message_cap_lives_in_general_with_legacy_fallback():
 
 
 def test_escalation_human_keywords_default_when_unset():
-    import escalation as esc
+    from app.chat import escalation as esc
     cfg = settings.escalation()  # empty cache -> built-in default
     assert cfg["human_request_keywords"] == list(esc._HUMAN_KEYWORDS)
 
@@ -171,7 +171,7 @@ def test_general_validate():
 
 
 def test_language_accessors_follow_settings(monkeypatch):
-    import language
+    from app.i18n import language
     monkeypatch.setattr(config, "DEFAULT_LANGUAGE", "ru")
     assert language.default_code() == "ru"          # env default via settings
     settings._cache["language"] = {"default": "es", "supported": ["es", "en"]}

@@ -52,12 +52,16 @@ def _changed_files(base: str) -> set[str]:
 # Each rule: (predicate over the changed-file set) -> (doc it wants, why).
 # Emitted only when the wanted doc is NOT itself among the changed files.
 _ARCH_PY = {
-    "settings.py", "prompts.py", "db.py", "chat_service.py", "retention.py",
-    "retention_v2.py", "player_sync.py", "escalation.py", "openai_client.py",
-    "antispam.py",
-    "language.py", "tenancy.py", "translations.py", "starter_kb.py", "main.py",
-    "secretbox.py", "kb.py", "metrics.py", "telegram_transport.py",
-    "telegram_format.py",
+    "app/core/settings.py", "app/ai/prompts.py", "app/core/db.py",
+    "app/chat/chat_service.py", "app/retention/retention.py",
+    "app/retention/retention_v2.py", "app/retention/player_sync.py",
+    "app/chat/escalation.py", "app/ai/openai_client.py",
+    "app/chat/antispam.py",
+    "app/i18n/language.py", "app/core/tenancy.py", "app/i18n/translations.py",
+    "app/ai/starter_kb.py", "app/main.py",
+    "app/core/secretbox.py", "app/ai/kb.py", "app/core/metrics.py",
+    "app/retention/telegram_transport.py",
+    "app/retention/telegram_format.py",
 }
 
 
@@ -84,7 +88,7 @@ def main(argv: list[str]) -> int:
     reminders: list[str] = []
 
     # 1. Architecture / invariants -> CLAUDE.md
-    arch = _hits(changed, names=_ARCH_PY) + _hits(changed, prefix="api/")
+    arch = _hits(changed, names=_ARCH_PY) + _hits(changed, prefix="app/api/")
     if arch and not claude_touched:
         reminders.append(
             "CLAUDE.md — architecture/invariants changed but CLAUDE.md is "
@@ -93,28 +97,29 @@ def main(argv: list[str]) -> int:
         )
 
     # 2. Env vars -> README.md "Environment variables" table
-    if "config.py" in changed and not readme_touched:
+    if "app/core/config.py" in changed and not readme_touched:
         reminders.append(
-            "README.md (§ Environment variables) — config.py changed; check the "
-            "env-vars table for a new/renamed/removed var."
+            "README.md (§ Environment variables) — app/core/config.py changed; "
+            "check the env-vars table for a new/renamed/removed var."
         )
 
     # 3. Public contracts -> the matching integration-*.html page
     contract_map = [
-        ("api/chat.py", "frontend/integration-chat-api.html",
+        ("app/api/chat.py", "frontend/integration-chat-api.html",
          "public Chat API changed"),
-        ("auth.py", "frontend/integration-data.html",
+        ("app/core/auth.py", "frontend/integration-data.html",
          "signed-handshake / player-data contract may have changed"),
-        ("api/retention.py", "frontend/integration-telegram.html",
+        ("app/api/retention.py", "frontend/integration-telegram.html",
          "retention/Telegram contract changed"),
-        ("api/admin.py", "frontend/integration-admin.html",
+        ("app/api/admin.py", "frontend/integration-admin.html",
          "the /admin/* endpoint reference changed"),
     ]
     for src, page, why in contract_map:
         if src in changed and page not in changed:
             reminders.append(f"{page} — {why} ({src}).")
     # Retention transport/orchestration also feeds the telegram page.
-    if ({"retention.py", "retention_v2.py", "telegram_transport.py"} & changed
+    if ({"app/retention/retention.py", "app/retention/retention_v2.py",
+         "app/retention/telegram_transport.py"} & changed
             and "frontend/integration-telegram.html" not in changed):
         reminders.append(
             "frontend/integration-telegram.html — retention internals changed; "
