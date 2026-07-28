@@ -267,6 +267,38 @@ async def body_size_cap(request: Request, call_next):
     return await call_next(request)
 
 
+# --- Security response headers ----------------------------------------------
+# The admin SPA is a same-origin React app whose ordinary buttons perform
+# destructive, state-changing actions (delete a product, rotate a widget key,
+# mint a service API key). Nothing stopped a third-party page from FRAMING it and
+# clickjacking a logged-in operator into those clicks, so /admin/* refuses to be
+# framed at all: X-Frame-Options for old browsers plus the CSP directive that
+# supersedes it.
+#
+# The frame deny is deliberately scoped to /admin — the widget, the test page and
+# the integration docs are MEANT to be embedded/opened by partner sites, and a
+# blanket frame-ancestors would break exactly the integration this service
+# exists for. `nosniff` is safe everywhere (every response here carries an
+# explicit Content-Type) and stops a content-type confusion turning an
+# admin-uploaded media binary into script. `setdefault`, not assignment, so a
+# handler that set its own value keeps it.
+_FRAME_DENY_PREFIX = "/admin"
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    if request.url.path.startswith(_FRAME_DENY_PREFIX):
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Content-Security-Policy",
+                                    "frame-ancestors 'none'")
+        # Keep admin URLs (product ids, filter state) out of third-party
+        # referrers when an operator follows a link out of the panel.
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
+
+
 # --- Admin audit middleware -------------------------------------------------
 # Records one row per SUCCESSFUL mutating /admin/* request (who + what + which
 # product scope + when) so the admin panel's Activity log can answer "who

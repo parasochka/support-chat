@@ -19,6 +19,12 @@ def _payload(resp):
     return json.loads(bytes(resp.body))
 
 
+def _req(ip: str = "1.2.3.4"):
+    """Minimal Request stand-in — these routes now take one for the per-IP
+    `chat-op:` throttle (client_ip reads .client/.headers, nothing else)."""
+    return SimpleNamespace(client=SimpleNamespace(host=ip), headers={})
+
+
 def _stub_auth(monkeypatch, session):
     """Make _auth_session resolve to `session` for any token."""
     monkeypatch.setattr(auth, "extract_bearer", lambda h: "tok")
@@ -43,7 +49,8 @@ async def test_resolve_marks_session_and_logs(monkeypatch):
     monkeypatch.setattr(db, "mark_resolved", fake_mark_resolved)
     monkeypatch.setattr(db, "log_admin_event", fake_log)
 
-    resp = await chat_api.resolve(chat_api.ResolveReq(session_id="s1"),
+    resp = await chat_api.resolve(_req(),
+                                  chat_api.ResolveReq(session_id="s1"),
                                   authorization="Bearer tok")
     data = _payload(resp)
     assert data == {"ok": True, "status": "resolved"}
@@ -66,7 +73,8 @@ async def test_resolve_does_not_close_escalated_session(monkeypatch):
     monkeypatch.setattr(db, "mark_resolved", fake_mark_resolved)
     monkeypatch.setattr(db, "log_admin_event", fake_log)
 
-    resp = await chat_api.resolve(chat_api.ResolveReq(session_id="s1"),
+    resp = await chat_api.resolve(_req(),
+                                  chat_api.ResolveReq(session_id="s1"),
                                   authorization="Bearer tok")
     assert _payload(resp)["ok"] is True
     # Neither the close nor the event fired for an escalated session.
@@ -86,7 +94,8 @@ async def test_resolve_idempotent_when_already_resolved(monkeypatch):
     monkeypatch.setattr(db, "mark_resolved", fake_mark_resolved)
     monkeypatch.setattr(db, "log_admin_event", fake_log)
 
-    resp = await chat_api.resolve(chat_api.ResolveReq(session_id="s1"),
+    resp = await chat_api.resolve(_req(),
+                                  chat_api.ResolveReq(session_id="s1"),
                                   authorization="Bearer tok")
     assert _payload(resp)["ok"] is True
     # No second write for an already-resolved session.
@@ -134,6 +143,7 @@ async def test_topic_change_on_resolved_session_is_rejected(monkeypatch):
     monkeypatch.setattr(db, "set_session_topic", fake_set_session_topic)
 
     resp = await chat_api.select_topic(
+        _req(),
         chat_api.TopicSelect(session_id="s1", topic_slug="betting_games"),
         authorization="Bearer tok",
     )
