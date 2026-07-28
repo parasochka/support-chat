@@ -108,6 +108,30 @@ def _ensure_open_session(session: dict) -> Optional[JSONResponse]:
     )
 
 
+# Shared per-IP budget for the session-bound routes that are NOT /message (topic
+# select, resume, escalate, resolve). Only /message was throttled, so one session
+# token bought UNLIMITED calls to the others — each doing real DB work (a topic
+# select writes the context-reset boundary, a resume reads 50 messages) — and an
+# IP's 20 session creates per window turned into unbounded DB load.
+# Deliberately generous, like _CATALOGUE_RATE_LIMIT: a real conversation taps a
+# topic a handful of times (the auto-switch adds at most MAX_AUTO_SWITCHES per
+# turn), resumes on reload, and finishes once. This only catches scripted abuse.
+_SESSION_OP_RATE_LIMIT = 300
+
+
+async def _check_session_op_rate(req: Request, session_id: Optional[str] = None
+                                 ) -> Optional[JSONResponse]:
+    """Throttle a session-bound, non-/message route. Returns an error or None."""
+    ip = client_ip(req)
+    try:
+        antispam.check_rate_limit(f"chat-op:{ip}", _SESSION_OP_RATE_LIMIT)
+    except antispam.AntiSpamError as exc:
+        await db.log_admin_event_sampled(session_id, "rate_limited",
+                                         {"ip": ip, "scope": "session_op"})
+        return _err(exc.status, exc.code, exc.detail)
+    return None
+
+
 async def _auth_session(authorization: Optional[str], session_id: str
                         ) -> tuple[Optional[dict], Optional[JSONResponse]]:
     """Verify bearer token bound to session_id, then load the session row.
@@ -410,8 +434,11 @@ async def widget_i18n(req: Request,
 # POST /api/chat/topic
 # ---------------------------------------------------------------------------
 @router.post("/topic")
-async def select_topic(body: TopicSelect,
+async def select_topic(req: Request, body: TopicSelect,
                        authorization: Optional[str] = Header(default=None)) -> JSONResponse:
+    limited = await _check_session_op_rate(req, body.session_id)
+    if limited:
+        return limited
     session, err = await _auth_session(authorization, body.session_id)
     if err:
         return err
@@ -611,8 +638,11 @@ async def send_message(req: Request, body: MessageSend,
 # GET /api/chat/session/{id}  -- resume
 # ---------------------------------------------------------------------------
 @router.get("/session/{session_id}")
-async def resume_session(session_id: str,
+async def resume_session(req: Request, session_id: str,
                          authorization: Optional[str] = Header(default=None)) -> JSONResponse:
+    limited = await _check_session_op_rate(req, session_id)
+    if limited:
+        return limited
     session, err = await _auth_session(authorization, session_id)
     if err:
         return err
@@ -640,8 +670,11 @@ async def resume_session(session_id: str,
 # POST /api/chat/escalate  -- explicit escalation
 # ---------------------------------------------------------------------------
 @router.post("/escalate")
-async def escalate(body: EscalateReq,
+async def escalate(req: Request, body: EscalateReq,
                    authorization: Optional[str] = Header(default=None)) -> JSONResponse:
+    limited = await _check_session_op_rate(req, body.session_id)
+    if limited:
+        return limited
     session, err = await _auth_session(authorization, body.session_id)
     if err:
         return err
@@ -665,7 +698,7 @@ async def escalate(body: EscalateReq,
 # POST /api/chat/resolve  -- player ended the chat via the "finish chat" nudge
 # ---------------------------------------------------------------------------
 @router.post("/resolve")
-async def resolve(body: ResolveReq,
+async def resolve(req: Request, body: ResolveReq,
                   authorization: Optional[str] = Header(default=None)) -> JSONResponse:
     """Close a session the player finished after a [[RESOLVED]] turn.
 
@@ -673,6 +706,9 @@ async def resolve(body: ResolveReq,
     is never closed by the player) and logs the close as an admin event. Idempotent
     and best-effort: the widget collapses the panel regardless of the outcome.
     """
+    limited = await _check_session_op_rate(req, body.session_id)
+    if limited:
+        return limited
     session, err = await _auth_session(authorization, body.session_id)
     if err:
         return err

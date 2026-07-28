@@ -76,7 +76,8 @@
 <p>Все строки виджета по языкам продукта (правки из админки доезжают без редеплоя виджета).</p>
 
 <div class="endpoint"><span class="tag post">POST</span><code>/api/chat/topic</code></div>
-<p><code>{ session_id, topic_slug }</code> + <code>Authorization: Bearer &lt;token&gt;</code>. Выбор/смена темы.</p>
+<p><code>{ session_id, topic_slug }</code> + <code>Authorization: Bearer &lt;token&gt;</code>. Выбор/смена темы.
+Ошибки: <code>401</code>, <code>400 bad_topic</code>, <code>409 session_closed</code>, <code>429</code>.</p>
 
 <div class="endpoint"><span class="tag post">POST</span><code>/api/chat/message</code></div>
 <p><code>{ session_id, text, closing? }</code> + bearer. Один ход диалога. Ответ:</p>
@@ -98,10 +99,22 @@
 (hand-off), <code>final=false</code> — карточка показана, чат продолжается.</p>
 
 <div class="endpoint"><span class="tag get">GET</span><code>/api/chat/session/{id}</code></div>
-<p>Резюме сессии: статус + история (bearer обязателен).</p>
+<p>Резюме сессии: статус + история (bearer обязателен). Ошибки: <code>401</code>,
+<code>404 not_found</code>, <code>429</code>.</p>
 
 <div class="endpoint"><span class="tag post">POST</span><code>/api/chat/escalate</code> · <span class="tag post">POST</span><code>/api/chat/resolve</code></div>
-<p>Явная эскалация (возвращает карточку контакта, закрывает сессию) / завершение чата игроком.</p>
+<p>Явная эскалация (возвращает карточку контакта, закрывает сессию) / завершение чата игроком.
+Ошибки: <code>401</code>, <code>409 session_closed</code> (только у <code>/escalate</code>),
+<code>429</code>.</p>
+
+<p class="muted"><b>Общий лимит на сессионные ручки.</b> У <code>/topic</code>, <code>/escalate</code>,
+<code>/resolve</code> и <code>GET /session/{id}</code> — один общий per-IP бюджет, отдельный от
+бюджета <code>/message</code>. Он намеренно щедрый (сотни запросов в окно) и обычным трафиком
+не достигается: реальный диалог меняет тему единицы раз, возобновляется при перезагрузке
+страницы и завершается один раз. Если ваш клиент опрашивает <code>GET /session/{id}</code>
+в цикле — не делайте этого: резюме нужно один раз при восстановлении, дальше состояние
+приходит в ответе каждого <code>/message</code>. На <code>429</code> реагируйте как в п. 2.5:
+пауза и повтор, а не немедленный ретрай.</p>
 
 <h2 id="custom-ui">2. Свой UI поверх Chat API — обязательная клиентская логика</h2>
 <p>Готовый виджет (<code>widget.js</code>) — это не только вёрстка: в нём заложена клиентская логика,

@@ -620,6 +620,16 @@ gate in `chat_service`** (soft hand-off, no model call — see "Escalation") →
 The cooldown gate only CHECKS; the stamp is armed (`antispam.arm_cooldown`) after every
 reject-gate passes, so a rejected message (too long / low-content / injection-blocked) never
 throttles the player's immediate corrected resend.
+**Every OTHER session-bound route is throttled too** (`chat.py` `_check_session_op_rate`): `POST
+/topic`, `POST /escalate`, `POST /resolve` and `GET /session/{id}` share ONE per-IP budget
+(`chat-op:{ip}`, `_SESSION_OP_RATE_LIMIT`), separate from `/message`'s. Only `/message` used to be
+gated, so a single valid session token bought UNLIMITED calls to the rest — each doing real DB work
+(a topic select writes `context_reset_id`, a resume reads 50 messages) — and the 20-sessions-per-IP
+create budget turned into unbounded DB load. The cap is deliberately generous (like
+`_CATALOGUE_RATE_LIMIT`): a real conversation taps a topic a handful of times (the widget's
+auto-switch adds at most `MAX_AUTO_SWITCHES` per turn), resumes on reload, and finishes once, so it
+only catches scripted abuse. It runs BEFORE `_auth_session`, so a blocked call costs no session
+lookup — and it is additive, never a replacement for the token check.
 Rate-limit and cooldown use **in-memory dicts** — fine for Phase 1 but they do not span multiple
 instances. Turnstile is verified at session create and skips gracefully (logged) when no secret
 is set, when the client sent NO token (the Turnstile script is blocked in some regions —
@@ -1123,6 +1133,14 @@ settings/secrets/KB/copy, the header switcher. When extending, keep these rules:
 ## Conventions
 
 - Stdlib-only JWT (`auth.py`) — HS256 via `hmac`/`hashlib`/`base64`, no PyJWT.
+- **Security response headers** (`main.py` `security_headers` middleware): `X-Content-Type-Options:
+  nosniff` on everything, plus `X-Frame-Options: DENY` + CSP `frame-ancestors 'none'` +
+  `Referrer-Policy: no-referrer` on **`/admin` paths only**. The admin SPA's ordinary buttons do
+  destructive things (delete a product, rotate a widget key, mint a `sak_` key), so a third-party
+  page framing it could clickjack a logged-in operator. The frame deny must NOT go global — the
+  widget, `test.html` and the `integration-*` pages are meant to be embedded/opened by partner
+  sites, which is the whole point of the service. Set with `setdefault`, so a handler that chose
+  its own value keeps it.
 - The widget front-end is vanilla ES modules with **no build step**; widget classes
   are prefixed `npchat-` to avoid host-page collisions. The admin SPA is the React
   Admin app in `admin/` (its own Vite build — the exception to "no build step",
