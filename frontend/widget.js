@@ -67,6 +67,9 @@ const I18N = {
         send: "Send", launcher: "Open support chat", close: "Close chat",
         startError: "Could not start chat. Please try again later.",
         sendError: "Something went wrong. Please try again.",
+        errorRateLimited: "You're sending messages a bit too fast. Please wait a moment and try again.",
+        errorTooLong: "That message is too long. Please shorten it and send again.",
+        errorRejected: "I can't process that message. Please rephrase it and try again.",
         switching: 'Looks like your question is about "{topic}", switching you there…',
         switchStuck: "I couldn't settle on the right topic for this question. Please rephrase it in a bit more detail.",
         finish: "End chat", finished: "Chat ended. Thanks for reaching out!" },
@@ -76,6 +79,9 @@ const I18N = {
         send: "Отправить", launcher: "Открыть чат поддержки", close: "Закрыть чат",
         startError: "Не удалось начать чат. Попробуйте позже.",
         sendError: "Что-то пошло не так. Попробуйте ещё раз.",
+        errorRateLimited: "Ты пишешь слишком часто. Подожди немного и отправь ещё раз.",
+        errorTooLong: "Сообщение слишком длинное. Сократи его и отправь ещё раз.",
+        errorRejected: "Не могу обработать это сообщение. Переформулируй, пожалуйста.",
         switching: 'Похоже, твой вопрос про "{topic}", переключаю тему…',
         switchStuck: "Мне не удалось подобрать подходящую тему для этого вопроса. Пожалуйста, переформулируй его чуть подробнее.",
         finish: "Завершить чат", finished: "Чат завершён. Спасибо за обращение!" },
@@ -85,6 +91,9 @@ const I18N = {
         send: "Enviar", launcher: "Abrir chat de soporte", close: "Cerrar chat",
         startError: "No se pudo iniciar el chat. Inténtalo más tarde.",
         sendError: "Algo salió mal. Inténtalo de nuevo.",
+        errorRateLimited: "Estás escribiendo demasiado rápido. Espera un momento e inténtalo de nuevo.",
+        errorTooLong: "Ese mensaje es demasiado largo. Acórtalo y envíalo de nuevo.",
+        errorRejected: "No puedo procesar ese mensaje. Reformúlalo, por favor.",
         switching: 'Parece que tu pregunta es sobre "{topic}", cambiando de tema…',
         switchStuck: "No pude encontrar el tema adecuado para esta pregunta. Por favor, reformúlala con un poco más de detalle.",
         finish: "Finalizar chat", finished: "Chat finalizado. ¡Gracias por contactarnos!" },
@@ -95,6 +104,9 @@ const I18N = {
         launcher: "Destek sohbetini aç", close: "Sohbeti kapat",
         startError: "Sohbet başlatılamadı. Lütfen daha sonra tekrar deneyin.",
         sendError: "Bir şeyler ters gitti. Lütfen tekrar deneyin.",
+        errorRateLimited: "Çok hızlı yazıyorsun. Biraz bekleyip tekrar dene.",
+        errorTooLong: "Bu mesaj çok uzun. Kısaltıp tekrar gönder.",
+        errorRejected: "Bu mesajı işleyemiyorum. Lütfen yeniden ifade et.",
         switching: 'Görünüşe göre sorunuz "{topic}" ile ilgili, konuyu değiştiriyorum…',
         switchStuck: "Bu soru için uygun konuyu bulamadım. Lütfen biraz daha ayrıntılı şekilde yeniden yazar mısın?",
         finish: "Sohbeti bitir", finished: "Sohbet sona erdi. Bize ulaştığınız için teşekkürler!" },
@@ -104,6 +116,9 @@ const I18N = {
         send: "Enviar", launcher: "Abrir chat de suporte", close: "Fechar chat",
         startError: "Não foi possível iniciar o chat. Tente novamente mais tarde.",
         sendError: "Algo deu errado. Tente novamente.",
+        errorRateLimited: "Você está escrevendo rápido demais. Espere um momento e tente de novo.",
+        errorTooLong: "Essa mensagem é longa demais. Encurte e envie novamente.",
+        errorRejected: "Não consigo processar essa mensagem. Reformule, por favor.",
         switching: 'Parece que sua pergunta é sobre "{topic}", mudando de tópico…',
         switchStuck: "Não consegui encontrar o tópico certo para essa pergunta. Por favor, reformule com um pouco mais de detalhes.",
         finish: "Encerrar chat", finished: "Chat encerrado. Obrigado pelo contato!" },
@@ -148,6 +163,20 @@ function resolveLang() {
   );
 }
 
+// (Re-)seed the language state FROM CONFIG. Must run after any Object.assign
+// into CONFIG, never at module-evaluation time: `state` is built when the module
+// is imported, but mount(overrides) applies the host's config afterwards, so
+// reading CONFIG in the state literal captured the pre-mount values and threw
+// away USER_CONTEXT.language entirely — the documented "strongest chrome
+// signal". A Russian account on an English browser got English chrome AND, since
+// `locale` is what /session resolves the base language from, English answers
+// until drift caught up.
+function applyConfigLanguage() {
+  state.lang = resolveLang();
+  state.locale =
+    (CONFIG.USER_CONTEXT && CONFIG.USER_CONTEXT.language) || CONFIG.LOCALE;
+}
+
 function t(key) {
   const dict = I18N[state.lang] || I18N.en;
   return dict[key] || I18N.en[key] || key;
@@ -156,6 +185,25 @@ function t(key) {
 // t() with a {topic} placeholder filled in (topic-switch suggestion copy).
 function tTopic(key, topic) {
   return t(key).replace("{topic}", topic);
+}
+
+// The localized note for a rejected turn, keyed on the response's machine-readable
+// `error` code (the human `detail` beside it is English-only, by design — it is
+// written for API consumers, not players). Anything unmapped falls back to the
+// generic send error rather than leaking the raw string.
+// Codes as raised by app/chat/antispam.py and app/api/chat.py.
+const ERROR_KEYS = {
+  rate_limited: "errorRateLimited",   // 429, per-IP window
+  cooldown: "errorRateLimited",       // 429, per-session gap
+  too_long: "errorTooLong",           // 400, over the length cap
+  empty: "errorRejected",             // 400, nothing to send
+  low_content: "errorRejected",       // 400, nothing answerable
+  rejected: "errorRejected",          // 400, injection hard-block
+};
+
+function errorText(code, status) {
+  const key = ERROR_KEYS[code] || (status === 429 ? "errorRateLimited" : null);
+  return t(key || "sendError");
 }
 
 const state = {
@@ -236,16 +284,19 @@ function withTimeout(promise, ms, fallback) {
   });
 }
 
+// Memoized: the script is injected ONCE and every later caller awaits the same
+// promise. Probing the DOM for the tag instead meant that after a failed load
+// (the whole point of the fail-open design — challenges.cloudflare.com blocked)
+// the tag was found, listeners were attached to a script that had ALREADY
+// fired, and the promise never settled. Only the 8s withTimeout unstuck it, so
+// in exactly those regions every session create paid a flat 8s — again on each
+// new session (back / close / finish) — and leaked a listener pair per attempt.
+let turnstileScriptPromise = null;
+
 function loadTurnstile() {
-  return new Promise((resolve) => {
-    if (window.turnstile) return resolve(window.turnstile);
-    const existing = document.querySelector("script[data-npchat-turnstile]");
-    if (existing) {
-      // Already injected (e.g. the mount-time pre-load); wait for it.
-      existing.addEventListener("load", () => resolve(window.turnstile || null));
-      existing.addEventListener("error", () => resolve(null));
-      return;
-    }
+  if (window.turnstile) return Promise.resolve(window.turnstile);
+  if (turnstileScriptPromise) return turnstileScriptPromise;
+  turnstileScriptPromise = new Promise((resolve) => {
     const s = document.createElement("script");
     s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
     s.async = true;
@@ -254,6 +305,7 @@ function loadTurnstile() {
     s.onerror = () => resolve(null);
     document.head.appendChild(s);
   });
+  return turnstileScriptPromise;
 }
 
 async function turnstileToken(action) {
@@ -503,7 +555,17 @@ async function sendMessage(text, closing = false) {
     if (status === 409 || (data && data.error === "session_closed")) {
       return { reply: t("finished"), escalation: { active: false }, sessionClosed: true };
     }
-    return { reply: data.detail || `Error (${status})`, escalation: { active: false } };
+    // Never surface the backend's `detail` — it is an English string written for
+    // API consumers (and on a 422 it is an ARRAY, which stringified to
+    // "[object Object]"). Rendering it as a normal assistant bubble made Nika
+    // say "You're sending messages too quickly" to a Russian player. Map the
+    // machine-readable `error` code to localized copy and mark it an error so
+    // the widget styles it as one.
+    return {
+      reply: errorText(data && data.error, status),
+      isError: true,
+      escalation: { active: false },
+    };
   }
   // The conversation language can drift when the player starts writing in
   // another supported language; follow it in the chrome too (see maybeSwitchLang).
@@ -524,6 +586,18 @@ function el(tag, cls, text) {
 }
 
 function buildUI() {
+  // Idempotent: mount() is a documented integration entry point AND the module
+  // auto-mounts on import, so the snippet in the integration guide ran this
+  // twice. A second pass used to build a SECOND .npchat-root, re-bind the
+  // window listeners and overwrite `els` — leaving the first widget orphaned in
+  // the DOM (its launcher still clickable, but pointing at nothing) and
+  // duplicating the /topics, /i18n and Turnstile fetches. Re-applying config to
+  // the widget that already exists is what the caller actually meant.
+  if (els.root && els.root.isConnected) {
+    applyConfigLanguage();
+    applyStaticLabels();
+    return;
+  }
   const root = el("div", "npchat-root");
 
   const launcher = el("button", "npchat-launcher");
@@ -975,8 +1049,8 @@ async function autoSwitchTopic(suggested, originalText, depth) {
   try {
     const data = await sendMessage(originalText);
     if (gen !== state.generation) { typing.remove(); return; }
-    fillTyping(typing, data.reply || "");
-    applyTurnExtras(data, originalText, depth + 1);
+    fillTyping(typing, data.reply || "", data.isError === true);
+    await applyTurnExtras(data, originalText, depth + 1);
     if (data.sessionClosed) endConversation();
   } catch (e) {
     if (gen !== state.generation) { typing.remove(); return; }
@@ -1032,6 +1106,14 @@ function renderSuggestions(list, closing, resolved) {
 // Apply the per-turn side payloads shared by a typed send and a topic resend:
 // the escalation block, a cross-topic switch prompt, and the guide-to-KB
 // bubbles / finish button.
+// Returns a promise that settles only when everything this turn triggered is
+// done — notably the whole auto-switch chain. The caller must await it before
+// clearing `state.sending`: autoSwitchTopic runs a topic change, a legibility
+// pause and a FULL second model call, and while that ran the composer used to
+// be re-enabled. A message sent in that window could land before POST /topic
+// (answered against the old KB), or consume the cooldown exemption the backend
+// grants the automatic re-ask — which then came back 429 and rendered its raw
+// English detail as if Nika had said it.
 function applyTurnExtras(data, originalText, depth = 0) {
   if (data.escalation && data.escalation.active) {
     addEscalation(data.escalation);
@@ -1056,8 +1138,7 @@ function applyTurnExtras(data, originalText, depth = 0) {
   // depth guard stops a runaway chain of switches.
   if (data.suggested_topic) {
     if (depth < MAX_AUTO_SWITCHES) {
-      autoSwitchTopic(data.suggested_topic, originalText, depth);
-      return;
+      return autoSwitchTopic(data.suggested_topic, originalText, depth);
     }
     // Auto-switch limit reached and the backend suppressed the in-place answer:
     // without this fallback the turn would end with NO reply at all and the
@@ -1137,7 +1218,7 @@ async function finishWithClosing(text) {
   }
   // Abandoned while the goodbye was in flight — drop it, don't clobber the new chat.
   if (gen !== state.generation) { typing.remove(); return; }
-  fillTyping(typing, data.reply || "");
+  fillTyping(typing, data.reply || "", data.isError === true);
   if (data.escalation && data.escalation.active) {
     addEscalation(data.escalation);
     endConversation();
@@ -1377,8 +1458,12 @@ async function submitText(text) {
     // The conversation may have been abandoned (back / close / new topic) while
     // this response was in flight — drop it instead of clobbering the new chat.
     if (gen !== state.generation) { typing.remove(); return; }
-    fillTyping(typing, data.reply || "");
-    applyTurnExtras(data, text);
+    // isError -> a rejected turn (rate limit, too long, blocked): render it as
+    // an error note, not as an assistant bubble in Nika's voice.
+    fillTyping(typing, data.reply || "", data.isError === true);
+    // Awaited: an auto-switch keeps the turn alive through a topic change and a
+    // second model call, and the composer must stay locked for all of it.
+    await applyTurnExtras(data, text);
     // 409 from a server-closed session: render the "Chat ended" bubble first
     // (above), THEN tear the session down locally.
     if (data.sessionClosed) endConversation();
@@ -1396,6 +1481,9 @@ async function submitText(text) {
 // ---------------------------------------------------------------------------
 export function mount(overrides = {}) {
   Object.assign(CONFIG, overrides);
+  // Re-resolve the language from the config we were just handed — the state
+  // literal ran at import time, before these overrides existed.
+  applyConfigLanguage();
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", buildUI);
   } else {
