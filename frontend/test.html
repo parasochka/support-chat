@@ -101,7 +101,10 @@
     </div>
   </div>
 
-  <!-- Widget auto-mounts on load. To override config, import { mount } instead. -->
+  <!-- Widget auto-mounts on load. To override config, import { mount } and call
+       it — it re-applies config to the widget that already exists. Set
+       window.__NPCHAT_NO_AUTOMOUNT__ = true before the import to control the
+       mount moment yourself. -->
   <script type="module" src="/widget.js"></script>
 </body>
 </html>

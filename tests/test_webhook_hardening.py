@@ -75,6 +75,9 @@ async def test_updates_for_one_chat_are_serialized(monkeypatch):
         retention.handle_update({"id": 1}, _msg_update(203, 8, "a")),
         retention.handle_update({"id": 1}, _msg_update(204, 9, "b")),
     )
-    starts = [t for t in order if t[0] == "start"]
-    assert len(starts) == 2 and len(order) == 4
+    # Both turns must be IN FLIGHT together: the second start has to land
+    # before the first end. Counting starts and events (== 2 and == 4) was also
+    # true of a fully serialized run, so a regression to a global lock would
+    # have passed unnoticed.
+    assert order == [("start", "a"), ("start", "b"), ("end", "a"), ("end", "b")]
     retention.reset_state()

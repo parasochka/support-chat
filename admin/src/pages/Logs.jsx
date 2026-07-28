@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Title } from 'react-admin';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Title, useNotify } from 'react-admin';
+import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
@@ -24,6 +25,8 @@ import { getScopeName } from '../productScope';
 import { t } from '../i18n';
 import { wideTableSx, nowrapCellSx } from '../lib/table';
 import { fmtDateTime } from '../lib/fmt';
+import { notifyError } from '../lib/notifyError';
+import useDebounced from '../lib/useDebounced';
 import useIsMobile from '../lib/useIsMobile';
 
 const LEVEL_COLOR = {
@@ -53,23 +56,46 @@ const SystemLogs = () => {
   const [rows, setRows] = useState([]);
   const [level, setLevel] = useState('');
   const [q, setQ] = useState('');
+  // Debounced: the fetch used to be keyed on `q` itself, so every keystroke
+  // fired GET /admin/logs *and* POST /admin/logs/read, with nothing cancelling
+  // them — a slower earlier response could land last and overwrite the newer
+  // rows.
+  const debouncedQ = useDebounced(q);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  const [error, setError] = useState(null);
+  const notify = useNotify();
+  // Monotonic request id: only the newest in-flight load may write state.
+  const reqId = useRef(0);
 
   const load = useCallback(
     async (beforeId) => {
+      const mine = ++reqId.current;
       setLoading(true);
       try {
-        const query = buildQuery({ level, q, before_id: beforeId, limit: 100 });
+        const query = buildQuery({
+          level, q: debouncedQ, before_id: beforeId, limit: 100,
+        });
         const { json } = await httpClient(`${API_URL}/admin/logs${query}`);
+        if (mine !== reqId.current) return;
         const items = json.items || [];
         setRows((prev) => (beforeId ? [...prev, ...items] : items));
         setHasMore(items.length === 100);
+        setError(null);
+      } catch (e) {
+        if (mine !== reqId.current) return;
+        // Without this the promise rejected unhandled AND the table simply
+        // rendered "no logs match the filter" — so a 403 (this page needs
+        // global read access) looked like an empty log.
+        setRows([]);
+        setHasMore(false);
+        setError(e);
+        notifyError(notify, e, t('Could not load logs'));
       } finally {
-        setLoading(false);
+        if (mine === reqId.current) setLoading(false);
       }
     },
-    [level, q]
+    [level, debouncedQ, notify]
   );
 
   // Load + clear the unread badge when the tab is opened / filters change.
@@ -106,6 +132,13 @@ const SystemLogs = () => {
         </Button>
       </Stack>
       {loading && <LinearProgress sx={{ mb: 1 }} />}
+      {error && (
+        <Alert severity="error" sx={{ mb: 1.5 }}>
+          {error.status === 403
+            ? t('This page needs global read access.')
+            : t('Could not load logs')}
+        </Alert>
+      )}
       {isMobile ? (
         // A log line is one long monospace string: squeezed into a third of a
         // phone screen it becomes an unreadable ribbon, and left at its desktop
@@ -191,23 +224,38 @@ const SystemLogs = () => {
 const ActivityLog = () => {
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState('');
+  const debouncedQ = useDebounced(q);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  const [error, setError] = useState(null);
+  const notify = useNotify();
+  const reqId = useRef(0);
 
   const load = useCallback(
     async (beforeId) => {
+      const mine = ++reqId.current;
       setLoading(true);
       try {
-        const query = buildQuery({ q, before_id: beforeId, limit: 100, ...scopeParams() });
+        const query = buildQuery({
+          q: debouncedQ, before_id: beforeId, limit: 100, ...scopeParams(),
+        });
         const { json } = await httpClient(`${API_URL}/admin/audit${query}`);
+        if (mine !== reqId.current) return;
         const items = json.items || [];
         setRows((prev) => (beforeId ? [...prev, ...items] : items));
         setHasMore(items.length === 100);
+        setError(null);
+      } catch (e) {
+        if (mine !== reqId.current) return;
+        setRows([]);
+        setHasMore(false);
+        setError(e);
+        notifyError(notify, e, t('Could not load the activity log'));
       } finally {
-        setLoading(false);
+        if (mine === reqId.current) setLoading(false);
       }
     },
-    [q]
+    [debouncedQ, notify]
   );
 
   useEffect(() => {
@@ -235,6 +283,13 @@ const ActivityLog = () => {
         </Button>
       </Stack>
       {loading && <LinearProgress sx={{ mb: 1 }} />}
+      {error && (
+        <Alert severity="error" sx={{ mb: 1.5 }}>
+          {error.status === 403
+            ? t('This page needs global read access.')
+            : t('Could not load the activity log')}
+        </Alert>
+      )}
       <Box sx={{ overflowX: 'auto' }}>
         <Table size="small" sx={wideTableSx(680)}>
           <TableHead>

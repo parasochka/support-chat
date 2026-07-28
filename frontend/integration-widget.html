@@ -89,6 +89,14 @@ mount({
   WIDGET_KEY: "wk_XXXXXXXXXXXX",
   SIGNED_CONTEXT: "&lt;подписанный blob с данными игрока&gt;", // см. /integration-data
 });</code></pre>
+<p>Виджет также монтируется сам при импорте модуля, поэтому <code>mount()</code> из примера выше
+применяет конфиг к уже созданному виджету — второго на странице не появится. Если нужно
+полностью управлять моментом монтажа, выставьте флаг <b>до</b> импорта:</p>
+<pre><code>&lt;script&gt;window.__NPCHAT_NO_AUTOMOUNT__ = true;&lt;/script&gt;
+&lt;script type="module"&gt;
+  import { mount } from "https://CHAT_HOST/widget.js";
+  mount({ /* ... */ });
+&lt;/script&gt;</code></pre>
 <p>Формат и подпись <code>SIGNED_CONTEXT</code> (HMAC-handshake бэкенда CMS, whitelist полей игрока,
 примеры кода на Node.js и Python) — на странице
 <a href="/integration-data#handshake" style="color:var(--accent)">передачи данных игрока</a>.

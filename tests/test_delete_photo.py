@@ -11,52 +11,12 @@ but a destructive delete is worth pinning.
 from __future__ import annotations
 
 from app.core import db
-
-
-class _Tx:
-    async def __aenter__(self):
-        return None
-
-    async def __aexit__(self, *a):
-        return False
-
-
-class _Acq:
-    def __init__(self, conn):
-        self._conn = conn
-
-    async def __aenter__(self):
-        return self._conn
-
-    async def __aexit__(self, *a):
-        return False
-
-
-class FakeConn:
-    def __init__(self, photo_row):
-        self.photo_row = photo_row
-        self.executed: list[tuple[str, tuple]] = []
-
-    def transaction(self):
-        return _Tx()
-
-    async def fetchrow(self, sql, *args):
-        return self.photo_row
-
-    async def execute(self, sql, *args):
-        self.executed.append((sql, args))
-
-
-class FakePool:
-    def __init__(self, conn):
-        self._conn = conn
-
-    def acquire(self, timeout=None):
-        return _Acq(self._conn)
+from tests.conftest import FakeConn, FakePool
 
 
 async def test_delete_photo_hard_deletes_row_and_views(monkeypatch):
-    conn = FakeConn({"storage_ref": "clip.tg.mp4", "media_type": "video"})
+    conn = FakeConn(row={"storage_ref": "clip.tg.mp4",
+                         "media_type": "video"})
     monkeypatch.setattr(db, "_pool", FakePool(conn))
 
     result = await db.delete_retention_photo(42)
@@ -80,7 +40,7 @@ async def test_delete_photo_hard_deletes_row_and_views(monkeypatch):
 
 
 async def test_delete_missing_photo_returns_none(monkeypatch):
-    conn = FakeConn(None)
+    conn = FakeConn(row=None)
     monkeypatch.setattr(db, "_pool", FakePool(conn))
 
     assert await db.delete_retention_photo(999) is None

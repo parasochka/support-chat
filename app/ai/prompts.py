@@ -1241,8 +1241,13 @@ def strip_resolved_tag(text: str) -> tuple[str, bool]:
 # ordinary "[[note]]" a reply might contain is left intact.
 _CONTROL_TAG_NAMES = ("ESCALATE", "RESOLVED", "TOPIC", "LANG", "SUGGEST",
                       "PHOTO", "STAGE_UP", "HANDOFF", "LINK")
+# `[^\]\n]*` — NOT `[^\]]*`. A negated class matches newlines too, so an
+# unclosed tag in the MIDDLE of a multi-line reply (a mangled "[[LINK:https://a.b"
+# with paragraphs after it) would swallow everything up to the next "]" anywhere
+# below, deleting visible answer text. Stopping at the line end bounds the damage
+# to the line the fragment is on, which is all a truncated tag can occupy.
 _CONTROL_SCRUB_RE = re.compile(
-    r"\[\[\s*(?:" + "|".join(_CONTROL_TAG_NAMES) + r")\b[^\]]*\]{0,2}",
+    r"\[\[\s*(?:" + "|".join(_CONTROL_TAG_NAMES) + r")\b[^\]\n]*\]{0,2}",
     re.IGNORECASE)
 
 

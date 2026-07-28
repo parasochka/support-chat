@@ -68,7 +68,11 @@ in mind for every change:
   on per-session routes, the admin's selected `product_id` on `/admin/*`). The sync
   `settings.*()` getters read it transparently, so per-product resolution needed no
   signature churn. `None` scope = global-only resolution (pre-tenancy behaviour;
-  tests unaffected).
+  tests unaffected). A request handler may just SET it (its context dies with the
+  request), but a **background worker MUST use `tenancy.scoped_product(pid)`** —
+  a worker loop is ONE long-lived task, so a bare set leaves the last product of
+  the pass bound for everything the task does afterwards (including
+  `db.log_admin_event`, which falls back to this ContextVar for `product_id`).
 - **Settings resolution** is now four layers, merged field-by-field:
   `product_settings` → `app_settings` → env → built-in default. Prompt variables,
   translations and the test profile are stored per product too (`product_settings`
@@ -93,6 +97,15 @@ in mind for every change:
   decrypting readers. A product without
   its own keys falls back to the deploy env keys
   (`openai_client.client_for_product`, cached per product + key fingerprint).
+  The **handshake secret does NOT fall back that way**: `auth.effective_handshake_secret`
+  applies the deploy-level `WIDGET_HANDSHAKE_SECRET` only in the **default product
+  scope** (`tenancy.is_default_scope()`, the same gate `escalation.build_payload`
+  puts on `CONTACT_FORM_URL`) — otherwise whoever holds it could sign a trusted
+  player profile for ANOTHER partner's casino. A non-default product with no
+  secret of its own simply has no signed mode; note that "is a secret in effect"
+  (production mode: never trust unsigned browser context) stays the BROADER
+  `product_secret or env`, so such a product still refuses browser-supplied
+  context rather than falling back to dev behaviour.
 - **Per-product Cloudflare Turnstile**: each product (domain) runs its own
   Turnstile widget (created as **Invisible** in the Cloudflare dashboard — no
   challenge UI ever shows) — the PUBLIC `turnstile_site_key` on the product row
@@ -361,6 +374,16 @@ schema, edit the `_SCHEMA` string. **A new column on an existing table will NOT 
 `CREATE TABLE IF NOT EXISTS`** — add an idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
 to `_ensure_columns()`. Every table read/write goes through a `db.<name>(...)` async helper;
 nothing else touches tables directly.
+
+**Every query goes through the bounded acquire.** Use the module helpers
+`_fetch/_fetchrow/_fetchval/_execute` (or `async with _acquire()` for a multi-statement
+transaction) — never asyncpg's `Pool.fetch/execute/...` convenience methods. Those wait for
+a free pool slot with **no ceiling** (`command_timeout` bounds how long a query may RUN, not
+how long it may WAIT), so a single call reaching for them opts that query out of
+`DB_ACQUIRE_TIMEOUT_SEC` and hangs forever under pool exhaustion. A lock or job that holds a
+connection for **minutes** (the retention sweeps' `pg_advisory_lock`, the media normalizer)
+must instead take a `db.dedicated_connection()`: it would otherwise eat one of the pool's 10
+slots, and the pool's `command_timeout` kills a *blocking* `pg_advisory_lock` wait outright.
 
 ### No seeds — empty DB starts empty
 There is **no seed step** for topics, KB content, or settings. On a fresh/empty database there

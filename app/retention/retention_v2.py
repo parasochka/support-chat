@@ -193,8 +193,14 @@ async def scheduler_loop() -> None:
 
 async def run_due_events() -> dict[str, Any]:
     """One sweep across all v2-enabled products (advisory-locked)."""
-    pool = db.pool()
-    async with pool.acquire() as conn:
+    # A DEDICATED connection, not a pool slot (the same reasoning as
+    # media_normalizer._run_product_locked): the sweep holds this lock for the
+    # whole pass — minutes, with the agent's 90s model calls inside — so parking
+    # it on one of the pool's 10 slots starves the request paths for the
+    # duration, and the pool's command_timeout=30 would kill a blocking
+    # pg_advisory_lock wait outright.
+    conn = await db.dedicated_connection()
+    try:
         got = await conn.fetchval("SELECT pg_try_advisory_lock($1)",
                                   _ADVISORY_LOCK_KEY)
         if not got:
@@ -213,6 +219,10 @@ async def run_due_events() -> dict[str, Any]:
         finally:
             await conn.execute("SELECT pg_advisory_unlock($1)",
                                _ADVISORY_LOCK_KEY)
+    finally:
+        # Closing the session releases the advisory lock too, so a failed
+        # explicit unlock can never wedge the sweep for other instances.
+        await conn.close()
 
 
 async def run_product_events_locked(product: dict[str, Any], *,
@@ -224,9 +234,15 @@ async def run_product_events_locked(product: dict[str, Any], *,
     per-player guard counters before either writes — double send. Blocking
     lock (not try-lock): the button should run right after the worker
     finishes, not silently no-op. The manual run also bypasses the humanizing
-    send delay — the operator pressing the button wants answers now."""
-    pool = db.pool()
-    async with pool.acquire() as conn:
+    send delay — the operator pressing the button wants answers now.
+
+    The wait rides a DEDICATED connection: the sweep can hold the lock for
+    minutes, and on a pool connection the pool's command_timeout=30 kills the
+    BLOCKING pg_advisory_lock itself — so «Process queue now» failed with a
+    query timeout instead of waiting its turn, exactly when the worker was busy.
+    """
+    conn = await db.dedicated_connection()
+    try:
         await conn.execute("SELECT pg_advisory_lock($1)", _ADVISORY_LOCK_KEY)
         try:
             return await run_product_events(product, limit=limit,
@@ -234,6 +250,8 @@ async def run_product_events_locked(product: dict[str, Any], *,
         finally:
             await conn.execute("SELECT pg_advisory_unlock($1)",
                                _ADVISORY_LOCK_KEY)
+    finally:
+        await conn.close()
 
 
 async def run_product_events(product: dict[str, Any], *,
@@ -263,55 +281,55 @@ async def run_product_events(product: dict[str, Any], *,
     silently kill the idle ladder the admin sees as a separate toggle.
     """
     pid = int(product["id"])
-    tenancy.set_current_product(pid)
-    cfg = settings.retention()
-    stats: dict[str, Any] = {"events": 0, "decided": 0, "sent": 0}
-    if not cfg.get("v2_enabled"):
-        stats["agent"] = "disabled"
-    elif not ignore_send_delay and _in_quiet_hours(cfg):
-        stats["agent"] = "quiet_hours_deferred"
-    else:
-        batch = int(limit or cfg["ping_batch_size"])
-        delay_min = (0 if ignore_send_delay
-                     else int(cfg.get("v2_send_delay_min_sec") or 0))
-        delay_max = (0 if ignore_send_delay
-                     else int(cfg.get("v2_send_delay_max_sec") or 0))
-        events = await db.claim_retention_events(
-            pid, limit=batch, delay_min_sec=delay_min,
-            delay_max_sec=max(delay_max, delay_min))
-        decided = sent = 0
-        for evt in events:
-            try:
-                outcome = await _process_event(product, evt, cfg)
-                if outcome:
-                    decided += 1
-                    if outcome == "sent":
-                        sent += 1
-            except Exception:  # noqa: BLE001 - one bad event must not wedge the queue
-                log.exception("retention_v2_event_failed product=%s event=%s",
-                              pid, evt.get("id"))
-        stats.update(events=len(events), decided=decided, sent=sent)
-    # The agent's INACTIVITY trigger: a quiet player produces no events, so the
-    # idle rules ladder (retention_idle) runs from the same sweep — same lock,
-    # same guards, same dry-run — gated by its OWN `idle_pings_enabled` switch.
-    # Self-paced (once per ~10 min per product), so a seconds-scale worker
-    # interval doesn't hammer it.
-    try:
-        from app.retention import retention_idle  # late: retention_idle imports this module
-        idle = await retention_idle.run_product_idle_pings(product, cfg)
-        if idle.get("sent") or idle.get("failed"):
-            stats["idle_sent"] = idle.get("sent", 0)
-            stats["idle_failed"] = idle.get("failed", 0)
-    except Exception:  # noqa: BLE001 - the idle sweep must not wedge the events
-        log.exception("retention_idle_sweep_failed product=%s", pid)
-    # Attribution: settle the outcome rows whose windows have elapsed. Runs on
-    # NO switch of its own — measuring what already went out is never something
-    # a product opts out of — and is self-paced (minutes, not worker ticks).
-    # Its helper swallows its own errors, so a broken sweep can't wedge here.
-    attributed = await outcomes.run_product_attribution(pid)
-    if attributed.get("attributed"):
-        stats["attributed"] = attributed["attributed"]
-    return stats
+    with tenancy.scoped_product(pid):
+        cfg = settings.retention()
+        stats: dict[str, Any] = {"events": 0, "decided": 0, "sent": 0}
+        if not cfg.get("v2_enabled"):
+            stats["agent"] = "disabled"
+        elif not ignore_send_delay and _in_quiet_hours(cfg):
+            stats["agent"] = "quiet_hours_deferred"
+        else:
+            batch = int(limit or cfg["ping_batch_size"])
+            delay_min = (0 if ignore_send_delay
+                         else int(cfg.get("v2_send_delay_min_sec") or 0))
+            delay_max = (0 if ignore_send_delay
+                         else int(cfg.get("v2_send_delay_max_sec") or 0))
+            events = await db.claim_retention_events(
+                pid, limit=batch, delay_min_sec=delay_min,
+                delay_max_sec=max(delay_max, delay_min))
+            decided = sent = 0
+            for evt in events:
+                try:
+                    outcome = await _process_event(product, evt, cfg)
+                    if outcome:
+                        decided += 1
+                        if outcome == "sent":
+                            sent += 1
+                except Exception:  # noqa: BLE001 - one bad event must not wedge the queue
+                    log.exception("retention_v2_event_failed product=%s event=%s",
+                                  pid, evt.get("id"))
+            stats.update(events=len(events), decided=decided, sent=sent)
+        # The agent's INACTIVITY trigger: a quiet player produces no events, so the
+        # idle rules ladder (retention_idle) runs from the same sweep — same lock,
+        # same guards, same dry-run — gated by its OWN `idle_pings_enabled` switch.
+        # Self-paced (once per ~10 min per product), so a seconds-scale worker
+        # interval doesn't hammer it.
+        try:
+            from app.retention import retention_idle  # late: retention_idle imports this module
+            idle = await retention_idle.run_product_idle_pings(product, cfg)
+            if idle.get("sent") or idle.get("failed"):
+                stats["idle_sent"] = idle.get("sent", 0)
+                stats["idle_failed"] = idle.get("failed", 0)
+        except Exception:  # noqa: BLE001 - the idle sweep must not wedge the events
+            log.exception("retention_idle_sweep_failed product=%s", pid)
+        # Attribution: settle the outcome rows whose windows have elapsed. Runs on
+        # NO switch of its own — measuring what already went out is never something
+        # a product opts out of — and is self-paced (minutes, not worker ticks).
+        # Its helper swallows its own errors, so a broken sweep can't wedge here.
+        attributed = await outcomes.run_product_attribution(pid)
+        if attributed.get("attributed"):
+            stats["attributed"] = attributed["attributed"]
+        return stats
 
 
 # ---------------------------------------------------------------------------

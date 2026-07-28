@@ -27,6 +27,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { API_URL, httpClient } from '../httpClient';
 import { t } from '../i18n';
 import rich from '../components/Rich';
+import { copyText } from '../lib/clipboard';
 import { notifyError } from '../lib/notifyError';
 import { compactTableSx } from '../lib/table';
 
@@ -37,14 +38,7 @@ const KEY_PLACEHOLDER = 'sak_…';
 /** A copyable code block — the page is mostly snippets, so this carries it. */
 const Snippet = ({ text, label }) => {
   const notify = useNotify();
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      notify(t('Copied'), { type: 'info' });
-    } catch {
-      notify(t('Copy failed — select the text manually.'), { type: 'warning' });
-    }
-  };
+  const copy = () => copyText(notify, text);
   return (
     <Box sx={{ position: 'relative', mb: 1 }}>
       {label && (

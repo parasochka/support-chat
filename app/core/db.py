@@ -43,12 +43,44 @@ async def connect() -> asyncpg.Pool:
 def _acquire():
     """Acquire a pooled connection with a bounded wait (use as `async with`).
 
-    The convenience helpers (`_pool.fetch/execute/...`) block on acquire with no
-    ceiling, so under pool exhaustion a request would hang forever. Explicit
-    acquire sites on the hot request paths use this so exhaustion surfaces as a
-    retryable error rather than an unbounded hang (DB_ACQUIRE_TIMEOUT_SEC).
+    asyncpg's convenience helpers (`Pool.fetch/execute/...`) block on acquire
+    with NO ceiling — `command_timeout` bounds how long a query may RUN, not how
+    long it may wait for a free slot — so under pool exhaustion a request would
+    hang forever. Every query in this module goes through this acquire (directly,
+    or via the `_fetch/_fetchrow/_fetchval/_execute` wrappers below), so
+    exhaustion surfaces as a retryable error instead of an unbounded hang
+    (DB_ACQUIRE_TIMEOUT_SEC).
     """
     return _pool.acquire(timeout=config.DB_ACQUIRE_TIMEOUT_SEC)
+
+
+# The one-liner query helpers. They exist so that a plain `SELECT` gets the
+# bounded acquire above without every call site having to open an `async with`:
+# reaching for `_fetch(...)` directly would silently opt that query out of
+# the pool-exhaustion ceiling.
+async def _fetch(query: str, *args) -> list[asyncpg.Record]:
+    async with _acquire() as conn:
+        return await conn.fetch(query, *args)
+
+
+async def _fetchrow(query: str, *args) -> Optional[asyncpg.Record]:
+    async with _acquire() as conn:
+        return await conn.fetchrow(query, *args)
+
+
+async def _fetchval(query: str, *args) -> Any:
+    async with _acquire() as conn:
+        return await conn.fetchval(query, *args)
+
+
+async def _execute(query: str, *args) -> str:
+    async with _acquire() as conn:
+        return await conn.execute(query, *args)
+
+
+async def _executemany(query: str, args) -> None:
+    async with _acquire() as conn:
+        return await conn.executemany(query, args)
 
 
 async def close() -> None:
@@ -470,7 +502,10 @@ CREATE TABLE IF NOT EXISTS retention_pings (
   retention_user_id BIGINT NOT NULL REFERENCES retention_users(id),
   rule_id           BIGINT REFERENCES retention_rules(id),
   action            TEXT NOT NULL,             -- 'message' | 'photo'
-  status            TEXT NOT NULL,             -- 'sent' | 'failed' | 'skipped'
+  -- 'sent' | 'failed' | 'skipped' | 'dry_run'. 'dry_run' is a ping that WOULD
+  -- have gone out (shadow mode): it counts for the pacing memories below, so a
+  -- dry rule paces exactly like a live one, but never for delivery metrics.
+  status            TEXT NOT NULL,
   detail            TEXT,
   cost_usd          NUMERIC(12, 6),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1091,7 +1126,7 @@ def clear_kb_caches() -> None:
 
 async def upsert_topic(product_id: int, slug: str, title: dict[str, str],
                        display_order: int, active: bool = True) -> int:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         """
         INSERT INTO kb_topics (product_id, slug, title, display_order, active)
         VALUES ($1, $2, $3::jsonb, $4, $5)
@@ -1111,7 +1146,7 @@ async def get_topic_by_slug(product_id: int, slug: str) -> Optional[dict[str, An
     # AND active: a deactivated topic must not be selectable (a stale widget or
     # handcrafted slug could otherwise load its soft-cleared KB), mirroring the
     # list_topics filter.
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "SELECT id, product_id, slug, title, display_order, active "
         "FROM kb_topics WHERE product_id = $1 AND slug = $2 AND active",
         product_id, slug,
@@ -1120,7 +1155,7 @@ async def get_topic_by_slug(product_id: int, slug: str) -> Optional[dict[str, An
 
 
 async def get_topic_by_id(topic_id: int) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "SELECT id, product_id, slug, title, display_order, active "
         "FROM kb_topics WHERE id = $1",
         topic_id,
@@ -1138,7 +1173,7 @@ async def list_topics(product_id: int) -> list[dict[str, Any]]:
     cached = _kb_topics_cache.get(product_id)
     if cached is not None:
         return cached
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT id, product_id, slug, title, display_order, active FROM kb_topics "
         "WHERE product_id = $1 AND active "
         "ORDER BY (slug = 'other'), display_order, id",
@@ -1152,7 +1187,7 @@ async def list_topics(product_id: int) -> list[dict[str, Any]]:
 async def get_kb_content(topic_id: int) -> Optional[str]:
     if topic_id in _kb_content_cache:
         return _kb_content_cache[topic_id]
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "SELECT content FROM kb_entries "
         "WHERE topic_id = $1 AND active ORDER BY id DESC LIMIT 1",
         topic_id,
@@ -1319,7 +1354,7 @@ async def seed_starter_kb(product_id: int) -> None:
 
     for order, (slug, titles, content) in enumerate(starter_kb.STARTER_TOPICS,
                                                     start=1):
-        row = await _pool.fetchrow(
+        row = await _fetchrow(
             """
             INSERT INTO kb_topics (product_id, slug, title, display_order, active)
             VALUES ($1, $2, $3::jsonb, $4, TRUE)
@@ -1330,7 +1365,7 @@ async def seed_starter_kb(product_id: int) -> None:
         )
         if row is None:
             continue
-        await _pool.execute(
+        await _execute(
             "INSERT INTO kb_entries (topic_id, content, active) "
             "VALUES ($1, $2, TRUE)",
             row["id"], content,
@@ -1347,7 +1382,7 @@ def _row_to_kb_variable(row: asyncpg.Record) -> dict[str, Any]:
 
 
 async def list_kb_variables(product_id: int) -> list[dict[str, Any]]:
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT key, description, value, updated_at, updated_by "
         "FROM kb_variables WHERE product_id = $1 ORDER BY key",
         product_id,
@@ -1359,7 +1394,7 @@ async def get_kb_variables_map(product_id: int) -> dict[str, str]:
     cached = _kb_vars_cache.get(product_id)
     if cached is not None:
         return cached
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT key, value FROM kb_variables WHERE product_id = $1", product_id
     )
     vars_map = {r["key"]: r["value"] for r in rows}
@@ -1369,7 +1404,7 @@ async def get_kb_variables_map(product_id: int) -> dict[str, str]:
 
 async def set_kb_variable(product_id: int, key: str, description: str, value: str,
                           updated_by: Optional[str] = None) -> dict[str, Any]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         """
         INSERT INTO kb_variables (product_id, key, description, value, updated_at, updated_by)
         VALUES ($1, $2, $3, $4, now(), $5)
@@ -1396,7 +1431,7 @@ async def create_session(consumer: str, player_id: Optional[str],
                          tg_user_id: Optional[int] = None,
                          prev_session_id: Optional[str] = None) -> str:
     sid = session_id or str(uuid.uuid4())
-    await _pool.execute(
+    await _execute(
         "INSERT INTO chat_sessions "
         "(id, consumer, product_id, player_id, lang, user_context, tg_user_id, "
         " prev_session_id) "
@@ -1408,7 +1443,7 @@ async def create_session(consumer: str, player_id: Optional[str],
 
 
 async def get_session(session_id: str) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "SELECT id, consumer, product_id, player_id, lang, conv_lang, topic_id, "
         "user_context, status, escalated, message_count, "
         "context_reset_id, prev_session_id, created_at, updated_at "
@@ -1457,14 +1492,14 @@ async def set_conv_lang(session_id: str, conv_lang: str) -> None:
     """Persist the sticky CONVERSATION language (the language the player started
     writing in). Independent of `lang` (the browser/UI language), so the widget
     chrome is untouched while the answers follow the player from this turn on."""
-    await _pool.execute(
+    await _execute(
         "UPDATE chat_sessions SET conv_lang = $1, updated_at = now() WHERE id = $2",
         conv_lang, session_id,
     )
 
 
 async def mark_escalated(session_id: str) -> None:
-    await _pool.execute(
+    await _execute(
         "UPDATE chat_sessions SET status = 'escalated', escalated = TRUE, "
         "updated_at = now() WHERE id = $1",
         session_id,
@@ -1480,7 +1515,7 @@ async def mark_escalated_soft(session_id: str) -> None:
     HARD escalation (model [[ESCALATE]], cap, explicit) still closes it via
     mark_escalated.
     """
-    await _pool.execute(
+    await _execute(
         "UPDATE chat_sessions SET escalated = TRUE, updated_at = now() "
         "WHERE id = $1",
         session_id,
@@ -1494,7 +1529,7 @@ async def mark_resolved(session_id: str) -> None:
     escalated session is left untouched — a pending hand-off to a human must not
     be silently closed by the player tapping finish.
     """
-    await _pool.execute(
+    await _execute(
         "UPDATE chat_sessions SET status = 'resolved', updated_at = now() "
         "WHERE id = $1 AND status <> 'escalated'",
         session_id,
@@ -1503,14 +1538,17 @@ async def mark_resolved(session_id: str) -> None:
 
 async def get_history(session_id: str, limit: int = 50,
                       after_id: int = 0) -> list[dict[str, Any]]:
-    """Return messages oldest-first (last `limit` turns).
+    """Return messages oldest-first, at most `limit` ROWS.
+
+    `limit` counts rows, not turns — a turn is two rows (the player's message
+    and the reply), so a caller thinking in turns must pass `turns * 2`.
 
     `after_id` restricts to messages newer than that id — used for prompt
     building so that turns from before a topic switch (the session's
     `context_reset_id`) are excluded. Default 0 returns the whole transcript
     (resume/admin views).
     """
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT role, content, lang, ping_context, link_url, created_at FROM ("
         "  SELECT role, content, lang, ping_context, link_url, created_at, id "
         "  FROM chat_messages "
@@ -1610,7 +1648,7 @@ async def log_ai_interaction(
     session-less background ones: a row without them cannot be told apart from
     the others at read time.
     """
-    await _pool.execute(
+    await _execute(
         "INSERT INTO ai_interaction_logs "
         "(session_id, product_id, consumer, source, model, key_used, tokens_in, "
         " tokens_out, cached_in, cost_usd, latency_ms, ok, error) "
@@ -1628,7 +1666,7 @@ async def log_admin_event(session_id: Optional[str], type_: str,
     if product_id is None:
         from app.core import tenancy  # local import: db must stay importable standalone
         product_id = tenancy.current_product_id()
-    await _pool.execute(
+    await _execute(
         "INSERT INTO admin_events (session_id, product_id, type, payload) "
         "VALUES ($1, $2, $3, $4::jsonb)",
         session_id, product_id, type_, json.dumps(payload or {}),
@@ -1685,7 +1723,7 @@ async def ping() -> bool:
     would drive a restart/crash loop). Returns False on timeout or any error."""
     try:
         val = await asyncio.wait_for(
-            _pool.fetchval("SELECT 1"),
+            _fetchval("SELECT 1"),
             timeout=config.DB_HEALTHCHECK_TIMEOUT_SEC,
         )
         return val == 1
@@ -1708,12 +1746,12 @@ def _json_value(value: Any) -> Any:
 
 
 async def get_all_settings() -> dict[str, Any]:
-    rows = await _pool.fetch("SELECT key, value FROM app_settings")
+    rows = await _fetch("SELECT key, value FROM app_settings")
     return {r["key"]: _json_value(r["value"]) for r in rows}
 
 
 async def set_setting(key: str, value: Any, updated_by: Optional[str] = None) -> None:
-    await _pool.execute(
+    await _execute(
         "INSERT INTO app_settings (key, value, updated_at, updated_by) "
         "VALUES ($1, $2::jsonb, now(), $3) "
         "ON CONFLICT (key) DO UPDATE "
@@ -1727,7 +1765,7 @@ async def set_setting(key: str, value: Any, updated_by: Optional[str] = None) ->
 # ---------------------------------------------------------------------------
 async def get_all_product_settings() -> dict[int, dict[str, Any]]:
     """Every product's overrides keyed by product_id (for the settings cache)."""
-    rows = await _pool.fetch("SELECT product_id, key, value FROM product_settings")
+    rows = await _fetch("SELECT product_id, key, value FROM product_settings")
     out: dict[int, dict[str, Any]] = {}
     for r in rows:
         out.setdefault(r["product_id"], {})[r["key"]] = _json_value(r["value"])
@@ -1735,7 +1773,7 @@ async def get_all_product_settings() -> dict[int, dict[str, Any]]:
 
 
 async def get_product_settings(product_id: int) -> dict[str, Any]:
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT key, value FROM product_settings WHERE product_id = $1", product_id
     )
     return {r["key"]: _json_value(r["value"]) for r in rows}
@@ -1743,7 +1781,7 @@ async def get_product_settings(product_id: int) -> dict[str, Any]:
 
 async def set_product_setting(product_id: int, key: str, value: Any,
                               updated_by: Optional[str] = None) -> None:
-    await _pool.execute(
+    await _execute(
         "INSERT INTO product_settings (product_id, key, value, updated_at, updated_by) "
         "VALUES ($1, $2, $3::jsonb, now(), $4) "
         "ON CONFLICT (product_id, key) DO UPDATE "
@@ -1832,7 +1870,7 @@ _PRODUCT_COLS = ("id, partner_id, slug, name, widget_key, active, "
 
 
 async def list_partners() -> list[dict[str, Any]]:
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT id, slug, name, active, created_at, updated_at "
         "FROM partners ORDER BY id"
     )
@@ -1840,7 +1878,7 @@ async def list_partners() -> list[dict[str, Any]]:
 
 
 async def get_partner(partner_id: int) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "SELECT id, slug, name, active, created_at, updated_at "
         "FROM partners WHERE id = $1", partner_id
     )
@@ -1849,7 +1887,7 @@ async def get_partner(partner_id: int) -> Optional[dict[str, Any]]:
 
 async def create_partner(slug: str, name: str) -> Optional[dict[str, Any]]:
     """Insert a partner; returns None when the slug is already taken."""
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "INSERT INTO partners (slug, name) VALUES ($1, $2) "
         "ON CONFLICT (slug) DO NOTHING "
         "RETURNING id, slug, name, active, created_at, updated_at",
@@ -1860,7 +1898,7 @@ async def create_partner(slug: str, name: str) -> Optional[dict[str, Any]]:
 
 async def update_partner(partner_id: int, *, name: Optional[str] = None,
                          active: Optional[bool] = None) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "UPDATE partners SET name = COALESCE($2, name), "
         "active = COALESCE($3, active), updated_at = now() WHERE id = $1 "
         "RETURNING id, slug, name, active, created_at, updated_at",
@@ -1875,21 +1913,21 @@ async def list_products(product_ids: Optional[list[int]] = None
     if product_ids is not None:
         args.append(product_ids)
         where_sql = f"WHERE id = ANY(${len(args)}::int[])"
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT {_PRODUCT_COLS} FROM products {where_sql} ORDER BY id", *args
     )
     return [_row_to_product(r) for r in rows]
 
 
 async def get_product(product_id: int) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"SELECT {_PRODUCT_COLS} FROM products WHERE id = $1", product_id
     )
     return _row_to_product(row) if row else None
 
 
 async def get_product_by_widget_key(widget_key: str) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"SELECT {_PRODUCT_COLS} FROM products WHERE widget_key = $1", widget_key
     )
     return _row_to_product(row) if row else None
@@ -1898,7 +1936,7 @@ async def get_product_by_widget_key(widget_key: str) -> Optional[dict[str, Any]]
 async def get_default_product() -> Optional[dict[str, Any]]:
     """The boot-seeded product a key-less widget lands on (see tenancy.py)."""
     from app.core import tenancy
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"SELECT {_PRODUCT_COLS} FROM products WHERE slug = $1",
         tenancy.DEFAULT_PRODUCT_SLUG,
     )
@@ -1908,14 +1946,14 @@ async def get_default_product() -> Optional[dict[str, Any]]:
 async def list_active_products() -> list[dict[str, Any]]:
     """Every active product — the sweep set of workers that are not
     retention-specific (the quality reviewer covers both facades)."""
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT {_PRODUCT_COLS} FROM products WHERE active ORDER BY id")
     return [_row_to_product(r) for r in rows]
 
 
 async def list_retention_products() -> list[dict[str, Any]]:
     """Active products running the retention bot (the ping worker's sweep set)."""
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT {_PRODUCT_COLS} FROM products "
         "WHERE active AND retention_enabled ORDER BY id"
     )
@@ -1945,7 +1983,7 @@ async def create_product(partner_id: int, slug: str, name: str
     """
     from app.ai import starter_kb  # local import (starter_kb → prompts) to avoid a cycle
 
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "INSERT INTO products (partner_id, slug, name, widget_key) "
         "VALUES ($1, $2, $3, $4) ON CONFLICT (slug) DO NOTHING "
         f"RETURNING {_PRODUCT_COLS}",
@@ -1971,7 +2009,7 @@ async def create_product(partner_id: int, slug: str, name: str
 
 async def update_product(product_id: int, *, name: Optional[str] = None,
                          active: Optional[bool] = None) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "UPDATE products SET name = COALESCE($2, name), "
         "active = COALESCE($3, active), updated_at = now() WHERE id = $1 "
         f"RETURNING {_PRODUCT_COLS}",
@@ -1982,7 +2020,7 @@ async def update_product(product_id: int, *, name: Optional[str] = None,
 
 async def rotate_widget_key(product_id: int) -> Optional[str]:
     """Mint a fresh widget key (old embeds stop resolving immediately)."""
-    return await _pool.fetchval(
+    return await _fetchval(
         "UPDATE products SET widget_key = $2, updated_at = now() "
         "WHERE id = $1 RETURNING widget_key",
         product_id, _new_widget_key(),
@@ -2028,7 +2066,7 @@ async def set_product_secrets(product_id: int, *,
         sets.append(f"telegram_webhook_secret = "
                     f"COALESCE(telegram_webhook_secret, ${len(args)})")
     args.append(product_id)
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"UPDATE products SET {', '.join(sets)} WHERE id = ${len(args)} RETURNING id",
         *args,
     )
@@ -2039,7 +2077,7 @@ async def get_product_telegram_token(product_id: int) -> Optional[str]:
     """Decrypted per-product Telegram bot token, or None when unset/undecryptable."""
     import logging
     from app.core import secretbox
-    enc = await _pool.fetchval(
+    enc = await _fetchval(
         "SELECT telegram_bot_token_enc FROM products WHERE id = $1", product_id
     )
     if not enc:
@@ -2057,7 +2095,7 @@ async def get_product_player_api_key(product_id: int) -> Optional[str]:
     """Decrypted per-product player-API key, or None when unset/undecryptable."""
     import logging
     from app.core import secretbox
-    enc = await _pool.fetchval(
+    enc = await _fetchval(
         "SELECT player_api_key_enc FROM products WHERE id = $1", product_id
     )
     if not enc:
@@ -2094,7 +2132,7 @@ async def update_product_telegram_config(
         args.append(val)
         sets.append(f"{col} = ${len(args)}")
     args.append(product_id)
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"UPDATE products SET {', '.join(sets)} WHERE id = ${len(args)} "
         f"RETURNING {_PRODUCT_COLS}",
         *args,
@@ -2112,7 +2150,7 @@ async def get_product_by_telegram_webhook_secret(secret: str
     """
     if not secret:
         return None
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"SELECT {_PRODUCT_COLS} FROM products WHERE telegram_webhook_secret = $1",
         secret,
     )
@@ -2129,7 +2167,7 @@ async def get_product_openai_keys(product_id: int) -> Optional[dict[str, Optiona
     import logging
 
     from app.core import secretbox
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "SELECT openai_key_primary_enc, openai_key_fallback_enc "
         "FROM products WHERE id = $1", product_id,
     )
@@ -2154,7 +2192,7 @@ async def get_product_handshake_secret(product_id: int) -> Optional[str]:
     import logging
 
     from app.core import secretbox
-    enc = await _pool.fetchval(
+    enc = await _fetchval(
         "SELECT handshake_secret_enc FROM products WHERE id = $1", product_id
     )
     if not enc:
@@ -2174,7 +2212,7 @@ async def get_product_turnstile_secret(product_id: int) -> Optional[str]:
     import logging
 
     from app.core import secretbox
-    enc = await _pool.fetchval(
+    enc = await _fetchval(
         "SELECT turnstile_secret_enc FROM products WHERE id = $1", product_id
     )
     if not enc:
@@ -2193,7 +2231,7 @@ async def set_product_turnstile_site_key(product_id: int,
                                          site_key: Optional[str]
                                          ) -> Optional[dict[str, Any]]:
     """Set the NON-secret Turnstile site key (public widget config)."""
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"UPDATE products SET turnstile_site_key = $2, updated_at = now() "
         f"WHERE id = $1 RETURNING {_PRODUCT_COLS}",
         product_id, (site_key or "").strip() or None,
@@ -2206,7 +2244,7 @@ async def set_product_site_url(product_id: int,
                                ) -> Optional[dict[str, Any]]:
     """Set the product's public main-site URL (its home page). Public config;
     the Telegram hand-off's "support on the site" button lands here."""
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"UPDATE products SET site_url = $2, updated_at = now() "
         f"WHERE id = $1 RETURNING {_PRODUCT_COLS}",
         product_id, (site_url or "").strip() or None,
@@ -2243,7 +2281,7 @@ _MEMBERSHIP_SELECT = (
 
 
 async def memberships_for(email: str) -> list[dict[str, Any]]:
-    rows = await _pool.fetch(
+    rows = await _fetch(
         _MEMBERSHIP_SELECT + "WHERE m.email = $1 ORDER BY m.id",
         email.strip().lower(),
     )
@@ -2251,7 +2289,7 @@ async def memberships_for(email: str) -> list[dict[str, Any]]:
 
 
 async def list_all_memberships() -> list[dict[str, Any]]:
-    rows = await _pool.fetch(_MEMBERSHIP_SELECT + "ORDER BY m.email, m.id")
+    rows = await _fetch(_MEMBERSHIP_SELECT + "ORDER BY m.email, m.id")
     return [_row_to_membership(r) for r in rows]
 
 
@@ -2260,36 +2298,36 @@ async def add_membership(email: str, scope_type: str,
                          role: str) -> dict[str, Any]:
     """Upsert one (user, scope) membership — a repeat write updates the role."""
     email = email.strip().lower()
-    existing = await _pool.fetchval(
+    existing = await _fetchval(
         "SELECT id FROM admin_memberships WHERE email = $1 AND scope_type = $2 "
         "AND COALESCE(partner_id, 0) = COALESCE($3, 0) "
         "AND COALESCE(product_id, 0) = COALESCE($4, 0)",
         email, scope_type, partner_id, product_id,
     )
     if existing is not None:
-        await _pool.execute(
+        await _execute(
             "UPDATE admin_memberships SET role = $2 WHERE id = $1", existing, role
         )
         mid = existing
     else:
-        mid = await _pool.fetchval(
+        mid = await _fetchval(
             "INSERT INTO admin_memberships (email, scope_type, partner_id, product_id, role) "
             "VALUES ($1, $2, $3, $4, $5) RETURNING id",
             email, scope_type, partner_id, product_id, role,
         )
-    row = await _pool.fetchrow(_MEMBERSHIP_SELECT + "WHERE m.id = $1", mid)
+    row = await _fetchrow(_MEMBERSHIP_SELECT + "WHERE m.id = $1", mid)
     return _row_to_membership(row)
 
 
 async def get_membership(membership_id: int) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         _MEMBERSHIP_SELECT + "WHERE m.id = $1", membership_id
     )
     return _row_to_membership(row) if row else None
 
 
 async def delete_membership(membership_id: int) -> bool:
-    res = await _pool.execute(
+    res = await _execute(
         "DELETE FROM admin_memberships WHERE id = $1", membership_id
     )
     return _affected(res) > 0
@@ -2299,7 +2337,7 @@ async def product_ids_for_partners(partner_ids: list[int]) -> list[int]:
     """All product ids under the given partners (for scope expansion)."""
     if not partner_ids:
         return []
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT id FROM products WHERE partner_id = ANY($1::int[])", partner_ids
     )
     return [r["id"] for r in rows]
@@ -2333,7 +2371,7 @@ async def create_admin_api_key(*, name: str, role: str, scope_type: str,
     exactly once at creation; only its SHA-256 hash is stored."""
     import secrets as _secrets
     token = "sak_" + _secrets.token_urlsafe(32)
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "INSERT INTO admin_api_keys "
         "(name, token_hash, token_hint, role, scope_type, partner_id, "
         " product_id, created_by) "
@@ -2346,13 +2384,13 @@ async def create_admin_api_key(*, name: str, role: str, scope_type: str,
 
 
 async def list_admin_api_keys() -> list[dict[str, Any]]:
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT {_API_KEY_COLS} FROM admin_api_keys ORDER BY id")
     return [_row_to_api_key(r) for r in rows]
 
 
 async def get_admin_api_key(key_id: int) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"SELECT {_API_KEY_COLS} FROM admin_api_keys WHERE id = $1", key_id)
     return _row_to_api_key(row) if row else None
 
@@ -2365,7 +2403,7 @@ async def get_admin_api_key_by_token(token: str) -> Optional[dict[str, Any]]:
     vacuum churn in the hot path of every keyed admin call).
     """
     h = _hash_api_token(token)
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"SELECT {_API_KEY_COLS} FROM admin_api_keys "
         "WHERE token_hash = $1 AND active", h,
     )
@@ -2375,7 +2413,7 @@ async def get_admin_api_key_by_token(token: str) -> Optional[dict[str, Any]]:
     if (row["last_used_at"] is None
             or (_dt.datetime.now(_dt.timezone.utc)
                 - row["last_used_at"]).total_seconds() > 60):
-        await _pool.execute(
+        await _execute(
             "UPDATE admin_api_keys SET last_used_at = now() "
             "WHERE token_hash = $1", h)
     return _row_to_api_key(row)
@@ -2384,7 +2422,7 @@ async def get_admin_api_key_by_token(token: str) -> Optional[dict[str, Any]]:
 async def update_admin_api_key(key_id: int, *, active: Optional[bool] = None,
                                name: Optional[str] = None
                                ) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "UPDATE admin_api_keys SET active = COALESCE($2, active), "
         "name = COALESCE($3, name) WHERE id = $1 "
         f"RETURNING {_API_KEY_COLS}",
@@ -2394,7 +2432,7 @@ async def update_admin_api_key(key_id: int, *, active: Optional[bool] = None,
 
 
 async def delete_admin_api_key(key_id: int) -> bool:
-    result = await _pool.execute(
+    result = await _execute(
         "DELETE FROM admin_api_keys WHERE id = $1", key_id)
     return result.endswith("1")
 
@@ -2413,7 +2451,7 @@ def _row_to_admin_user(row: asyncpg.Record, *, include_hash: bool = False) -> di
 
 async def get_admin_user(email: str) -> Optional[dict[str, Any]]:
     """Fetch a user INCLUDING the password hash (login path only)."""
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "SELECT email, password_hash, role, active, created_at, updated_at "
         "FROM admin_users WHERE email = $1",
         email.strip().lower(),
@@ -2422,7 +2460,7 @@ async def get_admin_user(email: str) -> Optional[dict[str, Any]]:
 
 
 async def list_admin_users() -> list[dict[str, Any]]:
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT email, role, active, created_at, updated_at "
         "FROM admin_users ORDER BY email"
     )
@@ -2430,7 +2468,7 @@ async def list_admin_users() -> list[dict[str, Any]]:
 
 
 async def create_admin_user(email: str, password_hash: str, role: str) -> dict[str, Any]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "INSERT INTO admin_users (email, password_hash, role) "
         "VALUES ($1, $2, $3) "
         "RETURNING email, role, active, created_at, updated_at",
@@ -2452,7 +2490,7 @@ async def update_admin_user(email: str, *, role: Optional[str] = None,
     if password_hash is not None:
         args.append(password_hash); sets.append(f"password_hash = ${len(args)}")
     args.append(email.strip().lower())
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"UPDATE admin_users SET {', '.join(sets)} WHERE email = ${len(args)} "
         f"RETURNING email, role, active, created_at, updated_at",
         *args,
@@ -2461,7 +2499,7 @@ async def update_admin_user(email: str, *, role: Optional[str] = None,
 
 
 async def delete_admin_user(email: str) -> bool:
-    res = await _pool.execute(
+    res = await _execute(
         "DELETE FROM admin_users WHERE email = $1", email.strip().lower()
     )
     return _affected(res) > 0
@@ -2471,7 +2509,7 @@ async def delete_admin_user(email: str) -> bool:
 # KB CRUD (admin management; reads still go through kb.py helpers)
 # ---------------------------------------------------------------------------
 async def list_topics_with_counts(product_id: int) -> list[dict[str, Any]]:
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT t.id, t.product_id, t.slug, t.title, t.display_order, t.active, "
         "  COUNT(e.id) FILTER (WHERE e.active) AS entry_count "
         "FROM kb_topics t LEFT JOIN kb_entries e ON e.topic_id = t.id "
@@ -2489,7 +2527,7 @@ async def list_topics_with_counts(product_id: int) -> list[dict[str, Any]]:
 
 async def get_kb_entry(topic_id: int) -> Optional[dict[str, Any]]:
     """The topic's single active KB entry, or None. One entry per topic."""
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "SELECT id, topic_id, content, active FROM kb_entries "
         "WHERE topic_id = $1 AND active ORDER BY id DESC LIMIT 1",
         topic_id,
@@ -2527,7 +2565,7 @@ async def set_kb_content(topic_id: int, content: str) -> int:
 
 async def clear_kb_content(topic_id: int) -> bool:
     """Soft-delete the topic's active KB entry. Returns True if one was cleared."""
-    res = await _pool.execute(
+    res = await _execute(
         "UPDATE kb_entries SET active = FALSE WHERE topic_id = $1 AND active",
         topic_id,
     )
@@ -2613,7 +2651,7 @@ async def overview_aggregates(dt_from: Any, dt_to: Any,
     # The cost query joins chat_sessions, so its product filter must qualify the
     # log table; sess/ev keep the bare `scope` (one table each). Same $n param.
     scope_l = scope.replace("product_id", "l.product_id")
-    sess = await _pool.fetchrow(
+    sess = await _fetchrow(
         "SELECT "
         "  COUNT(*) AS sessions_total, "
         "  COUNT(*) FILTER (WHERE message_count > 0) AS sessions_engaged, "
@@ -2625,7 +2663,7 @@ async def overview_aggregates(dt_from: Any, dt_to: Any,
         f"  AND consumer <> 'telegram'{scope}",
         *args,
     )
-    cost = await _pool.fetchrow(
+    cost = await _fetchrow(
         "SELECT "
         f"  COALESCE(SUM(l.cost_usd) FILTER (WHERE {_LOG_SOURCE} = 'chat'), 0) "
         "    AS cost_usd_total, "
@@ -2650,7 +2688,7 @@ async def overview_aggregates(dt_from: Any, dt_to: Any,
         f"  AND l.created_at >= $1 AND l.created_at < $2{scope_l}",
         *args,
     )
-    ev = await _pool.fetch(
+    ev = await _fetch(
         "SELECT type, COUNT(*) AS n FROM admin_events "
         f"WHERE created_at >= $1 AND created_at < $2{scope} GROUP BY type",
         *args,
@@ -2707,7 +2745,7 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
     # table; session metrics keep the bare `scope`. Same positional param.
     scope_l = scope.replace("product_id", "l.product_id")
     if metric == "cost":
-        rows = await _pool.fetch(
+        rows = await _fetch(
             f"SELECT date_trunc('{trunc}', l.created_at) AS bucket, "
             "COALESCE(SUM(l.cost_usd), 0) AS value "
             "FROM ai_interaction_logs l "
@@ -2720,7 +2758,7 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
     elif metric == "cost_per_session":
         # Average spend per session per bucket: total cost / distinct sessions that
         # had at least one OpenAI call in the bucket. The "average price per day".
-        rows = await _pool.fetch(
+        rows = await _fetch(
             f"SELECT date_trunc('{trunc}', l.created_at) AS bucket, "
             "COALESCE(SUM(l.cost_usd), 0) AS cost, "
             "COUNT(DISTINCT l.session_id) AS sessions "
@@ -2737,7 +2775,7 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
             for r in rows
         ]
     elif metric == "escalation_rate":
-        rows = await _pool.fetch(
+        rows = await _fetch(
             f"SELECT date_trunc('{trunc}', created_at) AS bucket, "
             "COUNT(*) FILTER (WHERE message_count > 0) AS engaged, "
             "COUNT(*) FILTER (WHERE escalated) AS escalated "
@@ -2752,7 +2790,7 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
             for r in rows
         ]
     else:  # sessions
-        rows = await _pool.fetch(
+        rows = await _fetch(
             f"SELECT date_trunc('{trunc}', created_at) AS bucket, "
             "COUNT(*) AS value "
             "FROM chat_sessions WHERE created_at >= $1 AND created_at < $2 "
@@ -2781,7 +2819,7 @@ async def ai_cost_timeseries(dt_from: Any, dt_to: Any,
     """
     args: list[Any] = [dt_from, dt_to]
     pid = _pid_where(product_ids, args, "l.product_id")
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT date_trunc('day', l.created_at) AS day, "
         "  COALESCE(SUM(l.cost_usd) FILTER "
         f"    (WHERE {_LOG_SOURCE} = 'chat'), 0) AS chat, "
@@ -2840,7 +2878,7 @@ async def by_topic(dt_from: Any, dt_to: Any,
                    product_ids: Optional[list[int]] = None) -> list[dict[str, Any]]:
     args: list[Any] = [dt_from, dt_to]
     scope, scope_cte = _scope_clauses(product_ids, args)
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"WITH {_cost_cte(scope_cte)} "
         "SELECT t.slug, t.title, "
         # Count only engaged sessions (>= 1 message): greeting-only "zero" sessions
@@ -2887,7 +2925,7 @@ async def by_language(dt_from: Any, dt_to: Any,
                       ) -> list[dict[str, Any]]:
     args: list[Any] = [dt_from, dt_to]
     scope, scope_cte = _scope_clauses(product_ids, args)
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"WITH {_cost_cte(scope_cte)} "
         # The language the conversation actually ran in: `conv_lang` (the sticky
         # answer language the player drifted to) when set, else the browser
@@ -2948,7 +2986,7 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
     if min_messages is not None:
         args.append(min_messages); where.append(f"s.message_count >= ${len(args)}")
     where_sql = " AND ".join(where)
-    total = await _pool.fetchval(
+    total = await _fetchval(
         f"SELECT COUNT(*) FROM chat_sessions s "
         f"LEFT JOIN kb_topics t ON t.id = s.topic_id WHERE {where_sql}",
         *args,
@@ -2956,7 +2994,7 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
     page = max(page, 1)
     page_size = 25
     args2 = args + [page_size, (page - 1) * page_size]
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT s.id, {_CONV_LANG_SQL} AS lang, s.lang AS ui_lang, "
         f"  s.status, s.escalated, s.message_count, "
         f"  s.created_at, s.updated_at, t.slug AS topic, "
@@ -2992,13 +3030,13 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
     session = await get_session(session_id)
     if session is None:
         return None
-    msgs = await _pool.fetch(
+    msgs = await _fetch(
         "SELECT role, content, lang, model, key_used, tokens_in, tokens_out, "
         "cached_in, cost_usd, ping_context, created_at FROM chat_messages "
         "WHERE session_id = $1 ORDER BY id ASC",
         session_id,
     )
-    logs = await _pool.fetch(
+    logs = await _fetch(
         "SELECT model, key_used, tokens_in, tokens_out, cached_in, cost_usd, "
         "latency_ms, ok, error, created_at FROM ai_interaction_logs "
         "WHERE session_id = $1 ORDER BY id ASC",
@@ -3009,7 +3047,7 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
     # orphaned in the transcript. Returning these lets the admin view interleave a
     # "switched X -> Y" marker (with that call's cost) into the timeline, so the
     # path is traceable and the per-step costs add up to cost_usd_total.
-    events = await _pool.fetch(
+    events = await _fetch(
         "SELECT type, payload, created_at FROM admin_events "
         "WHERE session_id = $1 AND type = 'topic_switch' ORDER BY id ASC",
         session_id,
@@ -3020,7 +3058,7 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
     # renders the two kinds differently: a video shows its extracted poster
     # frame (?poster=1), not the video binary — without the type the transcript
     # requested a video as an <img> and painted a broken image.
-    photos = await _pool.fetch(
+    photos = await _fetch(
         "SELECT v.photo_id, v.viewed_at, p.description, p.stage, p.level_min, "
         "p.media_type, p.storage_ref "
         "FROM retention_photo_views v "
@@ -3205,7 +3243,7 @@ async def unresolved_by_topic(dt_from: Any, dt_to: Any,
     """
     args: list[Any] = [dt_from, dt_to]
     scope, scope_cte = _scope_clauses(product_ids, args)
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"WITH {_cost_cte(scope_cte, support_only=False)}"
         ", unresolved AS ("
         "  SELECT COALESCE(t.slug, 'unknown') AS topic, "
@@ -3311,7 +3349,7 @@ def _as_ts(value: Any) -> Optional[Any]:
 
 async def get_retention_user(product_id: int, tg_user_id: int
                              ) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"SELECT {_RU_COLS} FROM retention_users "
         f"WHERE product_id = $1 AND tg_user_id = $2",
         product_id, tg_user_id,
@@ -3348,7 +3386,7 @@ async def upsert_retention_user(product_id: int, tg_user_id: int, *,
         # ON CONFLICT: two concurrent /start redemptions (double-tap, Telegram
         # redelivery) race the SELECT-then-INSERT — fall through to the UPDATE
         # branch below instead of raising UniqueViolationError.
-        row = await _pool.fetchrow(
+        row = await _fetchrow(
             f"INSERT INTO retention_users ({', '.join(cols)}) "
             f"VALUES ({', '.join(placeholders)}) "
             "ON CONFLICT (product_id, tg_user_id) DO NOTHING "
@@ -3372,7 +3410,7 @@ async def upsert_retention_user(product_id: int, tg_user_id: int, *,
     for f in prof_cols:
         args.append(_as_text(profile.get(f)))
         sets.append(f"{f} = ${len(args)}")
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"UPDATE retention_users SET {', '.join(sets)} "
         f"WHERE product_id = $1 AND tg_user_id = $2 RETURNING {_RU_COLS}",
         *args,
@@ -3412,7 +3450,7 @@ async def update_retention_profile(product_id: int, player_id: str,
         sets.append(
             f"{f} = GREATEST(COALESCE({f}, LEAST(${n}::timestamptz, now())), "
             f"LEAST(${n}::timestamptz, now()))")
-    result = await _pool.execute(
+    result = await _execute(
         f"UPDATE retention_users SET {', '.join(sets)} "
         f"WHERE product_id = $1 AND player_id = $2",
         *args,
@@ -3421,7 +3459,7 @@ async def update_retention_profile(product_id: int, player_id: str,
 
 
 async def set_retention_subscribed(rid: int, subscribed: bool) -> None:
-    await _pool.execute(
+    await _execute(
         "UPDATE retention_users SET subscribed = $2, last_active_at = now(), "
         "updated_at = now() WHERE id = $1",
         rid, subscribed,
@@ -3429,14 +3467,14 @@ async def set_retention_subscribed(rid: int, subscribed: bool) -> None:
 
 
 async def set_retention_session(rid: int, session_id: str) -> None:
-    await _pool.execute(
+    await _execute(
         "UPDATE retention_users SET session_id = $2, updated_at = now() "
         "WHERE id = $1", rid, session_id,
     )
 
 
 async def set_retention_conv_lang(rid: int, conv_lang: str) -> None:
-    await _pool.execute(
+    await _execute(
         "UPDATE retention_users SET conv_lang = $2, updated_at = now() "
         "WHERE id = $1", rid, conv_lang,
     )
@@ -3444,7 +3482,7 @@ async def set_retention_conv_lang(rid: int, conv_lang: str) -> None:
 
 async def set_retention_pings_muted(rid: int, muted: bool) -> None:
     """Player opt-out/in for proactive pings (/stop and /resume)."""
-    await _pool.execute(
+    await _execute(
         "UPDATE retention_users SET pings_muted = $2, updated_at = now() "
         "WHERE id = $1", rid, muted,
     )
@@ -3453,7 +3491,7 @@ async def set_retention_pings_muted(rid: int, muted: bool) -> None:
 async def set_retention_unreachable(rid: int, unreachable: bool = True) -> None:
     """Mark a player the bot can no longer message (blocked the bot). The next
     inbound message from them clears the flag (they are reachable again)."""
-    await _pool.execute(
+    await _execute(
         "UPDATE retention_users SET unreachable = $2, updated_at = now() "
         "WHERE id = $1", rid, unreachable,
     )
@@ -3488,13 +3526,13 @@ async def list_retention_rules(product_id: int,
     q = (f"SELECT {_RULE_COLS} FROM retention_rules WHERE product_id = $1 "
          + ("AND enabled " if only_enabled else "")
          + "ORDER BY priority DESC, id")
-    rows = await _pool.fetch(q, product_id)
+    rows = await _fetch(q, product_id)
     return [_row_to_rule(r) for r in rows]
 
 
 async def create_retention_rule(product_id: int, fields: dict[str, Any],
                                 updated_by: Optional[str] = None) -> dict[str, Any]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "INSERT INTO retention_rules (product_id, name, enabled, trigger_kind, "
         " inactivity_days, action, intent, vip_tiers, cooldown_days, priority, "
         " updated_by) "
@@ -3533,7 +3571,7 @@ async def update_retention_rule(rule_id: int, product_id: int,
     if "vip_tiers" in fields:
         args.append(json.dumps(fields.get("vip_tiers") or []))
         sets.append(f"vip_tiers = ${len(args)}")
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"UPDATE retention_rules SET {', '.join(sets)} "
         f"WHERE id = $1 AND product_id = $2 RETURNING {_RULE_COLS}",
         *args,
@@ -3568,7 +3606,7 @@ async def eligible_ping_users(product_id: int, *, min_gap_hours: int,
     cap. Most-idle first. Per-rule thresholds/cooldowns are evaluated by the
     caller.
     """
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT {_RU_COLS} FROM retention_users "
         "WHERE product_id = $1 AND subscribed AND NOT pings_muted "
         "  AND NOT unreachable "
@@ -3591,9 +3629,9 @@ async def list_retention_pings(product_id: int, page: int = 1,
                                page_size: int = 50) -> dict[str, Any]:
     """The ping ledger for the admin (joined with player + rule names)."""
     offset = max(page - 1, 0) * page_size
-    total = await _pool.fetchval(
+    total = await _fetchval(
         "SELECT COUNT(*) FROM retention_pings WHERE product_id = $1", product_id)
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT p.id, p.retention_user_id, p.rule_id, p.action, p.status, "
         "       p.detail, p.cost_usd, p.created_at, "
         "       u.tg_username, u.full_name, u.player_id, r.name AS rule_name "
@@ -3619,13 +3657,23 @@ async def list_retention_pings(product_id: int, page: int = 1,
     return {"items": items, "total": int(total or 0)}
 
 
+# A ping that FIRED, for pacing purposes: really sent, or shadow-fired in
+# dry-run mode. Excluding dry runs made the whole idle ladder pace as if nothing
+# had happened while `v2_dry_run` was on — which it is BY DEFAULT — so a rule
+# re-matched the same player every `ping_min_gap_hours` and filled the decision
+# ledger with duplicates of a ping it had already "made".
+_PING_FIRED = "p.status IN ('sent', 'dry_run')"
+
+
 async def ping_rule_recently_fired(rid: int, rule_id: int,
                                    cooldown_days: int) -> bool:
-    """True when this rule already pinged this player within its cooldown."""
-    val = await _pool.fetchval(
-        "SELECT EXISTS(SELECT 1 FROM retention_pings "
-        "WHERE retention_user_id = $1 AND rule_id = $2 AND status = 'sent' "
-        "AND created_at > now() - make_interval(days => $3))",
+    """True when this rule already pinged this player within its cooldown
+    (a dry-run ping counts — see _PING_FIRED)."""
+    val = await _fetchval(
+        "SELECT EXISTS(SELECT 1 FROM retention_pings p "
+        "WHERE p.retention_user_id = $1 AND p.rule_id = $2 "
+        f"AND {_PING_FIRED} "
+        "AND p.created_at > now() - make_interval(days => $3))",
         rid, rule_id, int(cooldown_days),
     )
     return bool(val)
@@ -3634,8 +3682,8 @@ async def ping_rule_recently_fired(rid: int, rule_id: int,
 async def idle_rule_thresholds_fired_since(rid: int, since: Any,
                                            trigger_kind: Optional[str] = None
                                            ) -> dict[str, int]:
-    """Max `inactivity_days` of the idle rules already fired ('sent') to this
-    player since `since`, per trigger kind.
+    """Max `inactivity_days` of the idle rules already fired to this player
+    since `since`, per trigger kind (a dry-run rung counts — see _PING_FIRED).
 
     The anti-cascade guard: per-rule cooldowns alone let a long-quiet player
     receive the ENTIRE ladder in reverse — after "quiet 60 days" fired, the
@@ -3659,11 +3707,11 @@ async def idle_rule_thresholds_fired_since(rid: int, since: Any,
     if trigger_kind is not None:
         args.append(trigger_kind)
         kind_sql = f" AND r.trigger_kind = ${len(args)}"
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT r.trigger_kind, MAX(r.inactivity_days) AS days "
         "FROM retention_pings p "
         "JOIN retention_rules r ON r.id = p.rule_id "
-        "WHERE p.retention_user_id = $1 AND p.status = 'sent' "
+        f"WHERE p.retention_user_id = $1 AND {_PING_FIRED} "
         "  AND p.created_at > COALESCE($2::timestamptz, "
         "                              '-infinity'::timestamptz)"
         + kind_sql +
@@ -3741,7 +3789,7 @@ async def ingest_retention_event(product_id: int, *, event_id: str,
                                  source: str = "webhook") -> Optional[int]:
     """Append one canonical event. Idempotent by (product_id, event_id):
     a duplicate returns None and writes nothing (at-least-once delivery)."""
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "INSERT INTO retention_events (product_id, event_id, event_name, "
         " event_version, player_id, ts, payload, source) "
         "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8) "
@@ -3774,7 +3822,7 @@ async def claim_retention_events(product_id: int, limit: int = 50,
     """
     lo = max(int(delay_min_sec), 0)
     span = max(int(delay_max_sec) - lo, 0) + 1  # modulo divisor, >= 1
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "UPDATE retention_events SET processed_at = now() "
         "WHERE id IN (SELECT id FROM retention_events "
         "             WHERE product_id = $1 AND processed_at IS NULL "
@@ -3790,7 +3838,7 @@ async def claim_retention_events(product_id: int, limit: int = 50,
 
 async def count_unprocessed_retention_events(product_id: int) -> int:
     """Queue depth for the admin status header."""
-    val = await _pool.fetchval(
+    val = await _fetchval(
         "SELECT COUNT(*) FROM retention_events "
         "WHERE product_id = $1 AND processed_at IS NULL",
         product_id,
@@ -3799,27 +3847,37 @@ async def count_unprocessed_retention_events(product_id: int) -> int:
 
 
 async def prune_retention_events(keep_days: int = 90) -> int:
-    """Delete PROCESSED canonical events older than keep_days (all products).
+    """Delete canonical events older than keep_days (all products).
 
     The event log is append-only and can grow by millions of rows/month (partners
     stream bet_settled per settled bet), while the state resolver only reads recent
-    events (the 24h loss window + recent activity), so old processed rows are dead
-    weight with no reaper — unlike app_logs, which is capped. Only PROCESSED rows
-    are removed (an unclaimed event is never dropped). Decision-ledger rows that
-    referenced a pruned event keep their event_name snapshot and drop the FK link
-    (there is no ON DELETE clause, so the link must be nulled first)."""
+    events (the 24h loss window + recent activity), so old rows are dead
+    weight with no reaper — unlike app_logs, which is capped.
+
+    Age is measured from `processed_at` when the row was claimed, else from
+    `created_at`. Pruning only PROCESSED rows left the table unbounded whenever
+    nothing was claiming: `claim_retention_events` is the only writer of
+    `processed_at` and it is skipped entirely when a product has `v2_enabled`
+    off (or when RETENTION_SCHEDULER_ENABLED is off deployment-wide), so a
+    partner streaming events at an agent that is switched off grew the table
+    forever. An unclaimed row this old is not a backlog worth keeping either —
+    `retention_v2._fresh_enough` refuses to react to anything older than
+    _MAX_REACTION_AGE_HOURS, orders of magnitude below keep_days.
+
+    Decision-ledger rows that referenced a pruned event keep their event_name
+    snapshot and drop the FK link (there is no ON DELETE clause, so the link
+    must be nulled first)."""
+    cutoff = ("COALESCE(processed_at, created_at) "
+              "< now() - make_interval(days => $1)")
     async with _acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 "UPDATE retention_v2_decisions SET event_pk = NULL "
                 "WHERE event_pk IN (SELECT id FROM retention_events "
-                "  WHERE processed_at IS NOT NULL "
-                "    AND processed_at < now() - make_interval(days => $1))",
+                f"  WHERE {cutoff})",
                 int(keep_days))
             result = await conn.execute(
-                "DELETE FROM retention_events "
-                "WHERE processed_at IS NOT NULL "
-                "  AND processed_at < now() - make_interval(days => $1)",
+                f"DELETE FROM retention_events WHERE {cutoff}",
                 int(keep_days))
     return _affected(result)
 
@@ -3828,10 +3886,10 @@ async def list_retention_events(product_id: int, page: int = 1,
                                 page_size: int = 50) -> dict[str, Any]:
     """The event log for the admin tab (newest first)."""
     offset = max(page - 1, 0) * page_size
-    total = await _pool.fetchval(
+    total = await _fetchval(
         "SELECT COUNT(*) FROM retention_events WHERE product_id = $1",
         product_id)
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT * FROM retention_events WHERE product_id = $1 "
         "ORDER BY id DESC LIMIT $2 OFFSET $3",
         product_id, page_size, offset,
@@ -3845,7 +3903,7 @@ async def recent_retention_events_for_player(product_id: int, player_id: str,
                                              ) -> list[dict[str, Any]]:
     """The player's recent event tail (newest first) — decision-prompt context
     and the state resolver's activity/loss inputs."""
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT * FROM retention_events "
         "WHERE product_id = $1 AND player_id = $2 "
         "ORDER BY ts DESC LIMIT $3",
@@ -3875,7 +3933,7 @@ async def player_net_loss_24h(product_id: int, player_id: str) -> float:
     (100 TRY + 50 EUR = "150") and compared it with the USD-denominated
     threshold. A single-currency player — the normal case — is exact; a
     mixed-currency player is judged by his worst single-currency loss."""
-    val = await _pool.fetchval(
+    val = await _fetchval(
         "SELECT MAX(loss) FROM ("
         "  SELECT COALESCE(payload->>'currency', '') AS cur, "
         f"         SUM({_payload_num('amount')} - {_payload_num('win_amount')})"
@@ -3894,7 +3952,7 @@ async def player_net_loss_24h(product_id: int, player_id: str) -> float:
 
 async def last_loss_signal_at(product_id: int, player_id: str) -> Optional[str]:
     """When the player last had a losing settled bet (comfort-window anchor)."""
-    val = await _pool.fetchval(
+    val = await _fetchval(
         "SELECT MAX(ts) FROM retention_events "
         "WHERE product_id = $1 AND player_id = $2 "
         "  AND event_name = 'bet_settled' "
@@ -3915,7 +3973,7 @@ async def touch_retention_activity(product_id: int, player_id: str,
     parsed = _as_ts(ts)
     if parsed is None:
         return 0
-    result = await _pool.execute(
+    result = await _execute(
         f"UPDATE retention_users SET {field} = "
         f"GREATEST(COALESCE({field}, $3), $3), updated_at = now() "
         "WHERE product_id = $1 AND player_id = $2",
@@ -3927,7 +3985,7 @@ async def touch_retention_activity(product_id: int, player_id: str,
 async def get_retention_user_by_player(product_id: int, player_id: str
                                        ) -> Optional[dict[str, Any]]:
     """The Telegram-linked retention user for a casino player_id, if any."""
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"SELECT {_RU_COLS} FROM retention_users "
         "WHERE product_id = $1 AND player_id = $2 "
         "ORDER BY updated_at DESC LIMIT 1",
@@ -3945,7 +4003,7 @@ async def insert_retention_v2_decision(
         reason: Optional[str] = None, dry_run: bool = False,
         delivered: bool = False, detail: Optional[str] = None,
         cost_usd: Optional[float] = None) -> int:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "INSERT INTO retention_v2_decisions (product_id, retention_user_id, "
         " player_id, trigger_kind, event_pk, event_name, state, guard, action, "
         " intent, tone, reason, dry_run, delivered, detail, cost_usd) "
@@ -3962,10 +4020,10 @@ async def list_retention_v2_decisions(product_id: int, page: int = 1,
                                       page_size: int = 50) -> dict[str, Any]:
     """The decision ledger for the admin tab (newest first, player joined)."""
     offset = max(page - 1, 0) * page_size
-    total = await _pool.fetchval(
+    total = await _fetchval(
         "SELECT COUNT(*) FROM retention_v2_decisions WHERE product_id = $1",
         product_id)
-    rows = await _pool.fetch(
+    rows = await _fetch(
         # The attribution row (when the touch was actually delivered) rides
         # along, so the ledger answers "did it work?" next to "what did we
         # decide?" — the two halves of one decision.
@@ -4021,7 +4079,7 @@ async def recent_v2_decision_exists(product_id: int, player_id: str, *,
         args.append(list(include_actions))
         q += f" AND action = ANY(${len(args)})"
     q += ")"
-    val = await _pool.fetchval(q, *args)
+    val = await _fetchval(q, *args)
     return bool(val)
 
 
@@ -4063,7 +4121,7 @@ async def delete_retention_v2_decision(product_id: int,
     """Delete ONE decision-ledger row (admin test-cleanup). NB: the daily
     budget and the same-event cooldown read this ledger, so deleting a row
     also 'refunds' its cost and re-arms the cooldown for that event type."""
-    result = await _pool.execute(
+    result = await _execute(
         "DELETE FROM retention_v2_decisions WHERE product_id = $1 AND id = $2",
         product_id, int(decision_pk))
     return _affected(result) == 1
@@ -4072,7 +4130,7 @@ async def delete_retention_v2_decision(product_id: int,
 async def clear_retention_v2_decisions(product_id: int) -> int:
     """Delete ALL of one product's decision-ledger rows (admin test-cleanup).
     Returns the number of rows removed."""
-    result = await _pool.execute(
+    result = await _execute(
         "DELETE FROM retention_v2_decisions WHERE product_id = $1",
         product_id)
     return _affected(result)
@@ -4083,16 +4141,16 @@ async def retention_v2_activity(product_id: int) -> dict[str, Any]:
     tables (not an in-process heartbeat), so it is correct across multiple
     instances: when an event last arrived / was last processed, when the agent
     last decided, and today's decision mix by action."""
-    ev = await _pool.fetchrow(
+    ev = await _fetchrow(
         "SELECT MAX(created_at) AS last_event_at, "
         "       MAX(processed_at) AS last_processed_at "
         "FROM retention_events WHERE product_id = $1",
         product_id)
-    last_decision = await _pool.fetchval(
+    last_decision = await _fetchval(
         "SELECT MAX(created_at) FROM retention_v2_decisions "
         "WHERE product_id = $1",
         product_id)
-    today = await _pool.fetch(
+    today = await _fetch(
         "SELECT action, COUNT(*) AS n, "
         "       COUNT(*) FILTER (WHERE delivered) AS delivered "
         "FROM retention_v2_decisions "
@@ -4114,11 +4172,11 @@ async def list_retention_v2_logs(product_id: int, page: int = 1,
     (decisions, simulator injections, manual runs, deletes/clears) — the same
     facts the Railway log lines carry, readable from the admin."""
     offset = max(page - 1, 0) * page_size
-    total = await _pool.fetchval(
+    total = await _fetchval(
         "SELECT COUNT(*) FROM admin_events "
         "WHERE product_id = $1 AND type LIKE 'retention_v2%'",
         product_id)
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT id, type, payload, created_at FROM admin_events "
         "WHERE product_id = $1 AND type LIKE 'retention_v2%' "
         "ORDER BY id DESC LIMIT $2 OFFSET $3",
@@ -4139,7 +4197,7 @@ async def retention_v2_cost_today(product_id: int) -> float:
     Truncate in UTC explicitly: date_trunc('day', now()) truncates in the DB
     session timezone, so on a non-UTC Postgres the budget window would silently
     disagree with the day boundary the rest of the retention pacing uses."""
-    val = await _pool.fetchval(
+    val = await _fetchval(
         "SELECT COALESCE(SUM(cost_usd), 0) FROM retention_v2_decisions "
         "WHERE product_id = $1 "
         "AND created_at >= date_trunc('day', now() at time zone 'utc') "
@@ -4168,7 +4226,7 @@ async def record_retention_outcome(
         media_type: Optional[str] = None, link_url: Optional[str] = None,
         cost_usd: Optional[float] = None) -> int:
     """Open one attribution row for a touch that was actually delivered."""
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "INSERT INTO retention_outcomes (product_id, retention_user_id, "
         " player_id, session_id, kind, decision_id, rule_id, event_name, "
         " action, tone, photo_id, media_type, link_url, cost_usd) "
@@ -4194,7 +4252,7 @@ async def attribute_retention_outcomes(
     (which is also what makes the effectiveness numbers stable).
     """
     window = max(int(reply_window_hours), int(conversion_window_hours))
-    result = await _pool.execute(
+    result = await _execute(
         "WITH open AS ("
         "  SELECT o.id, o.product_id, o.player_id, o.sent_at, ru.tg_user_id "
         "  FROM retention_outcomes o "
@@ -4245,7 +4303,7 @@ async def recent_touch_outcomes(product_id: int, player_id: str,
     the agent's decision call reads before choosing to write again."""
     if not player_id:
         return []
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT sent_at, event_name, action, tone, photo_id, link_url, "
         "       replied_at, reply_latency_sec, player_msgs, deposit_at, "
         "       returned_at, closed "
@@ -4318,7 +4376,7 @@ async def outcome_summary(product_id: int, dt_from: Any, dt_to: Any
     conversation, not to the CTA it happened to carry), so the per-outcome
     figures are computed over proactive touches alone.
     """
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"SELECT {_OUTCOME_AGG} FROM retention_outcomes o "
         "WHERE o.product_id = $1 AND o.sent_at >= $2 AND o.sent_at < $3 "
         "  AND o.kind = 'proactive'",
@@ -4332,7 +4390,7 @@ async def outcome_summary(product_id: int, dt_from: Any, dt_to: Any
                                     if stats["returns"] else None)
     stats["cost_per_deposit_usd"] = (round(cost / stats["deposits"], 4)
                                      if stats["deposits"] else None)
-    dialog = await _pool.fetchrow(
+    dialog = await _fetchrow(
         f"SELECT {_OUTCOME_AGG} FROM retention_outcomes o "
         "WHERE o.product_id = $1 AND o.sent_at >= $2 AND o.sent_at < $3 "
         "  AND o.kind = 'dialogue'",
@@ -4345,7 +4403,7 @@ async def outcome_by_media(product_id: int, dt_from: Any, dt_to: Any,
                            limit: int = 100) -> list[dict[str, Any]]:
     """Effectiveness per delivered photo/video (both facades: a photo sent in
     dialogue counts exactly like one sent proactively)."""
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT o.photo_id, {_OUTCOME_AGG}, "
         "  MAX(p.media_type) AS media_type, MAX(p.description) AS description, "
         "  MAX(p.storage_ref) AS storage_ref, MAX(p.stage) AS stage, "
@@ -4369,7 +4427,7 @@ async def outcome_by_media(product_id: int, dt_from: Any, dt_to: Any,
 async def outcome_by_link(product_id: int, dt_from: Any, dt_to: Any,
                           limit: int = 50) -> list[dict[str, Any]]:
     """Effectiveness per site-map CTA page the bot buttoned up."""
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT o.link_url, {_OUTCOME_AGG} FROM retention_outcomes o "
         "WHERE o.product_id = $1 AND o.sent_at >= $2 AND o.sent_at < $3 "
         "  AND o.link_url IS NOT NULL AND o.link_url <> '' "
@@ -4383,7 +4441,7 @@ async def outcome_by_idle_rule(product_id: int, dt_from: Any, dt_to: Any
                                ) -> list[dict[str, Any]]:
     """Effectiveness per idle-ladder rung (which day thresholds bring players
     back and which are dead weight)."""
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT o.rule_id, {_OUTCOME_AGG}, "
         "  MAX(r.name) AS name, MAX(r.inactivity_days) AS inactivity_days, "
         "  MAX(r.trigger_kind) AS trigger_kind, MAX(r.action) AS action, "
@@ -4406,7 +4464,7 @@ async def outcome_by_idle_rule(product_id: int, dt_from: Any, dt_to: Any
 async def outcome_by_event(product_id: int, dt_from: Any, dt_to: Any
                            ) -> list[dict[str, Any]]:
     """Effectiveness per proactive trigger (casino event / idle kind)."""
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT COALESCE(o.event_name, '(none)') AS event_name, {_OUTCOME_AGG} "
         "FROM retention_outcomes o "
         "WHERE o.product_id = $1 AND o.sent_at >= $2 AND o.sent_at < $3 "
@@ -4422,7 +4480,7 @@ async def top_links_by_outcome(product_id: int, limit: int = 3,
     """The CTA pages that actually pulled players back — fed to the play-nudge
     directive so link rotation prefers what works. Needs a few settled sends
     before a page counts (one lucky click is not evidence)."""
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT link_url, COUNT(*) AS sends, "
         "  COUNT(*) FILTER (WHERE replied_at IS NOT NULL "
         "                     OR returned_at IS NOT NULL) AS hits "
@@ -4452,8 +4510,14 @@ async def sessions_for_review(product_id: int, *, min_messages: int,
     all. A conversation is re-reviewed only after it has GROWN since its last
     verdict, so a stable transcript is never paid for twice. Oldest first, so
     a backlog drains in order instead of starving on the newest chats.
+
+    There must also be something the PLAYER said: `persist_ping_turn` bumps
+    `message_count` for a proactive ping, so a Telegram chat of nothing but
+    unanswered pings clears the length bar with no handling to judge. Without
+    the EXISTS check such a chat is picked on every pass forever, permanently
+    occupying a slot in the batch.
     """
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT s.id, s.consumer, s.lang, s.status, s.escalated, "
         "       s.message_count, s.topic_id "
         "FROM chat_sessions s "
@@ -4462,6 +4526,8 @@ async def sessions_for_review(product_id: int, *, min_messages: int,
         "  AND (s.status IN ('resolved', 'escalated') "
         "       OR s.updated_at < now() - make_interval(mins => $3)) "
         "  AND (r.id IS NULL OR r.reviewed_msg_count < s.message_count) "
+        "  AND EXISTS (SELECT 1 FROM chat_messages m "
+        "              WHERE m.session_id = s.id AND m.role = 'user') "
         "ORDER BY s.updated_at LIMIT $4",
         product_id, int(min_messages), int(idle_minutes), int(limit),
     )
@@ -4477,8 +4543,17 @@ async def upsert_conversation_review(
         issues: list[dict[str, Any]], kb_gaps: list[str],
         reviewed_msg_count: int, model: Optional[str] = None,
         cost_usd: Optional[float] = None) -> int:
-    """Store (or refresh) the verdict for one conversation."""
-    row = await _pool.fetchrow(
+    """Store (or refresh) the verdict for one conversation.
+
+    A `score` of None records a FAILED attempt (the model answered but the
+    verdict could not be parsed). Writing that row is what stops the judge from
+    paying for the same unparseable transcript on every pass: `reviewed_msg_count`
+    is what `sessions_for_review` compares against, so the chat is only retried
+    once it has grown. Such rows are excluded from the Quality reads below —
+    they are bookkeeping, not verdicts — but they DO count toward the daily cap
+    (`reviews_today`), because the OpenAI call was billed.
+    """
+    row = await _fetchrow(
         "INSERT INTO conversation_reviews (product_id, session_id, consumer, "
         " score, tags, summary, issues, kb_gaps, reviewed_msg_count, model, "
         " cost_usd) "
@@ -4502,7 +4577,7 @@ async def upsert_conversation_review(
 async def reviews_today(product_id: int) -> int:
     """Reviews written since midnight UTC — the judge's daily cap reads this
     (same UTC day boundary as the retention budget)."""
-    val = await _pool.fetchval(
+    val = await _fetchval(
         "SELECT COUNT(*) FROM conversation_reviews WHERE product_id = $1 "
         "AND created_at >= date_trunc('day', now() at time zone 'utc') "
         "                  at time zone 'utc'",
@@ -4535,9 +4610,11 @@ async def list_conversation_reviews(dt_from: Any, dt_to: Any, *,
     """The reviews list for the admin Quality page (worst first, then newest).
 
     `product_ids` follows the dashboard convention: None = the caller's whole
-    scope, an empty list = match nothing.
+    scope, an empty list = match nothing. Failed-attempt rows (`score IS NULL`,
+    see `upsert_conversation_review`) are bookkeeping, not verdicts, and never
+    appear here.
     """
-    where = ["r.created_at >= $1", "r.created_at < $2"]
+    where = ["r.created_at >= $1", "r.created_at < $2", "r.score IS NOT NULL"]
     args: list[Any] = [dt_from, dt_to]
     if product_ids is not None:
         args.append(product_ids)
@@ -4554,10 +4631,10 @@ async def list_conversation_reviews(dt_from: Any, dt_to: Any, *,
         args.append(int(max_score))
         where.append(f"r.score <= ${len(args)}")
     clause = " AND ".join(where)
-    total = await _pool.fetchval(
+    total = await _fetchval(
         f"SELECT COUNT(*) FROM conversation_reviews r WHERE {clause}", *args)
     args.extend([int(page_size), max(int(page) - 1, 0) * int(page_size)])
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT r.*, p.name AS product_name FROM conversation_reviews r "
         "LEFT JOIN products p ON p.id = r.product_id "
         f"WHERE {clause} ORDER BY r.score NULLS LAST, r.created_at DESC "
@@ -4576,19 +4653,21 @@ async def quality_overview(dt_from: Any, dt_to: Any, *,
     if product_ids is not None:
         args.append(product_ids)
         where.append(f"product_id = ANY(${len(args)}::int[])")
+    # Failed-attempt rows carry no verdict — they must not inflate `reviews`.
+    where.append("score IS NOT NULL")
     clause = " AND ".join(where)
-    head = await _pool.fetchrow(
+    head = await _fetchrow(
         "SELECT COUNT(*)::int AS reviews, AVG(score) AS avg_score, "
         "  COUNT(*) FILTER (WHERE score <= 2)::int AS poor, "
         "  COUNT(*) FILTER (WHERE score >= 4)::int AS good, "
         "  COUNT(*) FILTER (WHERE consumer = 'telegram')::int AS telegram, "
         "  COALESCE(SUM(cost_usd), 0) AS cost_usd "
         f"FROM conversation_reviews WHERE {clause}", *args)
-    tags = await _pool.fetch(
+    tags = await _fetch(
         "SELECT tag, COUNT(*)::int AS count FROM conversation_reviews, "
         "  LATERAL jsonb_array_elements_text(tags) AS tag "
         f"WHERE {clause} GROUP BY tag ORDER BY count DESC LIMIT 25", *args)
-    gaps = await _pool.fetch(
+    gaps = await _fetch(
         "SELECT gap, COUNT(*)::int AS count, MAX(session_id::text) AS example "
         "FROM conversation_reviews, "
         "  LATERAL jsonb_array_elements_text(kb_gaps) AS gap "
@@ -4667,13 +4746,13 @@ async def bump_retention_activity(rid: int, *, meaningful: bool) -> dict[str, An
     Returns the refreshed row so the caller can evaluate stage-advance thresholds.
     """
     if meaningful:
-        row = await _pool.fetchrow(
+        row = await _fetchrow(
             "UPDATE retention_users SET meaningful_msgs = meaningful_msgs + 1, "
             "msgs_since_photo = msgs_since_photo + 1, last_active_at = now(), "
             f"updated_at = now() WHERE id = $1 RETURNING {_RU_COLS}", rid,
         )
     else:
-        row = await _pool.fetchrow(
+        row = await _fetchrow(
             "UPDATE retention_users SET last_active_at = now(), "
             f"updated_at = now() WHERE id = $1 RETURNING {_RU_COLS}", rid,
         )
@@ -4681,7 +4760,7 @@ async def bump_retention_activity(rid: int, *, meaningful: bool) -> dict[str, An
 
 
 async def advance_retention_stage(rid: int, new_stage: int) -> None:
-    await _pool.execute(
+    await _execute(
         "UPDATE retention_users SET unlocked_stage = $2, "
         "last_stage_advance_at = now(), updated_at = now() WHERE id = $1",
         rid, new_stage,
@@ -4728,7 +4807,7 @@ async def has_photo_views(rid: int) -> bool:
     Drives the introduction-photo rule: only a player who has never seen a
     photo qualifies, so the intro can't refire after a delivery (the view row
     lands in the same transaction as the send)."""
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "SELECT 1 FROM retention_photo_views WHERE retention_user_id = $1 "
         "LIMIT 1", rid,
     )
@@ -4736,7 +4815,7 @@ async def has_photo_views(rid: int) -> bool:
 
 
 async def set_photo_file_id(photo_id: int, file_id: str) -> None:
-    await _pool.execute(
+    await _execute(
         "UPDATE retention_photos SET telegram_file_id = $2, updated_at = now() "
         "WHERE id = $1", photo_id, file_id,
     )
@@ -4753,7 +4832,7 @@ async def set_retention_photo_storage_ref(photo_id: int,
     file_id: a video file_id pins the exact uploaded binary, so keeping it
     would serve the pre-normalization copy forever.)
     """
-    await _pool.execute(
+    await _execute(
         "UPDATE retention_photos SET storage_ref = $2, updated_at = now() "
         "WHERE id = $1", photo_id, storage_ref,
     )
@@ -4766,7 +4845,7 @@ async def set_retention_video_normalized(photo_id: int, *, storage_ref: str,
     """Re-point a VIDEO row at its normalized binary, in one write: the new
     storage_ref, the probed sendVideo attrs, and telegram_file_id cleared
     (Telegram's cached copy is the old binary — the next send re-uploads)."""
-    await _pool.execute(
+    await _execute(
         "UPDATE retention_photos SET storage_ref = $2, tg_width = $3, "
         "tg_height = $4, tg_duration_sec = $5, telegram_file_id = NULL, "
         "updated_at = now() WHERE id = $1",
@@ -4781,7 +4860,7 @@ async def clear_photo_file_id(photo_id: int) -> None:
     dies between the two, the next send re-uploads the (still-squished) file
     and the next sweep re-probes non-square and repairs again — the repair
     converges instead of leaving Telegram's broken copy pinned forever."""
-    await _pool.execute(
+    await _execute(
         "UPDATE retention_photos SET telegram_file_id = NULL, "
         "updated_at = now() WHERE id = $1", photo_id,
     )
@@ -4796,7 +4875,7 @@ async def set_retention_video_meta(photo_id: int, *, width: Optional[int],
     `clear_file_id=True` is the SAR-repair path: the on-disk binary was
     re-encoded in place, so the file_id Telegram holds points at the broken
     copy and must be dropped; the plain backfill keeps it."""
-    await _pool.execute(
+    await _execute(
         "UPDATE retention_photos SET tg_width = $2, tg_height = $3, "
         "tg_duration_sec = $4, "
         "telegram_file_id = CASE WHEN $5 THEN NULL ELSE telegram_file_id END, "
@@ -4823,7 +4902,7 @@ _PHOTO_COLS = ("id, product_id, storage_ref, media_type, telegram_file_id, "
 async def list_retention_photos(product_id: int, *, active_only: bool = False
                                 ) -> list[dict[str, Any]]:
     where = "product_id = $1" + (" AND active" if active_only else "")
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT {_PHOTO_COLS} FROM retention_photos WHERE {where} "
         "ORDER BY sort_order, id", product_id,
     )
@@ -4831,7 +4910,7 @@ async def list_retention_photos(product_id: int, *, active_only: bool = False
 
 
 async def get_retention_photo(photo_id: int) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"SELECT {_PHOTO_COLS} FROM retention_photos WHERE id = $1", photo_id)
     return _row_to_photo(row) if row else None
 
@@ -4842,7 +4921,7 @@ async def create_retention_photo(product_id: int, *, storage_ref: Optional[str],
                                  category: Optional[str], sort_order: int,
                                  created_by: Optional[str],
                                  media_type: str = "photo") -> dict[str, Any]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "INSERT INTO retention_photos "
         "(product_id, storage_ref, media_type, description, tags, level_min, "
         " stage, category, sort_order, created_by) "
@@ -4867,7 +4946,7 @@ async def update_retention_photo(photo_id: int, **fields: Any
             sets.append(f"{col} = ${len(args)}"
                         + ("::jsonb" if col == "tags" else ""))
     args.append(photo_id)
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"UPDATE retention_photos SET {', '.join(sets)} "
         f"WHERE id = ${len(args)} RETURNING {_PHOTO_COLS}", *args,
     )
@@ -4957,7 +5036,7 @@ async def candidate_photos(product_id: int, retention_user_id: int, *,
     async def _fetch_videos(lim: int, offset: int = 0) -> list[asyncpg.Record]:
         if lim <= 0:
             return []
-        return await _pool.fetch(
+        return await _fetch(
             f"SELECT {_PHOTO_COLS}, {_PHOTO_OUTCOME_SCORE_SQL} "
             "FROM retention_photos "
             "WHERE product_id = $1 AND active AND media_type = 'video' "
@@ -4974,7 +5053,7 @@ async def candidate_photos(product_id: int, retention_user_id: int, *,
     video_limit = (limit if media == "video"
                    else min(_video_slot_cap(limit), limit))
     videos = [] if media == "photo" else await _fetch_videos(video_limit)
-    photos = [] if media == "video" else await _pool.fetch(
+    photos = [] if media == "video" else await _fetch(
         f"SELECT {_PHOTO_COLS}, {_PHOTO_OUTCOME_SCORE_SQL} "
         "FROM retention_photos "
         "WHERE product_id = $1 AND active AND media_type <> 'video' "
@@ -5014,13 +5093,13 @@ async def retention_appearance_context(product_id: int, retention_user_id: int
     like right now" to him). Descriptions doubling as appearance context is
     why they matter beyond captions - see prompts._appearance_directive.
     """
-    base_rows = await _pool.fetch(
+    base_rows = await _fetch(
         "SELECT description FROM retention_photos "
         "WHERE product_id = $1 AND active AND description <> '' "
         "ORDER BY stage, sort_order, id LIMIT 3",
         product_id,
     )
-    last_row = await _pool.fetchrow(
+    last_row = await _fetchrow(
         "SELECT p.description FROM retention_photo_views v "
         "JOIN retention_photos p ON p.id = v.photo_id "
         "WHERE v.retention_user_id = $1 AND p.description <> '' "
@@ -5050,7 +5129,7 @@ _RKB_COLS = ("id, product_id, title, trigger_when, body, links, sort_order, "
 async def list_retention_kb(product_id: int, *, active_only: bool = False
                             ) -> list[dict[str, Any]]:
     where = "product_id = $1" + (" AND active" if active_only else "")
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT {_RKB_COLS} FROM retention_kb WHERE {where} "
         "ORDER BY sort_order, id", product_id,
     )
@@ -5058,7 +5137,7 @@ async def list_retention_kb(product_id: int, *, active_only: bool = False
 
 
 async def get_retention_kb_entry(entry_id: int) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"SELECT {_RKB_COLS} FROM retention_kb WHERE id = $1", entry_id)
     return _row_to_retention_kb(row) if row else None
 
@@ -5068,7 +5147,7 @@ async def create_retention_kb(product_id: int, *, title: str,
                               links: list[str], sort_order: int,
                               active: bool = True,
                               updated_by: Optional[str]) -> dict[str, Any]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "INSERT INTO retention_kb "
         "(product_id, title, trigger_when, body, links, sort_order, active, "
         " updated_by) "
@@ -5092,7 +5171,7 @@ async def update_retention_kb(entry_id: int, *, updated_by: Optional[str] = None
     args.append(updated_by)
     sets.append(f"updated_by = ${len(args)}")
     args.append(entry_id)
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"UPDATE retention_kb SET {', '.join(sets)} "
         f"WHERE id = ${len(args)} RETURNING {_RKB_COLS}", *args,
     )
@@ -5100,7 +5179,7 @@ async def update_retention_kb(entry_id: int, *, updated_by: Optional[str] = None
 
 
 async def delete_retention_kb(entry_id: int) -> bool:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "DELETE FROM retention_kb WHERE id = $1 RETURNING id", entry_id)
     return row is not None
 
@@ -5169,11 +5248,11 @@ async def seed_starter_retention_kb(product_id: int) -> None:
     """
     from app.ai import starter_kb  # local import (starter_kb → prompts) to avoid a cycle
 
-    existing = await _pool.fetchval(
+    existing = await _fetchval(
         "SELECT count(*) FROM retention_kb WHERE product_id = $1", product_id)
     if existing:
         return
-    await _pool.execute(
+    await _execute(
         "INSERT INTO retention_kb (product_id, title, body, links, updated_by) "
         "VALUES ($1, $2, $3, '[]'::jsonb, 'starter-seed')",
         product_id, RETENTION_KB_DOC_TITLE, starter_kb.STARTER_RETENTION_KB,
@@ -5194,7 +5273,7 @@ _MGR_COLS = ("id, product_id, display_name, username, active, "
 
 
 async def list_retention_managers(product_id: int) -> list[dict[str, Any]]:
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT {_MGR_COLS} FROM retention_managers WHERE product_id = $1 "
         "ORDER BY id", product_id,
     )
@@ -5202,14 +5281,14 @@ async def list_retention_managers(product_id: int) -> list[dict[str, Any]]:
 
 
 async def get_retention_manager(manager_id: int) -> Optional[dict[str, Any]]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"SELECT {_MGR_COLS} FROM retention_managers WHERE id = $1", manager_id)
     return _row_to_manager(row) if row else None
 
 
 async def create_retention_manager(product_id: int, *, display_name: str,
                                    username: str) -> dict[str, Any]:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "INSERT INTO retention_managers (product_id, display_name, username) "
         f"VALUES ($1, $2, $3) RETURNING {_MGR_COLS}",
         product_id, display_name, username.lstrip("@"),
@@ -5230,7 +5309,7 @@ async def update_retention_manager(manager_id: int, **fields: Any
             args.append(val)
             sets.append(f"{col} = ${len(args)}")
     args.append(manager_id)
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         f"UPDATE retention_managers SET {', '.join(sets)} "
         f"WHERE id = ${len(args)} RETURNING {_MGR_COLS}", *args,
     )
@@ -5238,7 +5317,7 @@ async def update_retention_manager(manager_id: int, **fields: Any
 
 
 async def delete_retention_manager(manager_id: int) -> bool:
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "DELETE FROM retention_managers WHERE id = $1 RETURNING id", manager_id)
     return row is not None
 
@@ -5289,8 +5368,8 @@ async def create_retention_nonce(nonce: str, product_id: int,
                                  ttl_sec: int) -> None:
     # Opportunistically reap expired nonces (indexed on expires_at, low volume)
     # so the single-use table can't grow without bound.
-    await _pool.execute("DELETE FROM retention_nonces WHERE expires_at < now()")
-    await _pool.execute(
+    await _execute("DELETE FROM retention_nonces WHERE expires_at < now()")
+    await _execute(
         "INSERT INTO retention_nonces "
         "(nonce, product_id, payload, escalation, expires_at) "
         "VALUES ($1, $2, $3::jsonb, $4, now() + ($5 || ' seconds')::interval)",
@@ -5307,7 +5386,7 @@ async def redeem_retention_nonce(nonce: str,
     nonce minted for brand B must never link brand B's player profile into
     brand A's bot (a cross-tenant data leak).
     """
-    row = await _pool.fetchrow(
+    row = await _fetchrow(
         "UPDATE retention_nonces SET used = TRUE "
         "WHERE nonce = $1 AND NOT used AND expires_at > now() "
         "AND ($2::int IS NULL OR product_id = $2) "
@@ -5360,7 +5439,7 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
     # landing dashboard, so wall time matters more than anywhere else).
     users, photos, handoffs, messages, pings, cost, stage_rows = \
         await asyncio.gather(
-            _pool.fetchrow(
+            _fetchrow(
                 "SELECT COUNT(*) AS total, "
                 "  COUNT(*) FILTER (WHERE subscribed) AS subscribed, "
                 "  COUNT(*) FILTER (WHERE pings_muted) AS pings_muted, "
@@ -5371,24 +5450,24 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
                 "    AS new_in_range, "
                 "  COALESCE(AVG(unlocked_stage), 0) AS avg_stage "
                 f"FROM retention_users WHERE {pid}", *args),
-            _pool.fetchval(
+            _fetchval(
                 "SELECT COUNT(*) FROM retention_photo_views "
                 f"WHERE {pid} AND viewed_at >= $1 AND viewed_at < $2", *args),
-            _pool.fetchval(
+            _fetchval(
                 # Only 'retention_handoff': a [[HANDOFF]] with a manager
                 # configured ALSO logs 'retention_manager_handoff' for the same
                 # hand-off, so counting both doubled the KPI.
                 "SELECT COUNT(*) FROM admin_events "
                 f"WHERE {pid} AND type = 'retention_handoff' "
                 "  AND created_at >= $1 AND created_at < $2", *args),
-            _pool.fetchrow(
+            _fetchrow(
                 "SELECT COUNT(*) AS user_msgs, "
                 "  COUNT(DISTINCT s.tg_user_id) AS senders "
                 "FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id "
                 f"WHERE s.consumer = 'telegram' AND {pid_msgs} "
                 "  AND m.role = 'user' AND m.created_at >= $1 "
                 "  AND m.created_at < $2", *args_msgs),
-            _pool.fetchrow(
+            _fetchrow(
                 "SELECT COUNT(*) FILTER (WHERE p.status = 'sent') AS sent, "
                 "  COUNT(*) FILTER (WHERE p.status = 'failed') AS failed, "
                 "  COUNT(*) FILTER (WHERE p.status = 'sent' AND EXISTS ("
@@ -5402,7 +5481,7 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
                 "    AS replied "
                 f"FROM retention_pings p WHERE {pid2} "
                 "  AND p.created_at >= $1 AND p.created_at < $2", *args2),
-            _pool.fetchrow(
+            _fetchrow(
                 "SELECT "
                 "  COALESCE(SUM(l.cost_usd) FILTER "
                 f"    (WHERE {_LOG_SOURCE} = 'chat'), 0) AS dialog, "
@@ -5419,7 +5498,7 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
                 "LEFT JOIN chat_sessions s ON s.id = l.session_id "
                 f"WHERE {pid3} AND {_LOG_IS_RETENTION} "
                 "  AND l.created_at >= $1 AND l.created_at < $2", *args3),
-            _pool.fetch(
+            _fetch(
                 "SELECT unlocked_stage AS stage, COUNT(*) AS users "
                 f"FROM retention_users WHERE {pid4} "
                 "GROUP BY unlocked_stage ORDER BY unlocked_stage", *args4),
@@ -5479,7 +5558,7 @@ async def retention_funnel(product_ids: Optional[list[int]], dt_from: Any,
     retention tables for the rest."""
     args: list[Any] = [dt_from, dt_to]
     pid = _pid_where(product_ids, args)
-    events = await _pool.fetchrow(
+    events = await _fetchrow(
         "SELECT COUNT(*) FILTER (WHERE type = 'retention_deeplink_created') "
         "    AS deeplinks, "
         "  COUNT(*) FILTER (WHERE type = 'retention_start') AS starts, "
@@ -5488,7 +5567,7 @@ async def retention_funnel(product_ids: Optional[list[int]], dt_from: Any,
         f"FROM admin_events WHERE {pid} "
         "  AND created_at >= $1 AND created_at < $2", *args,
     )
-    users = await _pool.fetchrow(
+    users = await _fetchrow(
         "SELECT COUNT(*) AS new_users, "
         "  COUNT(*) FILTER (WHERE subscribed) AS subscribed "
         f"FROM retention_users WHERE {pid} "
@@ -5496,7 +5575,7 @@ async def retention_funnel(product_ids: Optional[list[int]], dt_from: Any,
     )
     args2: list[Any] = [dt_from, dt_to]
     pid2 = _pid_where(product_ids, args2, "s.product_id")
-    engaged = await _pool.fetchval(
+    engaged = await _fetchval(
         "SELECT COUNT(DISTINCT s.tg_user_id) "
         "FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id "
         f"WHERE s.consumer = 'telegram' AND {pid2} AND m.role = 'user' "
@@ -5504,7 +5583,7 @@ async def retention_funnel(product_ids: Optional[list[int]], dt_from: Any,
     )
     args3: list[Any] = [dt_from, dt_to]
     pid3 = _pid_where(product_ids, args3)
-    photo_receivers = await _pool.fetchval(
+    photo_receivers = await _fetchval(
         "SELECT COUNT(DISTINCT retention_user_id) FROM retention_photo_views "
         f"WHERE {pid3} AND viewed_at >= $1 AND viewed_at < $2", *args3,
     )
@@ -5531,7 +5610,7 @@ async def retention_timeseries(product_ids: Optional[list[int]], dt_from: Any,
 
     args: list[Any] = [dt_from, dt_to]
     pid = _pid_where(product_ids, args, "s.product_id")
-    for r in await _pool.fetch(
+    for r in await _fetch(
             "SELECT date_trunc('day', m.created_at) AS day, "
             "  COUNT(*) AS msgs, COUNT(DISTINCT s.tg_user_id) AS actives "
             "FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id "
@@ -5544,7 +5623,7 @@ async def retention_timeseries(product_ids: Optional[list[int]], dt_from: Any,
 
     args = [dt_from, dt_to]
     pid = _pid_where(product_ids, args)
-    for r in await _pool.fetch(
+    for r in await _fetch(
             "SELECT date_trunc('day', viewed_at) AS day, COUNT(*) AS n "
             f"FROM retention_photo_views WHERE {pid} "
             "  AND viewed_at >= $1 AND viewed_at < $2 GROUP BY 1", *args):
@@ -5552,7 +5631,7 @@ async def retention_timeseries(product_ids: Optional[list[int]], dt_from: Any,
 
     args = [dt_from, dt_to]
     pid = _pid_where(product_ids, args)
-    for r in await _pool.fetch(
+    for r in await _fetch(
             "SELECT date_trunc('day', created_at) AS day, COUNT(*) AS n "
             f"FROM retention_pings WHERE {pid} AND status = 'sent' "
             "  AND created_at >= $1 AND created_at < $2 GROUP BY 1", *args):
@@ -5563,7 +5642,7 @@ async def retention_timeseries(product_ids: Optional[list[int]], dt_from: Any,
     # attribution labels (see _LOG_SOURCE) rather than by "has a session".
     args = [dt_from, dt_to]
     pid = _pid_where(product_ids, args, "l.product_id")
-    for r in await _pool.fetch(
+    for r in await _fetch(
             "SELECT date_trunc('day', l.created_at) AS day, "
             "  COALESCE(SUM(l.cost_usd) FILTER "
             f"    (WHERE {_LOG_SOURCE} = 'chat'), 0) AS dialog, "
@@ -5601,7 +5680,7 @@ async def retention_timeseries(product_ids: Optional[list[int]], dt_from: Any,
 
 async def list_retention_users(product_id: int, *, limit: int = 100,
                                offset: int = 0) -> list[dict[str, Any]]:
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT u.id, u.tg_user_id, u.tg_username, u.player_id, u.entry_type, "
         "  u.vip_level, u.country, u.unlocked_stage, u.subscribed, "
         "  u.meaningful_msgs, u.photos_sent_today, u.conv_lang, u.last_active_at, "
@@ -5625,6 +5704,15 @@ async def list_retention_users(product_id: int, *, limit: int = 100,
     return out
 
 
+async def count_retention_users(product_id: int) -> int:
+    """Total linked players for this product (the paginated list's `total`)."""
+    val = await _fetchval(
+        "SELECT COUNT(*) FROM retention_users WHERE product_id = $1",
+        product_id,
+    )
+    return int(val or 0)
+
+
 async def close_retention_session(session_id: str,
                                   product_id: Optional[int] = None,
                                   reason: str = "idle") -> None:
@@ -5634,7 +5722,7 @@ async def close_retention_session(session_id: str,
     'open' session is touched (an escalated one keeps its state). Logged as an
     admin event (invariant §4 — every state transition leaves a trace).
     """
-    result = await _pool.execute(
+    result = await _execute(
         "UPDATE chat_sessions SET status = 'resolved', updated_at = now() "
         "WHERE id = $1 AND status = 'open'",
         session_id,
@@ -5650,13 +5738,13 @@ async def list_retention_sessions(product_id: int, *, page: int = 1,
     first, joined with the player identity from retention_users and the summed
     OpenAI cost. The Retention → Conversations admin tab feeds from this — the
     support Conversations list excludes consumer='telegram' entirely."""
-    total = await _pool.fetchval(
+    total = await _fetchval(
         "SELECT COUNT(*) FROM chat_sessions "
         "WHERE product_id = $1 AND consumer = 'telegram'",
         product_id,
     )
     page = max(page, 1)
-    rows = await _pool.fetch(
+    rows = await _fetch(
         "SELECT s.id, s.status, s.escalated, s.message_count, "
         "  COALESCE(s.conv_lang, s.lang) AS lang, s.created_at, s.updated_at, "
         "  s.tg_user_id, u.tg_username, u.player_id, u.full_name, "
@@ -5724,7 +5812,7 @@ async def insert_app_logs(items: list[dict[str, Any]]) -> None:
          if it.get("created") else now)
         for it in items
     ]
-    await _pool.executemany(
+    await _executemany(
         "INSERT INTO app_logs (level, logger, message, created_at) "
         "VALUES ($1, $2, $3, $4)",
         rows,
@@ -5741,7 +5829,7 @@ async def prune_app_logs(keep: int = 5000) -> None:
     subquery picks the id of the (keep+1)-th newest row — everything from there
     down goes; with fewer than `keep` rows it returns NULL and nothing matches.
     """
-    await _pool.execute(
+    await _execute(
         "DELETE FROM app_logs WHERE id <= "
         "(SELECT id FROM app_logs ORDER BY id DESC OFFSET $1 LIMIT 1)",
         keep,
@@ -5776,7 +5864,7 @@ async def list_app_logs(level: Optional[str] = None, q: Optional[str] = None,
         where.append(f"id < ${len(args)}")
     args.append(max(1, min(limit, 500)))
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT id, level, logger, message, created_at FROM app_logs "
         f"{where_sql} ORDER BY id DESC LIMIT ${len(args)}",
         *args,
@@ -5791,7 +5879,7 @@ async def list_app_logs(level: Optional[str] = None, q: Optional[str] = None,
 
 async def app_logs_unread_count(reader: str) -> int:
     """How many WARNING+ log rows are newer than this reader's last-read marker."""
-    return await _pool.fetchval(
+    return await _fetchval(
         "SELECT COUNT(*) FROM app_logs WHERE level = ANY($1) AND id > "
         "COALESCE((SELECT last_read_id FROM app_log_reads WHERE reader = $2), 0)",
         list(_WARN_LEVELS), reader,
@@ -5800,8 +5888,8 @@ async def app_logs_unread_count(reader: str) -> int:
 
 async def mark_app_logs_read(reader: str) -> int:
     """Mark all current logs read for this reader (badge clears). Returns the id."""
-    max_id = await _pool.fetchval("SELECT COALESCE(MAX(id), 0) FROM app_logs") or 0
-    await _pool.execute(
+    max_id = await _fetchval("SELECT COALESCE(MAX(id), 0) FROM app_logs") or 0
+    await _execute(
         "INSERT INTO app_log_reads (reader, last_read_id, updated_at) "
         "VALUES ($1, $2, now()) ON CONFLICT (reader) DO UPDATE "
         "SET last_read_id = GREATEST(app_log_reads.last_read_id, EXCLUDED.last_read_id), "
@@ -5824,10 +5912,10 @@ async def log_audit(*, actor_email: str, actor_role: Optional[str], method: str,
     """
     partner_id = None
     if product_id is not None:
-        partner_id = await _pool.fetchval(
+        partner_id = await _fetchval(
             "SELECT partner_id FROM products WHERE id = $1", product_id
         )
-    await _pool.execute(
+    await _execute(
         "INSERT INTO admin_audit_log "
         "(actor_email, actor_role, method, path, action, product_id, partner_id, status) "
         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -5876,7 +5964,7 @@ async def list_audit(product_ids: Optional[list[int]], *, include_admins: bool,
         conds.append(f"a.id < ${len(args)}")
     args.append(max(1, min(limit, 500)))
     where_sql = " AND ".join(f"({c})" for c in conds)
-    rows = await _pool.fetch(
+    rows = await _fetch(
         f"SELECT a.id, a.actor_email, a.actor_role, a.method, a.path, a.action, "
         f"a.product_id, a.partner_id, a.status, a.created_at, "
         f"p.name AS product_name FROM admin_audit_log a "

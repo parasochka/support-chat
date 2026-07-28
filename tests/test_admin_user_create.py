@@ -129,3 +129,65 @@ async def test_self_password_only_update_still_allowed(monkeypatch):
     await admin_api.update_user(
         "p@nowplix.com", UserUpdate(password="newpassw0rd"), admin=_PRODUCT_ADMIN)
     assert auth.verify_password("newpassw0rd", created["p@nowplix.com"]["password_hash"])
+
+
+async def test_revoke_membership_checks_reach_over_the_target_account(monkeypatch):
+    """Revoking must apply the same TARGET-account reach check as granting.
+
+    It only authorized the revoked membership's own scope, so a product-scoped
+    admin could strip that product's role off an account otherwise outside its
+    reach — a global admin who also holds a product membership, say. No
+    privilege escalation, but it mutates the rights of an account the caller may
+    not administer, which is exactly what `_can_manage_user` exists to prevent.
+    """
+    _stub_db(monkeypatch)
+    victim = "global.boss@nowplix.com"
+    # The victim is a GLOBAL admin who also carries a membership on product 7.
+    victim_memberships = [
+        {"id": 10, "email": victim, "scope_type": "global",
+         "partner_id": None, "product_id": None, "role": "admin"},
+        {"id": 11, "email": victim, "scope_type": "product",
+         "partner_id": 1, "product_id": 7, "role": "admin"},
+    ]
+
+    async def memberships_for(email):
+        return victim_memberships if email == victim else []
+
+    async def get_membership(mid):
+        return next((m for m in victim_memberships if m["id"] == mid), None)
+
+    deleted: list[int] = []
+
+    async def delete_membership(mid):
+        deleted.append(mid)
+        return True
+
+    async def get_admin_user(email):
+        return {"email": email, "active": True}
+
+    async def get_product(pid):
+        return {"id": pid, "partner_id": 1, "active": True}
+
+    monkeypatch.setattr(db, "memberships_for", memberships_for)
+    monkeypatch.setattr(db, "get_membership", get_membership)
+    monkeypatch.setattr(db, "get_product", get_product)
+    monkeypatch.setattr(db, "delete_membership", delete_membership)
+    monkeypatch.setattr(db, "get_admin_user", get_admin_user)
+
+    # The caller administers product 7 only — the membership's own scope, so the
+    # scope check alone would have let this through.
+    product_admin = {
+        "role": "admin", "email": "p7@nowplix.com",
+        "memberships": [{"id": 2, "email": "p7@nowplix.com",
+                         "scope_type": "product", "partner_id": 1,
+                         "product_id": 7, "role": "admin"}],
+    }
+    with pytest.raises(HTTPException) as exc:
+        await admin_api.revoke_membership(victim, 11, admin=product_admin)
+    assert exc.value.status_code == 403
+    assert deleted == []
+
+    # A global admin has reach over the whole account and may revoke.
+    result = await admin_api.revoke_membership(victim, 11, admin=_GLOBAL_ADMIN)
+    assert result.status_code == 200
+    assert deleted == [11]

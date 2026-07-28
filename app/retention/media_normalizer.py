@@ -340,130 +340,130 @@ async def normalize_product_photos(product_id: int) -> dict[str, Any]:
     quality targets are code-owned deploy constants (`config.RETENTION_MEDIA_*`),
     not admin settings.
     """
-    tenancy.set_current_product(product_id)
-    max_side = int(config.RETENTION_MEDIA_MAX_SIDE_PX)
-    quality = int(config.RETENTION_MEDIA_WEBP_QUALITY)
-    stats = {"checked": 0, "normalized": 0, "failed": 0,
-             "bytes_saved": 0}
-    for photo in await db.list_retention_photos(product_id):
-        ref = photo.get("storage_ref")
-        if not ref:
-            continue
-        # Bare filename by contract; never allow a path outside the media dir.
-        safe = os.path.basename(ref)
-        path = os.path.join(config.RETENTION_MEDIA_DIR, safe)
-        if not os.path.exists(path):
-            continue
-        stats["checked"] += 1
-        try:
-            if is_video_ref(safe):
-                new_ref, poster_ref = video_target_refs(safe)
-                poster_path = os.path.join(config.RETENTION_MEDIA_DIR,
-                                           poster_ref)
-                if not video_needs_normalization(safe):
-                    meta = await asyncio.to_thread(probe_video_meta, path)
-                    if meta and not meta["square_pixels"]:
-                        # Self-heal: a .tg.mp4 produced by the pre-fix encoder
-                        # kept the source's non-square SAR (Telegram rendered
-                        # it squished). Re-encode in place to square pixels,
-                        # refresh the poster and DROP the cached file_id —
-                        # Telegram's copy is the squished one.
-                        tmp_path = path + ".fix.mp4"
-                        await asyncio.to_thread(
-                            normalize_video_file, path, tmp_path,
-                            max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX,
-                            crf=config.RETENTION_MEDIA_VIDEO_CRF,
-                            preset=config.RETENTION_MEDIA_VIDEO_PRESET)
-                        # Drop the cached file_id BEFORE the on-disk swap: a
-                        # crash between the two leaves the squished file with
-                        # no pin — the next send re-uploads, the next sweep
-                        # re-probes non-square and repairs again (converges).
-                        # The meta write below re-clears it; both idempotent.
-                        await db.clear_photo_file_id(photo["id"])
-                        await asyncio.to_thread(os.replace, tmp_path, path)
-                        await asyncio.to_thread(
-                            extract_poster, path, poster_path,
-                            max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX)
+    with tenancy.scoped_product(product_id):
+        max_side = int(config.RETENTION_MEDIA_MAX_SIDE_PX)
+        quality = int(config.RETENTION_MEDIA_WEBP_QUALITY)
+        stats = {"checked": 0, "normalized": 0, "failed": 0,
+                 "bytes_saved": 0}
+        for photo in await db.list_retention_photos(product_id):
+            ref = photo.get("storage_ref")
+            if not ref:
+                continue
+            # Bare filename by contract; never allow a path outside the media dir.
+            safe = os.path.basename(ref)
+            path = os.path.join(config.RETENTION_MEDIA_DIR, safe)
+            if not os.path.exists(path):
+                continue
+            stats["checked"] += 1
+            try:
+                if is_video_ref(safe):
+                    new_ref, poster_ref = video_target_refs(safe)
+                    poster_path = os.path.join(config.RETENTION_MEDIA_DIR,
+                                               poster_ref)
+                    if not video_needs_normalization(safe):
                         meta = await asyncio.to_thread(probe_video_meta, path)
-                        await db.set_retention_video_meta(
-                            photo["id"], **_meta_attrs(meta),
-                            clear_file_id=True)
-                        log.info("media_normalize_video_sar_repaired "
-                                 "photo_id=%s ref=%s", photo.get("id"), safe)
-                        stats["normalized"] += 1
+                        if meta and not meta["square_pixels"]:
+                            # Self-heal: a .tg.mp4 produced by the pre-fix encoder
+                            # kept the source's non-square SAR (Telegram rendered
+                            # it squished). Re-encode in place to square pixels,
+                            # refresh the poster and DROP the cached file_id —
+                            # Telegram's copy is the squished one.
+                            tmp_path = path + ".fix.mp4"
+                            await asyncio.to_thread(
+                                normalize_video_file, path, tmp_path,
+                                max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX,
+                                crf=config.RETENTION_MEDIA_VIDEO_CRF,
+                                preset=config.RETENTION_MEDIA_VIDEO_PRESET)
+                            # Drop the cached file_id BEFORE the on-disk swap: a
+                            # crash between the two leaves the squished file with
+                            # no pin — the next send re-uploads, the next sweep
+                            # re-probes non-square and repairs again (converges).
+                            # The meta write below re-clears it; both idempotent.
+                            await db.clear_photo_file_id(photo["id"])
+                            await asyncio.to_thread(os.replace, tmp_path, path)
+                            await asyncio.to_thread(
+                                extract_poster, path, poster_path,
+                                max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX)
+                            meta = await asyncio.to_thread(probe_video_meta, path)
+                            await db.set_retention_video_meta(
+                                photo["id"], **_meta_attrs(meta),
+                                clear_file_id=True)
+                            log.info("media_normalize_video_sar_repaired "
+                                     "photo_id=%s ref=%s", photo.get("id"), safe)
+                            stats["normalized"] += 1
+                            continue
+                        # Already fine; backfill a missing poster / missing attrs.
+                        if not os.path.exists(poster_path):
+                            await asyncio.to_thread(
+                                extract_poster, path, poster_path,
+                                max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX)
+                        if meta and not (photo.get("tg_width")
+                                         and photo.get("tg_height")):
+                            # A row without attrs was uploaded before explicit
+                            # attrs shipped — if Telegram failed to detect them,
+                            # the cached file_id pins that broken download-first
+                            # presentation forever (a file_id send cannot attach
+                            # attrs). Clear it: one re-upload re-sends with attrs.
+                            await db.set_retention_video_meta(
+                                photo["id"], **_meta_attrs(meta),
+                                clear_file_id=True)
                         continue
-                    # Already fine; backfill a missing poster / missing attrs.
-                    if not os.path.exists(poster_path):
-                        await asyncio.to_thread(
-                            extract_poster, path, poster_path,
-                            max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX)
-                    if meta and not (photo.get("tg_width")
-                                     and photo.get("tg_height")):
-                        # A row without attrs was uploaded before explicit
-                        # attrs shipped — if Telegram failed to detect them,
-                        # the cached file_id pins that broken download-first
-                        # presentation forever (a file_id send cannot attach
-                        # attrs). Clear it: one re-upload re-sends with attrs.
-                        await db.set_retention_video_meta(
-                            photo["id"], **_meta_attrs(meta),
-                            clear_file_id=True)
+                    new_path = os.path.join(config.RETENTION_MEDIA_DIR, new_ref)
+                    old_size = os.path.getsize(path)
+                    # One encode at a time by construction: this loop is
+                    # sequential and every entry point holds the advisory lock.
+                    await asyncio.to_thread(
+                        normalize_video_file, path, new_path,
+                        max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX,
+                        crf=config.RETENTION_MEDIA_VIDEO_CRF,
+                        preset=config.RETENTION_MEDIA_VIDEO_PRESET)
+                    await asyncio.to_thread(
+                        extract_poster, new_path, poster_path,
+                        max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX)
+                    if os.path.getsize(new_path) > TG_VIDEO_MAX_BYTES:
+                        log.warning(
+                            "media_normalize_video_over_tg_cap photo_id=%s ref=%s "
+                            "bytes=%s - Telegram bots cannot upload files over "
+                            "50 MB; trim or replace this video",
+                            photo.get("id"), new_ref, os.path.getsize(new_path))
+                    # new_ref always differs here (this branch only sees refs
+                    # without the .tg.mp4 suffix, and new_ref carries it).
+                    meta = await asyncio.to_thread(probe_video_meta, new_path)
+                    # Re-point + store the sendVideo attrs + clear any cached
+                    # file_id in one write: the new binary is not the copy
+                    # Telegram may hold, so the next send must re-upload.
+                    await db.set_retention_video_normalized(
+                        photo["id"], storage_ref=new_ref, **_meta_attrs(meta))
+                    _remove_quietly(path)
+                    stats["normalized"] += 1
+                    stats["bytes_saved"] += max(
+                        0, old_size - os.path.getsize(new_path))
                     continue
+                if not await asyncio.to_thread(needs_normalization, path, max_side):
+                    continue
+                new_ref = os.path.splitext(safe)[0] + ".webp"
                 new_path = os.path.join(config.RETENTION_MEDIA_DIR, new_ref)
                 old_size = os.path.getsize(path)
-                # One encode at a time by construction: this loop is
-                # sequential and every entry point holds the advisory lock.
-                await asyncio.to_thread(
-                    normalize_video_file, path, new_path,
-                    max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX,
-                    crf=config.RETENTION_MEDIA_VIDEO_CRF,
-                    preset=config.RETENTION_MEDIA_VIDEO_PRESET)
-                await asyncio.to_thread(
-                    extract_poster, new_path, poster_path,
-                    max_side=config.RETENTION_MEDIA_VIDEO_MAX_SIDE_PX)
-                if os.path.getsize(new_path) > TG_VIDEO_MAX_BYTES:
-                    log.warning(
-                        "media_normalize_video_over_tg_cap photo_id=%s ref=%s "
-                        "bytes=%s - Telegram bots cannot upload files over "
-                        "50 MB; trim or replace this video",
-                        photo.get("id"), new_ref, os.path.getsize(new_path))
-                # new_ref always differs here (this branch only sees refs
-                # without the .tg.mp4 suffix, and new_ref carries it).
-                meta = await asyncio.to_thread(probe_video_meta, new_path)
-                # Re-point + store the sendVideo attrs + clear any cached
-                # file_id in one write: the new binary is not the copy
-                # Telegram may hold, so the next send must re-upload.
-                await db.set_retention_video_normalized(
-                    photo["id"], storage_ref=new_ref, **_meta_attrs(meta))
-                _remove_quietly(path)
+                await asyncio.to_thread(normalize_file, path, new_path,
+                                        max_side=max_side, quality=quality)
+                # Re-point the row FIRST, then delete the original — a failure in
+                # between leaves an orphan file, never a photo without a binary.
+                if new_ref != safe:
+                    await db.set_retention_photo_storage_ref(photo["id"], new_ref)
+                    _remove_quietly(path)
                 stats["normalized"] += 1
                 stats["bytes_saved"] += max(
                     0, old_size - os.path.getsize(new_path))
-                continue
-            if not await asyncio.to_thread(needs_normalization, path, max_side):
-                continue
-            new_ref = os.path.splitext(safe)[0] + ".webp"
-            new_path = os.path.join(config.RETENTION_MEDIA_DIR, new_ref)
-            old_size = os.path.getsize(path)
-            await asyncio.to_thread(normalize_file, path, new_path,
-                                    max_side=max_side, quality=quality)
-            # Re-point the row FIRST, then delete the original — a failure in
-            # between leaves an orphan file, never a photo without a binary.
-            if new_ref != safe:
-                await db.set_retention_photo_storage_ref(photo["id"], new_ref)
-                _remove_quietly(path)
-            stats["normalized"] += 1
-            stats["bytes_saved"] += max(
-                0, old_size - os.path.getsize(new_path))
-        except Exception:  # noqa: BLE001 - one bad file must not kill the sweep
-            stats["failed"] += 1
-            log.exception("media_normalize_failed photo_id=%s ref=%s",
-                          photo.get("id"), ref)
-    if stats["normalized"] or stats["failed"]:
-        log.info("media_normalize_done product=%s stats=%s", product_id, stats)
-        await db.log_admin_event(None, "retention_media_normalized",
-                                 {**stats, "max_side_px": max_side},
-                                 product_id=product_id)
-    return stats
+            except Exception:  # noqa: BLE001 - one bad file must not kill the sweep
+                stats["failed"] += 1
+                log.exception("media_normalize_failed photo_id=%s ref=%s",
+                              photo.get("id"), ref)
+        if stats["normalized"] or stats["failed"]:
+            log.info("media_normalize_done product=%s stats=%s", product_id, stats)
+            await db.log_admin_event(None, "retention_media_normalized",
+                                     {**stats, "max_side_px": max_side},
+                                     product_id=product_id)
+        return stats
 
 
 # Products with an instant post-upload run queued or in flight in THIS

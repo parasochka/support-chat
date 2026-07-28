@@ -8,8 +8,9 @@ English — which is what the by-language breakdown used to do.
 
 Also pins `prune_app_logs` counting ROWS rather than doing id arithmetic.
 
-db.* is normally not unit-tested (no Postgres in the suite), so these use a tiny
-fake pool that records the SQL — enough to pin which column the query keys on.
+db.* is normally not unit-tested (no Postgres in the suite), so these use the
+shared fake pool from conftest, which records the SQL — enough to pin which
+column the query keys on.
 """
 from __future__ import annotations
 
@@ -18,27 +19,7 @@ import datetime as dt
 from app.core import db
 from app.core import settings
 from app.i18n import translations
-
-
-class FakePool:
-    """Records every statement; returns canned rows."""
-
-    def __init__(self, rows=None, val=0):
-        self.rows = rows or []
-        self.val = val
-        self.sql: list[str] = []
-
-    async def fetch(self, sql, *args):
-        self.sql.append(sql)
-        return self.rows
-
-    async def fetchval(self, sql, *args):
-        self.sql.append(sql)
-        return self.val
-
-    async def execute(self, sql, *args):
-        self.sql.append(sql)
-        return None
+from tests.conftest import FakePool
 
 
 _FROM = dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc)

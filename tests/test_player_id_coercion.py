@@ -8,6 +8,7 @@ a TEXT column raised DataError and 500'd session create / the retention link.
 from __future__ import annotations
 
 from app.core import db
+from tests.conftest import FakeConn, FakePool
 
 
 def test_as_text_coerces_scalars_keeps_none_and_structures():
@@ -21,24 +22,8 @@ def test_as_text_coerces_scalars_keeps_none_and_structures():
     assert db._as_text([1, 2]) == [1, 2]
 
 
-class _FakePool:
-    """Captures the positional args bound to each execute/fetchrow call."""
-
-    def __init__(self, fetchrow_result=None):
-        self.calls: list = []
-        self._fetchrow_result = fetchrow_result
-
-    async def execute(self, query, *args):
-        self.calls.append((query, args))
-        return "INSERT 0 1"
-
-    async def fetchrow(self, query, *args):
-        self.calls.append((query, args))
-        return self._fetchrow_result
-
-
 async def test_create_session_binds_player_id_as_text(monkeypatch):
-    fake = _FakePool()
+    fake = FakePool()
     monkeypatch.setattr(db, "_pool", fake)
     # numeric id from a signed handshake (host serialized `id` as a number)
     sid = await db.create_session(
@@ -52,7 +37,7 @@ async def test_create_session_binds_player_id_as_text(monkeypatch):
 
 
 async def test_upsert_retention_user_coerces_numeric_profile(monkeypatch):
-    fake = _FakePool(fetchrow_result={"ok": True})
+    fake = FakePool(conn=FakeConn(row={"ok": True}))
     monkeypatch.setattr(db, "_pool", fake)
 
     async def _no_existing(product_id, tg_user_id):

@@ -117,7 +117,10 @@
       <td>Мастер-ключ шифрования секретов продуктов в БД. Задать отдельным сильным значением;
           его смена делает сохранённые секреты нечитаемыми (перевводятся в админке).</td></tr>
   <tr><td><code>WIDGET_HANDSHAKE_SECRET</code></td>
-      <td>Деплой-фолбэк секрета handshake (у продукта приоритет — его собственный секрет).</td></tr>
+      <td>Деплой-фолбэк секрета handshake — применяется <b>только к дефолтному продукту</b>.
+          У остальных продуктов работает исключительно собственный секрет (Structure →
+          Product secrets), см. <a href="/integration-data#handshake"
+          style="color:var(--accent)">передачу данных игрока</a>.</td></tr>
   <tr><td><code>CORS_ALLOW_ORIGINS</code></td><td>Домены сайтов, где встраивается виджет.</td></tr>
   <tr><td><code>TURNSTILE_SITE_KEY</code>/<code>TURNSTILE_SECRET</code> (фолбэк-пара Cloudflare
       Turnstile — у продукта приоритетна его собственная, см. <a href="/integration-widget#turnstile"

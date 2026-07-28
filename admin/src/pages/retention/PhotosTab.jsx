@@ -360,6 +360,36 @@ const PhotosTab = ({ productId }) => {
     }
   };
 
+  // Per-row text drafts for the controlled Description / Tags inputs.
+  // Keyed by photo id and re-seeded from the server row whenever that row's
+  // `updated_at` moves, so a reload (a save, or an AI metadata batch) shows the
+  // new values while an edit in progress is never yanked out from under the
+  // operator's cursor.
+  const [drafts, setDrafts] = useState({});
+
+  const draftOf = (ph) => {
+    const d = drafts[ph.id];
+    if (d && d.stamp === ph.updated_at) return d;
+    return {
+      stamp: ph.updated_at,
+      description: ph.description || '',
+      tags: (ph.tags || []).join(', '),
+    };
+  };
+
+  const setDraft = (id, fields) =>
+    setDrafts((prev) => {
+      const row = items.find((i) => i.id === id);
+      const base = prev[id] && row && prev[id].stamp === row.updated_at
+        ? prev[id]
+        : {
+            stamp: row && row.updated_at,
+            description: (row && row.description) || '',
+            tags: ((row && row.tags) || []).join(', '),
+          };
+      return { ...prev, [id]: { ...base, ...fields } };
+    });
+
   const patch = async (id, fields) => {
     try {
       await httpClient(`${API_URL}/admin/retention/photos/${id}`, {
@@ -875,10 +905,17 @@ const PhotosTab = ({ productId }) => {
                   )}
                 </Stack>
                 <Stack spacing={1.5} sx={{ mt: 1.5 }}>
+                  {/* Controlled (see `drafts`): as uncontrolled defaultValue
+                      fields these never refreshed after a reload, because React
+                      does not re-initialise defaultValue on a mounted input with
+                      an unchanged key. After "Generate metadata" the server had
+                      the AI description and tags, `load()` had them in `items`,
+                      and the operator still saw empty boxes. */}
                   <TextField
                     size="small"
                     label={t('Description')}
-                    defaultValue={ph.description || ''}
+                    value={draftOf(ph).description}
+                    onChange={(e) => setDraft(ph.id, { description: e.target.value })}
                     onBlur={(e) =>
                       e.target.value !== (ph.description || '') &&
                       patch(ph.id, { description: e.target.value })
@@ -889,7 +926,8 @@ const PhotosTab = ({ productId }) => {
                   <TextField
                     size="small"
                     label={t('Tags (comma-separated)')}
-                    defaultValue={(ph.tags || []).join(', ')}
+                    value={draftOf(ph).tags}
+                    onChange={(e) => setDraft(ph.id, { tags: e.target.value })}
                     onBlur={(e) => {
                       const tags = e.target.value
                         .split(',')

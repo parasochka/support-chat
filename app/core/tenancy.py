@@ -14,11 +14,19 @@ read it transparently.
 behaviour — so code paths and tests that never set a scope are unchanged.
 
 ContextVars are task-local, so concurrent requests never observe each other's
-scope. Handlers only ever SET the value (each request runs in its own context;
-no reset needed).
+scope. Request handlers only ever SET the value: each request runs in its own
+context, which is discarded when the response is sent, so nothing leaks.
+
+BACKGROUND WORKERS ARE THE EXCEPTION and must use `scoped_product()`. A worker
+loop lives in ONE long-running task, so every product it visits overwrites the
+same context — without a reset the scope of the LAST product it touched stays
+bound for the rest of the task's life, and anything resolved afterwards
+(settings, and `db.log_admin_event`, which falls back to this contextvar for
+`product_id`) silently belongs to the wrong tenant.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Optional
 
@@ -46,6 +54,22 @@ def reset_current_product(token) -> None:
     worker-cadence read) without clobbering the caller's product scope.
     """
     _current_product_id.reset(token)
+
+
+@contextmanager
+def scoped_product(product_id: Optional[int]):
+    """Bind a product for the duration of the block, then restore the previous scope.
+
+    This is what a BACKGROUND WORKER uses when it walks the product list: a
+    worker loop is a single long-lived task, so a bare `set_current_product()`
+    per product leaves the last one bound forever (see the module docstring).
+    Request handlers do not need it — their context dies with the request.
+    """
+    token = _current_product_id.set(product_id)
+    try:
+        yield
+    finally:
+        _current_product_id.reset(token)
 
 
 def current_product_id() -> Optional[int]:

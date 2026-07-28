@@ -267,7 +267,13 @@ _INJECTION_PATTERNS = (
     "представь, что ты",
     "system prompt",
     "системный промпт",
-    "system:",
+    # NOT a bare "system:" — the scan runs on the player's own words, and an
+    # ordinary sentence quoting the site ("the system: says my withdrawal
+    # failed") hard-blocked with a 400. The trigger is the attempt to open a
+    # system TURN, so require what actually follows one.
+    "system: you",
+    "system: ignore",
+    "system message",
     "reveal your",
     "покажи свой промпт",
     "раскрой систем",
@@ -278,8 +284,14 @@ _INJECTION_PATTERNS = (
     "dan mode",
     "disregard your instructions",
     "override your",
-    "new instructions",
-    "новые инструкции",
+    # Likewise "new instructions" alone caught "I want to know the new
+    # instructions for KYC" — a real support question. Keep the possessive /
+    # imperative forms, which only a redirection attempt uses.
+    "your new instructions",
+    "follow the new instructions",
+    "here are your new instructions",
+    "новые инструкции для тебя",
+    "твои новые инструкции",
 )
 
 

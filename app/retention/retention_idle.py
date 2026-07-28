@@ -138,9 +138,15 @@ async def run_product_idle_pings_locked(product: dict[str, Any],
     Required: without the lock a button-run and the worker's sweep can both
     read a player's guard counters before either writes — double send (the
     same guard-race class run_product_events_locked guards). Blocking lock (not try-lock): the button
-    should run right after the worker finishes, not silently no-op."""
-    pool = db.pool()
-    async with pool.acquire() as conn:
+    should run right after the worker finishes, not silently no-op.
+
+    Dedicated connection, same reason as run_product_events_locked: the sweep
+    holds this lock for minutes, and the pool's command_timeout=30 would kill
+    the blocking pg_advisory_lock wait rather than let the button queue behind
+    the worker.
+    """
+    conn = await db.dedicated_connection()
+    try:
         await conn.execute("SELECT pg_advisory_lock($1)",
                            retention_v2._ADVISORY_LOCK_KEY)
         try:
@@ -149,6 +155,8 @@ async def run_product_idle_pings_locked(product: dict[str, Any],
         finally:
             await conn.execute("SELECT pg_advisory_unlock($1)",
                                retention_v2._ADVISORY_LOCK_KEY)
+    finally:
+        await conn.close()
 
 
 async def run_product_idle_pings(product: dict[str, Any],
@@ -262,7 +270,12 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
         # WOULD have gone out, nothing is generated or sent (a dry idle rule
         # must not burn model calls on every sweep).
         await _ledger(dry_run=True)
-        await db.record_retention_ping(pid, rid, rule_id, action, "skipped",
+        # Status 'dry_run', not 'skipped': the pacing memories (per-rule
+        # cooldown + the anti-cascade rung guard) count it, so a dry ladder
+        # paces exactly like a live one. As 'skipped' it was invisible to both,
+        # and since dry-run ships ON the rule re-fired every ping_min_gap_hours
+        # against the same player. Delivery metrics still count 'sent' only.
+        await db.record_retention_ping(pid, rid, rule_id, action, "dry_run",
                                        detail="dry_run")
         return True
 

@@ -18,6 +18,7 @@ import { API_URL, httpClient } from '../httpClient';
 import SecretField from '../components/SecretField';
 import { t } from '../i18n';
 import SetBadge from '../components/SetBadge';
+import { copyText } from '../lib/clipboard';
 import { notifyError } from '../lib/notifyError';
 
 const embedSnippet = (widgetKey) =>
@@ -74,10 +75,7 @@ const ProductCard = ({ product, onChanged }) => {
     }
   };
 
-  const copy = async (text, message) => {
-    await navigator.clipboard.writeText(text);
-    notify(message, { type: 'info' });
-  };
+  const copy = (text, message) => copyText(notify, text, message);
 
   const saveSecrets = async () => {
     // Only persist fields the operator typed a value into; clearing is the

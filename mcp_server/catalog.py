@@ -346,10 +346,19 @@ TOOLS: tuple = (
                   required=True, location="path_body"),
             Param("value", "string", "The value substituted into KB texts.",
                   required=True, location="body"),
-            Param("description", "string", "What this placeholder means.",
-                  location="body"),
+            # REQUIRED, unlike the endpoint's own optional field: the upsert
+            # writes description = EXCLUDED.description, so omitting it silently
+            # blanked the placeholder's description. Read the current one with
+            # `kb_variables` and send it back unchanged when you only mean to
+            # change the value.
+            Param("description", "string",
+                  "What this placeholder means. Sent as-is — read the current "
+                  "value with `kb_variables` and pass it back unchanged when "
+                  "you are only changing `value`, or it will be overwritten.",
+                  required=True, location="body"),
         ),
         product="query", writes=True,
+        note="A partial write overwrites `description`; send the whole object.",
     ),
     Tool(
         name="translations",
@@ -558,6 +567,12 @@ TOOLS: tuple = (
                   "{\"product_id\": 2, \"from\": \"2026-07-01\"}.",
                   location="local"),
         ),
+        # This tool reaches the WIDEST set of endpoints, several of which carry
+        # player PII (retention media/users expose tg_username, managers expose
+        # display_name, /admin/users exposes account emails). Left unredactable
+        # it silently opted the broadest surface out of SUPPORT_ADMIN_REDACT_PII
+        # — the documented privacy default — while every narrow tool honoured it.
+        redactable=True,
         raw=True,
     ),
 )

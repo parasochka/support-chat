@@ -39,6 +39,17 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # request models
 # ---------------------------------------------------------------------------
+# `chat_sessions.consumer` is the facade label EVERY dashboard split keys on:
+# the support views filter `consumer <> 'telegram'` and the Retention views
+# filter `consumer = 'telegram'`. This endpoint is public and unauthenticated,
+# so the field cannot be taken at face value — a client sending
+# {"consumer": "telegram"} would erase its own session from Conversations,
+# Unresolved and every support metric, and inject it into the Telegram
+# dashboard. 'telegram' is set by the retention code path only, never by a
+# request body.
+_PUBLIC_CONSUMERS = frozenset({"web"})
+
+
 class SessionCreate(BaseModel):
     consumer: Optional[str] = "web"
     player_id: Optional[str] = None
@@ -186,10 +197,15 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
     # Precedence of trust:
     #   1. signed_context present -> verify HMAC + expiry; trust that payload
     #      only. The signature is checked against the PRODUCT's own handshake
-    #      secret when it has one, else the deploy-level env secret.
-    #   2. A handshake secret configured (product or env) but no signature ->
-    #      production mode: do NOT trust browser-supplied context; zero it
-    #      (anonymous session OK).
+    #      secret; the deploy-level env secret is a fallback for the DEFAULT
+    #      product only (auth.effective_handshake_secret — a deploy-wide secret
+    #      must not let one brand sign context for another partner's product).
+    #   2. ANY handshake secret configured, product or deploy, but no signature
+    #      -> production mode: do NOT trust browser-supplied context; zero it
+    #      (anonymous session OK). Note this is deliberately BROADER than the
+    #      verification key in (1): a deploy secret means "this deployment is in
+    #      production", so a product with no secret of its own gets no signed
+    #      mode AND no trusted browser context — never a silent fall to dev.
     #   3. No secret anywhere -> dev/test: the admin-configured test profile
     #      stands in for the host site (or the raw widget context if disabled).
     # The injection sanitizer (prompts.sanitize_user_context) runs regardless.
@@ -261,7 +277,12 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
 
     new_id = str(uuid.uuid4())
     session_id = await db.create_session(
-        consumer=body.consumer or "web",
+        # Anything unrecognised (notably 'telegram') collapses to 'web' — see
+        # _PUBLIC_CONSUMERS. Silently, not with a 400: the label is analytics
+        # bookkeeping, and a legacy embed passing its own string should keep
+        # chatting rather than be rejected.
+        consumer=(body.consumer if body.consumer in _PUBLIC_CONSUMERS
+                  else "web"),
         player_id=resolved_player_id,
         lang=session_lang,
         user_context=user_context,

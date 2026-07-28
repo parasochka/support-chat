@@ -127,6 +127,26 @@ def test_strip_photo_tag():
     # non-numeric ids never match
     clean, pid = prompts.strip_photo_tag("[[PHOTO:abc]]\nhi")
     assert pid is None
+    # ...and because the strict strip leaves it behind, the raw tag must not be
+    # what the player reads. The retention reply path runs the same backstop the
+    # widget does (chat_service._strip_retention_reply → scrub_control_sentinels).
+    assert "[[PHOTO" not in prompts.scrub_control_sentinels(clean)
+
+
+def test_scrub_keeps_visible_text_below_a_mangled_tag():
+    """The scrub must not eat the answer.
+
+    A negated character class matches newlines, so `[^\\]]*` let an unclosed tag
+    in the MIDDLE of a reply swallow every line down to the next "]" anywhere
+    below. Bounded to the line, only the fragment goes.
+    """
+    reply = ("Держи ссылку [[LINK:https://example.com\n"
+             "Пополнение занимает до 15 минут.\n"
+             "Если деньги не пришли [напиши] нам.")
+    cleaned = prompts.scrub_control_sentinels(reply)
+    assert "[[LINK" not in cleaned
+    assert "Пополнение занимает до 15 минут." in cleaned
+    assert "[напиши]" in cleaned
 
 
 def test_strip_stage_and_handoff_tags():

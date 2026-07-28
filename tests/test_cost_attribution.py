@@ -12,7 +12,8 @@ and `source` (what the call was), and the money-reporting queries read those
 labels instead of `session_id IS NULL`.
 
 db.* is normally not unit-tested (no Postgres in the suite), so the query tests
-use a tiny fake pool that records the SQL — enough to pin what it keys on.
+use the shared fake pool from conftest, which records the SQL — enough to pin
+what it keys on.
 """
 from __future__ import annotations
 
@@ -21,45 +22,10 @@ import datetime as dt
 from app.ai import reviewer
 from app.core import db
 from app.core import metrics
+from tests.conftest import FakePool
 
 _FROM = dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc)
 _TO = dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc)
-
-
-class _Row(dict):
-    """A row that answers any column with 0 — the queries under test are read
-    for their SQL, not their values."""
-
-    def __missing__(self, key):
-        return 0
-
-
-class FakePool:
-    """Records every statement (and the args of the last execute)."""
-
-    def __init__(self):
-        self.sql: list[str] = []
-        self.args: list[tuple] = []
-
-    async def fetch(self, sql, *args):
-        self.sql.append(sql)
-        self.args.append(args)
-        return []
-
-    async def fetchrow(self, sql, *args):
-        self.sql.append(sql)
-        self.args.append(args)
-        return _Row()
-
-    async def fetchval(self, sql, *args):
-        self.sql.append(sql)
-        self.args.append(args)
-        return 0
-
-    async def execute(self, sql, *args):
-        self.sql.append(sql)
-        self.args.append(args)
-        return None
 
 
 def _sql_with(pool: FakePool, needle: str) -> str:
