@@ -548,16 +548,20 @@ async def _decide(product_id: int, ru: dict[str, Any], evt: dict[str, Any],
     except Exception as exc:  # noqa: BLE001 - a model failure skips this event
         await db.log_ai_interaction(
             None, settings.model()["model"], "none", 0, 0, 0, 0.0, 0, False,
-            f"v2_decision: {exc.__class__.__name__}", product_id=product_id)
+            f"v2_decision: {exc.__class__.__name__}", product_id=product_id,
+            consumer="telegram", source="agent")
         log.warning("retention_v2_decision_model_failed product=%s error=%s",
                     product_id, exc)
         return None, 0.0
     cost = openai_client.compute_cost(result.model, result.tokens_in,
                                       result.tokens_out, result.cached_in)
+    # The decision call spends on the PROACTIVE AGENT (no session to hang it
+    # on) — labelled so it lands in the agent bucket, not the media one.
     await db.log_ai_interaction(
         None, result.model, result.key_used, result.tokens_in,
         result.tokens_out, result.cached_in, cost, result.latency_ms,
-        True, None, product_id=product_id)
+        True, None, product_id=product_id,
+        consumer="telegram", source="agent")
     return parse_decision(result.text, guard["allowed_actions"]), float(cost or 0)
 
 

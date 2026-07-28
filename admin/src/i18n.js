@@ -1190,15 +1190,24 @@ const RU = {
   'subscribed': 'подписаны',
   'lifetime': 'за всё время',
   'reply rate': 'доля ответов',
-  'TG turns + photo metadata': 'TG-диалоги + метаданные фото',
+  'dialogue + agent + media + review': 'диалоги + агент + медиа + оценка',
   'Messages & pings over time': 'Сообщения и пинги по дням',
 
   // ----- charts (Telegram cost panels / funnel) -----
+  'Quality review (USD)': 'Оценка качества (USD)',
+  'conversations judged': 'диалогов оценено',
+  'AI judge, outside chats': 'ИИ-оценка, вне диалогов',
+
   'Telegram cost over time': 'Стоимость Telegram по дням',
   'Telegram cost by source': 'Стоимость Telegram по источникам',
-  'Engagement dialog vs on-demand photo-metadata generation.':
-    'Диалоги с игроками против генерации метаданных фото по запросу.',
+  'Player dialogue, the proactive agent, media cataloguing and the AI quality judge — the four drivers sum to the total.':
+    'Диалоги с игроками, проактивный агент, разметка медиа и ИИ-оценка качества — четыре источника в сумме дают итог.',
   'Dialog': 'Диалог',
+  'Dialogue': 'Диалоги',
+  'Proactive agent': 'Проактивный агент',
+  'Media cataloguing': 'Разметка медиа',
+  'Quality review': 'Оценка качества',
+  'Unattributed (legacy)': 'Без разметки (старые записи)',
   'Photo metadata': 'Метаданные фото',
   'of previous': 'от предыдущего',
 

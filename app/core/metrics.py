@@ -10,6 +10,10 @@ Metric definitions (documented per the brief §4):
                          escalated", which includes abandoned sessions. Track
                          sessions_open separately to see abandonment.
   - avg_messages_per_session = avg(message_count) over engaged sessions.
+  - cost_usd_total     = DIALOGUE spend of the support facade. Background passes
+                         over support conversations (the AI quality judge) are
+                         reported separately as cost_review_usd — they belong to
+                         no session, so they must not move the per-session price.
   - cost_usd_per_session = cost_usd_total / sessions_with_ai, where sessions_with_ai
                          is the count of sessions that made >= 1 OpenAI call. Greeting-
                          only "zero" sessions (and model-free hand-offs) made no call,
@@ -64,6 +68,13 @@ def overview(raw: dict[str, Any]) -> dict[str, Any]:
         "ai_calls_total": raw.get("ai_calls_total", 0),
         "avg_latency_ms": round(raw.get("avg_latency_ms", 0) or 0),
         "failed_calls": raw.get("failed_calls", 0),
+        # Background support spend, reported APART from the dialogue cost above:
+        # the AI judge reading finished support conversations belongs to no
+        # session, so folding it into cost_usd_total would inflate the price of
+        # a chat. (A judged Telegram chat is retention spend and shows up in the
+        # retention analytics instead.)
+        "cost_review_usd": round(raw.get("cost_review_usd", 0) or 0, 6),
+        "review_calls": raw.get("review_calls", 0),
         "failovers": events.get("key_failover", 0),
         "rate_limit_blocks": events.get("rate_limited", 0),
         "injection_blocks": events.get("injection_blocked", 0),

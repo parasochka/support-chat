@@ -980,6 +980,30 @@ adds the CTA pages that actually earned responses as an explicit **hint, not an
 order** (the rotation rule and fitting the moment still win) — it only breaks the
 tie the blind rotation was guessing at.
 
+### SPEND ATTRIBUTION — whose money is it (`ai_interaction_logs.consumer/.source`)
+Every OpenAI call is logged (invariant §4), but only a DIALOGUE turn carries a
+`session_id` — the quality judge, the proactive agent's decision call and the media
+cataloguer all log with `session_id NULL`. The dashboards used to infer the spender from
+that NULL ("session-less ⇒ photo metadata"), which charged the judge and the agent to the
+media bucket and put reviews of SUPPORT conversations on the Telegram dashboard. So each
+row now carries its own labels, denormalized for the same reason `product_id` is:
+**`consumer`** ('web' | 'telegram') = which FACADE the money belongs to — for a quality
+review it is the facade of the REVIEWED conversation, so a support review is support spend
+and a Telegram review retention spend — and **`source`** ('chat' | 'agent' | 'review' |
+'media') = what the call was. Writers: `db.persist_turn` (dialogue, `consumer` from the
+caller), `db.persist_ping_turn` (always telegram/agent), and `db.log_ai_interaction`, whose
+`consumer=`/`source=` arguments every new call site must pass. Readers go through
+`db._LOG_SOURCE` / `_LOG_IS_SUPPORT` / `_LOG_IS_RETENTION` (they need
+`LEFT JOIN chat_sessions s ON s.id = l.session_id`) — never re-derive the spender from
+`session_id IS NULL`. Rows written before the columns existed are classified **at read
+time** (session-bound ⇒ 'chat', session-less ⇒ 'legacy', counted where the old dashboards
+already counted them) so no backfill scan runs on boot and history keeps its totals. The
+support dashboard reports DIALOGUE spend as `cost_usd_total` (the number every per-session
+metric divides) with the judge's passes broken out as `cost_review_usd`; the retention
+dashboard splits its total into dialogue / agent / media / review (+ the legacy remainder,
+whose chart series hides itself once it is all zero). Tests:
+`tests/test_cost_attribution.py`.
+
 ### QUALITY REVIEW — the LLM-as-judge over finished conversations (`app/ai/reviewer.py`)
 A cheap background pass that reads FINISHED conversations of **both** facades
 (support widget + Telegram) and stores one verdict each: a 1..5 score, tags from
@@ -998,7 +1022,9 @@ long enough to judge (`general.quality_review_min_messages`), at most
 re-reviewed only after it GREW since its last verdict (`reviewed_msg_count`, unique
 per session). Runs on the product's own keys/model group; every call lands in
 `ai_interaction_logs` with `session_id=NULL` (invariant §4) so the reviewed
-session's own per-turn costs stay clean. Worker started from `main.py` lifespan
+session's own per-turn costs stay clean — labelled `source='review'` with the
+`consumer` of the conversation it judged, so the spend surfaces in THAT facade's
+analytics (see "Spend attribution"). Worker started from `main.py` lifespan
 under `RETENTION_SCHEDULER_ENABLED` (the deploy switch for every background
 worker), advisory-locked. Tests: `tests/test_quality_review.py`.
 
@@ -1014,7 +1040,11 @@ worker), advisory-locked. Tests: `tests/test_quality_review.py`.
 3. Persisting a turn is one atomic transaction (messages + counters + AI log).
 4. Every message → `chat_messages`; every OpenAI call → `ai_interaction_logs`; every state
    transition (escalation, failover, rate-limit, injection) → `admin_events`. Per-turn/
-   per-session rows carry the session's `product_id` (per-product dashboards depend on it).
+   per-session rows carry the session's `product_id` (per-product dashboards depend on it),
+   and every AI log row carries its **spend attribution** — `consumer` ('web'|'telegram',
+   the facade the money belongs to) + `source` ('chat'|'agent'|'review'|'media', what the
+   call was). A background call has no session to join, so an unlabelled row cannot be told
+   apart from any other at read time (see "Spend attribution" below).
 5. Two-key failover races the fallback after the switch timeout; log every failover.
    The keys are the PRODUCT's own (encrypted at rest) when set, else the deploy env keys.
 6. No ORM, no migrations: schema is `init_db()`; new columns via guarded `ALTER`; all DB
