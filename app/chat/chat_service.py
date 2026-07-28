@@ -639,7 +639,10 @@ async def _retention_context(session: dict[str, Any]) -> tuple:
     if not history and prev_sid:
         carry = int(settings.retention()["carry_context_turns"])
         if carry > 0:
-            previous_history = await db.get_history(prev_sid, limit=carry)
+            # * 2 — get_history limits ROWS and a turn is two of them. The knob
+            # is labelled (and documented) in turns, so passing it raw carried
+            # only half the configured context.
+            previous_history = await db.get_history(prev_sid, limit=carry * 2)
     return kb_block, history, previous_history, client
 
 
@@ -664,6 +667,13 @@ def _strip_retention_reply(raw_text: Optional[str], candidate_ids: set,
         clean_text, stage_up = prompts.strip_stage_up_tag(clean_text)
         clean_text, photo_id = prompts.strip_photo_tag(clean_text)
         clean_text, link_raw = prompts.strip_link_tag(clean_text)
+        # Same backstop the widget path runs: the per-tag strips are strict
+        # regexes, so a tag the model mangled or the token budget cut off
+        # ("[[PHOTO:abc]]", "[[LINK:https://…" with no closing brackets) survives
+        # them all and reaches the player as raw machine syntax. Telegram's
+        # normalize_punctuation does not touch sentinels, so without this the
+        # retention bot had no such net at all.
+        clean_text = prompts.scrub_control_sentinels(clean_text)
         clean_text = telegram_format.normalize_punctuation(clean_text)
     if detected_lang and detected_lang not in language.supported_codes():
         detected_lang = None

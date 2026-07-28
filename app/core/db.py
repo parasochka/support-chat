@@ -1535,7 +1535,10 @@ async def mark_resolved(session_id: str) -> None:
 
 async def get_history(session_id: str, limit: int = 50,
                       after_id: int = 0) -> list[dict[str, Any]]:
-    """Return messages oldest-first (last `limit` turns).
+    """Return messages oldest-first, at most `limit` ROWS.
+
+    `limit` counts rows, not turns — a turn is two rows (the player's message
+    and the reply), so a caller thinking in turns must pass `turns * 2`.
 
     `after_id` restricts to messages newer than that id — used for prompt
     building so that turns from before a topic switch (the session's

@@ -159,8 +159,19 @@ def session_base_lang(session: dict) -> str:
 
 
 def language_name(resolved: str) -> str:
-    """Human name of the language to answer in. AUTO -> the service default."""
+    """Human name of the language to answer in. AUTO -> the service default.
+
+    The code's OWN name wins, admin-set or from the ISO table; only a code we
+    have no name for at all falls back to the default language's name. Nesting
+    the ISO lookup inside the default's `.get()` default made that fallback fire
+    first: `supported=['ru','de']` with no custom names resolved 'de' to
+    "Russian", and the Layer-3 directive then told the model to answer a German
+    session in Russian. `validate_settings` accepts any ISO code without
+    requiring a name, and the admin SPA only stores non-empty ones, so this is
+    the ordinary path for a newly added language, not an edge case.
+    """
     default = default_code()
     code = default if resolved == AUTO else resolved
     names = all_language_names()
-    return names.get(code, names.get(default, ISO_639_1.get(code, "English")))
+    return (names.get(code) or ISO_639_1.get(code)
+            or names.get(default) or "English")

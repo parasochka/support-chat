@@ -50,3 +50,31 @@ def test_selectable_includes_supported_and_builtins():
     # ISO name falls through for a supported-but-unnamed language
     ja = next(l for l in language.selectable_languages() if l["code"] == "ja")
     assert ja["name"] == "Japanese"
+
+
+def test_language_name_prefers_the_codes_own_name(monkeypatch):
+    """A supported language with no custom name must not borrow the DEFAULT
+    language's name.
+
+    `validate_setting` accepts any ISO code without requiring a name, and the
+    admin SPA stores only non-empty ones, so "supported but unnamed" is the
+    ordinary state of a freshly added language — `selectable_languages` above
+    already relies on the ISO fall-through. `language_name` nested that lookup
+    INSIDE the default's `.get()` default, so the default won first: with
+    default 'ru' and no names, `language_name('de')` returned "Russian" and the
+    Layer-3 directive told the model to answer a German session in Russian.
+    """
+    monkeypatch.setattr(settings, "_cache",
+                        {"language": {"default": "ru",
+                                      "supported": ["ru", "de"],
+                                      "names": {}}})
+    assert language.language_name("de") == "German"
+    assert language.language_name("ru") == "Russian"
+    # AUTO still means "the service default".
+    assert language.language_name(language.AUTO) == "Russian"
+    # An admin-set custom name still wins over the ISO table.
+    monkeypatch.setattr(settings, "_cache",
+                        {"language": {"default": "ru",
+                                      "supported": ["ru", "de"],
+                                      "names": {"de": "Deutsch"}}})
+    assert language.language_name("de") == "Deutsch"
