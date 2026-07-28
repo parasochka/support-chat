@@ -100,9 +100,12 @@ def test_site_map_injected_into_both_cores(monkeypatch):
     for core in (support, retention):
         assert "=== SITE MAP" in core
         assert "https://nikabet.example/cashier" in core
-        # Still byte-stable between requests within the (now non-empty) scope.
-        assert core == core
-    assert prompts.get_system_core() == support        # deterministic
+    # Still byte-stable between requests within the (now non-empty) scope —
+    # comparing each core to a SECOND call, not to itself (`core == core` is
+    # true of any value and pinned nothing; the retention core had no check at
+    # all).
+    assert prompts.get_system_core() == support
+    assert prompts.get_retention_system_core() == retention
 
 
 def test_getter_resolves_product_over_global(monkeypatch):

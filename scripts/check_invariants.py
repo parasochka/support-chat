@@ -101,41 +101,84 @@ def check_prompt_core_byte_stable() -> None:
     _ok("prompt-core (support + retention Layer-1 byte-stable)")
 
 
+def _js_block(source: str, name: str) -> str:
+    """The body of a top-level `export const NAME = { … }` object.
+
+    Brace-counted, not regex-matched: a non-greedy `\\{(.*?)\\}` stops at the
+    first nested `}`, so everything after the first field object silently fell
+    outside the searched text.
+    """
+    m = re.search(rf"{name}\s*=\s*\{{", source)
+    if not m:
+        return ""
+    start = m.end()
+    depth = 1
+    for i in range(start, len(source)):
+        ch = source[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:i]
+    return ""
+
+
 def check_settings_groups_have_ui() -> None:
     """Every writable settings group must surface in the admin Settings schema.
 
     A new group added to SETTING_KEYS but not to settingsSchema.js is invisible
-    in the panel. `escalation` (edited on the Prompt page) and `language` (its
-    own editor) are the two documented exceptions.
+    in the panel. It needs BOTH a label and at least one field: the typed editor
+    renders from GROUP_FIELDS, so a group with only a GROUP_LABELS entry shows
+    up as an empty page. Checking labels alone passed a group whose editor had
+    nothing in it — `language` was exactly that, which is why it needs an
+    exemption here rather than being caught.
+
+    Exempt (own editors, deliberately absent from GROUP_FIELDS):
+      - `escalation`, edited on the Common → Escalation keywords page;
+      - `language`, which has its own LanguageEditor in Settings.jsx.
     """
     from app.core import settings
 
-    schema = (ROOT / "admin" / "pages" / "settingsSchema.js")
-    if not schema.exists():
-        schema = ROOT / "admin" / "src" / "pages" / "settingsSchema.js"
+    schema = ROOT / "admin" / "src" / "pages" / "settingsSchema.js"
     if not schema.exists():
         _fail("settings-ui", "settingsSchema.js not found")
         return
+    source = schema.read_text()
 
-    labels_block = ""
-    m = re.search(r"GROUP_LABELS\s*=\s*\{(.*?)\}", schema.read_text(), re.S)
-    if m:
-        labels_block = m.group(1)
-
-    ui_exempt = {"escalation"}  # edited on the Prompt page, not the Settings tab
-    missing = [
-        g
-        for g in settings.SETTING_KEYS
-        if g not in ui_exempt and not re.search(rf"\b{re.escape(g)}\s*:", labels_block)
-    ]
-    if missing:
-        _fail(
-            "settings-ui",
-            "SETTING_KEYS groups missing from settingsSchema.js GROUP_LABELS: "
-            + ", ".join(missing),
-        )
+    labels_block = _js_block(source, "GROUP_LABELS")
+    fields_block = _js_block(source, "GROUP_FIELDS")
+    if not labels_block or not fields_block:
+        _fail("settings-ui",
+              "could not parse GROUP_LABELS / GROUP_FIELDS out of "
+              "settingsSchema.js")
         return
-    _ok("settings-ui (every group has an admin schema entry)")
+
+    # Own-editor groups: exempt from GROUP_FIELDS, still required in the labels.
+    fields_exempt = {"escalation", "language"}
+    labels_exempt = {"escalation"}
+
+    missing_labels = [
+        g for g in settings.SETTING_KEYS
+        if g not in labels_exempt
+        and not re.search(rf"\b{re.escape(g)}\s*:", labels_block)
+    ]
+    # A field list must exist AND be non-empty — `foo: []` is as invisible as no
+    # entry at all.
+    missing_fields = [
+        g for g in settings.SETTING_KEYS
+        if g not in fields_exempt
+        and not re.search(rf"\b{re.escape(g)}\s*:\s*\[\s*\{{", fields_block)
+    ]
+    problems = []
+    if missing_labels:
+        problems.append("missing from GROUP_LABELS: " + ", ".join(missing_labels))
+    if missing_fields:
+        problems.append("no fields in GROUP_FIELDS: " + ", ".join(missing_fields))
+    if problems:
+        _fail("settings-ui", "settingsSchema.js — " + "; ".join(problems))
+        return
+    _ok("settings-ui (every group has a label and typed fields)")
 
 
 def main() -> int:

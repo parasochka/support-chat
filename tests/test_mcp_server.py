@@ -169,14 +169,43 @@ def test_api_failure_surfaces_the_servers_explanation():
 # --------------------------------------------------------------------------
 # the escape hatch stays inside /admin
 # --------------------------------------------------------------------------
-@pytest.mark.parametrize("path", ["/api/chat/topics", "/healthz",
-                                  "/adminx/secret", "//evil.example/admin"])
+@pytest.mark.parametrize("path", [
+    "/api/chat/topics", "/healthz",
+    "/adminx/secret", "//evil.example/admin",
+    # Dot segments: httpx normalizes the path when it builds the URL, so a
+    # raw-string prefix test let these through and the request actually reached
+    # the public chat API — with the admin Bearer token attached.
+    "/admin/../api/chat/topics",
+    "/admin/../../healthz",
+    "/admin/sessions/../../api/chat/topics",
+    # A path may not smuggle its own query/fragment/scheme past `params` (only
+    # the part before "?" would be compared).
+    "/admin/overview?x=1",
+    "/admin/overview#/../api",
+    "https://evil.example/admin/overview",
+])
 def test_admin_get_refuses_paths_outside_the_admin_surface(path):
     client = RecordingClient()
     srv = MCPServer(client=client)
     res = call(srv, "admin_get", {"path": path})["result"]
     assert res["isError"] is True
     assert client.calls == []
+
+
+def test_admin_get_redacts_pii_like_every_other_tool():
+    """The escape hatch reaches the WIDEST set of endpoints — several of which
+    carry player PII (retention users/managers expose usernames and display
+    names, /admin/users exposes account emails). Declared unredactable, it
+    silently opted the broadest surface out of SUPPORT_ADMIN_REDACT_PII while
+    every narrow tool honoured it."""
+    assert catalog.TOOLS_BY_NAME["admin_get"].redactable is True
+
+    payload = {"items": [{"email": "player@example.com",
+                          "full_name": "Ivan Petrov"}]}
+    srv = MCPServer(client=RecordingClient(payload))
+    row = json.loads(text_of(call(srv, "admin_get", {"path": "/admin/users"})))
+    assert row["items"][0]["email"] == "***"
+    assert row["items"][0]["full_name"] == "***"
 
 
 def test_admin_get_passes_query_params_through():

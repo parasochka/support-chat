@@ -26,6 +26,7 @@ diagnostics go to stderr.
 from __future__ import annotations
 
 import json
+import posixpath
 import sys
 from typing import Any, Optional
 
@@ -228,11 +229,22 @@ class MCPServer:
 
     def _execute_raw(self, tool, args: dict) -> Any:
         path = str(args.get("path") or "").strip()
+        # Reject a path that carries its own query/fragment or a scheme: those
+        # would smuggle state past the `params` argument (and past the check
+        # below, since only the part before "?" is compared).
+        if any(c in path for c in "?#") or "//" in path or ":" in path:
+            raise ToolError("`path` must be a bare /admin/... path — put query "
+                            "parameters in `params`.")
         if not path.startswith("/"):
             path = "/" + path
-        # The escape hatch stays inside the admin surface: it must not become a
-        # way to poke the public chat API (or any other host path) with an
-        # admin credential attached.
+        # NORMALIZE BEFORE CHECKING. httpx resolves dot segments when it builds
+        # the URL, so a raw-string prefix test passed
+        # "/admin/../api/chat/topics" while the request actually went to
+        # /api/chat/topics — with the admin Bearer token attached. That is
+        # exactly what this guard exists to prevent: the escape hatch stays
+        # inside the admin surface and must never become a way to poke the
+        # public chat API (or any other host path) with an admin credential.
+        path = posixpath.normpath(path)
         if not (path == "/admin" or path.startswith("/admin/")):
             raise ToolError("admin_get only reaches paths under /admin/.")
         query = args.get("params") or {}

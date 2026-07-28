@@ -230,7 +230,11 @@ async def test_guard_denies_optouts_caps_and_gap(monkeypatch):
         1, _ru(last_ping_at=_iso_days_ago(0.5)), _evt(), st, cfg)
     assert "min_gap_not_elapsed" in g["reasons"]
 
-    today = _dt.date.today().isoformat()
+    # UTC, not the machine's local date: guard_check compares against
+    # datetime.now(timezone.utc).date(), so date.today() made this test pass or
+    # fail depending on the runner's timezone (it FAILED outright under
+    # TZ=Pacific/Kiritimati or Pacific/Midway).
+    today = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
     g = await retention_v2.guard_check(
         1, _ru(pings_day=today, pings_sent_today=1), _evt(), st, cfg)
     assert "daily_cap_reached" in g["reasons"]
