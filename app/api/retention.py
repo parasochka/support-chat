@@ -151,6 +151,9 @@ async def create_deeplink(req: Request, body: DeeplinkReq) -> JSONResponse:
     tenancy.set_current_product(product["id"])
 
     product_handshake = await db.get_product_handshake_secret(product["id"])
+    # One resolution for both branches (the deploy-level secret is a DEFAULT
+    # product fallback only — see auth.effective_handshake_secret).
+    handshake_key = auth.effective_handshake_secret(product_handshake)
     context: dict[str, Any] = {}
     if body.signed_context:
         try:
@@ -159,7 +162,7 @@ async def create_deeplink(req: Request, body: DeeplinkReq) -> JSONResponse:
         except auth.TokenError as exc:
             return _err(401, "bad_handshake", str(exc))
         context = {k: v for k, v in payload.items() if k not in ("iat", "exp")}
-    elif product_handshake or config.WIDGET_HANDSHAKE_SECRET:
+    elif handshake_key:
         # Production: never trust unsigned browser context.
         context = {}
     else:

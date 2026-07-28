@@ -15,7 +15,7 @@ import json
 import time
 from typing import Any, Optional
 
-from app.core import config
+from app.core import config, tenancy
 
 _ALG = "HS256"
 
@@ -225,15 +225,39 @@ def sign_handshake(context: dict[str, Any], ttl_sec: int = 300,
     return f"{payload_b64}.{sig_b64}"
 
 
+def effective_handshake_secret(product_secret: Optional[str]) -> Optional[str]:
+    """The handshake key in effect for the CURRENT product scope, or None.
+
+    A product's own secret always wins. The deploy-level WIDGET_HANDSHAKE_SECRET
+    is a fallback for the boot-seeded default product ONLY — the same gate
+    `escalation.build_payload` puts on CONTACT_FORM_URL, and for the same
+    reason: a deploy-wide fallback must never cross tenants. It would otherwise
+    let anyone holding that secret (the default brand's integrator, say) sign a
+    trusted player profile for ANOTHER partner's product, opening sessions and
+    minting retention deeplinks as that casino's player.
+
+    Callers use this for BOTH decisions — whether to verify a signature and
+    whether a secret is configured at all — so "signed mode available" and
+    "signature accepted" can never disagree.
+    """
+    if product_secret:
+        return product_secret
+    if tenancy.is_default_scope():
+        return config.WIDGET_HANDSHAKE_SECRET or None
+    return None
+
+
 def verify_handshake(blob: str, secret: Optional[str] = None) -> dict[str, Any]:
     """Verify a signed handshake blob; return the payload or raise TokenError.
 
     Checks: configured secret, structural validity, HMAC, `exp`, and that the
     token is not older than WIDGET_HANDSHAKE_MAX_AGE_SEC (anti-replay window).
     `secret` is the per-product handshake secret when the product has one;
-    without it the deploy-level WIDGET_HANDSHAKE_SECRET applies.
+    without it the deploy-level secret applies only in the default scope (see
+    `effective_handshake_secret`), so a non-default product with no secret of
+    its own simply has no signed mode.
     """
-    key = secret or config.WIDGET_HANDSHAKE_SECRET
+    key = effective_handshake_secret(secret)
     if not key:
         raise TokenError("handshake secret not configured")
     if not blob or blob.count(".") != 1:

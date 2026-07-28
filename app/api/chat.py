@@ -186,14 +186,18 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
     # Precedence of trust:
     #   1. signed_context present -> verify HMAC + expiry; trust that payload
     #      only. The signature is checked against the PRODUCT's own handshake
-    #      secret when it has one, else the deploy-level env secret.
-    #   2. A handshake secret configured (product or env) but no signature ->
-    #      production mode: do NOT trust browser-supplied context; zero it
-    #      (anonymous session OK).
-    #   3. No secret anywhere -> dev/test: the admin-configured test profile
+    #      secret; the deploy-level env secret is a fallback for the DEFAULT
+    #      product only (auth.effective_handshake_secret — a deploy-wide secret
+    #      must not let one brand sign context for another partner's product).
+    #   2. A handshake secret in effect but no signature -> production mode: do
+    #      NOT trust browser-supplied context; zero it (anonymous session OK).
+    #   3. No secret in effect -> dev/test: the admin-configured test profile
     #      stands in for the host site (or the raw widget context if disabled).
     # The injection sanitizer (prompts.sanitize_user_context) runs regardless.
     product_handshake = await db.get_product_handshake_secret(product["id"])
+    # ONE resolution for both branches below, so "signed mode is available" and
+    # "this signature is accepted" can never disagree.
+    handshake_key = auth.effective_handshake_secret(product_handshake)
     user_context: dict[str, Any] = {}
     context_source = "anonymous"
     if body.signed_context:
@@ -207,7 +211,7 @@ async def create_session(req: Request, body: SessionCreate) -> JSONResponse:
             return _err(401, "bad_handshake", str(exc))
         user_context = {k: v for k, v in payload.items() if k not in ("iat", "exp")}
         context_source = "signed_handshake"
-    elif product_handshake or config.WIDGET_HANDSHAKE_SECRET:
+    elif handshake_key:
         if body.user_context:
             await db.log_admin_event_sampled(None, "unsigned_context_ignored",
                                              {"ip": ip}, product_id=product["id"])

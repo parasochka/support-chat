@@ -106,7 +106,7 @@ async def review_session(product_id: int, session: dict[str, Any]
         return None
     topic = None
     if session.get("topic_id"):
-        topic = await _topic_slug(session["topic_id"])
+        topic = await _topic_slug(product_id, session["topic_id"])
     messages = prompts.build_conversation_review_messages(
         history, consumer=consumer, topic=topic,
         lang=session.get("lang"),
@@ -133,6 +133,15 @@ async def review_session(product_id: int, session: dict[str, Any]
         None, product_id=product_id, consumer=consumer, source="review")
     verdict = parse_review(result.text)
     if verdict is None:
+        # Record the failed ATTEMPT. Without a row `sessions_for_review` keeps
+        # selecting this chat (it filters on `reviewed_msg_count`), so an
+        # unparseable transcript would be paid for on every pass forever —
+        # and outside the daily cap, which only counts stored rows.
+        await db.upsert_conversation_review(
+            product_id, session_id, consumer=consumer, score=None, tags=[],
+            summary="", issues=[], kb_gaps=[],
+            reviewed_msg_count=int(session.get("message_count") or 0),
+            model=result.model, cost_usd=float(cost or 0))
         log.warning("quality_review_unparseable product=%s session=%s",
                     product_id, session_id)
         return None
@@ -147,10 +156,12 @@ async def review_session(product_id: int, session: dict[str, Any]
             "cost_usd": float(cost or 0)}
 
 
-async def _topic_slug(topic_id: Any) -> Optional[str]:
+async def _topic_slug(product_id: int, topic_id: Any) -> Optional[str]:
     try:
-        topics = await db.list_topics()
+        topics = await db.list_topics(product_id)
     except Exception:  # noqa: BLE001 - context only
+        log.warning("quality_review_topic_lookup_failed product=%s",
+                    product_id, exc_info=True)
         return None
     for t in topics:
         if t.get("id") == topic_id:
@@ -159,39 +170,44 @@ async def _topic_slug(topic_id: Any) -> Optional[str]:
 
 
 async def run_product_reviews(product: dict[str, Any]) -> dict[str, Any]:
-    """Review this product's pending conversations, honouring its daily cap."""
+    """Review this product's pending conversations, honouring its daily cap.
+
+    The scope is bound with `scoped_product`, not left set: this runs inside the
+    worker's single long-lived task, so a bare set would leave the last product
+    of the pass bound for everything the task does afterwards.
+    """
     pid = int(product["id"])
-    tenancy.set_current_product(pid)
-    cfg = settings.general()
-    if not cfg.get("quality_review_enabled"):
-        return {"skipped": "disabled"}
-    daily_max = int(cfg.get("quality_review_daily_max") or 0)
-    if daily_max <= 0:
-        return {"skipped": "daily_max_zero"}
-    done_today = await db.reviews_today(pid)
-    budget = daily_max - done_today
-    if budget <= 0:
-        return {"skipped": "daily_max_reached"}
-    batch = min(budget, _PASS_BATCH)
-    sessions = await db.sessions_for_review(
-        pid, min_messages=int(cfg.get("quality_review_min_messages") or 4),
-        idle_minutes=config.QUALITY_REVIEW_IDLE_MINUTES, limit=batch)
-    reviewed = failed = 0
-    for session in sessions:
-        try:
-            if await review_session(pid, session):
-                reviewed += 1
-            else:
+    with tenancy.scoped_product(pid):
+        cfg = settings.general()
+        if not cfg.get("quality_review_enabled"):
+            return {"skipped": "disabled"}
+        daily_max = int(cfg.get("quality_review_daily_max") or 0)
+        if daily_max <= 0:
+            return {"skipped": "daily_max_zero"}
+        done_today = await db.reviews_today(pid)
+        budget = daily_max - done_today
+        if budget <= 0:
+            return {"skipped": "daily_max_reached"}
+        batch = min(budget, _PASS_BATCH)
+        sessions = await db.sessions_for_review(
+            pid, min_messages=int(cfg.get("quality_review_min_messages") or 4),
+            idle_minutes=config.QUALITY_REVIEW_IDLE_MINUTES, limit=batch)
+        reviewed = failed = 0
+        for session in sessions:
+            try:
+                if await review_session(pid, session):
+                    reviewed += 1
+                else:
+                    failed += 1
+            except Exception:  # noqa: BLE001 - one bad chat must not stop the pass
+                log.exception("quality_review_failed product=%s session=%s",
+                              pid, session.get("id"))
                 failed += 1
-        except Exception:  # noqa: BLE001 - one bad chat must not stop the pass
-            log.exception("quality_review_failed product=%s session=%s",
-                          pid, session.get("id"))
-            failed += 1
-    if reviewed or failed:
-        log.info("quality_review_pass product=%s reviewed=%s failed=%s",
-                 pid, reviewed, failed)
-    return {"reviewed": reviewed, "failed": failed,
-            "considered": len(sessions)}
+        if reviewed or failed:
+            log.info("quality_review_pass product=%s reviewed=%s failed=%s",
+                     pid, reviewed, failed)
+        return {"reviewed": reviewed, "failed": failed,
+                "considered": len(sessions)}
 
 
 async def run_due_reviews() -> dict[str, Any]:

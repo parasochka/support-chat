@@ -888,27 +888,27 @@ def _chat_lock(product_id: int, tg_user_id: int) -> asyncio.Lock:
 
 async def handle_update(product: dict[str, Any], update: dict[str, Any]) -> None:
     """Process one Telegram update for a product. Never raises into the webhook."""
-    tenancy.set_current_product(product["id"])
-    if _is_duplicate_update(product["id"], update):
-        log.info("retention_duplicate_update product_id=%s update_id=%s",
-                 product["id"], update.get("update_id"))
-        return
-    token = await db.get_product_telegram_token(product["id"])
-    if not token:
-        log.warning("retention_no_bot_token product_id=%s", product["id"])
-        return
-    client = TelegramClient(token)
-    pu = parse_update(update)
-    if pu.tg_user_id is None or pu.chat_id is None:
-        return
-    try:
-        async with _chat_lock(product["id"], pu.tg_user_id):
-            if pu.kind == "callback":
-                await _handle_callback(client, product, pu)
-            elif pu.kind == "message":
-                await _handle_message(client, product, pu)
-    except Exception:  # noqa: BLE001 - a handler error must not 500 the webhook
-        log.exception("retention_handle_update_failed product_id=%s", product["id"])
+    with tenancy.scoped_product(product["id"]):
+        if _is_duplicate_update(product["id"], update):
+            log.info("retention_duplicate_update product_id=%s update_id=%s",
+                     product["id"], update.get("update_id"))
+            return
+        token = await db.get_product_telegram_token(product["id"])
+        if not token:
+            log.warning("retention_no_bot_token product_id=%s", product["id"])
+            return
+        client = TelegramClient(token)
+        pu = parse_update(update)
+        if pu.tg_user_id is None or pu.chat_id is None:
+            return
+        try:
+            async with _chat_lock(product["id"], pu.tg_user_id):
+                if pu.kind == "callback":
+                    await _handle_callback(client, product, pu)
+                elif pu.kind == "message":
+                    await _handle_message(client, product, pu)
+        except Exception:  # noqa: BLE001 - a handler error must not 500 the webhook
+            log.exception("retention_handle_update_failed product_id=%s", product["id"])
 
 
 async def _handle_message(client: TelegramClient, product: dict[str, Any],

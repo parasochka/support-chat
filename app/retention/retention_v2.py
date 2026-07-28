@@ -263,55 +263,55 @@ async def run_product_events(product: dict[str, Any], *,
     silently kill the idle ladder the admin sees as a separate toggle.
     """
     pid = int(product["id"])
-    tenancy.set_current_product(pid)
-    cfg = settings.retention()
-    stats: dict[str, Any] = {"events": 0, "decided": 0, "sent": 0}
-    if not cfg.get("v2_enabled"):
-        stats["agent"] = "disabled"
-    elif not ignore_send_delay and _in_quiet_hours(cfg):
-        stats["agent"] = "quiet_hours_deferred"
-    else:
-        batch = int(limit or cfg["ping_batch_size"])
-        delay_min = (0 if ignore_send_delay
-                     else int(cfg.get("v2_send_delay_min_sec") or 0))
-        delay_max = (0 if ignore_send_delay
-                     else int(cfg.get("v2_send_delay_max_sec") or 0))
-        events = await db.claim_retention_events(
-            pid, limit=batch, delay_min_sec=delay_min,
-            delay_max_sec=max(delay_max, delay_min))
-        decided = sent = 0
-        for evt in events:
-            try:
-                outcome = await _process_event(product, evt, cfg)
-                if outcome:
-                    decided += 1
-                    if outcome == "sent":
-                        sent += 1
-            except Exception:  # noqa: BLE001 - one bad event must not wedge the queue
-                log.exception("retention_v2_event_failed product=%s event=%s",
-                              pid, evt.get("id"))
-        stats.update(events=len(events), decided=decided, sent=sent)
-    # The agent's INACTIVITY trigger: a quiet player produces no events, so the
-    # idle rules ladder (retention_idle) runs from the same sweep — same lock,
-    # same guards, same dry-run — gated by its OWN `idle_pings_enabled` switch.
-    # Self-paced (once per ~10 min per product), so a seconds-scale worker
-    # interval doesn't hammer it.
-    try:
-        from app.retention import retention_idle  # late: retention_idle imports this module
-        idle = await retention_idle.run_product_idle_pings(product, cfg)
-        if idle.get("sent") or idle.get("failed"):
-            stats["idle_sent"] = idle.get("sent", 0)
-            stats["idle_failed"] = idle.get("failed", 0)
-    except Exception:  # noqa: BLE001 - the idle sweep must not wedge the events
-        log.exception("retention_idle_sweep_failed product=%s", pid)
-    # Attribution: settle the outcome rows whose windows have elapsed. Runs on
-    # NO switch of its own — measuring what already went out is never something
-    # a product opts out of — and is self-paced (minutes, not worker ticks).
-    # Its helper swallows its own errors, so a broken sweep can't wedge here.
-    attributed = await outcomes.run_product_attribution(pid)
-    if attributed.get("attributed"):
-        stats["attributed"] = attributed["attributed"]
-    return stats
+    with tenancy.scoped_product(pid):
+        cfg = settings.retention()
+        stats: dict[str, Any] = {"events": 0, "decided": 0, "sent": 0}
+        if not cfg.get("v2_enabled"):
+            stats["agent"] = "disabled"
+        elif not ignore_send_delay and _in_quiet_hours(cfg):
+            stats["agent"] = "quiet_hours_deferred"
+        else:
+            batch = int(limit or cfg["ping_batch_size"])
+            delay_min = (0 if ignore_send_delay
+                         else int(cfg.get("v2_send_delay_min_sec") or 0))
+            delay_max = (0 if ignore_send_delay
+                         else int(cfg.get("v2_send_delay_max_sec") or 0))
+            events = await db.claim_retention_events(
+                pid, limit=batch, delay_min_sec=delay_min,
+                delay_max_sec=max(delay_max, delay_min))
+            decided = sent = 0
+            for evt in events:
+                try:
+                    outcome = await _process_event(product, evt, cfg)
+                    if outcome:
+                        decided += 1
+                        if outcome == "sent":
+                            sent += 1
+                except Exception:  # noqa: BLE001 - one bad event must not wedge the queue
+                    log.exception("retention_v2_event_failed product=%s event=%s",
+                                  pid, evt.get("id"))
+            stats.update(events=len(events), decided=decided, sent=sent)
+        # The agent's INACTIVITY trigger: a quiet player produces no events, so the
+        # idle rules ladder (retention_idle) runs from the same sweep — same lock,
+        # same guards, same dry-run — gated by its OWN `idle_pings_enabled` switch.
+        # Self-paced (once per ~10 min per product), so a seconds-scale worker
+        # interval doesn't hammer it.
+        try:
+            from app.retention import retention_idle  # late: retention_idle imports this module
+            idle = await retention_idle.run_product_idle_pings(product, cfg)
+            if idle.get("sent") or idle.get("failed"):
+                stats["idle_sent"] = idle.get("sent", 0)
+                stats["idle_failed"] = idle.get("failed", 0)
+        except Exception:  # noqa: BLE001 - the idle sweep must not wedge the events
+            log.exception("retention_idle_sweep_failed product=%s", pid)
+        # Attribution: settle the outcome rows whose windows have elapsed. Runs on
+        # NO switch of its own — measuring what already went out is never something
+        # a product opts out of — and is self-paced (minutes, not worker ticks).
+        # Its helper swallows its own errors, so a broken sweep can't wedge here.
+        attributed = await outcomes.run_product_attribution(pid)
+        if attributed.get("attributed"):
+            stats["attributed"] = attributed["attributed"]
+        return stats
 
 
 # ---------------------------------------------------------------------------
