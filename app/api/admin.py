@@ -1077,6 +1077,16 @@ async def revoke_membership(email: str, membership_id: int,
     membership = await db.get_membership(membership_id)
     if membership is None or membership.get("email") != target:
         raise HTTPException(status_code=404, detail="Membership not found.")
+    # Reach check on the TARGET account, same as grant_membership above (and
+    # update_user/delete_user). Authorizing only the revoked membership's own
+    # scope let a product-scoped admin strip that product's role off an account
+    # otherwise outside its reach — a global admin who also holds a product
+    # membership, say. No privilege escalation, but it is still mutating the
+    # rights of an account the caller may not administer.
+    target_memberships = await db.memberships_for(target)
+    if not await _can_manage_user(admin, target_memberships):
+        raise HTTPException(status_code=403,
+                            detail="No administrator reach over this account.")
     await _require_scope_admin(admin, membership["scope_type"],
                                membership.get("partner_id"),
                                membership.get("product_id"))

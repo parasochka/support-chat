@@ -236,9 +236,11 @@ def effective_handshake_secret(product_secret: Optional[str]) -> Optional[str]:
     trusted player profile for ANOTHER partner's product, opening sessions and
     minting retention deeplinks as that casino's player.
 
-    Callers use this for BOTH decisions — whether to verify a signature and
-    whether a secret is configured at all — so "signed mode available" and
-    "signature accepted" can never disagree.
+    This answers "which key may VERIFY a signature", which is narrower than
+    "is this deployment in production". Callers keep testing
+    `product_secret or config.WIDGET_HANDSHAKE_SECRET` for the latter, so a
+    product with no secret of its own gets no signed mode AND still refuses to
+    trust unsigned browser context — it must never fall back to dev behaviour.
     """
     if product_secret:
         return product_secret

@@ -53,7 +53,8 @@ def _stubs(monkeypatch):
 
     async def create_session(consumer, player_id, lang, user_context,
                              session_id=None, product_id=None):
-        created.update(product_id=product_id, user_context=user_context)
+        created.update(product_id=product_id, user_context=user_context,
+                       consumer=consumer)
         return session_id or "sid-1"
 
     async def catalogue(lang="en", product_id=None):
@@ -128,3 +129,72 @@ async def test_wrong_secret_signature_rejected(_stubs, monkeypatch):
     resp = await chat_api.create_session(
         _req(), _body(widget_key="wk_lucky", signed_context=blob))
     assert resp.status_code == 401
+
+
+async def test_deploy_handshake_secret_does_not_cross_into_another_product(
+        _stubs, monkeypatch):
+    """The deploy-level secret is the DEFAULT product's fallback, nobody else's.
+
+    It used to apply to every product that had no secret of its own, so anyone
+    holding it — the default brand's integrator, say — could sign a trusted
+    player profile for ANOTHER partner's casino and open sessions (or mint
+    retention deeplinks) as that brand's player.
+    """
+    monkeypatch.setattr(config, "WIDGET_HANDSHAKE_SECRET", "deploy-wide-secret")
+    tenancy.set_default_product_id(_DEFAULT["id"])
+
+    async def _no_product_secret(product_id):
+        return None
+
+    monkeypatch.setattr(db, "get_product_handshake_secret", _no_product_secret)
+    blob = auth.sign_handshake({"id": "p9", "full_name": "Someone Else"},
+                               secret="deploy-wide-secret")
+
+    # The non-default casino has no secret of its own -> no signed mode.
+    resp = await chat_api.create_session(
+        _req(), _body(widget_key="wk_lucky", signed_context=blob))
+    assert resp.status_code == 401
+    assert json.loads(bytes(resp.body))["error"] == "bad_handshake"
+
+    # The default product still accepts it (single-product deployments).
+    resp = await chat_api.create_session(_req(), _body(signed_context=blob))
+    assert resp.status_code == 200
+    assert _stubs["user_context"]["full_name"] == "Someone Else"
+
+
+async def test_no_secret_product_zeroes_context_consistently(_stubs, monkeypatch):
+    """A product with no signed mode must not fall back to TRUSTING the browser.
+
+    The "is a secret in effect" branch and the signature check resolve through
+    the same helper, so a non-default product with no secret rejects signatures
+    AND ignores unsigned context — it never quietly trusts what the page sent.
+    """
+    monkeypatch.setattr(config, "WIDGET_HANDSHAKE_SECRET", "deploy-wide-secret")
+    tenancy.set_default_product_id(_DEFAULT["id"])
+
+    async def _no_product_secret(product_id):
+        return None
+
+    monkeypatch.setattr(db, "get_product_handshake_secret", _no_product_secret)
+    resp = await chat_api.create_session(
+        _req(), _body(widget_key="wk_lucky",
+                      user_context={"full_name": "Spoofed"}))
+    assert resp.status_code == 200
+    assert _stubs["user_context"] == {}
+
+
+async def test_public_session_cannot_claim_the_telegram_facade(_stubs):
+    """`consumer` decides which dashboard a session belongs to, and this
+    endpoint is public: a client claiming 'telegram' would erase itself from
+    every support metric and appear under Retention instead."""
+    resp = await chat_api.create_session(_req(), _body(consumer="telegram"))
+    assert resp.status_code == 200
+    assert _stubs["consumer"] == "web"
+
+    resp = await chat_api.create_session(_req(), _body(consumer="whatever"))
+    assert resp.status_code == 200
+    assert _stubs["consumer"] == "web"
+
+    # The one accepted value still passes through.
+    resp = await chat_api.create_session(_req(), _body(consumer="web"))
+    assert _stubs["consumer"] == "web"
