@@ -1,4 +1,9 @@
-"""Two-key failover: race after switch timeout, hard error switches immediately."""
+"""Two-key failover: race after switch timeout, hard error switches immediately.
+
+Also the per-purpose timeout profiles: a background purpose ships with the race
+OFF, so it never pays for the same work twice — but it still fails over when the
+primary key actually breaks.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -31,9 +36,11 @@ class _FakeKey:
         self.exc = exc
         self.text = text
         self.calls = 0
+        self.purposes = []
 
-    async def call(self, messages):
+    async def call(self, messages, purpose="chat"):
         self.calls += 1
+        self.purposes.append(purpose)
         if self.delay:
             await asyncio.sleep(self.delay)
         if self.exc:
@@ -103,6 +110,67 @@ async def test_hard_primary_error_switches_immediately(monkeypatch):
     assert res.text == "fallback-answer"
     assert res.key_used == "fallback"
     assert "primary_error" in events
+
+
+@pytest.mark.asyncio
+async def test_background_purpose_does_not_race_the_fallback(monkeypatch):
+    """A slow BACKGROUND call must not spawn a second, billable request.
+
+    The reviewer/agent/media passes routinely run past the interactive 15s
+    switch timeout — with the race on, every one of them paid for the same work
+    twice (and the loser's usage is unaccountable by construction).
+    """
+    monkeypatch.setattr(config, "OPENAI_KEY_SWITCH_TIMEOUT_SEC", 0.05)
+    monkeypatch.setattr(config, "OPENAI_REVIEW_KEY_SWITCH_TIMEOUT_SEC", 0)
+    primary = _FakeKey("primary", delay=0.2, text="primary-answer")
+    fallback = _FakeKey("fallback", delay=0.0, text="fallback-answer")
+    client = _client_with(primary, fallback)
+
+    events = []
+    async def on_fo(sid, reason): events.append(reason)
+
+    res = await client.complete([{"role": "user", "content": "x"}],
+                                on_failover=on_fo, purpose="review")
+    assert res.text == "primary-answer"  # the slow primary is simply awaited
+    assert fallback.calls == 0           # no speculative second call
+    assert events == []                  # and no failover was recorded
+    assert primary.purposes == ["review"]
+
+
+@pytest.mark.asyncio
+async def test_background_purpose_still_fails_over_on_error(monkeypatch):
+    """Race off is not failover off — invariant §5 still holds."""
+    monkeypatch.setattr(config, "OPENAI_REVIEW_KEY_SWITCH_TIMEOUT_SEC", 0)
+    monkeypatch.setattr(config, "OPENAI_MAX_ATTEMPTS", 1)
+
+    import openai as openai_mod
+    primary = _FakeKey("primary", exc=openai_mod.AuthenticationError("bad key"))
+    fallback = _FakeKey("fallback", text="fallback-answer")
+    client = _client_with(primary, fallback)
+
+    events = []
+    async def on_fo(sid, reason): events.append(reason)
+
+    res = await client.complete([{"role": "user", "content": "x"}],
+                                on_failover=on_fo, purpose="review")
+    assert res.text == "fallback-answer"
+    assert res.key_used == "fallback"
+    assert "primary_error" in events
+    assert fallback.purposes == ["review"]
+
+
+@pytest.mark.asyncio
+async def test_interactive_purpose_keeps_racing(monkeypatch):
+    """The chat profile is untouched: a silent primary is still raced."""
+    monkeypatch.setattr(config, "OPENAI_KEY_SWITCH_TIMEOUT_SEC", 0.05)
+    primary = _FakeKey("primary", delay=5.0, text="primary-answer")
+    fallback = _FakeKey("fallback", delay=0.0, text="fallback-answer")
+    client = _client_with(primary, fallback)
+
+    res = await client.complete([{"role": "user", "content": "x"}],
+                                purpose="chat")
+    assert res.key_used == "fallback"
+    assert fallback.purposes == ["chat"]
 
 
 @pytest.mark.asyncio

@@ -166,9 +166,11 @@ def model() -> dict[str, Any]:
     """Resolved OpenAI tuning knobs: app_settings override over env defaults.
 
     Read live by `openai_client` on every call (model/reasoning_effort/verbosity/
-    max tokens/switch timeout/attempts) so edits are hot. `request_timeout_sec` and
-    `max_concurrent_per_key` are bound when the client is constructed, so the
-    admin write also calls `openai_client.reset()` to rebuild it.
+    max tokens/timeouts/attempts) so edits are hot — including the per-purpose
+    timeout profiles, which are read per call and therefore need no client
+    rebuild. `max_concurrent_per_key` is bound when the client is constructed
+    (and so is the SDK-level default timeout), so the admin write also calls
+    `openai_client.reset()` to rebuild it.
     """
     db_v = _group("model")
     return {
@@ -185,6 +187,65 @@ def model() -> dict[str, Any]:
         "max_attempts": db_v.get("max_attempts", config.OPENAI_MAX_ATTEMPTS),
         "max_concurrent_per_key": db_v.get("max_concurrent_per_key",
                                            config.OPENAI_MAX_CONCURRENT_PER_KEY),
+        # Background profiles (see model_profile below). The two fields above
+        # stay the INTERACTIVE ones, so an existing stored `model` row keeps its
+        # meaning and only the background blocks get the new timeouts.
+        "agent_request_timeout_sec": db_v.get(
+            "agent_request_timeout_sec", config.OPENAI_AGENT_REQUEST_TIMEOUT_SEC),
+        "agent_key_switch_timeout_sec": db_v.get(
+            "agent_key_switch_timeout_sec",
+            config.OPENAI_AGENT_KEY_SWITCH_TIMEOUT_SEC),
+        "review_request_timeout_sec": db_v.get(
+            "review_request_timeout_sec", config.OPENAI_REVIEW_REQUEST_TIMEOUT_SEC),
+        "review_key_switch_timeout_sec": db_v.get(
+            "review_key_switch_timeout_sec",
+            config.OPENAI_REVIEW_KEY_SWITCH_TIMEOUT_SEC),
+        "media_request_timeout_sec": db_v.get(
+            "media_request_timeout_sec", config.OPENAI_MEDIA_REQUEST_TIMEOUT_SEC),
+        "media_key_switch_timeout_sec": db_v.get(
+            "media_key_switch_timeout_sec",
+            config.OPENAI_MEDIA_KEY_SWITCH_TIMEOUT_SEC),
+    }
+
+
+# Which `model`-group field prefix serves which call purpose. The interactive
+# profile carries no prefix, so the pre-existing fields keep their names.
+_MODEL_PROFILE_PREFIX: dict[str, str] = {
+    "chat": "",
+    "agent": "agent_",
+    "review": "review_",
+    "media": "media_",
+}
+
+
+def model_profile(purpose: str = "chat",
+                  resolved: Optional[dict[str, Any]] = None) -> dict[str, float]:
+    """The timeout profile for ONE call purpose (see config's per-purpose block).
+
+    `purpose` is one of `openai_client.CALL_PURPOSES`; anything unknown resolves
+    to the interactive (`chat`) profile, and so does a background field left
+    blank — a profile can never end up without a value. Pass `resolved` when the
+    caller already holds a `model()` dict, so one call reads the settings once.
+    """
+    m = resolved if resolved is not None else model()
+    prefix = _MODEL_PROFILE_PREFIX.get(purpose, "")
+
+    # Floats, not ints: the admin only ever writes whole seconds, but tests (and
+    # a future sub-second tweak) rely on fractions surviving the resolution.
+    def _pick(field: str, default: float) -> float:
+        v = m.get(f"{prefix}{field}")
+        if v is None or v == "":
+            v = m.get(field, default)
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return float(default)
+
+    return {
+        "request_timeout_sec": _pick("request_timeout_sec",
+                                     config.OPENAI_REQUEST_TIMEOUT_SEC),
+        "key_switch_timeout_sec": _pick("key_switch_timeout_sec",
+                                        config.OPENAI_KEY_SWITCH_TIMEOUT_SEC),
     }
 
 
@@ -583,7 +644,13 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
                         allow_empty=True)
         _require_int(value, "max_output_tokens", 1, 128_000)
         _require_int(value, "request_timeout_sec", 1, 600)
-        _require_int(value, "key_switch_timeout_sec", 1, 600)
+        # 0 on a key-switch timeout = never race the fallback key for that
+        # purpose (fail over only on a real error) — the sane setting for a
+        # background pass nobody is waiting for.
+        _require_int(value, "key_switch_timeout_sec", 0, 600)
+        for _p in ("agent", "review", "media"):
+            _require_int(value, f"{_p}_request_timeout_sec", 1, 600)
+            _require_int(value, f"{_p}_key_switch_timeout_sec", 0, 600)
         _require_int(value, "max_attempts", 1, 10)
         _require_int(value, "max_concurrent_per_key", 1, 1_000)
     elif key == "general":

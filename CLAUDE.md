@@ -560,14 +560,32 @@ widget never renders a blank bubble. This was the bug behind "a new chat in the 
 hangs" — at `max_output_tokens=700` the wrong-topic routing reasoning ate the whole budget, so the
 switch suggestion was never produced.
 
-The tuning knobs (model name, reasoning effort, verbosity, max output tokens, request timeout,
-key-switch timeout, max attempts, per-key concurrency) are NOT read from env directly — they
-come from the hot-reloaded `model` settings group (`settings.model()`, precedence
-`app_settings` → env → default). Model/reasoning-effort/verbosity/max-tokens/switch-timeout/
-attempts are read **live per call**; `request_timeout_sec` and `max_concurrent_per_key` are
-bound when the client is built, so a `model` write also calls `openai_client.reset()` to
-rebuild the singleton (no effect on the OpenAI-side prefix cache). API keys themselves stay
-secrets in env.
+**Timeouts are PER CALL PURPOSE (`openai_client.CALL_PURPOSES` + `settings.model_profile`).**
+Every caller declares which block of the stack it is — `chat` (support widget turns +
+Telegram bot replies), `agent` (the proactive retention agent: event decisions + ping
+writing), `review` (the quality-review judge) or `media` (photo/video cataloguing) — and the
+request timeout + key-switch timeout resolve from that purpose's fields in the `model`
+settings group (`agent_*`/`review_*`/`media_*`; the unprefixed pair stays the interactive
+one, so a stored row keeps its meaning, and a blank background field falls back to it). The
+race above exists to protect a player watching the typing indicator; a background pass has
+nobody waiting, so the background purposes ship with **`key_switch_timeout_sec = 0` = never
+race** — the fallback key is engaged only on a real error (invariant §5 holds; only the
+speculative second call is dropped). This was a live cost leak: a quality review reads a
+whole transcript and a vision call carries a multi-MB image, so both routinely ran past the
+interactive 15s and raced a second FULL call whose tokens OpenAI bills but which can never be
+accounted (the loser's usage rides in a response that is never received). Background purposes
+also get longer request timeouts (agent 90s, review/media 120s vs the chat's 30s). Every log
+line carries `purpose=…`: a background call has no `session_id`, so without it a
+`switch_timeout` line named no culprit.
+
+The tuning knobs (model name, reasoning effort, verbosity, max output tokens, the per-purpose
+timeouts, max attempts, per-key concurrency) are NOT read from env directly — they come from
+the hot-reloaded `model` settings group (`settings.model()`, precedence `app_settings` → env →
+default). Everything except `max_concurrent_per_key` is read **live per call** (the per-call
+`timeout` kwarg overrides the SDK client's construction-time default, so a timeout edit needs
+no rebuild); `max_concurrent_per_key` is bound when the client is built, so a `model` write
+also calls `openai_client.reset()` to rebuild the singleton (no effect on the OpenAI-side
+prefix cache). API keys themselves stay secrets in env.
 
 ### Anti-spam gate order (`antispam.py`, enforced in `app/api/chat.py`)
 `POST /api/chat/message` checks in this exact order: verify session token (401) →

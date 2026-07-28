@@ -283,3 +283,10 @@ Most operational knobs (rate limits, cooldowns, model tuning, escalation thresho
 session TTL, body cap, etc.) are tunable live from the admin **Settings** tab and only need
 an env var to seed an initial value. True secrets stay in env. See `app/core/config.py` for
 the full list.
+
+The OpenAI **timeouts are per call purpose** (System settings → Model): the live chat
+(support widget + Telegram replies) keeps the short interactive timeout and races the
+fallback key when the primary goes silent, while the background blocks — the proactive
+agent, the quality-review judge and photo/video cataloguing — get their own, longer request
+timeouts and ship with the key race **off** (`0`), since nobody is waiting on them and a
+speculative second call would just bill the same work twice.

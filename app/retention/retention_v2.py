@@ -542,7 +542,9 @@ async def _decide(product_id: int, ru: dict[str, Any], evt: dict[str, Any],
         touch_history=touches)
     client = await openai_client.client_for_product(product_id)
     try:
-        result = await client.complete(messages)
+        # `agent`: a proactive decision nobody is waiting on — its own timeout
+        # profile, no fallback-key race (see openai_client.CALL_PURPOSES).
+        result = await client.complete(messages, purpose="agent")
     except Exception as exc:  # noqa: BLE001 - a model failure skips this event
         await db.log_ai_interaction(
             None, settings.model()["model"], "none", 0, 0, 0, 0.0, 0, False,

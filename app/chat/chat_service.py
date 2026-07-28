@@ -265,8 +265,11 @@ async def handle_message(
     # --- call model (two-key failover; the product's own keys when set) ------
     # `client` was resolved above, concurrently with the prompt inputs.
     try:
+        # `chat`: a player is watching the typing indicator — the interactive
+        # profile (short timeout, race the fallback key on silence).
         result = await client.complete(
-            messages, session_id=session_id, on_failover=_on_failover
+            messages, session_id=session_id, on_failover=_on_failover,
+            purpose="chat",
         )
         raw_text = result.text
         log.info(
@@ -738,8 +741,11 @@ async def handle_retention_message(
 
     # --- call model (product keys / env failover; client fetched above) -----
     try:
+        # A Telegram dialogue turn is as interactive as a widget turn — the
+        # player is in the chat waiting for the answer.
         result = await client.complete(
-            messages, session_id=session_id, on_failover=_on_failover
+            messages, session_id=session_id, on_failover=_on_failover,
+            purpose="chat",
         )
         raw_text = result.text
     except Exception as exc:  # noqa: BLE001
@@ -862,8 +868,11 @@ async def generate_retention_ping(
         history_window=int(settings.general()["history_max_turns"]),
     )
     try:
+        # A proactive ping is written by the agent, not asked for by a player:
+        # the `agent` profile (longer timeout, no fallback-key race) applies.
         result = await client.complete(
-            messages, session_id=session_id, on_failover=_on_failover
+            messages, session_id=session_id, on_failover=_on_failover,
+            purpose="agent",
         )
         raw_text = result.text
     except Exception as exc:  # noqa: BLE001

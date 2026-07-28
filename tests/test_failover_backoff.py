@@ -31,7 +31,7 @@ class _ScriptedKey:
         self._script = list(script)
         self.calls = 0
 
-    async def call(self, messages):
+    async def call(self, messages, purpose="chat"):
         self.calls += 1
         if self._script:
             item = self._script.pop(0)

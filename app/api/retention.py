@@ -890,7 +890,9 @@ async def _generate_photo_meta(client: Any, photo: dict[str, Any],
                                                  library_counts=library_counts,
                                                  is_video=is_video)
     try:
-        result = await client.complete(messages)
+        # `media`: a vision call over a multi-MB data URL — the slowest thing the
+        # stack sends, and a batch job at that (own timeout, no key race).
+        result = await client.complete(messages, purpose="media")
     except Exception as exc:  # noqa: BLE001 - one bad photo must not kill the batch
         await db.log_ai_interaction(None, None, None, None, None, None, None,
                                     None, ok=False,

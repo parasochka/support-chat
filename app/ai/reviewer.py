@@ -108,7 +108,9 @@ async def review_session(product_id: int, session: dict[str, Any]
                 else session.get("status")))
     client = await openai_client.client_for_product(product_id)
     try:
-        result = await client.complete(messages)
+        # `review`: a whole transcript per call and nobody waiting for it — its
+        # own (longer) request timeout, and no fallback-key race.
+        result = await client.complete(messages, purpose="review")
     except Exception as exc:  # noqa: BLE001 - one failed review is not fatal
         await db.log_ai_interaction(
             None, settings.model()["model"], "none", 0, 0, 0, 0.0, 0, False,
