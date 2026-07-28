@@ -157,5 +157,5 @@ async def account_undelivered_generation(session_id, draft, detail, *,
         session_id, meta.get("model"), meta.get("key_used"),
         meta.get("tokens_in"), meta.get("tokens_out"), meta.get("cached_in"),
         cost, meta.get("latency_ms"), False, f"{label} {detail}",
-        product_id=product_id)
+        product_id=product_id, consumer="telegram", source="agent")
     return cost

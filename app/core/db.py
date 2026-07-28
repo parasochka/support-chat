@@ -227,10 +227,24 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 -- product_id is denormalized onto both log tables (copied from the session /
 -- the admin's selected scope) so per-product dashboards aggregate without a
 -- chat_sessions join.
+-- consumer + source are the SPEND ATTRIBUTION pair, denormalized for the same
+-- reason product_id is: half these rows have no session to join (a background
+-- pass logs with session_id NULL), so without them a dashboard has to GUESS who
+-- spent the money — and guessing "session-less ⇒ photo metadata" charged the
+-- quality judge's and the proactive agent's calls to the media bucket.
+--   consumer: 'web' | 'telegram' — WHICH FACADE the spend belongs to. For a
+--             quality review it is the facade of the REVIEWED conversation, so
+--             a support review lands in the support dashboard and a Telegram
+--             review in the retention one.
+--   source:   'chat' | 'agent' | 'review' | 'media' — WHAT the call was
+--             (dialogue turn / proactive agent / AI judge / media cataloguing).
+-- Legacy rows carry NULL and are classified at read time (_LOG_SOURCE_SQL).
 CREATE TABLE IF NOT EXISTS ai_interaction_logs (
   id          BIGSERIAL PRIMARY KEY,
   session_id  UUID,
   product_id  INT,
+  consumer    TEXT,
+  source      TEXT,
   model       TEXT,
   key_used    TEXT,
   tokens_in   INT,
@@ -754,6 +768,14 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         "product_id INT REFERENCES products(id)",
         "ALTER TABLE ai_interaction_logs ADD COLUMN IF NOT EXISTS "
         "product_id INT",
+        # Spend attribution (see the ai_interaction_logs comment in _SCHEMA):
+        # which facade the money belongs to and what kind of call it was. Rows
+        # written before this shipped stay NULL and are classified at read time,
+        # so no backfill scan runs on every boot.
+        "ALTER TABLE ai_interaction_logs ADD COLUMN IF NOT EXISTS "
+        "consumer TEXT",
+        "ALTER TABLE ai_interaction_logs ADD COLUMN IF NOT EXISTS "
+        "source TEXT",
         "ALTER TABLE admin_events ADD COLUMN IF NOT EXISTS "
         "product_id INT",
         # Slugs/keys are now unique WITHIN a product, not globally: drop the
@@ -1511,6 +1533,7 @@ async def persist_turn(
     ai_meta: Optional[dict[str, Any]] = None,
     product_id: Optional[int] = None,
     link_url: Optional[str] = None,
+    consumer: str = "web",
 ) -> int:
     """Insert user + assistant rows, bump counters, write the AI log — atomically.
 
@@ -1520,7 +1543,10 @@ async def persist_turn(
     (for example the message-cap hand-off) still persist the visible chat turn
     but intentionally skip `ai_interaction_logs` because no API call happened.
     `product_id` (the session's product) is denormalized onto the AI log row so
-    per-product cost dashboards aggregate without a join. `link_url` records
+    per-product cost dashboards aggregate without a join, and so are the spend
+    attribution labels: `consumer` (the caller's facade — 'web' for the widget,
+    'telegram' for a retention dialogue turn) with source 'chat', since this
+    helper only ever persists a DIALOGUE turn. `link_url` records
     the validated CTA button attached to the assistant message (retention),
     so the prompt history can show which page was already linked.
     """
@@ -1546,10 +1572,12 @@ async def persist_turn(
             if ai_meta:
                 await conn.execute(
                     "INSERT INTO ai_interaction_logs "
-                    "(session_id, product_id, model, key_used, tokens_in, "
-                    " tokens_out, cached_in, cost_usd, latency_ms, ok, error) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-                    session_id, product_id,
+                    "(session_id, product_id, consumer, source, model, key_used, "
+                    " tokens_in, tokens_out, cached_in, cost_usd, latency_ms, ok, "
+                    " error) "
+                    "VALUES ($1, $2, $3, 'chat', $4, $5, $6, $7, $8, $9, $10, "
+                    " $11, $12)",
+                    session_id, product_id, consumer,
                     ai_meta.get("model"), ai_meta.get("key_used"),
                     ai_meta.get("tokens_in"), ai_meta.get("tokens_out"),
                     ai_meta.get("cached_in"), ai_meta.get("cost_usd"),
@@ -1573,14 +1601,22 @@ async def log_ai_interaction(
     tokens_in: Optional[int], tokens_out: Optional[int], cached_in: Optional[int],
     cost_usd: Optional[float], latency_ms: Optional[int], ok: bool,
     error: Optional[str], product_id: Optional[int] = None,
+    consumer: Optional[str] = None, source: Optional[str] = None,
 ) -> None:
+    """Account one OpenAI call (invariant §4).
+
+    `consumer` ('web'|'telegram') and `source` ('chat'|'agent'|'review'|'media')
+    attribute the spend — pass BOTH on every new call site, especially the
+    session-less background ones: a row without them cannot be told apart from
+    the others at read time.
+    """
     await _pool.execute(
         "INSERT INTO ai_interaction_logs "
-        "(session_id, product_id, model, key_used, tokens_in, tokens_out, "
-        " cached_in, cost_usd, latency_ms, ok, error) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-        session_id, product_id, model, key_used, tokens_in, tokens_out,
-        cached_in, cost_usd, latency_ms, ok, error,
+        "(session_id, product_id, consumer, source, model, key_used, tokens_in, "
+        " tokens_out, cached_in, cost_usd, latency_ms, ok, error) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        session_id, product_id, consumer, source, model, key_used, tokens_in,
+        tokens_out, cached_in, cost_usd, latency_ms, ok, error,
     )
 
 
@@ -2532,6 +2568,32 @@ def _scope_clauses(product_ids: Optional[list[int]],
             f" AND cs.product_id = ANY(${n}::int[])")
 
 
+# ---------------------------------------------------------------------------
+# AI-spend attribution (ai_interaction_logs.consumer / .source)
+#
+# Every dashboard that reports money reads the spend through these two
+# expressions instead of guessing from `session_id IS NULL` — that guess charged
+# the quality judge and the proactive agent to the photo-metadata bucket, and
+# charged reviews of SUPPORT conversations to the Telegram dashboard.
+#
+# Rows written before the columns existed carry NULL and are classified here, at
+# read time (no boot-time backfill scan over an unbounded log table): a legacy
+# session-bound row was always a dialogue turn, and a legacy session-less one was
+# a background call whose kind is no longer knowable ('legacy'). Those legacy
+# background rows were all retention (photo metadata / agent decisions), which is
+# exactly where the old dashboards counted them — so history keeps its totals and
+# only the labelling gets honest going forward.
+#
+# Every query using them needs `LEFT JOIN chat_sessions s ON s.id = l.session_id`.
+# ---------------------------------------------------------------------------
+_LOG_SOURCE = ("COALESCE(l.source, CASE WHEN l.session_id IS NOT NULL "
+               "THEN 'chat' ELSE 'legacy' END)")
+_LOG_FACADE = "COALESCE(l.consumer, s.consumer)"
+_LOG_IS_SUPPORT = f"{_LOG_FACADE} = 'web'"
+_LOG_IS_RETENTION = (f"({_LOG_FACADE} = 'telegram' "
+                     "OR (l.consumer IS NULL AND l.session_id IS NULL))")
+
+
 async def overview_aggregates(dt_from: Any, dt_to: Any,
                               product_ids: Optional[list[int]] = None
                               ) -> dict[str, Any]:
@@ -2539,10 +2601,12 @@ async def overview_aggregates(dt_from: Any, dt_to: Any,
 
     This is the SUPPORT (web-widget) dashboard: telegram/retention data is
     excluded end-to-end. Sessions filter `consumer <> 'telegram'`; the cost
-    aggregate joins `chat_sessions` so it counts only non-telegram turns and
-    drops the `session_id IS NULL` photo-metadata calls (those are retention —
-    they belong to the Telegram cost panels, not here). The retention side has
-    its own `retention_overview` / `retention_timeseries`.
+    aggregate keeps only rows attributed to the support facade
+    (`_LOG_IS_SUPPORT`) and reports the DIALOGUE spend as `cost_usd_total` —
+    the number every per-session metric divides — with the AI judge's passes
+    over support conversations broken out as `cost_review_usd`, so background
+    spend never inflates the price of a chat. The retention side has its own
+    `retention_overview` / `retention_timeseries`.
     """
     args: list[Any] = [dt_from, dt_to]
     scope = _product_clause(product_ids, args)
@@ -2563,17 +2627,27 @@ async def overview_aggregates(dt_from: Any, dt_to: Any,
     )
     cost = await _pool.fetchrow(
         "SELECT "
-        "  COALESCE(SUM(l.cost_usd), 0) AS cost_usd_total, "
-        "  COALESCE(SUM(l.cached_in), 0) AS cached_in_total, "
-        "  COALESCE(SUM(l.tokens_in), 0) AS tokens_in_total, "
+        f"  COALESCE(SUM(l.cost_usd) FILTER (WHERE {_LOG_SOURCE} = 'chat'), 0) "
+        "    AS cost_usd_total, "
+        f"  COALESCE(SUM(l.cached_in) FILTER (WHERE {_LOG_SOURCE} = 'chat'), 0) "
+        "    AS cached_in_total, "
+        f"  COALESCE(SUM(l.tokens_in) FILTER (WHERE {_LOG_SOURCE} = 'chat'), 0) "
+        "    AS tokens_in_total, "
         "  COUNT(DISTINCT l.session_id) AS sessions_with_ai, "
         "  COUNT(*) AS ai_calls_total, "
         "  COALESCE(AVG(l.latency_ms) FILTER "
         "    (WHERE l.ok AND l.latency_ms IS NOT NULL), 0) AS avg_latency_ms, "
-        "  COUNT(*) FILTER (WHERE NOT l.ok) AS failed_calls "
+        "  COUNT(*) FILTER (WHERE NOT l.ok) AS failed_calls, "
+        # The AI judge's passes over SUPPORT conversations: they log with
+        # session_id NULL, so they belong to no chat turn — a separate line,
+        # never folded into the dialogue cost the per-session metrics divide.
+        f"  COALESCE(SUM(l.cost_usd) FILTER (WHERE {_LOG_SOURCE} = 'review'), 0) "
+        "    AS cost_review_usd, "
+        f"  COUNT(*) FILTER (WHERE {_LOG_SOURCE} = 'review') AS review_calls "
         "FROM ai_interaction_logs l "
-        "JOIN chat_sessions s ON s.id = l.session_id AND s.consumer <> 'telegram' "
-        f"WHERE l.created_at >= $1 AND l.created_at < $2{scope_l}",
+        "LEFT JOIN chat_sessions s ON s.id = l.session_id "
+        f"WHERE {_LOG_IS_SUPPORT} "
+        f"  AND l.created_at >= $1 AND l.created_at < $2{scope_l}",
         *args,
     )
     ev = await _pool.fetch(
@@ -2602,6 +2676,11 @@ async def overview_aggregates(dt_from: Any, dt_to: Any,
         "ai_calls_total": int(cost["ai_calls_total"]),
         "avg_latency_ms": float(cost["avg_latency_ms"]),
         "failed_calls": int(cost["failed_calls"]),
+        # Background spend on THIS facade, kept apart from the dialogue cost:
+        # the AI judge reading finished SUPPORT conversations. A review of a
+        # Telegram chat is retention spend and shows up there instead.
+        "cost_review_usd": float(cost["cost_review_usd"]),
+        "review_calls": int(cost["review_calls"]),
         "events": events,
     }
 
@@ -2613,10 +2692,13 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
     """Per-bucket series for sessions | cost | cost_per_session | escalation_rate.
 
     SUPPORT (web-widget) only — telegram/retention is excluded the same way as
-    `overview_aggregates`: the two cost metrics join `chat_sessions` (so the
-    telegram turns and the `session_id IS NULL` photo-metadata calls drop out),
-    and the session metrics filter `consumer <> 'telegram'`. Telegram spend has
-    its own series in `retention_timeseries`.
+    `overview_aggregates`. The two cost metrics are DIALOGUE spend
+    (`_LOG_IS_SUPPORT` + source 'chat'): background passes over support
+    conversations (the AI judge) are real support spend but belong to no
+    session, so folding them in would silently inflate "cost per session" — they
+    are reported as their own overview figure instead. Session metrics filter
+    `consumer <> 'telegram'`. Telegram spend has its own series in
+    `retention_timeseries`.
     """
     trunc = "day" if bucket not in ("hour", "day", "week", "month") else bucket
     args: list[Any] = [dt_from, dt_to]
@@ -2629,8 +2711,9 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
             f"SELECT date_trunc('{trunc}', l.created_at) AS bucket, "
             "COALESCE(SUM(l.cost_usd), 0) AS value "
             "FROM ai_interaction_logs l "
-            "JOIN chat_sessions s ON s.id = l.session_id AND s.consumer <> 'telegram' "
-            f"WHERE l.created_at >= $1 AND l.created_at < $2{scope_l} "
+            "LEFT JOIN chat_sessions s ON s.id = l.session_id "
+            f"WHERE {_LOG_IS_SUPPORT} AND {_LOG_SOURCE} = 'chat' "
+            f"  AND l.created_at >= $1 AND l.created_at < $2{scope_l} "
             "GROUP BY bucket ORDER BY bucket",
             *args,
         )
@@ -2642,8 +2725,9 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
             "COALESCE(SUM(l.cost_usd), 0) AS cost, "
             "COUNT(DISTINCT l.session_id) AS sessions "
             "FROM ai_interaction_logs l "
-            "JOIN chat_sessions s ON s.id = l.session_id AND s.consumer <> 'telegram' "
-            f"WHERE l.created_at >= $1 AND l.created_at < $2{scope_l} "
+            "LEFT JOIN chat_sessions s ON s.id = l.session_id "
+            f"WHERE {_LOG_IS_SUPPORT} AND {_LOG_SOURCE} = 'chat' "
+            f"  AND l.created_at >= $1 AND l.created_at < $2{scope_l} "
             "GROUP BY bucket ORDER BY bucket",
             *args,
         )
@@ -4504,10 +4588,14 @@ async def persist_ping_turn(session_id: str, assistant_text: str,
             )
             if ai_meta.get("model"):
                 await conn.execute(
+                    # A ping is written by the proactive AGENT, never by a
+                    # player's turn — its spend belongs to the agent bucket.
                     "INSERT INTO ai_interaction_logs "
-                    "(session_id, product_id, model, key_used, tokens_in, "
-                    " tokens_out, cached_in, cost_usd, latency_ms, ok, error) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                    "(session_id, product_id, consumer, source, model, key_used, "
+                    " tokens_in, tokens_out, cached_in, cost_usd, latency_ms, ok, "
+                    " error) "
+                    "VALUES ($1, $2, 'telegram', 'agent', $3, $4, $5, $6, $7, $8, "
+                    " $9, $10, $11)",
                     session_id, product_id,
                     ai_meta.get("model"), ai_meta.get("key_used"),
                     ai_meta.get("tokens_in"), ai_meta.get("tokens_out"),
@@ -5209,10 +5297,13 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
     args2: list[Any] = [dt_from, dt_to]
     pid2 = _pid_where(product_ids, args2, "p.product_id")
     args3: list[Any] = [dt_from, dt_to]
-    # Telegram cost is scoped on the LOG row's product so it captures both the
-    # dialog turns (a telegram session) AND the photo-metadata vision calls,
-    # which log with session_id IS NULL (no session to join). Split the two out
-    # so the admin can see the drivers apart.
+    # Telegram cost is scoped on the LOG row's product so it captures the dialog
+    # turns (a telegram session) AND every background call, which log with
+    # session_id IS NULL (no session to join). The four drivers are split by the
+    # row's own attribution labels — dialogue, the proactive agent, media
+    # cataloguing and the AI judge — because they answer different questions
+    # ("is the bot too chatty?" vs "is the judge too expensive?") and used to be
+    # lumped together under photo metadata.
     pid3 = _pid_where(product_ids, args3, "l.product_id")
     args4: list[Any] = []
     pid4 = _pid_where(product_ids, args4)
@@ -5265,14 +5356,19 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
             _pool.fetchrow(
                 "SELECT "
                 "  COALESCE(SUM(l.cost_usd) FILTER "
-                "    (WHERE l.session_id IS NOT NULL), 0) AS dialog, "
+                f"    (WHERE {_LOG_SOURCE} = 'chat'), 0) AS dialog, "
                 "  COALESCE(SUM(l.cost_usd) FILTER "
-                "    (WHERE l.session_id IS NULL), 0) AS photo, "
+                f"    (WHERE {_LOG_SOURCE} = 'agent'), 0) AS agent, "
+                "  COALESCE(SUM(l.cost_usd) FILTER "
+                f"    (WHERE {_LOG_SOURCE} = 'media'), 0) AS photo, "
+                "  COALESCE(SUM(l.cost_usd) FILTER "
+                f"    (WHERE {_LOG_SOURCE} = 'review'), 0) AS review, "
+                "  COALESCE(SUM(l.cost_usd) FILTER "
+                f"    (WHERE {_LOG_SOURCE} = 'legacy'), 0) AS legacy, "
                 "  COALESCE(SUM(l.cost_usd), 0) AS total "
                 "FROM ai_interaction_logs l "
                 "LEFT JOIN chat_sessions s ON s.id = l.session_id "
-                f"WHERE {pid3} "
-                "  AND (s.consumer = 'telegram' OR l.session_id IS NULL) "
+                f"WHERE {pid3} AND {_LOG_IS_RETENTION} "
                 "  AND l.created_at >= $1 AND l.created_at < $2", *args3),
             _pool.fetch(
                 "SELECT unlocked_stage AS stage, COUNT(*) AS users "
@@ -5299,12 +5395,17 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
             "pings_failed": int(pings["failed"] or 0) if pings else 0,
             "ping_replies": replied,
             "ping_reply_rate": round(replied / sent, 3) if sent else None,
-            # Total telegram AI spend for the range, plus the two drivers:
-            # engagement dialog turns vs the on-demand photo-metadata vision
-            # calls. cost_usd = cost_dialog_usd + cost_photo_usd.
+            # Total telegram AI spend for the range, plus its drivers, which sum
+            # back to it: player dialogue, the proactive agent (decisions +
+            # written pings), photo/video cataloguing, the AI judge reading
+            # finished Telegram chats, and — for rows written before spend
+            # attribution shipped — an unlabelled remainder.
             "cost_usd": round(float(cost["total"] if cost else 0), 4),
             "cost_dialog_usd": round(float(cost["dialog"] if cost else 0), 4),
+            "cost_agent_usd": round(float(cost["agent"] if cost else 0), 4),
             "cost_photo_usd": round(float(cost["photo"] if cost else 0), 4),
+            "cost_review_usd": round(float(cost["review"] if cost else 0), 4),
+            "cost_legacy_usd": round(float(cost["legacy"] if cost else 0), 4),
         },
         "stage_distribution": [
             {"stage": int(r["stage"]), "users": int(r["users"])}
@@ -5408,31 +5509,42 @@ async def retention_timeseries(product_ids: Optional[list[int]], dt_from: Any,
             "  AND created_at >= $1 AND created_at < $2 GROUP BY 1", *args):
         out.setdefault(_day(r["day"]), {})["pings"] = int(r["n"])
 
-    # Telegram AI cost per day, scoped on the LOG product so it captures both the
-    # dialog turns and the session-less photo-metadata calls (split out below).
+    # Telegram AI cost per day, scoped on the LOG product so it captures the
+    # dialog turns AND every session-less background call, split by the row's own
+    # attribution labels (see _LOG_SOURCE) rather than by "has a session".
     args = [dt_from, dt_to]
     pid = _pid_where(product_ids, args, "l.product_id")
     for r in await _pool.fetch(
             "SELECT date_trunc('day', l.created_at) AS day, "
             "  COALESCE(SUM(l.cost_usd) FILTER "
-            "    (WHERE l.session_id IS NOT NULL), 0) AS dialog, "
+            f"    (WHERE {_LOG_SOURCE} = 'chat'), 0) AS dialog, "
             "  COALESCE(SUM(l.cost_usd) FILTER "
-            "    (WHERE l.session_id IS NULL), 0) AS photo, "
+            f"    (WHERE {_LOG_SOURCE} = 'agent'), 0) AS agent, "
+            "  COALESCE(SUM(l.cost_usd) FILTER "
+            f"    (WHERE {_LOG_SOURCE} = 'media'), 0) AS photo, "
+            "  COALESCE(SUM(l.cost_usd) FILTER "
+            f"    (WHERE {_LOG_SOURCE} = 'review'), 0) AS review, "
+            "  COALESCE(SUM(l.cost_usd) FILTER "
+            f"    (WHERE {_LOG_SOURCE} = 'legacy'), 0) AS legacy, "
             "  COALESCE(SUM(l.cost_usd), 0) AS cost "
             "FROM ai_interaction_logs l "
             "LEFT JOIN chat_sessions s ON s.id = l.session_id "
-            f"WHERE {pid} AND (s.consumer = 'telegram' OR l.session_id IS NULL) "
+            f"WHERE {pid} AND {_LOG_IS_RETENTION} "
             "  AND l.created_at >= $1 AND l.created_at < $2 GROUP BY 1", *args):
         d = out.setdefault(_day(r["day"]), {})
         d["cost_usd"] = round(float(r["cost"]), 4)
         d["cost_dialog_usd"] = round(float(r["dialog"]), 4)
+        d["cost_agent_usd"] = round(float(r["agent"]), 4)
         d["cost_photo_usd"] = round(float(r["photo"]), 4)
+        d["cost_review_usd"] = round(float(r["review"]), 4)
+        d["cost_legacy_usd"] = round(float(r["legacy"]), 4)
 
     series = []
     for day in sorted(out):
         row = {"date": day, "messages": 0, "active_users": 0, "photos": 0,
                "pings": 0, "cost_usd": 0.0, "cost_dialog_usd": 0.0,
-               "cost_photo_usd": 0.0}
+               "cost_agent_usd": 0.0, "cost_photo_usd": 0.0,
+               "cost_review_usd": 0.0, "cost_legacy_usd": 0.0}
         row.update(out[day])
         series.append(row)
     return series

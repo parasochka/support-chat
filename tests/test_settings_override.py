@@ -114,6 +114,45 @@ def test_model_validate_rejects_bad():
         settings.validate_setting("model", {"max_attempts": 0})        # below min
 
 
+# --- per-purpose timeout profiles ------------------------------------------
+def test_model_profile_defaults_per_purpose(monkeypatch):
+    monkeypatch.setattr(config, "OPENAI_REQUEST_TIMEOUT_SEC", 30)
+    monkeypatch.setattr(config, "OPENAI_KEY_SWITCH_TIMEOUT_SEC", 15)
+    monkeypatch.setattr(config, "OPENAI_REVIEW_REQUEST_TIMEOUT_SEC", 120)
+    monkeypatch.setattr(config, "OPENAI_REVIEW_KEY_SWITCH_TIMEOUT_SEC", 0)
+
+    chat = settings.model_profile("chat")
+    assert (chat["request_timeout_sec"], chat["key_switch_timeout_sec"]) == (30, 15)
+    review = settings.model_profile("review")
+    # Background: longer request budget, and the fallback race is OFF (0).
+    assert (review["request_timeout_sec"], review["key_switch_timeout_sec"]) == (120, 0)
+    # An unknown purpose can never end up without a profile.
+    assert settings.model_profile("nonsense") == chat
+
+
+def test_model_profile_db_override_and_blank_fallback():
+    settings._cache["model"] = {"agent_key_switch_timeout_sec": 45,
+                                "agent_request_timeout_sec": ""}
+    agent = settings.model_profile("agent")
+    assert agent["key_switch_timeout_sec"] == 45          # admin override wins
+    # A blank background field falls back to the interactive value, not to zero.
+    assert agent["request_timeout_sec"] == config.OPENAI_REQUEST_TIMEOUT_SEC
+
+
+def test_model_validate_accepts_purpose_profiles():
+    v = settings.validate_setting("model", {
+        "key_switch_timeout_sec": 0,          # 0 = never race, now allowed
+        "agent_request_timeout_sec": 90, "agent_key_switch_timeout_sec": 0,
+        "review_request_timeout_sec": 120, "review_key_switch_timeout_sec": 0,
+        "media_request_timeout_sec": 120, "media_key_switch_timeout_sec": 30,
+    })
+    assert v["review_request_timeout_sec"] == 120
+    with pytest.raises(ValueError):
+        settings.validate_setting("model", {"review_request_timeout_sec": 0})
+    with pytest.raises(ValueError):
+        settings.validate_setting("model", {"media_key_switch_timeout_sec": -1})
+
+
 # --- antispam fields folded in from env ------------------------------------
 def test_antispam_new_fields_default_to_env(monkeypatch):
     monkeypatch.setattr(config, "INJECTION_HARD_BLOCK", True)

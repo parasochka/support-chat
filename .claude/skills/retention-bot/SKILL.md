@@ -527,14 +527,17 @@ checklist lives in the admin — the **Retention → How it works** page.
   `retention_timeseries`): the overview separates LIFETIME player-base numbers (`users` block:
   total/subscribed/muted/unreachable/avg stage) from RANGE activity (`range` block: active/new
   players, player messages, photos, handoffs, pings sent/failed, **ping reply rate** — a sent
-  ping answered by a player message within 48h —, **telegram AI cost** `cost_usd` split into
-  `cost_dialog_usd` + `cost_photo_usd`, the latter the session-less photo-metadata vision
-  calls, so the whole Telegram spend the support dashboard excludes lands here) plus a per-stage
+  ping answered by a player message within 48h —, **telegram AI cost** `cost_usd` split by the
+  AI log rows' own attribution labels into `cost_dialog_usd` + `cost_agent_usd` +
+  `cost_photo_usd` + `cost_review_usd` (+ `cost_legacy_usd` for rows written before
+  attribution shipped), so the whole Telegram spend the support dashboard excludes lands here
+  AND each driver is nameable — the split used to be "has a session or not", which charged the
+  proactive agent's and the AI judge's calls to photo metadata) plus a per-stage
   `stage_distribution`; the **funnel** (deeplinks → starts → linked → subscribed → engaged →
   photo receivers → handoffs) is backed by durable `retention_deeplink_created` /
   `retention_start` admin events (the nonce table is reaped on expiry, so it can never be the
   denominator); the **timeseries** is daily messages/actives/photos/pings/cost (cost also split
-  `cost_dialog_usd`/`cost_photo_usd` per day — the `TelegramCostCharts` panels). Endpoints
+  the same four ways per day — the `TelegramCostCharts` panels). Endpoints
   `GET /admin/retention/overview|funnel|timeseries` take `from`/`to` + an OPTIONAL
   `product_id`/`partner_id` — omitted, they aggregate the caller's whole accessible scope
   (the global dashboard's retention block), following the support dashboard's

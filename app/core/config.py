@@ -116,6 +116,28 @@ OPENAI_MODEL: str = _env("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_REQUEST_TIMEOUT_SEC: int = _env_int("OPENAI_REQUEST_TIMEOUT_SEC", 30)
 OPENAI_KEY_SWITCH_TIMEOUT_SEC: int = _env_int("OPENAI_KEY_SWITCH_TIMEOUT_SEC", 15)
 OPENAI_MAX_ATTEMPTS: int = _env_int("OPENAI_MAX_ATTEMPTS", 3)
+# --- per-purpose latency profiles -------------------------------------------
+# The two timeouts above are the INTERACTIVE profile: a player is waiting, so a
+# primary key that stays silent for 15s is worth racing against the fallback.
+# A BACKGROUND pass has nobody waiting — there the race just pays for the same
+# work twice (the losing request is already processed and billed by OpenAI, and
+# its usage rides in a response we never receive, so it cannot even be logged),
+# and the 30s request timeout is too short for a call that reads a whole
+# transcript or a multi-MB image. Each block that talks to the model therefore
+# carries its own profile, resolved through the `model` settings group:
+#   chat   — support widget turns + Telegram bot replies (a player is waiting)
+#   agent  — the proactive retention agent: event decisions + ping writing
+#   review — the quality-review judge (a whole conversation per call)
+#   media  — photo/video cataloguing (vision, multi-MB data URLs)
+# A key-switch timeout of 0 DISABLES the race for that purpose: the fallback key
+# is then engaged only when the primary actually fails (invariant §5 holds — the
+# failover itself is never lost, only the speculative second call is).
+OPENAI_AGENT_REQUEST_TIMEOUT_SEC: int = _env_int("OPENAI_AGENT_REQUEST_TIMEOUT_SEC", 90)
+OPENAI_AGENT_KEY_SWITCH_TIMEOUT_SEC: int = _env_int("OPENAI_AGENT_KEY_SWITCH_TIMEOUT_SEC", 0)
+OPENAI_REVIEW_REQUEST_TIMEOUT_SEC: int = _env_int("OPENAI_REVIEW_REQUEST_TIMEOUT_SEC", 120)
+OPENAI_REVIEW_KEY_SWITCH_TIMEOUT_SEC: int = _env_int("OPENAI_REVIEW_KEY_SWITCH_TIMEOUT_SEC", 0)
+OPENAI_MEDIA_REQUEST_TIMEOUT_SEC: int = _env_int("OPENAI_MEDIA_REQUEST_TIMEOUT_SEC", 120)
+OPENAI_MEDIA_KEY_SWITCH_TIMEOUT_SEC: int = _env_int("OPENAI_MEDIA_KEY_SWITCH_TIMEOUT_SEC", 0)
 # Reasoning effort and output verbosity. Empty string ⇒ omit the parameter from
 # the request (use the model's own default). "low" keeps support answers fast,
 # cheap, and concise.

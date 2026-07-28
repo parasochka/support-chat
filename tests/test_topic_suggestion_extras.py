@@ -39,7 +39,7 @@ def test_topic_suggestion_is_routing_only_and_suppresses_answer(monkeypatch):
         calls["events"].append((type_, payload or {}))
 
     class _FakeClient:
-        async def complete(self, messages, session_id=None, on_failover=None):
+        async def complete(self, messages, session_id=None, on_failover=None, purpose="chat"):
             return openai_client.ChatResult(
                 text=(
                     "[[TOPIC:deposits]]\n"
@@ -104,7 +104,7 @@ def test_normal_turn_appends_system_closing_suggestion(monkeypatch):
         pass
 
     class _FakeClient:
-        async def complete(self, messages, session_id=None, on_failover=None):
+        async def complete(self, messages, session_id=None, on_failover=None, purpose="chat"):
             return openai_client.ChatResult(
                 text=(
                     "Пополнить можно картой или криптой.\n"

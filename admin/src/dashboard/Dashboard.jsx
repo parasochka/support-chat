@@ -203,7 +203,7 @@ const SupportBlock = () => {
         />
       </Grid>
 
-      {/* Row 2 — AI, cost & performance (6 tiles). The gap-based Grid container
+      {/* Row 2 — AI, cost & performance (7 tiles). The gap-based Grid container
           carries no outer margin, so without an explicit top margin the two
           KPI rows touch. */}
       <Grid container spacing={2} sx={{ mt: 2 }}>
@@ -214,6 +214,19 @@ const SupportBlock = () => {
             overview?.cost_usd_per_session != null
               ? `${usd(overview.cost_usd_per_session)} / ${t('session')}`
               : undefined
+          }
+        />
+        {/* Background support spend, deliberately its own tile: the AI judge
+            reads finished conversations and belongs to no session, so it must
+            not move the per-session price in the tile above. A judged Telegram
+            chat is retention spend and appears in the retention analytics. */}
+        <Kpi
+          label={t('Quality review (USD)')}
+          value={usd(overview?.cost_review_usd)}
+          hint={
+            overview?.review_calls
+              ? `${num(overview.review_calls)} ${t('conversations judged')}`
+              : t('AI judge, outside chats')
           }
         />
         <Kpi
@@ -339,7 +352,7 @@ const RetentionBlock = () => {
         <Kpi
           label={t('Cost (USD)')}
           value={usd(inRange?.cost_usd)}
-          hint={t('TG turns + photo metadata')}
+          hint={t('dialogue + agent + media + review')}
         />
       </Grid>
       <Grid container spacing={2} sx={{ mt: 2 }}>

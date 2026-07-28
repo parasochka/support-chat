@@ -2,11 +2,20 @@
 
 Failover model (from the Greekly pattern):
   - Try the primary key first.
-  - If it stays silent for OPENAI_KEY_SWITCH_TIMEOUT_SEC, launch the fallback in
-    PARALLEL and take whichever responds first (cancel the loser).
+  - If it stays silent for the purpose's key-switch timeout, launch the fallback
+    in PARALLEL and take whichever responds first (cancel the loser).
   - If the primary errors hard (auth / quota / invalid key), switch to fallback
     immediately.
   - Log a `key_failover` admin event whenever the fallback is engaged.
+
+Call purposes: every caller declares WHICH block of the stack it is (see
+CALL_PURPOSES), and the timeouts are resolved per purpose from the `model`
+settings group. The race above exists to protect a player who is waiting for an
+answer; a background pass has nobody waiting, so it ships with the race off (a
+switch timeout of 0) — otherwise the second, speculative call bills the same
+work twice and its usage cannot even be accounted (it rides in a response that
+is never received). Background purposes also get a longer request timeout: a
+whole transcript or a multi-MB image does not fit the interactive 30s.
 
 Backoff: 429 / Retry-After / timeouts / transient errors are retried with
 exponential backoff up to OPENAI_MAX_ATTEMPTS.
@@ -28,6 +37,20 @@ from app.core import config
 from app.core import settings
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Call purposes — the blocks of the stack that talk to the model. Each one
+# resolves its own timeout profile (`settings.model_profile`), so a slow
+# background pass can never be measured against the interactive chat's clock:
+#   chat   — support widget turns + Telegram bot replies (a player is waiting)
+#   agent  — the proactive retention agent: event decisions + ping writing
+#   review — the quality-review judge (a whole conversation per call)
+#   media  — photo/video cataloguing (vision, multi-MB data URLs)
+# The purpose is also stamped on every log line: a background call carries no
+# session_id, so without it a `switch_timeout` line named no culprit.
+# ---------------------------------------------------------------------------
+CALL_PURPOSES = ("chat", "agent", "review", "media")
+DEFAULT_PURPOSE = "chat"
 
 try:  # native dep may be stubbed in tests
     from openai import AsyncOpenAI
@@ -173,8 +196,10 @@ class _KeyClient:
         # accounting. Entries whose response never reaches _result (a cancelled
         # race loser) are cleared by the size guard below.
         self._pending_extra_usage: dict[int, tuple[Any, tuple[int, int, int]]] = {}
-        # Concurrency + client timeout are bound at construction; a change to
-        # them is picked up via openai_client.reset() (called on settings write).
+        # Concurrency + the SDK client's DEFAULT timeout are bound at
+        # construction; a change to them is picked up via openai_client.reset()
+        # (called on settings write). The default is the interactive one — every
+        # call overrides it with its purpose's timeout (see `call`).
         m = settings.model()
         self._sem = asyncio.Semaphore(int(m["max_concurrent_per_key"]))
         if AsyncOpenAI is not None:
@@ -184,21 +209,24 @@ class _KeyClient:
         else:  # pragma: no cover - only when openai missing & not under test stub
             self.client = None
 
-    async def call(self, messages: list[dict[str, str]]) -> Any:
+    async def call(self, messages: list[dict[str, str]],
+                   purpose: str = DEFAULT_PURPOSE) -> Any:
         # model / reasoning effort / verbosity / max tokens / per-call timeout
         # are read live so tuning from the admin panel takes effect without a
         # redeploy. The GPT-5 reasoning family takes `max_completion_tokens`
         # (not `max_tokens`) and does NOT accept `temperature`; reasoning_effort
         # and verbosity are sent only when set (empty ⇒ use the model default),
         # so the owner can disable either from the admin panel if a future model
-        # rejects it.
+        # rejects it. The timeout is the PURPOSE's (a background call reading a
+        # whole transcript needs more than the interactive 30s); passing it
+        # per-request overrides the SDK client's construction-time default.
         m = settings.model()
         budget = int(m["max_output_tokens"])
         kwargs: dict[str, Any] = {
             "model": m["model"],
             "messages": messages,
             "max_completion_tokens": budget,
-            "timeout": m["request_timeout_sec"],
+            "timeout": settings.model_profile(purpose, m)["request_timeout_sec"],
             "store": False,
         }
         effort = m.get("reasoning_effort")
@@ -208,8 +236,8 @@ class _KeyClient:
         if verbosity:
             kwargs["verbosity"] = verbosity
         log.info(
-            "openai_request_start key=%s model=%s max_completion_tokens=%s effort=%s verbosity=%s timeout=%s messages=%s",
-            self.name, kwargs["model"], kwargs["max_completion_tokens"],
+            "openai_request_start key=%s purpose=%s model=%s max_completion_tokens=%s effort=%s verbosity=%s timeout=%s messages=%s",
+            self.name, purpose, kwargs["model"], kwargs["max_completion_tokens"],
             kwargs.get("reasoning_effort"), kwargs.get("verbosity"),
             kwargs["timeout"], len(messages),
         )
@@ -304,20 +332,23 @@ def _retry_after_seconds(exc: Exception) -> Optional[float]:
     return None
 
 
-async def _call_with_backoff(kc: _KeyClient, messages: list[dict[str, str]]) -> Any:
+async def _call_with_backoff(kc: _KeyClient, messages: list[dict[str, str]],
+                             purpose: str = DEFAULT_PURPOSE) -> Any:
     """One key, with exponential backoff on transient errors."""
     last_exc: Optional[Exception] = None
     max_attempts = int(settings.model()["max_attempts"])
     for attempt in range(max_attempts):
         try:
-            resp = await kc.call(messages)
-            log.info("openai_request_success key=%s attempt=%s", kc.name, attempt + 1)
+            resp = await kc.call(messages, purpose)
+            log.info("openai_request_success key=%s purpose=%s attempt=%s",
+                     kc.name, purpose, attempt + 1)
             return resp
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             log.warning(
-                "openai_request_error key=%s attempt=%s/%s error_type=%s error=%s",
-                kc.name, attempt + 1, max_attempts, exc.__class__.__name__, exc,
+                "openai_request_error key=%s purpose=%s attempt=%s/%s error_type=%s error=%s",
+                kc.name, purpose, attempt + 1, max_attempts,
+                exc.__class__.__name__, exc,
             )
             if _is_hard_error(exc):
                 log.warning("openai_request_hard_error key=%s", kc.name)
@@ -387,8 +418,13 @@ class OpenAIClient:
         messages: list[dict[str, str]],
         session_id: Optional[str] = None,
         on_failover: Optional[Any] = None,
+        purpose: str = DEFAULT_PURPOSE,
     ) -> ChatResult:
         """Two-key completion, guarded by the circuit breaker (fail fast on outage).
+
+        `purpose` names the calling block (CALL_PURPOSES) and selects the timeout
+        profile — interactive by default, so an unmarked caller keeps the old
+        behaviour.
 
         When the breaker for this client's key_source is open, raise
         CircuitOpenError immediately instead of paying the full failover cost;
@@ -404,18 +440,19 @@ class OpenAIClient:
             remaining = cooldown - (time.monotonic() - b.opened_at)
             if remaining > 0:
                 log.warning(
-                    "openai_circuit_open key_source=%s session_id=%s "
+                    "openai_circuit_open key_source=%s purpose=%s session_id=%s "
                     "cooldown_remaining_sec=%.1f",
-                    self.key_source, session_id, remaining,
+                    self.key_source, purpose, session_id, remaining,
                 )
                 raise CircuitOpenError(
                     f"OpenAI circuit open for {self.key_source}; retry shortly"
                 )
-            log.info("openai_circuit_half_open key_source=%s session_id=%s",
-                     self.key_source, session_id)
+            log.info("openai_circuit_half_open key_source=%s purpose=%s session_id=%s",
+                     self.key_source, purpose, session_id)
 
         try:
-            result = await self._complete_inner(messages, session_id, on_failover)
+            result = await self._complete_inner(messages, session_id, on_failover,
+                                                purpose)
         except Exception:
             if threshold > 0:
                 b.fails += 1
@@ -441,6 +478,7 @@ class OpenAIClient:
         messages: list[dict[str, str]],
         session_id: Optional[str] = None,
         on_failover: Optional[Any] = None,
+        purpose: str = DEFAULT_PURPOSE,
     ) -> ChatResult:
         """Run a chat completion with two-key failover + race.
 
@@ -449,21 +487,42 @@ class OpenAIClient:
         """
         started = time.monotonic()
         log.info(
-            "openai_complete_started session_id=%s fallback_configured=%s key_source=%s",
-            session_id, self.fallback is not None, self.key_source,
+            "openai_complete_started session_id=%s purpose=%s "
+            "fallback_configured=%s key_source=%s",
+            session_id, purpose, self.fallback is not None, self.key_source,
         )
 
         # No fallback configured -> just the primary with backoff.
         if self.fallback is None:
-            resp = await _call_with_backoff(self.primary, messages)
-            log.info("openai_complete_primary_only_finished session_id=%s", session_id)
+            resp = await _call_with_backoff(self.primary, messages, purpose)
+            log.info("openai_complete_primary_only_finished session_id=%s purpose=%s",
+                     session_id, purpose)
+            return self._result(resp, self.primary, started)
+
+        switch_timeout = settings.model_profile(purpose)["key_switch_timeout_sec"]
+
+        # Race disabled for this purpose (switch timeout 0): nobody is waiting on
+        # a background pass, so a speculative second call would only bill the
+        # same work twice. The fallback is still engaged — just on a real error.
+        if switch_timeout <= 0:
+            try:
+                resp = await _call_with_backoff(self.primary, messages, purpose)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "openai_complete_primary_error_failover session_id=%s "
+                    "purpose=%s error_type=%s error=%s (race disabled)",
+                    session_id, purpose, exc.__class__.__name__, exc,
+                )
+                await self._note_failover(on_failover, session_id,
+                                          reason="primary_error")
+                resp = await _call_with_backoff(self.fallback, messages, purpose)
+                return self._result(resp, self.fallback, started)
             return self._result(resp, self.primary, started)
 
         primary_task = asyncio.ensure_future(
-            _call_with_backoff(self.primary, messages)
+            _call_with_backoff(self.primary, messages, purpose)
         )
 
-        switch_timeout = settings.model()["key_switch_timeout_sec"]
         try:
             done, _ = await asyncio.wait({primary_task}, timeout=switch_timeout)
         except Exception:  # noqa: BLE001
@@ -475,22 +534,22 @@ class OpenAIClient:
                 return self._result(primary_task.result(), self.primary, started)
             # Primary failed (hard or exhausted). Fail over immediately.
             log.warning(
-                "openai_complete_primary_error_failover session_id=%s "
+                "openai_complete_primary_error_failover session_id=%s purpose=%s "
                 "error_type=%s error=%s",
-                session_id, exc.__class__.__name__, exc,
+                session_id, purpose, exc.__class__.__name__, exc,
             )
             await self._note_failover(on_failover, session_id, reason="primary_error")
-            resp = await _call_with_backoff(self.fallback, messages)
+            resp = await _call_with_backoff(self.fallback, messages, purpose)
             return self._result(resp, self.fallback, started)
 
         # Primary still silent after switch timeout -> race the fallback.
         log.warning(
-            "openai_complete_switch_timeout session_id=%s timeout_sec=%s",
-            session_id, switch_timeout,
+            "openai_complete_switch_timeout session_id=%s purpose=%s timeout_sec=%s",
+            session_id, purpose, switch_timeout,
         )
         await self._note_failover(on_failover, session_id, reason="switch_timeout")
         fallback_task = asyncio.ensure_future(
-            _call_with_backoff(self.fallback, messages)
+            _call_with_backoff(self.fallback, messages, purpose)
         )
         return await self._race(primary_task, fallback_task, started)
 

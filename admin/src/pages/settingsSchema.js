@@ -85,8 +85,17 @@ export const GROUP_FIELDS = {
     { name: 'reasoning_effort', label: 'Reasoning effort', type: 'select', options: ['', 'minimal', 'low', 'medium', 'high'], help: 'Hidden-reasoning depth. Empty = the model default (parameter omitted).' },
     { name: 'verbosity', label: 'Verbosity', type: 'select', options: ['', 'low', 'medium', 'high'], help: 'Answer length. Empty = the model default (parameter omitted).' },
     { name: 'max_output_tokens', label: 'Max output tokens', type: 'int', min: 1, max: 128000, help: 'Output budget — INCLUDES hidden reasoning tokens, so keep it generous (≈2000).' },
-    { name: 'request_timeout_sec', label: 'Request timeout (sec)', type: 'int', min: 1, max: 600, help: 'Per-request timeout before a retry/failover.' },
-    { name: 'key_switch_timeout_sec', label: 'Key-switch timeout (sec)', type: 'int', min: 1, max: 600, help: 'Silence on the primary key before the fallback key is raced.' },
+    { name: 'request_timeout_sec', label: 'Chat: request timeout (sec)', type: 'int', min: 1, max: 600, help: 'Per-request timeout for a LIVE chat turn (support widget + Telegram replies) before a retry/failover.' },
+    { name: 'key_switch_timeout_sec', label: 'Chat: key-switch timeout (sec)', type: 'int', min: 0, max: 600, help: 'Silence on the primary key before the fallback key is raced, for live chat turns. 0 = never race (fail over only on a real error).' },
+    // Background profiles: the same two knobs per block that talks to the model.
+    // A background pass has nobody waiting, so racing the second key there only
+    // pays for the same work twice — they ship with the race OFF (0).
+    { name: 'agent_request_timeout_sec', label: 'Agent: request timeout (sec)', type: 'int', min: 1, max: 600, help: 'Proactive retention agent (event decisions + ping writing) — nobody is waiting, so it may take longer than a chat turn.' },
+    { name: 'agent_key_switch_timeout_sec', label: 'Agent: key-switch timeout (sec)', type: 'int', min: 0, max: 600, help: 'Race the fallback key for proactive-agent calls after this much silence. 0 (default) = never race — a background retry would just bill the same work twice.' },
+    { name: 'review_request_timeout_sec', label: 'Quality review: request timeout (sec)', type: 'int', min: 1, max: 600, help: 'The AI judge reads a WHOLE conversation per call, so it needs a longer timeout than a chat turn.' },
+    { name: 'review_key_switch_timeout_sec', label: 'Quality review: key-switch timeout (sec)', type: 'int', min: 0, max: 600, help: 'Race the fallback key for quality-review calls after this much silence. 0 (default) = never race.' },
+    { name: 'media_request_timeout_sec', label: 'Media cataloguing: request timeout (sec)', type: 'int', min: 1, max: 600, help: 'Vision pass over an uploaded photo/video (multi-MB image) — the slowest call the stack makes.' },
+    { name: 'media_key_switch_timeout_sec', label: 'Media cataloguing: key-switch timeout (sec)', type: 'int', min: 0, max: 600, help: 'Race the fallback key for media-cataloguing calls after this much silence. 0 (default) = never race.' },
     { name: 'max_attempts', label: 'Max attempts / key', type: 'int', min: 1, max: 10, help: 'Retries per key on transient (429/timeout) errors.' },
     { name: 'max_concurrent_per_key', label: 'Max concurrent / key', type: 'int', min: 1, max: 1000, help: 'Concurrent in-flight requests allowed per API key.' },
   ],

@@ -84,7 +84,8 @@ async def _none() -> None:
 
 
 async def _log_model_failure(session_id, product_id, exc, label: str,
-                             *, ping: bool = False) -> str:
+                             *, ping: bool = False,
+                             consumer: str = "web") -> str:
     """Account a failed OpenAI call (invariant §4) + the sampled admin event.
 
     Called from inside an except block (log.exception picks up the traceback).
@@ -95,6 +96,7 @@ async def _log_model_failure(session_id, product_id, exc, label: str,
     await db.log_ai_interaction(
         session_id, settings.model()["model"], "none",
         0, 0, 0, 0.0, 0, False, error, product_id=product_id,
+        consumer=consumer, source=("agent" if ping else "chat"),
     )
     payload: dict[str, Any] = {"error": error[:300]}
     if ping:
@@ -265,8 +267,11 @@ async def handle_message(
     # --- call model (two-key failover; the product's own keys when set) ------
     # `client` was resolved above, concurrently with the prompt inputs.
     try:
+        # `chat`: a player is watching the typing indicator — the interactive
+        # profile (short timeout, race the fallback key on silence).
         result = await client.complete(
-            messages, session_id=session_id, on_failover=_on_failover
+            messages, session_id=session_id, on_failover=_on_failover,
+            purpose="chat",
         )
         raw_text = result.text
         log.info(
@@ -391,6 +396,7 @@ async def handle_message(
             session_id, result.model, result.key_used,
             result.tokens_in, result.tokens_out, result.cached_in,
             cost, result.latency_ms, True, None, product_id=product_id,
+            consumer="web", source="chat",
         )
         # Record the switch itself so the admin session view can trace the whole
         # path: this detect call belongs to NO chat_messages turn (the answer was
@@ -738,13 +744,16 @@ async def handle_retention_message(
 
     # --- call model (product keys / env failover; client fetched above) -----
     try:
+        # A Telegram dialogue turn is as interactive as a widget turn — the
+        # player is in the chat waiting for the answer.
         result = await client.complete(
-            messages, session_id=session_id, on_failover=_on_failover
+            messages, session_id=session_id, on_failover=_on_failover,
+            purpose="chat",
         )
         raw_text = result.text
     except Exception as exc:  # noqa: BLE001
         await _log_model_failure(session_id, product_id, exc,
-                                 "retention_model_failed")
+                                 "retention_model_failed", consumer="telegram")
         return RetentionReply(
             reply=_model_error_reply(base_lang), lang=base_lang,
             message_count=session.get("message_count", 0), ok=False,
@@ -779,6 +788,7 @@ async def handle_retention_message(
         product_id=product_id,
         link_url=link_url,
         ai_meta=_ai_meta(result, cost),
+        consumer="telegram",
     )
     log.info(
         "retention_turn_done session_id=%s photo=%s handoff=%s stage_up=%s elapsed_ms=%s",
@@ -862,13 +872,17 @@ async def generate_retention_ping(
         history_window=int(settings.general()["history_max_turns"]),
     )
     try:
+        # A proactive ping is written by the agent, not asked for by a player:
+        # the `agent` profile (longer timeout, no fallback-key race) applies.
         result = await client.complete(
-            messages, session_id=session_id, on_failover=_on_failover
+            messages, session_id=session_id, on_failover=_on_failover,
+            purpose="agent",
         )
         raw_text = result.text
     except Exception as exc:  # noqa: BLE001
         await _log_model_failure(session_id, product_id, exc,
-                                 "retention_ping_model_failed", ping=True)
+                                 "retention_ping_model_failed", ping=True,
+                                 consumer="telegram")
         return None
 
     # A ping never hands off or advances stages — the flags are discarded, but

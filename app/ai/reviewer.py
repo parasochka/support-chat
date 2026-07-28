@@ -94,6 +94,12 @@ async def review_session(product_id: int, session: dict[str, Any]
     """Judge ONE conversation and store the verdict. Returns it, or None when
     the transcript is unusable or the model call failed."""
     session_id = str(session["id"])
+    # The judge's spend belongs to the facade of the conversation it read: a
+    # review of a Telegram chat is a retention cost, a review of a widget chat a
+    # support cost. Both land in ai_interaction_logs with session_id NULL (the
+    # reviewed session's own per-turn costs stay clean), so the label is the ONLY
+    # thing that tells the two apart.
+    consumer = session.get("consumer") or "web"
     history = await db.get_history(session_id, limit=200)
     if not any(m.get("role") == "user" for m in history):
         # Nothing the player said — there is no handling to judge.
@@ -102,17 +108,20 @@ async def review_session(product_id: int, session: dict[str, Any]
     if session.get("topic_id"):
         topic = await _topic_slug(session["topic_id"])
     messages = prompts.build_conversation_review_messages(
-        history, consumer=session.get("consumer") or "web", topic=topic,
+        history, consumer=consumer, topic=topic,
         lang=session.get("lang"),
         status=("escalated" if session.get("escalated")
                 else session.get("status")))
     client = await openai_client.client_for_product(product_id)
     try:
-        result = await client.complete(messages)
+        # `review`: a whole transcript per call and nobody waiting for it — its
+        # own (longer) request timeout, and no fallback-key race.
+        result = await client.complete(messages, purpose="review")
     except Exception as exc:  # noqa: BLE001 - one failed review is not fatal
         await db.log_ai_interaction(
             None, settings.model()["model"], "none", 0, 0, 0, 0.0, 0, False,
-            f"quality_review: {exc.__class__.__name__}", product_id=product_id)
+            f"quality_review: {exc.__class__.__name__}", product_id=product_id,
+            consumer=consumer, source="review")
         log.warning("quality_review_model_failed product=%s session=%s error=%s",
                     product_id, session_id, exc)
         return None
@@ -121,14 +130,14 @@ async def review_session(product_id: int, session: dict[str, Any]
     await db.log_ai_interaction(
         None, result.model, result.key_used, result.tokens_in,
         result.tokens_out, result.cached_in, cost, result.latency_ms, True,
-        None, product_id=product_id)
+        None, product_id=product_id, consumer=consumer, source="review")
     verdict = parse_review(result.text)
     if verdict is None:
         log.warning("quality_review_unparseable product=%s session=%s",
                     product_id, session_id)
         return None
     await db.upsert_conversation_review(
-        product_id, session_id, consumer=session.get("consumer") or "web",
+        product_id, session_id, consumer=consumer,
         score=verdict["score"], tags=verdict["tags"],
         summary=verdict["summary"], issues=verdict["issues"],
         kb_gaps=verdict["kb_gaps"],

@@ -44,7 +44,7 @@ def _wire(monkeypatch, *, captured):
     captured["messages"] = None
 
     class _FakeClient:
-        async def complete(self, messages, session_id=None, on_failover=None):
+        async def complete(self, messages, session_id=None, on_failover=None, purpose="chat"):
             captured["messages"] = messages
             return openai_client.ChatResult(
                 text="Чтобы вывести средства, ...", tokens_in=10, tokens_out=5, cached_in=0,

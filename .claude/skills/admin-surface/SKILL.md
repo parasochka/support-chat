@@ -119,16 +119,20 @@ Map of what lives where:
   `sessions_open` tracked separately). **The support dashboard is SUPPORT-only: every
   aggregate excludes `consumer='telegram'`** so retention/Telegram spend and sessions
   never inflate it. Session counts filter `consumer <> 'telegram'`; the cost aggregates
-  (`overview_aggregates`, `timeseries` `cost`/`cost_per_session`) **join `chat_sessions`**
-  so they count only non-telegram turns AND drop the `session_id IS NULL` photo-metadata
-  vision calls (those are retention); `by_topic`/`by_language` add the same exclusion. The
+  (`overview_aggregates`, `timeseries` `cost`/`cost_per_session`) select on the AI log
+  row's OWN attribution labels (`db._LOG_IS_SUPPORT` + `_LOG_SOURCE` = 'chat' — see
+  "Spend attribution" in CLAUDE.md), so they count support DIALOGUE spend only; the AI
+  judge's passes over support conversations come back as a separate
+  `cost_review_usd`/`review_calls` pair (its own dashboard tile) and never move
+  `cost_usd_per_session`. `by_topic`/`by_language` keep the session-join exclusion. The
   Telegram module has its own home — `retention_overview`/`retention_timeseries` — whose
-  cost is scoped on the LOG row's product so it INCLUDES the session-less photo-metadata
-  calls, and is split into `cost_dialog_usd` (engagement turns) + `cost_photo_usd`
-  (photo-metadata generation), summing to `cost_usd`. The SPA renders that split as the two
-  **Telegram cost** panels (`components/charts.jsx` `TelegramCostCharts`: total-over-time +
-  cost-by-source stacked bars), shown on both the dashboard Retention block and Retention →
-  Analytics. The overview also carries AI-API health:
+  cost is scoped on the LOG row's product so it INCLUDES every session-less background
+  call, split into `cost_dialog_usd` + `cost_agent_usd` + `cost_photo_usd` +
+  `cost_review_usd` (+ `cost_legacy_usd`, pre-attribution rows), summing to `cost_usd`.
+  The SPA renders that split as the two **Telegram cost** panels
+  (`components/charts.jsx` `TelegramCostCharts`: total-over-time + cost-by-source stacked
+  bars, the legacy series hidden once it is all zero), shown on both the dashboard
+  Retention block and Retention → Analytics. The overview also carries AI-API health:
   `avg_latency_ms` (mean end-to-end latency of the SUCCESSFUL OpenAI calls — failures
   carry no meaningful latency, so they are excluded from the average), `ai_calls_total`
   and `failed_calls` (from `ai_interaction_logs`). The SPA renders the KPI tiles as two
@@ -236,7 +240,11 @@ Map of what lives where:
   attribution ledger's four cuts (media / CTA pages / idle rungs / triggers) plus
   the summary with cost per reply, return and deposit. Deliberately NOT
   scope-aggregated — the rows are that product's own media/pages/rules and do not
-  merge across brands. Rendered in Retention → Analytics, and merged by id into the
+  merge across brands. Rendered in Retention → Analytics as four cards whose tables
+  are FIXED-layout (label column takes the slack, five ~66px numeric columns, counts
+  with their rate underneath) and full-width below `xl` — they must never scroll
+  horizontally, and a long list scrolls vertically under a sticky header instead;
+  a phone gets a block per row. Also merged by id into the
   Media grid (a reply-rate chip) and the Idle rules table (a Replies column); the
   Decisions ledger gets the per-decision outcome via its own LEFT JOIN in
   `db.list_retention_v2_decisions`.

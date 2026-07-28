@@ -560,14 +560,32 @@ widget never renders a blank bubble. This was the bug behind "a new chat in the 
 hangs" — at `max_output_tokens=700` the wrong-topic routing reasoning ate the whole budget, so the
 switch suggestion was never produced.
 
-The tuning knobs (model name, reasoning effort, verbosity, max output tokens, request timeout,
-key-switch timeout, max attempts, per-key concurrency) are NOT read from env directly — they
-come from the hot-reloaded `model` settings group (`settings.model()`, precedence
-`app_settings` → env → default). Model/reasoning-effort/verbosity/max-tokens/switch-timeout/
-attempts are read **live per call**; `request_timeout_sec` and `max_concurrent_per_key` are
-bound when the client is built, so a `model` write also calls `openai_client.reset()` to
-rebuild the singleton (no effect on the OpenAI-side prefix cache). API keys themselves stay
-secrets in env.
+**Timeouts are PER CALL PURPOSE (`openai_client.CALL_PURPOSES` + `settings.model_profile`).**
+Every caller declares which block of the stack it is — `chat` (support widget turns +
+Telegram bot replies), `agent` (the proactive retention agent: event decisions + ping
+writing), `review` (the quality-review judge) or `media` (photo/video cataloguing) — and the
+request timeout + key-switch timeout resolve from that purpose's fields in the `model`
+settings group (`agent_*`/`review_*`/`media_*`; the unprefixed pair stays the interactive
+one, so a stored row keeps its meaning, and a blank background field falls back to it). The
+race above exists to protect a player watching the typing indicator; a background pass has
+nobody waiting, so the background purposes ship with **`key_switch_timeout_sec = 0` = never
+race** — the fallback key is engaged only on a real error (invariant §5 holds; only the
+speculative second call is dropped). This was a live cost leak: a quality review reads a
+whole transcript and a vision call carries a multi-MB image, so both routinely ran past the
+interactive 15s and raced a second FULL call whose tokens OpenAI bills but which can never be
+accounted (the loser's usage rides in a response that is never received). Background purposes
+also get longer request timeouts (agent 90s, review/media 120s vs the chat's 30s). Every log
+line carries `purpose=…`: a background call has no `session_id`, so without it a
+`switch_timeout` line named no culprit.
+
+The tuning knobs (model name, reasoning effort, verbosity, max output tokens, the per-purpose
+timeouts, max attempts, per-key concurrency) are NOT read from env directly — they come from
+the hot-reloaded `model` settings group (`settings.model()`, precedence `app_settings` → env →
+default). Everything except `max_concurrent_per_key` is read **live per call** (the per-call
+`timeout` kwarg overrides the SDK client's construction-time default, so a timeout edit needs
+no rebuild); `max_concurrent_per_key` is bound when the client is built, so a `model` write
+also calls `openai_client.reset()` to rebuild the singleton (no effect on the OpenAI-side
+prefix cache). API keys themselves stay secrets in env.
 
 ### Anti-spam gate order (`antispam.py`, enforced in `app/api/chat.py`)
 `POST /api/chat/message` checks in this exact order: verify session token (401) →
@@ -962,6 +980,30 @@ adds the CTA pages that actually earned responses as an explicit **hint, not an
 order** (the rotation rule and fitting the moment still win) — it only breaks the
 tie the blind rotation was guessing at.
 
+### SPEND ATTRIBUTION — whose money is it (`ai_interaction_logs.consumer/.source`)
+Every OpenAI call is logged (invariant §4), but only a DIALOGUE turn carries a
+`session_id` — the quality judge, the proactive agent's decision call and the media
+cataloguer all log with `session_id NULL`. The dashboards used to infer the spender from
+that NULL ("session-less ⇒ photo metadata"), which charged the judge and the agent to the
+media bucket and put reviews of SUPPORT conversations on the Telegram dashboard. So each
+row now carries its own labels, denormalized for the same reason `product_id` is:
+**`consumer`** ('web' | 'telegram') = which FACADE the money belongs to — for a quality
+review it is the facade of the REVIEWED conversation, so a support review is support spend
+and a Telegram review retention spend — and **`source`** ('chat' | 'agent' | 'review' |
+'media') = what the call was. Writers: `db.persist_turn` (dialogue, `consumer` from the
+caller), `db.persist_ping_turn` (always telegram/agent), and `db.log_ai_interaction`, whose
+`consumer=`/`source=` arguments every new call site must pass. Readers go through
+`db._LOG_SOURCE` / `_LOG_IS_SUPPORT` / `_LOG_IS_RETENTION` (they need
+`LEFT JOIN chat_sessions s ON s.id = l.session_id`) — never re-derive the spender from
+`session_id IS NULL`. Rows written before the columns existed are classified **at read
+time** (session-bound ⇒ 'chat', session-less ⇒ 'legacy', counted where the old dashboards
+already counted them) so no backfill scan runs on boot and history keeps its totals. The
+support dashboard reports DIALOGUE spend as `cost_usd_total` (the number every per-session
+metric divides) with the judge's passes broken out as `cost_review_usd`; the retention
+dashboard splits its total into dialogue / agent / media / review (+ the legacy remainder,
+whose chart series hides itself once it is all zero). Tests:
+`tests/test_cost_attribution.py`.
+
 ### QUALITY REVIEW — the LLM-as-judge over finished conversations (`app/ai/reviewer.py`)
 A cheap background pass that reads FINISHED conversations of **both** facades
 (support widget + Telegram) and stores one verdict each: a 1..5 score, tags from
@@ -980,7 +1022,9 @@ long enough to judge (`general.quality_review_min_messages`), at most
 re-reviewed only after it GREW since its last verdict (`reviewed_msg_count`, unique
 per session). Runs on the product's own keys/model group; every call lands in
 `ai_interaction_logs` with `session_id=NULL` (invariant §4) so the reviewed
-session's own per-turn costs stay clean. Worker started from `main.py` lifespan
+session's own per-turn costs stay clean — labelled `source='review'` with the
+`consumer` of the conversation it judged, so the spend surfaces in THAT facade's
+analytics (see "Spend attribution"). Worker started from `main.py` lifespan
 under `RETENTION_SCHEDULER_ENABLED` (the deploy switch for every background
 worker), advisory-locked. Tests: `tests/test_quality_review.py`.
 
@@ -996,7 +1040,11 @@ worker), advisory-locked. Tests: `tests/test_quality_review.py`.
 3. Persisting a turn is one atomic transaction (messages + counters + AI log).
 4. Every message → `chat_messages`; every OpenAI call → `ai_interaction_logs`; every state
    transition (escalation, failover, rate-limit, injection) → `admin_events`. Per-turn/
-   per-session rows carry the session's `product_id` (per-product dashboards depend on it).
+   per-session rows carry the session's `product_id` (per-product dashboards depend on it),
+   and every AI log row carries its **spend attribution** — `consumer` ('web'|'telegram',
+   the facade the money belongs to) + `source` ('chat'|'agent'|'review'|'media', what the
+   call was). A background call has no session to join, so an unlabelled row cannot be told
+   apart from any other at read time (see "Spend attribution" below).
 5. Two-key failover races the fallback after the switch timeout; log every failover.
    The keys are the PRODUCT's own (encrypted at rest) when set, else the deploy env keys.
 6. No ORM, no migrations: schema is `init_db()`; new columns via guarded `ALTER`; all DB

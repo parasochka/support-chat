@@ -890,19 +890,23 @@ async def _generate_photo_meta(client: Any, photo: dict[str, Any],
                                                  library_counts=library_counts,
                                                  is_video=is_video)
     try:
-        result = await client.complete(messages)
+        # `media`: a vision call over a multi-MB data URL — the slowest thing the
+        # stack sends, and a batch job at that (own timeout, no key race).
+        result = await client.complete(messages, purpose="media")
     except Exception as exc:  # noqa: BLE001 - one bad photo must not kill the batch
         await db.log_ai_interaction(None, None, None, None, None, None, None,
                                     None, ok=False,
                                     error=f"photo_meta: {exc.__class__.__name__}",
-                                    product_id=product_id)
+                                    product_id=product_id,
+                                    consumer="telegram", source="media")
         return {"id": photo["id"], "ok": False, "error": "model call failed"}
     cost = openai_client.compute_cost(result.model, result.tokens_in, result.tokens_out,
                            result.cached_in)
     await db.log_ai_interaction(None, result.model, result.key_used,
                                 result.tokens_in, result.tokens_out,
                                 result.cached_in, cost, result.latency_ms,
-                                ok=True, error=None, product_id=product_id)
+                                ok=True, error=None, product_id=product_id,
+                                consumer="telegram", source="media")
     try:
         meta = _parse_photo_meta(result.text, vip_tiers=vip_tiers,
                                  max_stage=max_stage)

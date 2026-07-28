@@ -192,10 +192,13 @@ const StackedBarChart = ({
  * of the support dashboard (it carries the photo-metadata vision calls and the
  * long engagement chats), so these are its dedicated home:
  *   1. total TG cost per day;
- *   2. the same cost split by driver — engagement dialog vs the on-demand
- *      photo-metadata generation — so the two read apart.
- * `data` = the retention timeseries rows (cost_usd / cost_dialog_usd /
- * cost_photo_usd per day).
+ *   2. the same cost split by DRIVER, so "the bot talks a lot" reads apart from
+ *      "the agent pings a lot" and from the background passes (media
+ *      cataloguing, the AI judge). The drivers sum back to the total.
+ * `data` = the retention timeseries rows (cost_usd + cost_dialog_usd /
+ * cost_agent_usd / cost_photo_usd / cost_review_usd / cost_legacy_usd per day).
+ * `cost_legacy_usd` is spend logged before attribution shipped — the series is
+ * dropped when every bucket is zero, so it disappears once history rolls past.
  */
 export const TelegramCostCharts = ({ data, height = 200 }) => (
   <Grid container spacing={2}>
@@ -226,14 +229,11 @@ export const TelegramCostCharts = ({ data, height = 200 }) => (
             display="block"
             sx={{ mb: 1 }}
           >
-            {t('Engagement dialog vs on-demand photo-metadata generation.')}
+            {t('Player dialogue, the proactive agent, media cataloguing and the AI quality judge — the four drivers sum to the total.')}
           </Typography>
           <StackedBarChart
             data={data}
-            series={[
-              { key: 'cost_dialog_usd', label: t('Dialog') },
-              { key: 'cost_photo_usd', label: t('Photo metadata') },
-            ]}
+            series={costSourceSeries(data)}
             height={height}
             valueFormatter={usd}
           />
@@ -242,6 +242,24 @@ export const TelegramCostCharts = ({ data, height = 200 }) => (
     </Grid>
   </Grid>
 );
+
+// The drivers behind Telegram spend. `legacy` is only shown while rows written
+// before spend attribution existed are still inside the window — an always-zero
+// series would just read as a broken bucket. Labels are resolved per call (t()
+// reads the language chosen at runtime, so a module-level array would freeze the
+// wrong one).
+const costSourceSeries = (data) =>
+  [
+    { key: 'cost_dialog_usd', label: t('Dialogue') },
+    { key: 'cost_agent_usd', label: t('Proactive agent') },
+    { key: 'cost_photo_usd', label: t('Media cataloguing') },
+    { key: 'cost_review_usd', label: t('Quality review') },
+    { key: 'cost_legacy_usd', label: t('Unattributed (legacy)') },
+  ].filter(
+    (s) =>
+      s.key !== 'cost_legacy_usd' ||
+      (data || []).some((row) => Number(row?.cost_legacy_usd) > 0)
+  );
 
 /**
  * Small vertical bar chart for a short categorical distribution

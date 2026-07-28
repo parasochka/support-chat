@@ -135,7 +135,7 @@ class _FakeClient:
     def __init__(self, text):
         self._text = text
 
-    async def complete(self, messages, session_id=None, on_failover=None):
+    async def complete(self, messages, session_id=None, on_failover=None, purpose="chat"):
         return _fake_result(self._text)
 
 

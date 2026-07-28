@@ -17,7 +17,7 @@ import { FunnelBars, MiniBarChart, SeriesLineChart, TelegramCostCharts } from '.
 import { Kpi, RETENTION_FUNNEL_STEPS, RETENTION_TIMESERIES_SERIES } from '../../components/Kpi';
 import { t } from '../../i18n';
 import { fmtDateTime } from '../../lib/fmt';
-import { wideTableSx } from '../../lib/table';
+import { compactTableSx, wideTableSx } from '../../lib/table';
 import useIsMobile from '../../lib/useIsMobile';
 
 // ---------------------------------------------------------------------------
@@ -51,7 +51,48 @@ const latency = (s) => {
   return `${Math.round(s / 3600)}h`;
 };
 
-const OutcomeTable = ({ rows, firstLabel, renderFirst, minWidth = 640, empty }) => {
+// Long CTA URLs and media descriptions are the norm here, and one unbreakable
+// string used to push the numeric columns off the card.
+// One line of text on the table layout, free to wrap in the phone's block
+// layout — the same component serves both.
+const ellipsis = {
+  display: 'block',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: { xs: 'normal', sm: 'nowrap' },
+  overflowWrap: { xs: 'anywhere', sm: 'normal' },
+};
+
+/** A count with its rate underneath — vertical, so the column stays ~64px. */
+const CountCell = ({ value, rate }) => (
+  <TableCell align="right" sx={{ verticalAlign: 'top' }}>
+    <Typography variant="body2" component="div" sx={{ lineHeight: 1.3 }}>
+      {value ?? 0}
+    </Typography>
+    {rate != null && (
+      <Typography variant="caption" color="text.secondary" component="div" sx={{ lineHeight: 1.2 }}>
+        {pct(rate)}
+      </Typography>
+    )}
+  </TableCell>
+);
+
+// The numeric columns are FIXED-width and the label column takes whatever is
+// left (tableLayout: 'fixed'), so the table always fits its card — no
+// horizontal scroll, on any width. Widths are sized for the real figures: a
+// 4-digit count plus a percentage under it.
+const OUTCOME_COL_PX = 66;
+
+/**
+ * One cut of the attribution ledger. Above `sm` a fixed-layout table; on a
+ * phone a block per row (six columns at 400px turn into a one-word-per-line
+ * ribbon whose last figures fall off the edge). On the table layout a long list
+ * scrolls VERTICALLY inside the card under a sticky header — the media cut
+ * returns up to 100 rows, which would otherwise push the rest of the page far
+ * below the fold. The phone layout keeps the page's own scroll (a scrollable
+ * box inside a touch page is a trap).
+ */
+const OutcomeTable = ({ rows, firstLabel, renderFirst, empty, maxHeight = 340 }) => {
   const isMobile = useIsMobile();
   if (!rows?.length) {
     return (
@@ -61,9 +102,6 @@ const OutcomeTable = ({ rows, firstLabel, renderFirst, minWidth = 640, empty }) 
     );
   }
   if (isMobile) {
-    // Six columns whose first one is a caption: squeezed onto a phone the text
-    // becomes a one-word-per-line ribbon and the last figures fall off the
-    // edge. One block per row instead, numbers on their own line.
     return (
       <Stack spacing={1}>
         {rows.map((r, i) => (
@@ -71,20 +109,42 @@ const OutcomeTable = ({ rows, firstLabel, renderFirst, minWidth = 640, empty }) 
             <Typography variant="body2" component="div" sx={{ overflowWrap: 'anywhere' }}>
               {renderFirst(r)}
             </Typography>
-            <Typography variant="caption" color="text.secondary" component="div">
-              {t('Sent')}: {r.sends} · {t('Replied')}: {r.replies} ({pct(r.reply_rate)}) ·{' '}
-              {t('Returned')}: {r.returns} · {t('Deposited')}: {r.deposits} · {t('Avg reply')}:{' '}
-              {latency(r.avg_reply_latency_sec)}
-            </Typography>
+            <Stack
+              direction="row"
+              spacing={1.5}
+              useFlexGap
+              sx={{ flexWrap: 'wrap', mt: 0.5 }}
+            >
+              <MobileStat label={t('Sent')} value={r.sends} />
+              <MobileStat label={t('Replied')} value={r.replies} rate={r.reply_rate} />
+              <MobileStat label={t('Returned')} value={r.returns} rate={r.return_rate} />
+              <MobileStat label={t('Deposited')} value={r.deposits} rate={r.deposit_rate} />
+              <MobileStat label={t('Avg reply')} value={latency(r.avg_reply_latency_sec)} />
+            </Stack>
           </Box>
         ))}
       </Stack>
     );
   }
   return (
-    <Box sx={{ overflowX: 'auto' }}>
-      <Table size="small" sx={wideTableSx(minWidth)}>
-        <TableHead>
+    <Box sx={{ maxHeight, overflowY: 'auto' }}>
+      <Table size="small" sx={{ tableLayout: 'fixed', ...compactTableSx }}>
+        <colgroup>
+          <col />
+          <col style={{ width: OUTCOME_COL_PX }} />
+          <col style={{ width: OUTCOME_COL_PX }} />
+          <col style={{ width: OUTCOME_COL_PX }} />
+          <col style={{ width: OUTCOME_COL_PX }} />
+          <col style={{ width: OUTCOME_COL_PX }} />
+        </colgroup>
+        <TableHead
+          sx={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 1,
+            bgcolor: 'background.paper',
+          }}
+        >
           <TableRow>
             <TableCell>{firstLabel}</TableCell>
             <TableCell align="right">{t('Sent')}</TableCell>
@@ -97,20 +157,66 @@ const OutcomeTable = ({ rows, firstLabel, renderFirst, minWidth = 640, empty }) 
         <TableBody>
           {rows.map((r, i) => (
             <TableRow key={i}>
-              <TableCell>{renderFirst(r)}</TableCell>
-              <TableCell align="right">{r.sends}</TableCell>
-              <TableCell align="right">
-                {r.replies} <Typography component="span" variant="caption" color="text.secondary">({pct(r.reply_rate)})</Typography>
+              <TableCell sx={{ verticalAlign: 'top' }}>{renderFirst(r)}</TableCell>
+              <CountCell value={r.sends} />
+              <CountCell value={r.replies} rate={r.reply_rate} />
+              <CountCell value={r.returns} rate={r.return_rate} />
+              <CountCell value={r.deposits} rate={r.deposit_rate} />
+              <TableCell align="right" sx={{ verticalAlign: 'top' }}>
+                {latency(r.avg_reply_latency_sec)}
               </TableCell>
-              <TableCell align="right">{r.returns}</TableCell>
-              <TableCell align="right">{r.deposits}</TableCell>
-              <TableCell align="right">{latency(r.avg_reply_latency_sec)}</TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
     </Box>
   );
+};
+
+const MobileStat = ({ label, value, rate }) => (
+  <Typography variant="caption" color="text.secondary" component="span">
+    {label}: <Box component="span" sx={{ color: 'text.primary' }}>{value ?? 0}</Box>
+    {rate != null ? ` (${pct(rate)})` : ''}
+  </Typography>
+);
+
+/**
+ * The label column of an outcome row: a title that truncates instead of
+ * widening the table, plus a muted detail line (also truncated). `title` keeps
+ * the full value reachable on hover.
+ */
+const OutcomeLabel = ({ title, detail }) => (
+  <>
+    <Typography
+      variant="body2"
+      component="span"
+      title={typeof title === 'string' ? title : undefined}
+      sx={ellipsis}
+    >
+      {title}
+    </Typography>
+    {detail ? (
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        component="span"
+        title={typeof detail === 'string' ? detail : undefined}
+        sx={ellipsis}
+      >
+        {detail}
+      </Typography>
+    ) : null}
+  </>
+);
+
+/** A CTA page reads as its path — the origin repeats on every row. */
+const linkLabel = (url) => {
+  try {
+    const u = new URL(url);
+    return `${u.pathname}${u.search}` || '/';
+  } catch {
+    return url;
+  }
 };
 
 const EffectivenessSection = ({ data }) => {
@@ -140,89 +246,79 @@ const EffectivenessSection = ({ data }) => {
           hint={t('windows elapsed — the rest may still change')}
         />
       </Grid>
+      {/* Two-up only from `xl`. Below that each cut gets the full width: a
+          half-width card on a 1440px laptop left ~570px for six columns, which
+          is what forced the horizontal scroll these tables used to have. */}
       <Grid container spacing={2} sx={{ mb: 2 }}>
-        <Grid size={{ xs: 12, lg: 6 }}>
-          <Card sx={{ height: '100%' }}>
-            <CardContent>
-              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-                {t('Media')}
-              </Typography>
-              <OutcomeTable
-                rows={data?.media}
-                firstLabel={t('Photo / video')}
-                empty={t('No media delivered in this range yet.')}
-                renderFirst={(r) => (
-                  <>
-                    #{r.photo_id} · {r.media_type}
-                    <Typography variant="caption" color="text.secondary" display="block">
-                      {(r.description || t('(deleted)')).slice(0, 70)}
-                    </Typography>
-                  </>
-                )}
+        <OutcomeCard title={t('Media')}>
+          <OutcomeTable
+            rows={data?.media}
+            firstLabel={t('Photo / video')}
+            empty={t('No media delivered in this range yet.')}
+            renderFirst={(r) => (
+              <OutcomeLabel
+                title={`#${r.photo_id} · ${r.media_type}`}
+                detail={r.description || t('(deleted)')}
               />
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid size={{ xs: 12, lg: 6 }}>
-          <Card sx={{ height: '100%' }}>
-            <CardContent>
-              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-                {t('Site pages (CTA buttons)')}
-              </Typography>
-              <OutcomeTable
-                rows={data?.links}
-                firstLabel={t('Page')}
-                minWidth={560}
-                empty={t('No CTA buttons attached in this range yet.')}
-                renderFirst={(r) => r.link_url}
+            )}
+          />
+        </OutcomeCard>
+        <OutcomeCard title={t('Site pages (CTA buttons)')}>
+          <OutcomeTable
+            rows={data?.links}
+            firstLabel={t('Page')}
+            empty={t('No CTA buttons attached in this range yet.')}
+            renderFirst={(r) => (
+              <OutcomeLabel title={linkLabel(r.link_url)} detail={r.link_url} />
+            )}
+          />
+        </OutcomeCard>
+        <OutcomeCard title={t('Idle ladder rungs')}>
+          <OutcomeTable
+            rows={data?.idle_rules}
+            firstLabel={t('Rule')}
+            empty={t('No idle pings fired in this range yet.')}
+            renderFirst={(r) => (
+              <OutcomeLabel
+                title={r.name}
+                detail={[
+                  r.inactivity_days != null ? `${r.inactivity_days}d` : null,
+                  r.trigger_kind || null,
+                  r.enabled === false ? t('disabled') : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
               />
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid size={{ xs: 12, lg: 6 }}>
-          <Card sx={{ height: '100%' }}>
-            <CardContent>
-              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-                {t('Idle ladder rungs')}
-              </Typography>
-              <OutcomeTable
-                rows={data?.idle_rules}
-                firstLabel={t('Rule')}
-                minWidth={560}
-                empty={t('No idle pings fired in this range yet.')}
-                renderFirst={(r) => (
-                  <>
-                    {r.name}
-                    <Typography variant="caption" color="text.secondary" display="block">
-                      {r.inactivity_days != null ? `${r.inactivity_days}d · ` : ''}
-                      {r.trigger_kind || ''} {r.enabled === false ? `· ${t('disabled')}` : ''}
-                    </Typography>
-                  </>
-                )}
-              />
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid size={{ xs: 12, lg: 6 }}>
-          <Card sx={{ height: '100%' }}>
-            <CardContent>
-              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-                {t('Triggers')}
-              </Typography>
-              <OutcomeTable
-                rows={data?.events}
-                firstLabel={t('Trigger')}
-                minWidth={560}
-                empty={t('No proactive touches in this range yet.')}
-                renderFirst={(r) => r.event_name}
-              />
-            </CardContent>
-          </Card>
-        </Grid>
+            )}
+          />
+        </OutcomeCard>
+        <OutcomeCard title={t('Triggers')}>
+          <OutcomeTable
+            rows={data?.events}
+            firstLabel={t('Trigger')}
+            empty={t('No proactive touches in this range yet.')}
+            renderFirst={(r) => (
+              <OutcomeLabel title={r.event_name} />
+            )}
+          />
+        </OutcomeCard>
       </Grid>
     </>
   );
 };
+
+const OutcomeCard = ({ title, children }) => (
+  <Grid size={{ xs: 12, xl: 6 }}>
+    <Card sx={{ height: '100%' }}>
+      <CardContent>
+        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+          {title}
+        </Typography>
+        {children}
+      </CardContent>
+    </Card>
+  </Grid>
+);
 
 const AnalyticsTab = ({ productId }) => {
   const isMobile = useIsMobile();
@@ -315,7 +411,7 @@ const AnalyticsTab = ({ productId }) => {
         <KpiCard
           label={t('Cost (USD)')}
           value={inRange?.cost_usd != null ? `$${Number(inRange.cost_usd).toFixed(4)}` : undefined}
-          hint={t('TG dialog + photo metadata')}
+          hint={t('dialogue + agent + media + review')}
         />
       </Grid>
 

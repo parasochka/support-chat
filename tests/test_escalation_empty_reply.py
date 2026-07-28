@@ -32,7 +32,7 @@ def test_control_only_escalation_gets_visible_handoff_copy(monkeypatch):
         pass
 
     class _FakeClient:
-        async def complete(self, messages, session_id=None, on_failover=None):
+        async def complete(self, messages, session_id=None, on_failover=None, purpose="chat"):
             return openai_client.ChatResult(
                 text="[[ESCALATE]]\n[[LANG:ru]]", tokens_in=10, tokens_out=2, cached_in=0,
                 model="gpt-test", key_used="primary", latency_ms=1,
