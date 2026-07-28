@@ -161,6 +161,21 @@ in mind for every change:
   page (`frontend/test.html`) carries exactly one link to each. Update the
   matching page when a public contract changes; keep the family in the same
   house style.
+  The one **GENERATED** member is `GET /integration-reference` — the API &
+  interop reference handed to OTHER teams' programmers to match this service
+  against their systems. It is ONE flat, filterable table: a row is an
+  integration UNIT (endpoint, wire field, header, canonical event) with its
+  format, obligation, example, who calls whom, authorization, limits and error
+  codes. Its scope is deliberately narrow — **only what crosses a system
+  boundary**. Product-internal surface (env vars, the hot settings groups,
+  prompt/KB variables, the translations registry, the DB schema) is OUT on
+  purpose: nobody outside edits it, and it dilutes the contract surface. It is
+  NOT hand-edited: `scripts/build_api_reference.py` renders BOTH
+  `frontend/integration-reference.html` and the downloadable
+  `frontend/api-reference.xlsx` (linked from the page, served by the `/static`
+  mount) from ONE `ROWS` list, so page and workbook can never drift apart. When
+  a public contract changes, edit `ROWS` and re-run
+  `python scripts/build_api_reference.py`; never hand-edit the two generated files.
 - **The prompt template stays the one shared, deploy-level artifact** — brands
   differ only via prompt variables + KB + translations + settings, never per-tenant
   prompt forks.
