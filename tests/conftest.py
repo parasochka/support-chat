@@ -119,16 +119,25 @@ class Row(dict):
 
 
 class _Tx:
-    """`conn.transaction()` — records nothing, just satisfies `async with`."""
+    """`conn.transaction()` — counts entries AND drops BEGIN/COMMIT markers
+    into `conn.calls`, so an atomicity test can assert not just "one
+    transaction happened" but that every statement landed INSIDE it (a
+    regression that moved a write before the `async with conn.transaction()`
+    would keep the count at 1 and only the ordering would catch it)."""
+
+    BEGIN = "-- BEGIN"
+    COMMIT = "-- COMMIT"
 
     def __init__(self, conn):
         self._conn = conn
 
     async def __aenter__(self):
         self._conn.transactions += 1
+        self._conn.calls.append((self.BEGIN, ()))
         return None
 
     async def __aexit__(self, *a):
+        self._conn.calls.append((self.COMMIT, ()))
         return False
 
 

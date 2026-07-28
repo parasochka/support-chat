@@ -53,6 +53,16 @@ log = logging.getLogger(__name__)
 # Arbitrary but stable: the advisory-lock key for the agent sweep.
 _ADVISORY_LOCK_KEY = 0x50494E56  # "PINV"
 
+# How long a manual «Run now» / «Process queue now» waits behind the worker's
+# advisory lock before giving up with WorkerBusy. Long enough to queue behind
+# a normal sweep tail, short enough that a wedged sweep can't hang the admin's
+# HTTP request forever (the dedicated lock connection has no command_timeout).
+_MANUAL_LOCK_WAIT_SEC = 120
+
+
+class WorkerBusy(RuntimeError):
+    """A manual run could not take the worker lock within the wait ceiling."""
+
 # Events that may wake the agent at all. Everything else is state food: it
 # feeds the resolver/bridge and is marked processed silently — no model call,
 # no ledger row (bet_settled is special-cased: only a high-loss window crossing
@@ -191,6 +201,36 @@ async def scheduler_loop() -> None:
             log.exception("retention_v2_sweep_failed")
 
 
+# The sweep's long-lived lock connection. run_due_events fires every
+# worker_interval_sec (default 5s); opening a fresh dedicated connection per
+# tick meant ~17k TLS+auth handshakes a day per instance even with an empty
+# queue. The connection carries ONLY the advisory lock/unlock queries (all
+# real work rides short bounded pool acquires), so one reusable session is
+# safe; any error on it drops the cache and the next tick reconnects —
+# closing the session releases the advisory lock server-side, so a dropped
+# connection can never wedge the lock for other instances.
+_worker_lock_conn: Optional[Any] = None
+
+
+async def _get_worker_lock_conn() -> Any:
+    global _worker_lock_conn
+    conn = _worker_lock_conn
+    if conn is None or conn.is_closed():
+        conn = await db.dedicated_connection()
+        _worker_lock_conn = conn
+    return conn
+
+
+async def _drop_worker_lock_conn() -> None:
+    global _worker_lock_conn
+    conn, _worker_lock_conn = _worker_lock_conn, None
+    if conn is not None:
+        try:
+            await conn.close()
+        except Exception:  # noqa: BLE001 - already dropping it
+            pass
+
+
 async def run_due_events() -> dict[str, Any]:
     """One sweep across all v2-enabled products (advisory-locked)."""
     # A DEDICATED connection, not a pool slot (the same reasoning as
@@ -198,31 +238,35 @@ async def run_due_events() -> dict[str, Any]:
     # whole pass — minutes, with the agent's 90s model calls inside — so parking
     # it on one of the pool's 10 slots starves the request paths for the
     # duration, and the pool's command_timeout=30 would kill a blocking
-    # pg_advisory_lock wait outright.
-    conn = await db.dedicated_connection()
+    # pg_advisory_lock wait outright. Reused across ticks (see above).
+    conn = await _get_worker_lock_conn()
     try:
         got = await conn.fetchval("SELECT pg_try_advisory_lock($1)",
                                   _ADVISORY_LOCK_KEY)
-        if not got:
-            return {"skipped": "another instance holds the lock"}
+    except Exception:
+        await _drop_worker_lock_conn()
+        raise
+    if not got:
+        return {"skipped": "another instance holds the lock"}
+    try:
+        totals: dict[str, Any] = {"products": 0, "events": 0,
+                                  "decided": 0, "sent": 0}
+        for product in await db.list_retention_products():
+            stats = await run_product_events(product)
+            totals["products"] += 1
+            for k in ("events", "decided", "sent", "idle_sent",
+                      "idle_failed"):
+                if stats.get(k):
+                    totals[k] = totals.get(k, 0) + stats[k]
+        return totals
+    finally:
         try:
-            totals: dict[str, Any] = {"products": 0, "events": 0,
-                                      "decided": 0, "sent": 0}
-            for product in await db.list_retention_products():
-                stats = await run_product_events(product)
-                totals["products"] += 1
-                for k in ("events", "decided", "sent", "idle_sent",
-                          "idle_failed"):
-                    if stats.get(k):
-                        totals[k] = totals.get(k, 0) + stats[k]
-            return totals
-        finally:
             await conn.execute("SELECT pg_advisory_unlock($1)",
                                _ADVISORY_LOCK_KEY)
-    finally:
-        # Closing the session releases the advisory lock too, so a failed
-        # explicit unlock can never wedge the sweep for other instances.
-        await conn.close()
+        except Exception:  # noqa: BLE001 - closing releases the lock instead
+            log.warning("retention_v2_unlock_failed, dropping worker conn",
+                        exc_info=True)
+            await _drop_worker_lock_conn()
 
 
 async def run_product_events_locked(product: dict[str, Any], *,
@@ -240,10 +284,21 @@ async def run_product_events_locked(product: dict[str, Any], *,
     minutes, and on a pool connection the pool's command_timeout=30 kills the
     BLOCKING pg_advisory_lock itself — so «Process queue now» failed with a
     query timeout instead of waiting its turn, exactly when the worker was busy.
+    The wait is CEILINGED at _MANUAL_LOCK_WAIT_SEC though: a dedicated
+    connection has no command_timeout at all, so a wedged sweep would
+    otherwise hang the button's HTTP request forever — past the ceiling the
+    run raises WorkerBusy and the API answers 409 instead.
     """
     conn = await db.dedicated_connection()
     try:
-        await conn.execute("SELECT pg_advisory_lock($1)", _ADVISORY_LOCK_KEY)
+        try:
+            await asyncio.wait_for(
+                conn.execute("SELECT pg_advisory_lock($1)",
+                             _ADVISORY_LOCK_KEY),
+                timeout=_MANUAL_LOCK_WAIT_SEC)
+        except asyncio.TimeoutError:
+            raise WorkerBusy(
+                "the retention worker is mid-sweep; try again shortly")
         try:
             return await run_product_events(product, limit=limit,
                                             ignore_send_delay=True)

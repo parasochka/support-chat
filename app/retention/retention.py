@@ -1387,17 +1387,20 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
             result, err_code, _ = await send_by_id(
                 chat_id, file_id, caption=caption, parse_mode=None,
                 reply_markup=photo_markup, disable_notification=silent)
-    if result is None and caption_rejected:
-        # The binary is fine — a re-upload would fail on the same caption and
-        # cost a multi-MB Volume read first. Deliver the text instead.
-        return await _fallback_text()
     if result is None:
         if err_code == 403:
             # The player blocked the bot — flip unreachable so the guards stop
-            # retrying (mirrors delivery.send_text). Do NOT burn a Volume read +
-            # re-upload on a 403; it would fail again identically.
+            # retrying (mirrors delivery.send_text). Checked BEFORE the
+            # caption shortcut: the block can land between the HTML attempt
+            # and the plain retry, and the text fallback would fail on the
+            # same 403 without ever flipping the flag. Do NOT burn a Volume
+            # read + re-upload on a 403; it would fail again identically.
             await db.set_retention_unreachable(int(ru["id"]), True)
             return None
+        if caption_rejected:
+            # The binary is fine — a re-upload would fail on the same caption
+            # and cost a multi-MB Volume read first. Deliver the text instead.
+            return await _fallback_text()
         # No cached id (or a stale one) — upload from the Volume. Off-thread:
         # a multi-MB Volume read on the event loop stalls every concurrent turn.
         content = await asyncio.to_thread(_read_media, photo.get("storage_ref"))

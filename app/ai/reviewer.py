@@ -102,7 +102,14 @@ async def review_session(product_id: int, session: dict[str, Any]
     consumer = session.get("consumer") or "web"
     history = await db.get_history(session_id, limit=200)
     if not any(m.get("role") == "user" for m in history):
-        # Nothing the player said — there is no handling to judge.
+        # Nothing the player said — there is no handling to judge. Still book
+        # the attempt (free — no model call): the selection SQL's EXISTS guard
+        # checks the WHOLE transcript, so a long session whose only user turn
+        # is older than this window would otherwise be re-selected on every
+        # pass, permanently wasting a batch slot.
+        await db.record_review_attempt(
+            product_id, session_id, consumer=consumer,
+            reviewed_msg_count=int(session.get("message_count") or 0))
         return None
     topic = None
     if session.get("topic_id"):
@@ -133,13 +140,16 @@ async def review_session(product_id: int, session: dict[str, Any]
         None, product_id=product_id, consumer=consumer, source="review")
     verdict = parse_review(result.text)
     if verdict is None:
-        # Record the failed ATTEMPT. Without a row `sessions_for_review` keeps
-        # selecting this chat (it filters on `reviewed_msg_count`), so an
-        # unparseable transcript would be paid for on every pass forever —
-        # and outside the daily cap, which only counts stored rows.
-        await db.upsert_conversation_review(
-            product_id, session_id, consumer=consumer, score=None, tags=[],
-            summary="", issues=[], kb_gaps=[],
+        # Record the failed ATTEMPT — bookkeeping only, never through the
+        # verdict upsert. Without a row `sessions_for_review` keeps selecting
+        # this chat (it filters on `reviewed_msg_count`), so an unparseable
+        # transcript would be paid for on every pass forever — and outside the
+        # daily cap, which only counts stored rows. `record_review_attempt`
+        # advances the bookkeeping WITHOUT touching verdict fields: a session
+        # that was reviewed, grew, and then failed its re-review keeps its
+        # previously stored verdict on the Quality page.
+        await db.record_review_attempt(
+            product_id, session_id, consumer=consumer,
             reviewed_msg_count=int(session.get("message_count") or 0),
             model=result.model, cost_usd=float(cost or 0))
         log.warning("quality_review_unparseable product=%s session=%s",
@@ -212,9 +222,18 @@ async def run_product_reviews(product: dict[str, Any]) -> dict[str, Any]:
 
 async def run_due_reviews() -> dict[str, Any]:
     """One pass across every active product (advisory-locked, like the
-    retention worker: two instances must not review the same chat twice)."""
-    pool = db.pool()
-    async with pool.acquire() as conn:
+    retention worker: two instances must not review the same chat twice).
+
+    The lock rides a DEDICATED connection (db.dedicated_connection), not a
+    pool slot — the same contract as retention_v2.run_due_events and the media
+    normalizer: this pass holds the lock across every product × up to
+    _PASS_BATCH review calls with the 120s `review` timeout, i.e. potentially
+    tens of minutes, and parking that on a pooled connection starves one of
+    the pool's 10 request slots for the duration (and the unbounded
+    pool.acquire() wait opted this path out of DB_ACQUIRE_TIMEOUT_SEC).
+    """
+    conn = await db.dedicated_connection()
+    try:
         got = await conn.fetchval("SELECT pg_try_advisory_lock($1)",
                                   _ADVISORY_LOCK_KEY)
         if not got:
@@ -231,6 +250,10 @@ async def run_due_reviews() -> dict[str, Any]:
         finally:
             await conn.execute("SELECT pg_advisory_unlock($1)",
                                _ADVISORY_LOCK_KEY)
+    finally:
+        # Closing the session releases the advisory lock too, so a failed
+        # explicit unlock can never wedge the sweep for other instances.
+        await conn.close()
 
 
 # Arbitrary but stable advisory-lock key for the review sweep ("QREV").

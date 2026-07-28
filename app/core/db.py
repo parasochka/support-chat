@@ -1330,15 +1330,19 @@ async def seed_kb_variables(conn: Optional[asyncpg.Connection] = None,
     Runs at boot for the default product and at creation time for every new
     product, so each casino starts with the full placeholder registry.
     """
-    target = conn or _pool
-    await target.executemany(
-        """
+    query = """
         INSERT INTO kb_variables (product_id, key, description, value)
         VALUES ($1, $2, $3, $4)
         ON CONFLICT (product_id, key) DO NOTHING
-        """,
-        [(product_id, k, d, v) for k, d, v in _DEFAULT_KB_VARIABLES],
-    )
+        """
+    rows = [(product_id, k, d, v) for k, d, v in _DEFAULT_KB_VARIABLES]
+    if conn is not None:
+        await conn.executemany(query, rows)
+    else:
+        # The bounded module helper, NOT _pool.executemany — a bare pool call
+        # waits for a free slot with no ceiling (this was the one query in the
+        # module left bypassing _acquire()).
+        await _executemany(query, rows)
 
 
 async def seed_starter_kb(product_id: int) -> None:
@@ -3846,7 +3850,8 @@ async def count_unprocessed_retention_events(product_id: int) -> int:
     return int(val or 0)
 
 
-async def prune_retention_events(keep_days: int = 90) -> int:
+async def prune_retention_events(keep_days: int = 90, *,
+                                 batch: int = 20_000) -> int:
     """Delete canonical events older than keep_days (all products).
 
     The event log is append-only and can grow by millions of rows/month (partners
@@ -3866,20 +3871,36 @@ async def prune_retention_events(keep_days: int = 90) -> int:
 
     Decision-ledger rows that referenced a pruned event keep their event_name
     snapshot and drop the FK link (there is no ON DELETE clause, so the link
-    must be nulled first)."""
+    must be nulled first).
+
+    BATCHED on purpose: the very deployments this prune exists for arrive with
+    a backlog of millions of rows, and one unbatched DELETE of that backlog
+    cannot finish inside the pool's command_timeout — it would time out, roll
+    back whole, and retry identically on every pass forever. Each batch is its
+    own short transaction, so partial progress always sticks and the hourly
+    cadence drains any backlog within a few passes."""
     cutoff = ("COALESCE(processed_at, created_at) "
               "< now() - make_interval(days => $1)")
-    async with _acquire() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                "UPDATE retention_v2_decisions SET event_pk = NULL "
-                "WHERE event_pk IN (SELECT id FROM retention_events "
-                f"  WHERE {cutoff})",
-                int(keep_days))
-            result = await conn.execute(
-                f"DELETE FROM retention_events WHERE {cutoff}",
-                int(keep_days))
-    return _affected(result)
+    removed = 0
+    while True:
+        async with _acquire() as conn:
+            async with conn.transaction():
+                rows = await conn.fetch(
+                    f"SELECT id FROM retention_events WHERE {cutoff} "
+                    "ORDER BY id LIMIT $2",
+                    int(keep_days), int(batch))
+                ids = [r["id"] for r in rows]
+                if not ids:
+                    return removed
+                await conn.execute(
+                    "UPDATE retention_v2_decisions SET event_pk = NULL "
+                    "WHERE event_pk = ANY($1::bigint[])", ids)
+                result = await conn.execute(
+                    "DELETE FROM retention_events WHERE id = ANY($1::bigint[])",
+                    ids)
+        removed += _affected(result)
+        if len(ids) < int(batch):
+            return removed
 
 
 async def list_retention_events(product_id: int, page: int = 1,
@@ -4545,12 +4566,11 @@ async def upsert_conversation_review(
         cost_usd: Optional[float] = None) -> int:
     """Store (or refresh) the verdict for one conversation.
 
-    A `score` of None records a FAILED attempt (the model answered but the
-    verdict could not be parsed). Writing that row is what stops the judge from
-    paying for the same unparseable transcript on every pass: `reviewed_msg_count`
-    is what `sessions_for_review` compares against, so the chat is only retried
-    once it has grown. Such rows are excluded from the Quality reads below —
-    they are bookkeeping, not verdicts — but they DO count toward the daily cap
+    Replaces the row whole — call it only with a PARSED verdict. A failed
+    attempt goes through `record_review_attempt` instead, which advances the
+    bookkeeping without destroying a previously stored verdict. Score-NULL
+    rows (failed attempts) are excluded from the Quality reads below — they
+    are bookkeeping, not verdicts — but they DO count toward the daily cap
     (`reviews_today`), because the OpenAI call was billed.
     """
     row = await _fetchrow(
@@ -4570,6 +4590,41 @@ async def upsert_conversation_review(
         product_id, session_id, consumer, score, json.dumps(tags or []),
         summary, json.dumps(issues or []), json.dumps(kb_gaps or []),
         int(reviewed_msg_count), model, cost_usd,
+    )
+    return int(row["id"])
+
+
+async def record_review_attempt(product_id: int, session_id: str, *,
+                                consumer: str, reviewed_msg_count: int,
+                                model: Optional[str] = None,
+                                cost_usd: Optional[float] = None) -> int:
+    """Book a FAILED review attempt without touching a stored verdict.
+
+    `upsert_conversation_review` replaces the whole row, so writing the failed
+    attempt through it destroyed a previously stored good verdict (session
+    reviewed → grew → re-review unparseable → score=NULL overwrote score=4 and
+    the verdict vanished from the Quality page). This helper only advances the
+    bookkeeping: `reviewed_msg_count` (stops `sessions_for_review` from
+    re-selecting the chat until it grows again), `created_at` (the attempt was
+    a billed call, so it must count toward the `reviews_today` daily cap) and
+    the accumulated `cost_usd`. Verdict fields (score/tags/summary/issues/
+    kb_gaps) are written only when the row is NEW — an existing verdict, good
+    or previously-failed, keeps its content.
+    """
+    row = await _fetchrow(
+        "INSERT INTO conversation_reviews (product_id, session_id, consumer, "
+        " score, tags, summary, issues, kb_gaps, reviewed_msg_count, model, "
+        " cost_usd) "
+        "VALUES ($1, $2, $3, NULL, '[]'::jsonb, '', '[]'::jsonb, '[]'::jsonb, "
+        "        $4, $5, $6) "
+        "ON CONFLICT (session_id) DO UPDATE SET "
+        "  reviewed_msg_count = EXCLUDED.reviewed_msg_count, "
+        "  cost_usd = COALESCE(conversation_reviews.cost_usd, 0) "
+        "             + COALESCE(EXCLUDED.cost_usd, 0), "
+        "  created_at = now() "
+        "RETURNING id",
+        product_id, session_id, consumer, int(reviewed_msg_count), model,
+        cost_usd,
     )
     return int(row["id"])
 
