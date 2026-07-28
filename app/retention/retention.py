@@ -1368,12 +1368,29 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
     file_id = photo.get("telegram_file_id")
     result = None
     err_code: Optional[int] = None
+    # True once a send failed for a reason the CAPTION explains, so the retry
+    # (and the decision not to re-upload the binary) can key on it.
+    caption_rejected = False
     if file_id:
         send_by_id = (client.send_video_file_id_verbose if is_video
                       else client.send_photo_file_id_verbose)
-        result, err_code, _ = await send_by_id(
+        result, err_code, desc = await send_by_id(
             chat_id, file_id, caption=caption_html, parse_mode="HTML",
             reply_markup=photo_markup, disable_notification=silent)
+        if result is None and _is_caption_error(err_code, desc, caption_html):
+            # Same plain-text retry _send_ai_text does: Telegram rejected our
+            # HTML, not the media. Re-send the cached id with an unformatted
+            # caption before writing the send off.
+            caption_rejected = True
+            log.warning("retention_photo_caption_html_rejected photo_id=%s "
+                        "desc=%s", photo_id, desc)
+            result, err_code, _ = await send_by_id(
+                chat_id, file_id, caption=caption, parse_mode=None,
+                reply_markup=photo_markup, disable_notification=silent)
+    if result is None and caption_rejected:
+        # The binary is fine — a re-upload would fail on the same caption and
+        # cost a multi-MB Volume read first. Deliver the text instead.
+        return await _fallback_text()
     if result is None:
         if err_code == 403:
             # The player blocked the bot — flip unreachable so the guards stop
@@ -1413,12 +1430,18 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
             if poster:
                 extra["thumbnail"] = await asyncio.to_thread(
                     media_normalizer.make_video_thumbnail, poster)
-        result, err_code, _ = await send_bytes(
-            chat_id, content,
-            photo.get("storage_ref") or ("video.mp4" if is_video
-                                         else "photo.jpg"),
+        filename = photo.get("storage_ref") or ("video.mp4" if is_video
+                                                else "photo.jpg")
+        result, err_code, desc = await send_bytes(
+            chat_id, content, filename,
             caption=caption_html, parse_mode="HTML",
             reply_markup=photo_markup, disable_notification=silent, **extra)
+        if result is None and _is_caption_error(err_code, desc, caption_html):
+            log.warning("retention_photo_caption_html_rejected photo_id=%s "
+                        "desc=%s", photo_id, desc)
+            result, err_code, _ = await send_bytes(
+                chat_id, content, filename, caption=caption, parse_mode=None,
+                reply_markup=photo_markup, disable_notification=silent, **extra)
         if result is None and err_code == 403:
             await db.set_retention_unreachable(int(ru["id"]), True)
             return None
@@ -1441,7 +1464,27 @@ async def _send_photo(client: TelegramClient, product: dict[str, Any],
             await _send_ai_text(client, chat_id, overflow_text,
                                 reply_markup=reply_markup, silent=silent)
         return "photo"
-    return None
+    # Every media route failed for a reason other than a block. The turn is
+    # ALREADY persisted by the caller, so returning None here left a ghost in
+    # the transcript that the player never received — deliver the caption as
+    # plain text instead, the same last resort every branch above takes.
+    return await _fallback_text()
+
+
+def _is_caption_error(err_code: Optional[int], desc: Optional[str],
+                      caption_html: Optional[str]) -> bool:
+    """Did Telegram reject the CAPTION rather than the media?
+
+    Only meaningful when we actually sent formatted markup — otherwise there is
+    nothing to retry plainly. Telegram answers 400 with a description naming the
+    entity/caption problem ("can't parse entities", "message caption is too
+    long"); anything else (5xx, a stale file_id, a bad video) is a media problem
+    and takes the normal upload/fallback route.
+    """
+    if not caption_html or err_code != 400 or not desc:
+        return False
+    low = desc.lower()
+    return ("parse" in low and "entit" in low) or "caption" in low
 
 
 def _read_media(storage_ref: Optional[str]) -> Optional[bytes]:

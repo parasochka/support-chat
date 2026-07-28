@@ -680,3 +680,74 @@ def test_fallback_media_caption_words_for_the_sent_kind():
     assert retention.fallback_media_caption("en", 3, cands) in video_texts
     assert retention.fallback_media_caption("en", 4, cands) in photo_texts
     assert retention.fallback_media_caption("en", None, cands) in photo_texts
+
+
+async def test_send_photo_retries_a_rejected_html_caption_plainly(monkeypatch):
+    """Telegram rejecting our caption MARKUP must not lose the whole send.
+
+    The caption always went out with parse_mode=HTML and there was no plain
+    retry (unlike _send_ai_text and delivery.send_text, which both have one), so
+    a 400 "can't parse entities" dropped the media AND returned None — while the
+    turn was already persisted, leaving a ghost the player never received.
+    """
+    sends: list[dict] = []
+
+    async def _get_photo(pid):
+        return {"id": 55, "active": True, "telegram_file_id": "cachedfile",
+                "storage_ref": "x.jpg"}
+    monkeypatch.setattr(retention.db, "get_retention_photo", _get_photo)
+
+    async def _record(rid, photo_id, product_id, session_id=None):
+        pass
+    monkeypatch.setattr(retention.db, "record_retention_photo_view", _record)
+
+    reads = {"n": 0}
+
+    def _read(ref):
+        reads["n"] += 1
+        return b"bytes"
+    monkeypatch.setattr(retention, "_read_media", _read)
+
+    class _PickyClient:
+        async def send_photo_file_id_verbose(self, chat_id, file_id, **kw):
+            sends.append(kw)
+            if kw.get("parse_mode") == "HTML":
+                return None, 400, "Bad Request: can't parse entities"
+            return {"ok": True}, None, None
+
+    ru = {"id": 10, "tg_user_id": 7}
+    out = await retention._send_photo(_PickyClient(), PRODUCT, ru, 7, 55,
+                                      "**жирный** привет")
+    # The photo still reached the player, on the plain retry.
+    assert out == "photo"
+    assert len(sends) == 2
+    assert sends[1]["parse_mode"] is None
+    assert sends[1]["caption"] == "**жирный** привет"
+    # A caption problem is not a media problem — no Volume read, no re-upload.
+    assert reads["n"] == 0
+
+
+async def test_send_photo_falls_back_to_text_when_media_fails(monkeypatch):
+    """A media send that fails for any non-403 reason must still deliver the
+    caption: the turn is already persisted, so returning None strands it."""
+    async def _get_photo(pid):
+        return {"id": 55, "active": True, "telegram_file_id": "cachedfile",
+                "storage_ref": "x.jpg"}
+    monkeypatch.setattr(retention.db, "get_retention_photo", _get_photo)
+    monkeypatch.setattr(retention, "_read_media", lambda ref: b"bytes")
+
+    tg = FakeTelegram()
+
+    async def _always_fail(chat_id, file_id, **kw):
+        return None, 500, "Internal Server Error"
+
+    async def _always_fail_bytes(chat_id, content, filename, **kw):
+        return None, 500, "Internal Server Error"
+
+    monkeypatch.setattr(tg, "send_photo_file_id_verbose", _always_fail)
+    monkeypatch.setattr(tg, "send_photo_bytes_verbose", _always_fail_bytes)
+
+    ru = {"id": 10, "tg_user_id": 7}
+    out = await retention._send_photo(tg, PRODUCT, ru, 7, 55, "привет")
+    assert out == "text"
+    assert any(m[1] == "привет" for m in tg.messages)

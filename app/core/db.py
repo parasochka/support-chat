@@ -502,7 +502,10 @@ CREATE TABLE IF NOT EXISTS retention_pings (
   retention_user_id BIGINT NOT NULL REFERENCES retention_users(id),
   rule_id           BIGINT REFERENCES retention_rules(id),
   action            TEXT NOT NULL,             -- 'message' | 'photo'
-  status            TEXT NOT NULL,             -- 'sent' | 'failed' | 'skipped'
+  -- 'sent' | 'failed' | 'skipped' | 'dry_run'. 'dry_run' is a ping that WOULD
+  -- have gone out (shadow mode): it counts for the pacing memories below, so a
+  -- dry rule paces exactly like a live one, but never for delivery metrics.
+  status            TEXT NOT NULL,
   detail            TEXT,
   cost_usd          NUMERIC(12, 6),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -3654,13 +3657,23 @@ async def list_retention_pings(product_id: int, page: int = 1,
     return {"items": items, "total": int(total or 0)}
 
 
+# A ping that FIRED, for pacing purposes: really sent, or shadow-fired in
+# dry-run mode. Excluding dry runs made the whole idle ladder pace as if nothing
+# had happened while `v2_dry_run` was on — which it is BY DEFAULT — so a rule
+# re-matched the same player every `ping_min_gap_hours` and filled the decision
+# ledger with duplicates of a ping it had already "made".
+_PING_FIRED = "p.status IN ('sent', 'dry_run')"
+
+
 async def ping_rule_recently_fired(rid: int, rule_id: int,
                                    cooldown_days: int) -> bool:
-    """True when this rule already pinged this player within its cooldown."""
+    """True when this rule already pinged this player within its cooldown
+    (a dry-run ping counts — see _PING_FIRED)."""
     val = await _fetchval(
-        "SELECT EXISTS(SELECT 1 FROM retention_pings "
-        "WHERE retention_user_id = $1 AND rule_id = $2 AND status = 'sent' "
-        "AND created_at > now() - make_interval(days => $3))",
+        "SELECT EXISTS(SELECT 1 FROM retention_pings p "
+        "WHERE p.retention_user_id = $1 AND p.rule_id = $2 "
+        f"AND {_PING_FIRED} "
+        "AND p.created_at > now() - make_interval(days => $3))",
         rid, rule_id, int(cooldown_days),
     )
     return bool(val)
@@ -3669,8 +3682,8 @@ async def ping_rule_recently_fired(rid: int, rule_id: int,
 async def idle_rule_thresholds_fired_since(rid: int, since: Any,
                                            trigger_kind: Optional[str] = None
                                            ) -> dict[str, int]:
-    """Max `inactivity_days` of the idle rules already fired ('sent') to this
-    player since `since`, per trigger kind.
+    """Max `inactivity_days` of the idle rules already fired to this player
+    since `since`, per trigger kind (a dry-run rung counts — see _PING_FIRED).
 
     The anti-cascade guard: per-rule cooldowns alone let a long-quiet player
     receive the ENTIRE ladder in reverse — after "quiet 60 days" fired, the
@@ -3698,7 +3711,7 @@ async def idle_rule_thresholds_fired_since(rid: int, since: Any,
         "SELECT r.trigger_kind, MAX(r.inactivity_days) AS days "
         "FROM retention_pings p "
         "JOIN retention_rules r ON r.id = p.rule_id "
-        "WHERE p.retention_user_id = $1 AND p.status = 'sent' "
+        f"WHERE p.retention_user_id = $1 AND {_PING_FIRED} "
         "  AND p.created_at > COALESCE($2::timestamptz, "
         "                              '-infinity'::timestamptz)"
         + kind_sql +
@@ -3834,27 +3847,37 @@ async def count_unprocessed_retention_events(product_id: int) -> int:
 
 
 async def prune_retention_events(keep_days: int = 90) -> int:
-    """Delete PROCESSED canonical events older than keep_days (all products).
+    """Delete canonical events older than keep_days (all products).
 
     The event log is append-only and can grow by millions of rows/month (partners
     stream bet_settled per settled bet), while the state resolver only reads recent
-    events (the 24h loss window + recent activity), so old processed rows are dead
-    weight with no reaper — unlike app_logs, which is capped. Only PROCESSED rows
-    are removed (an unclaimed event is never dropped). Decision-ledger rows that
-    referenced a pruned event keep their event_name snapshot and drop the FK link
-    (there is no ON DELETE clause, so the link must be nulled first)."""
+    events (the 24h loss window + recent activity), so old rows are dead
+    weight with no reaper — unlike app_logs, which is capped.
+
+    Age is measured from `processed_at` when the row was claimed, else from
+    `created_at`. Pruning only PROCESSED rows left the table unbounded whenever
+    nothing was claiming: `claim_retention_events` is the only writer of
+    `processed_at` and it is skipped entirely when a product has `v2_enabled`
+    off (or when RETENTION_SCHEDULER_ENABLED is off deployment-wide), so a
+    partner streaming events at an agent that is switched off grew the table
+    forever. An unclaimed row this old is not a backlog worth keeping either —
+    `retention_v2._fresh_enough` refuses to react to anything older than
+    _MAX_REACTION_AGE_HOURS, orders of magnitude below keep_days.
+
+    Decision-ledger rows that referenced a pruned event keep their event_name
+    snapshot and drop the FK link (there is no ON DELETE clause, so the link
+    must be nulled first)."""
+    cutoff = ("COALESCE(processed_at, created_at) "
+              "< now() - make_interval(days => $1)")
     async with _acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 "UPDATE retention_v2_decisions SET event_pk = NULL "
                 "WHERE event_pk IN (SELECT id FROM retention_events "
-                "  WHERE processed_at IS NOT NULL "
-                "    AND processed_at < now() - make_interval(days => $1))",
+                f"  WHERE {cutoff})",
                 int(keep_days))
             result = await conn.execute(
-                "DELETE FROM retention_events "
-                "WHERE processed_at IS NOT NULL "
-                "  AND processed_at < now() - make_interval(days => $1)",
+                f"DELETE FROM retention_events WHERE {cutoff}",
                 int(keep_days))
     return _affected(result)
 

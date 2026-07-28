@@ -1019,3 +1019,50 @@ def test_current_time_directive_rides_layer3():
         user_context={}, resolved_lang="ru", user_text="привет",
         tz_offset_hours=3)
     assert "CURRENT TIME" in dialog
+
+
+async def test_dry_run_idle_ping_is_remembered_by_the_pacing_guards(monkeypatch):
+    """A shadow-fired rung must pace like a real one.
+
+    A dry-run ping was recorded as status='skipped', but both pacing memories —
+    the per-rule cooldown (`ping_rule_recently_fired`) and the anti-cascade rung
+    guard (`idle_rule_thresholds_fired_since`) — only counted 'sent'. Since
+    `v2_dry_run` ships ON, the ladder paced as if nothing had happened: the same
+    rule re-matched the same player every `ping_min_gap_hours`, filling the
+    decision ledger with duplicates of a ping it had already "made". It is now
+    its own status, which both memories count.
+    """
+    from app.retention import retention, retention_idle
+
+    recorded: list[tuple] = []
+
+    async def _record(product_id, rid, rule_id, action, status, detail=None,
+                      cost_usd=None):
+        recorded.append((status, detail))
+
+    async def _decision(*a, **kw):
+        return 1
+
+    async def _sess(pid, ru, lang):
+        return {"id": "s-1", "product_id": pid}
+
+    monkeypatch.setattr(db, "record_retention_ping", _record)
+    monkeypatch.setattr(db, "insert_retention_v2_decision", _decision)
+    monkeypatch.setattr(retention, "_ensure_session", _sess)
+    monkeypatch.setattr(retention, "_user_context_from_ru", lambda ru: {})
+
+    ok = await retention_idle._send_idle_ping(
+        None, {"id": 1}, _ru(), {"id": 9, "action": "message",
+                                 "trigger_kind": "bot_inactivity",
+                                 "intent": "come back"},
+        idle_days=7, cfg=_cfg(v2_dry_run=True))
+
+    assert ok is True
+    assert recorded == [("dry_run", "dry_run")]
+
+
+def test_ping_pacing_queries_count_dry_runs():
+    """The two pacing memories share one predicate, so they cannot drift apart
+    again — and neither may be narrowed back to 'sent' alone."""
+    assert "'dry_run'" in db._PING_FIRED
+    assert "'sent'" in db._PING_FIRED
