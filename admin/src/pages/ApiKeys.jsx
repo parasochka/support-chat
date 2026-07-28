@@ -28,6 +28,7 @@ import { API_URL, httpClient } from '../httpClient';
 import useIsMobile from '../lib/useIsMobile';
 import { t } from '../i18n';
 import rich from '../components/Rich';
+import { copyText } from '../lib/clipboard';
 import { notifyError } from '../lib/notifyError';
 import { fmtDateTime } from '../lib/fmt';
 
@@ -153,10 +154,8 @@ const ApiKeys = () => {
     }
   };
 
-  const copyToken = async () => {
-    await navigator.clipboard.writeText(minted.token);
-    notify(t('Token copied'), { type: 'info' });
-  };
+  // The token is displayed exactly once, so a silent copy failure loses it.
+  const copyToken = () => copyText(notify, minted.token, t('Token copied'));
 
   const createDisabled =
     !form.name.trim() ||

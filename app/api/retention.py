@@ -1562,11 +1562,18 @@ async def effectiveness(product_id: int,
 @admin_router.get("/users")
 async def users(product_id: int, limit: int = 100, offset: int = 0,
                 admin=Depends(require_admin)) -> JSONResponse:
+    """Linked Telegram players, newest activity first.
+
+    Returns `total` alongside the page: without it the caller cannot tell a
+    complete list from a truncated one, and the Analytics tab rendered
+    "Linked players (100)" beside a KPI showing the real (larger) count.
+    """
     await admin_auth.require_product_read(admin, product_id)
     return JSONResponse(content={
         "items": await db.list_retention_users(product_id,
                                                limit=max(1, min(limit, 500)),
-                                               offset=max(offset, 0))})
+                                               offset=max(offset, 0)),
+        "total": await db.count_retention_users(product_id)})
 
 
 @admin_router.get("/sessions")

@@ -26,14 +26,22 @@ const EscalationKeywordsInner = () => {
 
   const [highRisk, setHighRisk] = useState('');
   const [humanReq, setHumanReq] = useState('');
-  const [escalation, setEscalation] = useState(null);
+  // `resolved` seeds the editor (product > global > env > default, i.e. what is
+  // actually in force); `overrides` is what THIS layer already stores and is the
+  // base we write back to. Saving the resolved object would bake every inherited
+  // value of the escalation group into this product's override, permanently
+  // shadowing later global changes — the hazard Settings.jsx and
+  // Translations.jsx both call out.
+  const [resolved, setResolved] = useState(null);
+  const [overrides, setOverrides] = useState({});
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     httpClient(withProduct(`${API_URL}/admin/settings`))
       .then(({ json }) => {
         const esc = json.resolved?.escalation || {};
-        setEscalation(esc);
+        setResolved(esc);
+        setOverrides(json.overrides?.escalation || {});
         setHighRisk((esc.high_risk_keywords || []).join('\n'));
         setHumanReq((esc.human_request_keywords || []).join('\n'));
       })
@@ -48,11 +56,13 @@ const EscalationKeywordsInner = () => {
         .map((x) => x.trim())
         .filter(Boolean);
     try {
+      // Only the two lists this page owns, merged over the layer's EXISTING
+      // overrides — never over the resolved values.
       await httpClient(withProduct(`${API_URL}/admin/settings/escalation`), {
         method: 'PUT',
         body: JSON.stringify({
           value: {
-            ...escalation,
+            ...overrides,
             high_risk_keywords: lines(highRisk),
             human_request_keywords: lines(humanReq),
           },
@@ -66,7 +76,7 @@ const EscalationKeywordsInner = () => {
     }
   };
 
-  if (!escalation) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
+  if (!resolved) return <Box sx={{ p: 2 }}>{t('Loading…')}</Box>;
 
   return (
     <Box sx={{ p: 2 }}>

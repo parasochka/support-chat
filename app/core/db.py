@@ -5704,6 +5704,15 @@ async def list_retention_users(product_id: int, *, limit: int = 100,
     return out
 
 
+async def count_retention_users(product_id: int) -> int:
+    """Total linked players for this product (the paginated list's `total`)."""
+    val = await _fetchval(
+        "SELECT COUNT(*) FROM retention_users WHERE product_id = $1",
+        product_id,
+    )
+    return int(val or 0)
+
+
 async def close_retention_session(session_id: str,
                                   product_id: Optional[int] = None,
                                   reason: str = "idle") -> None:

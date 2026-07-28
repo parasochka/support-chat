@@ -18,6 +18,11 @@ import { Kpi, RETENTION_FUNNEL_STEPS, RETENTION_TIMESERIES_SERIES } from '../../
 import { t } from '../../i18n';
 import { fmtDateTime } from '../../lib/fmt';
 import { compactTableSx, wideTableSx } from '../../lib/table';
+import GridPagination from '../../components/GridPagination';
+
+// The /admin/retention/users endpoint caps a page at 500; 100 is its default
+// and a comfortable table page.
+const USERS_PER_PAGE = 100;
 import useIsMobile from '../../lib/useIsMobile';
 
 // ---------------------------------------------------------------------------
@@ -328,6 +333,8 @@ const AnalyticsTab = ({ productId }) => {
   const [funnel, setFunnel] = useState(null);
   const [series, setSeries] = useState([]);
   const [users, setUsers] = useState([]);
+  const [usersTotal, setUsersTotal] = useState(0);
+  const [usersPage, setUsersPage] = useState(1);
   const [effect, setEffect] = useState(null);
 
   useEffect(() => {
@@ -346,11 +353,28 @@ const AnalyticsTab = ({ productId }) => {
       .catch(() => setEffect(null));
   }, [productId, range, notify]);
 
+  // Paginated: the endpoint caps at 100 rows per page, so fetching it bare
+  // rendered "Linked players (100)" next to a KPI showing the real, larger
+  // total — two contradicting numbers on one screen, with the table silently
+  // truncated and no way to reach the rest.
   useEffect(() => {
-    httpClient(`${API_URL}/admin/retention/users?product_id=${productId}`)
-      .then(({ json }) => setUsers(json.items || []))
+    let alive = true;
+    const offset = (usersPage - 1) * USERS_PER_PAGE;
+    httpClient(
+      `${API_URL}/admin/retention/users?product_id=${productId}` +
+        `&limit=${USERS_PER_PAGE}&offset=${offset}`
+    )
+      .then(({ json }) => {
+        if (!alive) return;
+        setUsers(json.items || []);
+        setUsersTotal(json.total || 0);
+      })
       .catch(() => {});
-  }, [productId]);
+    return () => { alive = false; };
+  }, [productId, usersPage]);
+
+  // A product switch invalidates the page number.
+  useEffect(() => { setUsersPage(1); }, [productId]);
 
   const base = overview?.users;
   const inRange = overview?.range;
@@ -479,7 +503,7 @@ const AnalyticsTab = ({ productId }) => {
       </Grid>
 
       <Typography variant="h6" sx={{ mb: 1 }}>
-        {t('Linked players')} ({users.length})
+        {t('Linked players')} ({usersTotal})
       </Typography>
       {isMobile ? (
         <Stack spacing={1}>
@@ -541,6 +565,15 @@ const AnalyticsTab = ({ productId }) => {
           </TableBody>
         </Table>
       </Box>
+      )}
+      {usersTotal > USERS_PER_PAGE && (
+        <GridPagination
+          count={usersTotal}
+          page={usersPage}
+          perPage={USERS_PER_PAGE}
+          onPage={setUsersPage}
+          unit={t('players')}
+        />
       )}
     </Box>
   );
