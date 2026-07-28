@@ -132,7 +132,13 @@ Map of what lives where:
   The SPA renders that split as the two **Telegram cost** panels
   (`components/charts.jsx` `TelegramCostCharts`: total-over-time + cost-by-source stacked
   bars, the legacy series hidden once it is all zero), shown on both the dashboard
-  Retention block and Retention → Analytics. The overview also carries AI-API health:
+  Retention block and Retention → Analytics. The PLATFORM-WIDE cost view is
+  `GET /admin/ai-costs` (`db.ai_cost_timeseries`): daily spend of EVERY call in scope —
+  facade-blind, both bots + all background passes, summing to the whole OpenAI bill —
+  split by `source`, rendered as the "AI cost by call type" histogram under the AI-model
+  group on System → Settings (`components/AiCostsPanel.jsx`; its own scope picker — whole
+  platform / partner / product, seeded from the header product — plus a call-type filter,
+  both independent of the header switcher). The overview also carries AI-API health:
   `avg_latency_ms` (mean end-to-end latency of the SUCCESSFUL OpenAI calls — failures
   carry no meaningful latency, so they are excluded from the average), `ai_calls_total`
   and `failed_calls` (from `ai_interaction_logs`). The SPA renders the KPI tiles as two
@@ -229,11 +235,11 @@ Map of what lives where:
   data as `taxonomy` so the page never duplicates it —, the top KB gaps) and
   `GET /reviews` (worst score first, filters: consumer/tag/max_score) follow the
   dashboard scope convention (`resolve_scope_filter`: no selection = the caller's
-  whole accessible scope). The two triggers are WRITES on one product because they
-  spend its OpenAI budget: `POST /run` (a pass now, still bounded by the product's
-  daily cap) and `POST /review/{session_id}` (judge one chat), both behind
-  `require_admin_write` + `require_product_write`. The judge never edits anything —
-  the page is a triage queue, not an actor. Knobs live in the `general` settings
+  whole accessible scope). The surface is READ-ONLY — the judge runs only
+  automatically in the background (the manual `POST /run` / `POST /review/{id}`
+  triggers were removed), never edits anything, and the page is a triage queue,
+  not an actor. The SPA page itself is `RequireProduct`-gated (the verdict queue
+  is per-product data, like Conversations). Knobs live in the `general` settings
   group (`quality_review_enabled` / `_daily_max` / `_min_messages`), so they show up
   on the System-settings surface like every other group field.
 - **Effectiveness** (`GET /admin/retention/effectiveness`, product-scoped): the
@@ -265,7 +271,7 @@ Map of what lives where:
   sub-tabs are exposed as sub-menu entries that deep-link `/retention?tab=…`
   (the page reads `?tab=`, like the Prompt page). **Product-scoped surfaces are
   gated** by `components/RequireProduct` — KB, KB variables, Prompt, Translations,
-  Retention and the Conversations / Unresolved lists (incl. the conversation
+  Retention, Quality and the Conversations / Unresolved lists (incl. the conversation
   detail view) refuse to render without a concrete product selected in the header
   (otherwise they'd silently edit/show the default product's data), showing a
   "select a product" notice instead; this applies to admins and managers alike.

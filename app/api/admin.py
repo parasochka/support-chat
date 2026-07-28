@@ -170,6 +170,27 @@ async def timeseries(metric: str = "sessions", bucket: str = "day",
     return JSONResponse(content={"metric": metric, "bucket": bucket, "series": series})
 
 
+@router.get("/ai-costs")
+async def ai_costs(from_: Optional[str] = Query(default=None, alias="from"),
+                   to: Optional[str] = None,
+                   product_id: Optional[int] = None,
+                   partner_id: Optional[int] = None,
+                   admin=Depends(require_admin)) -> JSONResponse:
+    """Daily OpenAI spend for the scope, split by call source (chat / agent /
+    media / review / legacy) across BOTH facades — the platform-wide cost
+    histogram on System → Settings. Scope follows the dashboard convention:
+    no product/partner = the caller's whole accessible scope."""
+    dt_from, dt_to = _range(from_, to)
+    scope = await admin_auth.resolve_scope_filter(admin, product_id, partner_id)
+    series = await db.ai_cost_timeseries(dt_from, dt_to, product_ids=scope)
+    totals: dict[str, float] = {}
+    for key in ("cost_chat_usd", "cost_agent_usd", "cost_media_usd",
+                "cost_review_usd", "cost_legacy_usd", "cost_usd"):
+        totals[key] = round(sum(r[key] for r in series), 4)
+    totals["calls"] = sum(r["calls"] for r in series)
+    return JSONResponse(content={"series": series, "totals": totals})
+
+
 @router.get("/by-topic")
 async def by_topic(from_: Optional[str] = Query(default=None, alias="from"),
                    to: Optional[str] = None,

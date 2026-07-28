@@ -33,6 +33,7 @@ import { useMemo } from 'react';
 import { API_URL, httpClient } from '../httpClient';
 import { getProductId, getScopeName, withProduct } from '../productScope';
 import { t } from '../i18n';
+import AiCostsPanel from '../components/AiCostsPanel';
 import RequireProduct from '../components/RequireProduct';
 import rich from '../components/Rich';
 import { notifyError } from '../lib/notifyError';
@@ -90,6 +91,7 @@ const MODULE_HOWTO = {
       '**AI model** — the model id plus its budgets and timeouts. «Max output tokens» INCLUDES the model’s hidden reasoning: keep it generous (≈2000), too low and answers can come back empty.',
       '**Languages** — the supported set and the default. A newly added language starts on English copy and becomes translatable in Translations; answers always follow the player’s language.',
       '**General** — technical lifetimes and caps (sessions, admin tokens, request bodies). These rarely need changing.',
+      '**AI cost by call type** — the histogram under the AI-model tab sums every OpenAI call of the selected scope (both bots plus the background passes) per day, split by what the call was; filter it by partner / product or a single call type.',
       'Every setting resolves per product: product override → global default → deploy env → built-in default. The banner above the form shows which layer you are editing right now.',
     ],
   },
@@ -735,6 +737,9 @@ export const SettingsModule = ({ module }) => {
         </Tabs>
       )}
 
+      {/* The platform-wide AI-spend histogram lives under the AI-model group:
+          the model knobs set what a call costs, this shows what the calls DID
+          cost, split by call type across both bots + the background passes. */}
       {groups.map((g) =>
         g !== tab ? null : g === 'language' ? (
           <LanguageEditor
@@ -761,6 +766,7 @@ export const SettingsModule = ({ module }) => {
           />
         )
       )}
+      {module === 'core' && tab === 'model' && <AiCostsPanel />}
     </Box>
   );
 };

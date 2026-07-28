@@ -2764,6 +2764,55 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
             for r in rows]
 
 
+async def ai_cost_timeseries(dt_from: Any, dt_to: Any,
+                             product_ids: Optional[list[int]] = None
+                             ) -> list[dict[str, Any]]:
+    """Daily OpenAI spend across EVERY call in scope, split by `source`.
+
+    The platform-wide cost view (System → Settings, under the AI-model group):
+    unlike the support/retention dashboards it does NOT split by facade — it
+    sums both bots plus every background pass, so the buckets add up to the
+    whole OpenAI bill for the scope. Split follows the row's own attribution
+    label (`_LOG_SOURCE`): chat = dialogue turns (widget + Telegram), agent =
+    the proactive agent, media = photo/video cataloguing, review = the AI
+    judge, legacy = session-less rows written before attribution shipped.
+    `product_ids` follows the dashboard scope convention: None = all
+    accessible, [] = none.
+    """
+    args: list[Any] = [dt_from, dt_to]
+    pid = _pid_where(product_ids, args, "l.product_id")
+    rows = await _pool.fetch(
+        "SELECT date_trunc('day', l.created_at) AS day, "
+        "  COALESCE(SUM(l.cost_usd) FILTER "
+        f"    (WHERE {_LOG_SOURCE} = 'chat'), 0) AS chat, "
+        "  COALESCE(SUM(l.cost_usd) FILTER "
+        f"    (WHERE {_LOG_SOURCE} = 'agent'), 0) AS agent, "
+        "  COALESCE(SUM(l.cost_usd) FILTER "
+        f"    (WHERE {_LOG_SOURCE} = 'media'), 0) AS media, "
+        "  COALESCE(SUM(l.cost_usd) FILTER "
+        f"    (WHERE {_LOG_SOURCE} = 'review'), 0) AS review, "
+        "  COALESCE(SUM(l.cost_usd) FILTER "
+        f"    (WHERE {_LOG_SOURCE} = 'legacy'), 0) AS legacy, "
+        "  COALESCE(SUM(l.cost_usd), 0) AS total, "
+        "  COUNT(*) AS calls "
+        "FROM ai_interaction_logs l "
+        f"WHERE {pid} AND l.created_at >= $1 AND l.created_at < $2 "
+        "GROUP BY 1 ORDER BY 1",
+        *args,
+    )
+    return [
+        {"date": str(r["day"])[:10],
+         "cost_chat_usd": round(float(r["chat"]), 4),
+         "cost_agent_usd": round(float(r["agent"]), 4),
+         "cost_media_usd": round(float(r["media"]), 4),
+         "cost_review_usd": round(float(r["review"]), 4),
+         "cost_legacy_usd": round(float(r["legacy"]), 4),
+         "cost_usd": round(float(r["total"]), 4),
+         "calls": int(r["calls"])}
+        for r in rows
+    ]
+
+
 def _cost_cte(scope_cte: str, *, support_only: bool = True) -> str:
     """`costs AS (...)` — the windowed, product-scoped per-session cost CTE.
 

@@ -751,6 +751,8 @@ const RU = {
     '**Языки** — поддерживаемый набор и язык по умолчанию. Новый язык стартует с английскими текстами и переводится в «Переводах»; ответы всегда следуют за языком игрока.',
   '**General** — technical lifetimes and caps (sessions, admin tokens, request bodies). These rarely need changing.':
     '**Общие** — технические сроки жизни и лимиты (сессии, админ-токены, тела запросов). Их редко нужно менять.',
+  '**AI cost by call type** — the histogram under the AI-model tab sums every OpenAI call of the selected scope (both bots plus the background passes) per day, split by what the call was; filter it by partner / product or a single call type.':
+    '**Стоимость AI по типам вызовов** — гистограмма под вкладкой AI-модели складывает все вызовы OpenAI выбранной области (оба бота плюс фоновые проходы) по дням с разбивкой по типу вызова; фильтруется по партнёру / продукту или одному типу вызова.',
   'Every setting resolves per product: product override → global default → deploy env → built-in default. The banner above the form shows which layer you are editing right now.':
     'Каждая настройка резолвится по продукту: переопределение продукта → глобальное значение → env деплоя → встроенное значение. Баннер над формой показывает, какой слой вы сейчас редактируете.',
 
@@ -1566,11 +1568,13 @@ const RU = {
   'Triggers': 'Триггеры',
   'Trigger': 'Триггер',
   'No proactive touches in this range yet.': 'В этом периоде проактивных касаний не было.',
-  'Sent': 'Отправлено',
-  'Replied': 'Ответили',
-  'Returned': 'Вернулись',
-  'Deposited': 'Депозит',
-  'Avg reply': 'Ср. время ответа',
+  // Abbreviated on purpose: these sit over ~66px numeric columns in the
+  // outcome tables, where the full words overlapped each other.
+  'Sent': 'Отпр.',
+  'Replied': 'Отв.',
+  'Returned': 'Верн.',
+  'Deposited': 'Деп.',
+  'Avg reply': 'Ср. ответ',
   'Replies (90d)': 'Ответы (90 дн)',
   '{rep} replies and {ret} returns to the casino out of {n} sends.':
     '{rep} ответов и {ret} возвратов в казино из {n} отправок.',
@@ -1620,6 +1624,15 @@ const RU = {
   'Review': 'Аудит',
   'Issues': 'Проблемы',
   'Conversation': 'Диалог',
+
+  // ----- platform-wide AI cost histogram (System → Settings) -----
+  'AI cost by call type': 'Стоимость AI по типам вызовов',
+  'Every OpenAI call in the selected scope — both bots and the background passes — stacked per day by what the call was: player dialogue, the proactive agent, media cataloguing, the AI quality judge.':
+    'Все вызовы OpenAI в выбранной области — оба бота и фоновые проходы — по дням, с разбивкой по типу вызова: диалоги с игроками, проактивный агент, разметка медиа, ИИ-оценка качества.',
+  'Entire platform (all available)': 'Вся платформа (всё доступное)',
+  'Call type': 'Тип вызова',
+  'All types': 'Все типы',
+  'Total for the range': 'Итого за период',
 };
 
 const current = getAdminLang();
