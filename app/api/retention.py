@@ -1279,8 +1279,14 @@ async def run_idle_pings_now(product_id: int,
     # Locked variant: shares the worker's advisory lock so the button and the
     # sweep never evaluate the same player's send-frequency guards in parallel
     # (the same race the v2 «Process queue now» button is locked against).
-    stats = await retention_idle.run_product_idle_pings_locked(
-        product, settings_mod.retention(), force=True)
+    from app.retention import retention_v2
+    try:
+        stats = await retention_idle.run_product_idle_pings_locked(
+            product, settings_mod.retention(), force=True)
+    except retention_v2.WorkerBusy:
+        raise HTTPException(
+            status_code=409,
+            detail="The retention worker is mid-sweep; try again in a minute.")
     await db.log_admin_event(None, "retention_ping_run_manual",
                              {"stats": stats, "by": admin.get("email")},
                              product_id=product_id)
@@ -1471,7 +1477,12 @@ async def v2_run_now(product_id: int,
         raise HTTPException(status_code=404, detail="Product not found.")
     # Locked variant: shares the worker's advisory lock so the button and the
     # sweep never evaluate the same player's send-frequency guards in parallel.
-    stats = await retention_v2.run_product_events_locked(product)
+    try:
+        stats = await retention_v2.run_product_events_locked(product)
+    except retention_v2.WorkerBusy:
+        raise HTTPException(
+            status_code=409,
+            detail="The retention worker is mid-sweep; try again in a minute.")
     await db.log_admin_event(None, "retention_v2_run_manual",
                              {"stats": stats, "by": admin.get("email")},
                              product_id=product_id)

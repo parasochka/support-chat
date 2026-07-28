@@ -222,6 +222,14 @@
    generates the reply, so the player sees the request is in flight and an answer
    is on the way. The `.npchat-typing` class is dropped (and the dots replaced by
    the real text) the moment the answer arrives — see fillTyping() in widget.js. */
+/* A rejected turn (rate limit, too-long, injection block): visually an error
+   note, not the assistant talking — tinted, plain text (widget.js renders it
+   via textContent, no Markdown). */
+.npchat-msg-error {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: #fecaca;
+}
 .npchat-msg.npchat-typing {
   display: inline-flex;
   align-items: center;

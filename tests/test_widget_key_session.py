@@ -76,7 +76,11 @@ def _stubs(monkeypatch):
     monkeypatch.setattr(db, "log_admin_event", log_admin_event)
     monkeypatch.setattr(db, "log_admin_event_sampled", log_admin_event_sampled)
     monkeypatch.setattr(kb, "catalogue", catalogue)
-    return created
+    yield created
+    # The handshake tests bind the default product id — a module GLOBAL, not a
+    # ContextVar (monkeypatch can't see it) — and `is_default_scope()` keys on
+    # it, so without this reset it would leak into every later test file.
+    tenancy.set_default_product_id(None)
 
 
 def _body(**kw):

@@ -273,7 +273,11 @@ _INJECTION_PATTERNS = (
     # system TURN, so require what actually follows one.
     "system: you",
     "system: ignore",
-    "system message",
+    # NOT a bare "system message" either — "I got a system message saying my
+    # deposit failed" is an ordinary support sentence. The injection shape is
+    # the player PRESENTING their text as a system turn, so require the framing.
+    "this is a system message",
+    "as a system message",
     "reveal your",
     "покажи свой промпт",
     "раскрой систем",

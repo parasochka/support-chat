@@ -258,6 +258,13 @@ def verify_handshake(blob: str, secret: Optional[str] = None) -> dict[str, Any]:
     without it the deploy-level secret applies only in the default scope (see
     `effective_handshake_secret`), so a non-default product with no secret of
     its own simply has no signed mode.
+
+    ORDERING CONTRACT: on a public route the caller MUST bind the tenant scope
+    (`tenancy.set_current_product(...)`) BEFORE calling this. `is_default_scope`
+    treats "no scope set" as the default product (the pre-tenancy/test
+    behaviour), so a call site that forgets to bind the scope would silently
+    re-enable the deploy-secret fallback for every product — the exact
+    cross-tenant hole `effective_handshake_secret` exists to close.
     """
     key = effective_handshake_secret(secret)
     if not key:

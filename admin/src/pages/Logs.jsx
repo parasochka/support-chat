@@ -98,11 +98,16 @@ const SystemLogs = () => {
     [level, debouncedQ, notify]
   );
 
-  // Load + clear the unread badge when the tab is opened / filters change.
+  // Reload whenever the filters/search change.
   useEffect(() => {
     load();
-    httpClient(`${API_URL}/admin/logs/read`, { method: 'POST' }).catch(() => {});
   }, [load]);
+
+  // Clear the unread badge ONCE per visit — re-POSTing it on every keystroke
+  // of the search box was a pointless write per filter change.
+  useEffect(() => {
+    httpClient(`${API_URL}/admin/logs/read`, { method: 'POST' }).catch(() => {});
+  }, []);
 
   return (
     <Box>

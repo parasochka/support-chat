@@ -367,14 +367,29 @@ const PhotosTab = ({ productId }) => {
   // operator's cursor.
   const [drafts, setDrafts] = useState({});
 
+  // A product switch swaps the whole library; drafts keyed by the previous
+  // product's photo ids would never match again and only accumulate.
+  useEffect(() => { setDrafts({}); }, [productId]);
+
   const draftOf = (ph) => {
     const d = drafts[ph.id];
     if (d && d.stamp === ph.updated_at) return d;
-    return {
+    const fresh = {
       stamp: ph.updated_at,
       description: ph.description || '',
       tags: (ph.tags || []).join(', '),
     };
+    // The stamp moved (a save or an AI metadata batch reloaded the row) while
+    // the operator had touched fields in this row — e.g. saved Description and
+    // kept typing in Tags before load() resolved. Keep the touched text,
+    // reseed only the untouched fields from the server; `patch` un-touches a
+    // field once its save lands, so nothing stays pinned forever.
+    if (d && d.touched) {
+      const kept = {};
+      for (const k of Object.keys(d.touched)) kept[k] = d[k];
+      return { ...fresh, ...kept, touched: d.touched };
+    }
+    return fresh;
   };
 
   const setDraft = (id, fields) =>
@@ -386,8 +401,29 @@ const PhotosTab = ({ productId }) => {
             stamp: row && row.updated_at,
             description: (row && row.description) || '',
             tags: ((row && row.tags) || []).join(', '),
+            ...(prev[id] && prev[id].touched
+              ? { touched: prev[id].touched } : {}),
           };
-      return { ...prev, [id]: { ...base, ...fields } };
+      const touched = { ...(base.touched || {}) };
+      for (const k of Object.keys(fields)) touched[k] = true;
+      return { ...prev, [id]: { ...base, ...fields, touched } };
+    });
+
+  // A committed field is the server's again: stop pinning it so later reloads
+  // (another save, an AI metadata batch) can refresh it. Drops the whole draft
+  // once nothing in the row is still being edited.
+  const clearCommitted = (id, fields) =>
+    setDrafts((prev) => {
+      const d = prev[id];
+      if (!d) return prev;
+      const touched = { ...(d.touched || {}) };
+      for (const k of Object.keys(fields)) delete touched[k];
+      if (!Object.keys(touched).length) {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      }
+      return { ...prev, [id]: { ...d, touched } };
     });
 
   const patch = async (id, fields) => {
@@ -396,6 +432,7 @@ const PhotosTab = ({ productId }) => {
         method: 'PUT',
         body: JSON.stringify(fields),
       });
+      clearCommitted(id, fields);
       load();
     } catch (e) {
       notifyError(notify, e, t('Save failed'));

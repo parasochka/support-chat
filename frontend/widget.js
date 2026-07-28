@@ -225,6 +225,10 @@ const state = {
   // Mount-time /i18n fetch (chrome copy + the product's Turnstile site key);
   // turnstileToken() awaits it when the key hasn't arrived yet.
   i18nPromise: null,
+  // The "API_BASE|WIDGET_KEY|lang" the mount-time fetches were built from, so
+  // a later mount() that changes any of them can tell the already-built widget
+  // to refetch (see buildUI's idempotent branch).
+  fetchedWith: null,
   // The widget chrome language. Starts at the browser locale and may later
   // follow the conversation if the player switches language (maybeSwitchLang).
   lang: resolveLang(),
@@ -595,6 +599,19 @@ function buildUI() {
   // the widget that already exists is what the caller actually meant.
   if (els.root && els.root.isConnected) {
     applyConfigLanguage();
+    // If this mount() changed what the import-time fetches were built from —
+    // the documented `import { mount } … mount({ API_BASE, WIDGET_KEY })`
+    // snippet means automount fired them against the host origin with no key —
+    // re-run them under the merged config. Without this the failed/wrong-tenant
+    // results stuck for the page's lifetime: `state.i18nPromise` was never
+    // retried, so the product's admin copy AND its Turnstile site key never
+    // arrived — every session was minted token-less (the backend fail-opens,
+    // silently disabling the anti-bot check), and a same-origin automount
+    // showed the DEFAULT product's topic catalogue for a key supplied late.
+    if (configFetchKey() !== state.fetchedWith) {
+      state.topicsLoaded = false;
+      startConfigFetches();
+    }
     applyStaticLabels();
     return;
   }
@@ -701,10 +718,23 @@ function buildUI() {
   window.addEventListener("resize", reclassify);
   window.addEventListener("orientationchange", reclassify);
 
+  startConfigFetches();
+}
+
+// The mount-time fetch batch, extracted so buildUI's idempotent branch can
+// re-run it when a second mount() changes the config it was built from.
+function startConfigFetches() {
+  state.fetchedWith = configFetchKey();
   // Speculatively warm the topic catalogue so the very first open paints the
   // category buttons instantly. It's a cheap, cacheable, session-free GET and
   // touches no Turnstile or DB, so doing it on mount is cheap insurance.
-  fetchTopics().catch(() => { /* the open handler retries if this missed */ });
+  fetchTopics()
+    .then(() => {
+      if (els.topics && !els.topics.classList.contains("npchat-hidden")) {
+        renderTopics();
+      }
+    })
+    .catch(() => { /* the open handler retries if this missed */ });
   // Merge the admin-edited chrome copy over the baked-in defaults (non-fatal).
   // The promise is kept: the per-product Turnstile site key rides in this
   // response, so turnstileToken() awaits it when no key is known yet — a
@@ -716,6 +746,12 @@ function buildUI() {
   // message could be sent. Loading it at mount costs nothing when unused
   // (fetchI18n also kicks it off once the product's site key arrives).
   if (CONFIG.TURNSTILE_SITE_KEY) loadTurnstile();
+}
+
+// What the mount-time fetches depend on: the origin they hit, the widget key
+// that scopes them to a product, and the language the titles were asked in.
+function configFetchKey() {
+  return [CONFIG.API_BASE || "", CONFIG.WIDGET_KEY || "", state.lang].join("|");
 }
 
 // Re-apply chrome strings. Idempotent, and re-run whenever the language changes
@@ -970,8 +1006,12 @@ function fillTyping(elm, text, isError) {
     return;
   }
   elm.classList.remove("npchat-typing");
-  if (isError) elm.textContent = text;
-  else setMsgBody(elm, "assistant", body);
+  if (isError) {
+    // Visually distinct from a real Nika answer: plain text (no Markdown) and
+    // the error tint, so a rejected turn never reads as the assistant talking.
+    elm.classList.add("npchat-msg-error");
+    elm.textContent = text;
+  } else setMsgBody(elm, "assistant", body);
   scrollToBottom();
 }
 

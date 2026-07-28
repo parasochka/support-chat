@@ -156,11 +156,100 @@ async def test_one_broken_chat_does_not_stop_the_pass(monkeypatch):
 
 
 async def test_review_session_skips_a_transcript_with_no_player_turn(monkeypatch):
+    booked: dict = {}
+
     async def _history_only_bot(session_id, limit=200):
         return [{"role": "assistant", "content": "hi"}]
 
+    async def _attempt(product_id, session_id, **kw):
+        booked.update(kw, session_id=session_id)
+        return 1
+
     monkeypatch.setattr(db, "get_history", _history_only_bot)
-    assert await reviewer.review_session(1, {"id": "s-1"}) is None
+    monkeypatch.setattr(db, "record_review_attempt", _attempt)
+    assert await reviewer.review_session(
+        1, {"id": "s-1", "message_count": 6}) is None
+    # The free skip still books the attempt: the selection SQL checks the WHOLE
+    # transcript while this check sees only the history window, so without a
+    # row the same chat would be re-selected on every pass forever.
+    assert booked["reviewed_msg_count"] == 6
+
+
+async def test_failed_reparse_books_the_attempt_without_touching_the_verdict(
+        monkeypatch):
+    """An unparseable RE-review must not destroy the stored verdict.
+
+    The failed attempt goes through `record_review_attempt` (bookkeeping only),
+    never through `upsert_conversation_review` — which replaces the row whole,
+    so routing the failure through it made a previously stored good verdict
+    vanish from the Quality page (score=NULL rows are excluded everywhere).
+    """
+    attempt: dict = {}
+
+    async def _history(session_id, limit=200):
+        return [{"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"}]
+
+    class _Result:
+        text = "utterly not json"
+        model = "gpt-5-mini"
+        key_used = "primary"
+        tokens_in = 100
+        tokens_out = 20
+        cached_in = 0
+        latency_ms = 500
+
+    class _Client:
+        async def complete(self, messages, **kw):
+            return _Result()
+
+    async def _client_for_product(product_id):
+        return _Client()
+
+    async def _attempt(product_id, session_id, **kw):
+        attempt.update(kw, product_id=product_id)
+        return 1
+
+    async def _upsert(*a, **kw):
+        raise AssertionError(
+            "a failed attempt must never go through the verdict upsert")
+
+    async def _log(*a, **kw):
+        return None
+
+    monkeypatch.setattr(db, "get_history", _history)
+    monkeypatch.setattr(db, "record_review_attempt", _attempt)
+    monkeypatch.setattr(db, "upsert_conversation_review", _upsert)
+    monkeypatch.setattr(db, "log_ai_interaction", _log)
+    monkeypatch.setattr(reviewer.openai_client, "client_for_product",
+                        _client_for_product)
+
+    out = await reviewer.review_session(
+        7, {"id": "22222222-2222-2222-2222-222222222222", "consumer": "web",
+            "message_count": 9, "status": "resolved"})
+    assert out is None
+    assert attempt["reviewed_msg_count"] == 9
+
+
+async def test_record_review_attempt_sql_preserves_verdict_columns(monkeypatch):
+    """DB half of the same pin: the ON CONFLICT update advances ONLY the
+    bookkeeping (reviewed_msg_count / cost / created_at). If a verdict column
+    ever enters the DO UPDATE clause, a failed re-review would overwrite it."""
+    from tests.conftest import FakeConn, FakePool
+
+    conn = FakeConn(row={"id": 5})
+    monkeypatch.setattr(db, "_pool", FakePool(conn))
+
+    await db.record_review_attempt(7, "s-1", consumer="web",
+                                   reviewed_msg_count=9, model="gpt-5-mini",
+                                   cost_usd=0.001)
+
+    sql = next(s for s in conn.sql if "conversation_reviews" in s)
+    do_update = sql.split("DO UPDATE SET", 1)[1].split("RETURNING", 1)[0]
+    assert "reviewed_msg_count" in do_update
+    assert "created_at" in do_update
+    for verdict_col in ("score", "tags", "summary", "issues", "kb_gaps"):
+        assert f"{verdict_col} =" not in do_update
 
 
 async def test_review_session_stores_the_verdict(monkeypatch):

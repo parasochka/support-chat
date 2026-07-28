@@ -131,8 +131,14 @@ async def _log_flush_loop() -> None:
                     log.info("retention_events_pruned rows=%s", removed)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - never let a DB hiccup kill the loop
-            pass
+        except Exception as exc:  # noqa: BLE001 - never let a DB hiccup kill the loop
+            # One line, not log.exception: this loop's own records are captured
+            # and re-flushed by itself, and a down DB would otherwise stack a
+            # full traceback into the buffer every few seconds. But NOT silent —
+            # a prune that times out and rolls back on every pass (the exact
+            # C2 failure mode) must be visible in the logs.
+            log.warning("log_flush_tick_failed error=%s: %s",
+                        exc.__class__.__name__, exc)
 
 
 @asynccontextmanager

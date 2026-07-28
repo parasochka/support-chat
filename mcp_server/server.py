@@ -43,6 +43,10 @@ PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 PII_KEYS = frozenset({
     "email", "full_name", "first_name", "last_name", "name_first",
     "phone", "player_email", "player_name", "tg_username", "username",
+    # Manager identities: /admin/managers returns `display_name` and the
+    # sessions list joins it in as `manager_name` — the very fields the
+    # admin_get redaction exists for.
+    "display_name", "manager_name",
 })
 MASK = "***"
 
@@ -235,6 +239,15 @@ class MCPServer:
         if any(c in path for c in "?#") or "//" in path or ":" in path:
             raise ToolError("`path` must be a bare /admin/... path — put query "
                             "parameters in `params`.")
+        # No percent-escapes either: posixpath.normpath below doesn't decode
+        # them, so "/admin/%2e%2e/api/..." would sail through the prefix check
+        # encoded and be decoded only later (today's server routes it to a 404,
+        # but a normalizing reverse proxy in front could collapse it — cheap to
+        # refuse outright). Admin paths never need percent-encoding; anything
+        # that does belongs in `params`, which httpx encodes itself.
+        if "%" in path:
+            raise ToolError("`path` must not contain percent-escapes — put "
+                            "query parameters in `params`.")
         if not path.startswith("/"):
             path = "/" + path
         # NORMALIZE BEFORE CHECKING. httpx resolves dot segments when it builds

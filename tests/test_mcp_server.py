@@ -183,6 +183,11 @@ def test_api_failure_surfaces_the_servers_explanation():
     "/admin/overview?x=1",
     "/admin/overview#/../api",
     "https://evil.example/admin/overview",
+    # Percent-encoded dot segments: normpath does not decode them, so they
+    # passed the prefix check encoded — refused outright now (a normalizing
+    # reverse proxy in front could collapse them after the guard).
+    "/admin/%2e%2e/api/chat/topics",
+    "/admin/..%2fapi/chat/topics",
 ])
 def test_admin_get_refuses_paths_outside_the_admin_surface(path):
     client = RecordingClient()

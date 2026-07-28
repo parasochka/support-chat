@@ -24,6 +24,7 @@ chrome line — same voice, same language stickiness, same photo machinery.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import logging
 import time
@@ -143,12 +144,19 @@ async def run_product_idle_pings_locked(product: dict[str, Any],
     Dedicated connection, same reason as run_product_events_locked: the sweep
     holds this lock for minutes, and the pool's command_timeout=30 would kill
     the blocking pg_advisory_lock wait rather than let the button queue behind
-    the worker.
+    the worker. Same wait ceiling too — past it the run raises WorkerBusy
+    (409 at the API) instead of hanging the button's request forever.
     """
     conn = await db.dedicated_connection()
     try:
-        await conn.execute("SELECT pg_advisory_lock($1)",
-                           retention_v2._ADVISORY_LOCK_KEY)
+        try:
+            await asyncio.wait_for(
+                conn.execute("SELECT pg_advisory_lock($1)",
+                             retention_v2._ADVISORY_LOCK_KEY),
+                timeout=retention_v2._MANUAL_LOCK_WAIT_SEC)
+        except asyncio.TimeoutError:
+            raise retention_v2.WorkerBusy(
+                "the retention worker is mid-sweep; try again shortly")
         try:
             return await run_product_idle_pings(product, cfg, force=force,
                                                 limit=limit)
