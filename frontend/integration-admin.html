@@ -158,7 +158,14 @@ bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию
   <tr><td><span class="tag get">GET</span><code>/admin/overview?from=&amp;to=&amp;product_id=</code></td>
       <td>KPI: сессии, эскалации, стоимость, здоровье AI-API (латентность, ошибки).</td></tr>
   <tr><td><span class="tag get">GET</span><code>/admin/timeseries?metric=sessions|cost|cost_per_session|escalation_rate</code></td>
-      <td>Ряды по дням/часам.</td></tr>
+      <td>Ряды по дням/часам. Стоимостные метрики считают только диалоговые
+          траты виджета; ИИ-судья идёт отдельной строкой в overview
+          (<code>cost_review_usd</code>).</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/ai-costs?from=&amp;to=&amp;product_id=|partner_id=</code></td>
+      <td>Дневная стоимость <b>всех</b> AI-вызовов области — оба бота плюс фоновые
+          проходы — с разбивкой по типу вызова: <code>cost_chat_usd / cost_agent_usd /
+          cost_media_usd / cost_review_usd / cost_legacy_usd</code> + итоги за период.
+          Это данные графика «Стоимость AI по типам вызовов» (System → Settings).</td></tr>
   <tr><td><span class="tag get">GET</span><code>/admin/by-topic</code> · <code>/admin/by-language</code></td>
       <td>Разрезы по темам / языкам (+ стоимость на строку).</td></tr>
   <tr><td><span class="tag get">GET</span><code>/admin/sessions</code> · <code>/admin/session/{id}</code></td>
@@ -177,7 +184,9 @@ bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию
       <td>Воронка входа: <code>deeplinks_created → starts → new_users → subscribed →
           engaged → photo_receivers → handoffs</code>.</td></tr>
   <tr><td><span class="tag get">GET</span><code>/admin/retention/timeseries</code></td>
-      <td>Дневные ряды: сообщения, активные игроки, фото, пинги, стоимость.</td></tr>
+      <td>Дневные ряды: сообщения, активные игроки, фото, пинги, стоимость —
+          общая и по источникам (диалоги / проактивный агент / разметка медиа /
+          оценка качества / старые неразмеченные записи).</td></tr>
   <tr><td><span class="tag get">GET</span><code>/admin/retention/idle/ledger</code></td>
       <td>Леджер проактивных отправок: кому, каким правилом, статус, стоимость.</td></tr>
   <tr><td><span class="tag get">GET</span><code>/admin/retention/effectiveness?product_id=</code></td>

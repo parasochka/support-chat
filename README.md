@@ -102,7 +102,10 @@ panel.
   in-range KPIs (engagement, photos, proactive sends + reply rate, cost, stage
   distribution),
   the entry funnel (deeplinks → starts → new users → subscribed → engaged → photo
-  receivers → handoffs) and daily series.
+  receivers → handoffs) and daily series. AI spend is **attributed per facade and per
+  call type** (dialogue / proactive agent / media cataloguing / AI quality judge), and a
+  platform-wide **AI cost by call type** histogram (`GET /admin/ai-costs`) sits under the
+  AI-model settings with its own platform / partner / product and call-type filters.
 - **Service API keys** for machine access to the `/admin` API (an external "master"
   admin panel, partner backends): `sak_…` Bearer tokens minted in **System → API keys**
   (shown once; only a hash is stored), each carrying one role (`admin`/`manager`) at one

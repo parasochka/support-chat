@@ -203,9 +203,9 @@ const SupportBlock = () => {
         />
       </Grid>
 
-      {/* Row 2 — AI, cost & performance (7 tiles). The gap-based Grid container
-          carries no outer margin, so without an explicit top margin the two
-          KPI rows touch. */}
+      {/* Row 2 — AI, cost & performance (6 tiles, so the two rows stay 6+6).
+          The gap-based Grid container carries no outer margin, so without an
+          explicit top margin the two KPI rows touch. */}
       <Grid container spacing={2} sx={{ mt: 2 }}>
         <Kpi
           label={t('Cost (USD)')}
@@ -242,11 +242,6 @@ const SupportBlock = () => {
               ? `${overview.failed_calls} ${t('failed')}`
               : t('OpenAI requests')
           }
-        />
-        <Kpi
-          label={t('Cache hit ratio')}
-          value={pct(overview?.cache_hit_ratio)}
-          hint={t('prefix-cache economics')}
         />
         <Kpi
           label={t('Key failovers')}

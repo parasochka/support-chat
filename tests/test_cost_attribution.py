@@ -176,6 +176,58 @@ async def test_retention_timeseries_splits_every_driver(monkeypatch):
         assert source in sql
 
 
+# --- the platform-wide cost histogram (System -> Settings) -----------------
+async def test_ai_cost_timeseries_splits_by_source_across_both_facades(monkeypatch):
+    pool = FakePool()
+    monkeypatch.setattr(db, "_pool", pool)
+
+    await db.ai_cost_timeseries(_FROM, _TO, product_ids=[1])
+
+    sql = _sql_with(pool, "AS chat")
+    # Split by the row's own source label, every bucket present.
+    for source in ("'chat'", "'agent'", "'media'", "'review'", "'legacy'"):
+        assert source in sql
+    # Scoped on the LOG row's product and deliberately facade-blind: this view
+    # sums BOTH bots plus the background passes into one bill.
+    assert "l.product_id = ANY(" in sql
+    assert "consumer" not in sql
+
+
+async def test_ai_costs_endpoint_scopes_and_totals(monkeypatch):
+    from app.api import admin as admin_api
+
+    seen: dict = {}
+
+    async def _scope(admin, product_id=None, partner_id=None):
+        seen["scope_args"] = (product_id, partner_id)
+        return [11]
+
+    async def _series(dt_from, dt_to, product_ids=None):
+        seen["product_ids"] = product_ids
+        return [
+            {"date": "2026-07-01", "cost_chat_usd": 0.1, "cost_agent_usd": 0.02,
+             "cost_media_usd": 0.0, "cost_review_usd": 0.005,
+             "cost_legacy_usd": 0.0, "cost_usd": 0.125, "calls": 7},
+            {"date": "2026-07-02", "cost_chat_usd": 0.2, "cost_agent_usd": 0.0,
+             "cost_media_usd": 0.01, "cost_review_usd": 0.0,
+             "cost_legacy_usd": 0.0, "cost_usd": 0.21, "calls": 3},
+        ]
+
+    monkeypatch.setattr(admin_api.admin_auth, "resolve_scope_filter", _scope)
+    monkeypatch.setattr(db, "ai_cost_timeseries", _series)
+
+    resp = await admin_api.ai_costs(from_="2026-07-01", to="2026-07-31",
+                                    product_id=11, admin={"email": "a@x"})
+
+    import json
+    body = json.loads(resp.body)
+    assert seen["scope_args"] == (11, None)
+    assert seen["product_ids"] == [11]
+    assert body["totals"]["cost_usd"] == 0.335
+    assert body["totals"]["cost_chat_usd"] == 0.3
+    assert body["totals"]["calls"] == 10
+
+
 # --- the derived payload ---------------------------------------------------
 def test_overview_reports_review_cost_apart_from_the_dialogue_cost():
     o = metrics.overview({

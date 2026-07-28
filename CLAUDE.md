@@ -1001,8 +1001,13 @@ already counted them) so no backfill scan runs on boot and history keeps its tot
 support dashboard reports DIALOGUE spend as `cost_usd_total` (the number every per-session
 metric divides) with the judge's passes broken out as `cost_review_usd`; the retention
 dashboard splits its total into dialogue / agent / media / review (+ the legacy remainder,
-whose chart series hides itself once it is all zero). Tests:
-`tests/test_cost_attribution.py`.
+whose chart series hides itself once it is all zero). The PLATFORM-WIDE view is
+`db.ai_cost_timeseries` → `GET /admin/ai-costs`: daily spend of EVERY call in scope —
+facade-blind, both bots plus all background passes, so the buckets sum to the whole OpenAI
+bill — split by `source`; rendered as the "AI cost by call type" histogram under the
+AI-model group on System → Settings (`admin/src/components/AiCostsPanel.jsx`), whose scope
+filter (whole platform / partner / product, seeded from the header product) and call-type
+filter are independent of the header switcher. Tests: `tests/test_cost_attribution.py`.
 
 ### QUALITY REVIEW — the LLM-as-judge over finished conversations (`app/ai/reviewer.py`)
 A cheap background pass that reads FINISHED conversations of **both** facades

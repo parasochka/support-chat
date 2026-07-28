@@ -23,6 +23,7 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { API_URL, httpClient } from '../httpClient';
 import { scopeParams } from '../productScope';
+import RequireProduct from '../components/RequireProduct';
 import { Kpi } from '../components/Kpi';
 import GridPagination from '../components/GridPagination';
 import { t } from '../i18n';
@@ -51,7 +52,7 @@ const qs = (params) =>
     .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
     .join('&');
 
-const Quality = () => {
+const QualityPage = () => {
   const notify = useNotify();
   const isMobile = useIsMobile();
   const [range, setRange] = useState(defaultRange);
@@ -433,5 +434,14 @@ const Quality = () => {
     </Box>
   );
 };
+
+// The verdicts (and the two spend triggers) are per-product data: without a
+// concrete product the queue silently mixes every reachable brand, so gate it
+// like the other product-scoped surfaces.
+const Quality = () => (
+  <RequireProduct title={t('Quality')}>
+    <QualityPage />
+  </RequireProduct>
+);
 
 export default Quality;

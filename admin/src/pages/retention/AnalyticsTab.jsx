@@ -361,27 +361,39 @@ const AnalyticsTab = ({ productId }) => {
 
   return (
     <Box>
-      <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', mb: 2 }}>
-        <TextField
-          size="small"
-          type="date"
-          label={t('From')}
-          value={range.from}
-          onChange={(e) => e.target.value && setRange({ ...range, from: e.target.value })}
-          slotProps={{ inputLabel: { shrink: true } }}
-        />
-        <TextField
-          size="small"
-          type="date"
-          label={t('To')}
-          value={range.to}
-          onChange={(e) => e.target.value && setRange({ ...range, to: e.target.value })}
-          slotProps={{ inputLabel: { shrink: true } }}
-        />
-        <Typography variant="caption" color="text.secondary">
+      {/* The two date fields share ONE row (a 2-column grid whose columns can
+          shrink below the inputs' intrinsic width), so they never wrap into a
+          stack on narrow screens; the caption gets its own line below. */}
+      <Box sx={{ mb: 2 }}>
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+            gap: 1,
+            maxWidth: 440,
+          }}
+        >
+          <TextField
+            size="small"
+            type="date"
+            label={t('From')}
+            value={range.from}
+            onChange={(e) => e.target.value && setRange({ ...range, from: e.target.value })}
+            slotProps={{ inputLabel: { shrink: true } }}
+          />
+          <TextField
+            size="small"
+            type="date"
+            label={t('To')}
+            value={range.to}
+            onChange={(e) => e.target.value && setRange({ ...range, to: e.target.value })}
+            slotProps={{ inputLabel: { shrink: true } }}
+          />
+        </Box>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
           {t('Both days inclusive. “Player base” below is lifetime; everything else counts this range.')}
         </Typography>
-      </Stack>
+      </Box>
 
       <Typography variant="h6" sx={{ mb: 1 }}>
         {t('Player base')}

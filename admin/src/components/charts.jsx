@@ -52,11 +52,16 @@ const EmptyNote = () => (
 );
 
 // Shared tooltip/axis styling so every recharts panel reads like one system.
+// `tooltipWrapper` lifts the tooltip above its siblings: recharts renders the
+// Legend AFTER the tooltip div, so on a short chart (dashboard, height 190)
+// a tall 5-series tooltip overlapped the legend and the legend painted OVER
+// it — which read as a "transparent" tooltip with the page showing through.
 const useChartChrome = () => {
   const theme = useTheme();
   return {
     grid: theme.palette.divider,
     text: theme.palette.text.secondary,
+    tooltipWrapper: { zIndex: 2 },
     tooltip: {
       backgroundColor: theme.palette.background.paper,
       border: `1px solid ${theme.palette.divider}`,
@@ -108,6 +113,7 @@ export const SeriesLineChart = ({
           labelFormatter={fmtDay}
           formatter={valueFormatter ? (v) => valueFormatter(v) : undefined}
           contentStyle={chrome.tooltip}
+          wrapperStyle={chrome.tooltipWrapper}
         />
         {series.length > 1 && (
           <Legend wrapperStyle={{ fontSize: 12 }} iconType="plainline" />
@@ -135,7 +141,7 @@ export const SeriesLineChart = ({
  * composition stays visible. `series` = [{ key, label }] in palette order.
  * `valueFormatter` formats the Y axis + tooltip (and implies decimals).
  */
-const StackedBarChart = ({
+export const StackedBarChart = ({
   data,
   series,
   xKey = 'date',
@@ -168,6 +174,7 @@ const StackedBarChart = ({
           labelFormatter={fmtDay}
           formatter={valueFormatter ? (v) => valueFormatter(v) : undefined}
           contentStyle={chrome.tooltip}
+          wrapperStyle={chrome.tooltipWrapper}
           cursor={{ fill: 'transparent' }}
         />
         {series.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
@@ -286,7 +293,11 @@ export const MiniBarChart = ({ data, xKey, yKey, label, height = 200 }) => {
           tickLine={false}
           width={44}
         />
-        <Tooltip contentStyle={chrome.tooltip} cursor={{ fill: 'transparent' }} />
+        <Tooltip
+          contentStyle={chrome.tooltip}
+          wrapperStyle={chrome.tooltipWrapper}
+          cursor={{ fill: 'transparent' }}
+        />
         <Bar
           dataKey={yKey}
           name={label}
