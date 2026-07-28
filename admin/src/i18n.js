@@ -701,7 +701,6 @@ const RU = {
   'proactive nudges': 'проактивные сообщения',
   'Ping replies': 'Ответы на пинги',
   'to manager / site support': 'менеджеру / в поддержку сайта',
-  'TG dialog + photo metadata': 'TG-диалог + метаданные фото',
   'Daily activity': 'Активность по дням',
   'Both days inclusive. “Player base” below is lifetime; everything else counts this range.':
     'Обе даты включительно. «База игроков» ниже — за всё время; остальное — за период.',
