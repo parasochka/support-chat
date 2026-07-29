@@ -187,6 +187,23 @@ async def test_injection_gets_model_free_deflection(monkeypatch):
     assert events and events[0][0] == "injection_blocked"
 
 
+async def test_incoming_media_gets_model_free_reply(monkeypatch):
+    # The bot has no vision pass: an inbound photo/video/file gets an honest
+    # localized "can't open those here" line instead of reaching the model
+    # (which used to improvise "I don't see it - send it again" loops).
+    tg = FakeTelegram()
+    events: list = []
+    _patch_common(monkeypatch, tg, events)
+
+    upd = {"message": {"from": {"id": 7}, "chat": {"id": 7},
+                       "photo": [{"file_id": "abc"}], "caption": "вот скриншот"}}
+    await retention.handle_update(PRODUCT, upd)
+
+    assert len(tg.messages) == 1
+    assert ("фото" in tg.messages[0][1].lower()
+            or "photo" in tg.messages[0][1].lower())
+
+
 async def test_stop_and_resume_toggle_pings(monkeypatch):
     tg = FakeTelegram()
     events: list = []

@@ -1000,6 +1000,19 @@ async def _handle_message(client: TelegramClient, product: dict[str, Any],
     if sub and not ru.get("subscribed"):
         await db.set_retention_subscribed(int(ru["id"]), True)
 
+    # Inbound attachments: the bot has no vision pass by design, so a photo/
+    # video/file gets an honest in-persona "can't open those here" line
+    # (model-free) instead of the model improvising "I don't see it - send it
+    # again" loops. A caption, if any, is deliberately NOT answered: the player
+    # is asking about the attachment, and answering the caption while blind to
+    # the media reads worse than saying so plainly.
+    if pu.has_media:
+        log.info("retention_incoming_media product_id=%s tg_user_id=%s",
+                 product["id"], pu.tg_user_id)
+        await client.send_message(pu.chat_id,
+                                  _rtn_text("rtn_incoming_media_reply", lang))
+        return
+
     # Input gates: overlong text is truncated (not rejected — chats are human);
     # junk/no-content messages and injection attempts get a canned in-persona
     # line and never reach the model. (cfg was resolved at the rate-limit gate.)
