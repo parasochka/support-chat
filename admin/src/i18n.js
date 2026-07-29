@@ -252,8 +252,8 @@ const RU = {
 
   // ----- field labels + helps (model) -----
   'Model id': 'ID модели',
-  'OpenAI model, e.g. gpt-5-mini (the GPT-5 mini reasoning family).':
-    'Модель OpenAI, напр. gpt-5-mini (семейство reasoning-моделей GPT-5 mini).',
+  'OpenAI model, e.g. gpt-5.6-luna (the cheapest tier of the GPT-5.6 reasoning family).':
+    'Модель OpenAI, напр. gpt-5.6-luna (самый дешёвый тариф reasoning-семейства GPT-5.6).',
   'Reasoning effort': 'Глубина рассуждений',
   'Hidden-reasoning depth. Empty = the model default (parameter omitted).':
     'Глубина скрытых рассуждений. Пусто = значение модели по умолчанию (параметр не передаётся).',

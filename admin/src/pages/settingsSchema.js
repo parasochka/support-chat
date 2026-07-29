@@ -81,7 +81,7 @@ export const GROUP_FIELDS = {
     { name: 'min_meaningful_chars', label: 'Min meaningful characters', type: 'int', min: 1, max: 100, help: 'Distinct letters/digits a message must carry to reach the model.' },
   ],
   model: [
-    { name: 'model', label: 'Model id', type: 'string', help: 'OpenAI model, e.g. gpt-5-mini (the GPT-5 mini reasoning family).' },
+    { name: 'model', label: 'Model id', type: 'string', help: 'OpenAI model, e.g. gpt-5.6-luna (the cheapest tier of the GPT-5.6 reasoning family).' },
     { name: 'reasoning_effort', label: 'Reasoning effort', type: 'select', options: ['', 'minimal', 'low', 'medium', 'high'], help: 'Hidden-reasoning depth. Empty = the model default (parameter omitted).' },
     { name: 'verbosity', label: 'Verbosity', type: 'select', options: ['', 'low', 'medium', 'high'], help: 'Answer length. Empty = the model default (parameter omitted).' },
     { name: 'max_output_tokens', label: 'Max output tokens', type: 'int', min: 1, max: 128000, help: 'Output budget — INCLUDES hidden reasoning tokens, so keep it generous (≈2000).' },

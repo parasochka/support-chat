@@ -571,7 +571,8 @@ and prices it as the stable alias — so a new dated snapshot doesn't silently f
 cost to $0. Every call path (incl. `_call_with_backoff` retries and the race) emits structured
 `log.info/warning` lines for Railway tracing.
 
-The default model is the **GPT-5 mini reasoning family** (`gpt-5-mini`). Reasoning models
+The default model is **GPT-5.6 Luna** (`gpt-5.6-luna`) — the cheapest tier of the GPT-5.6
+reasoning family (Sol > Terra > Luna), aimed at high-volume latency-sensitive chat. Reasoning models
 change the request shape: the call sends `max_completion_tokens` (**not** `max_tokens`), does
 **not** send `temperature` (rejected by these models), and instead passes `reasoning_effort`
 and `verbosity` (each `low`/`medium`/`high`). Both are sent only when set — an empty string in
