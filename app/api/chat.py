@@ -567,8 +567,12 @@ async def send_message(req: Request, body: MessageSend,
     # cooldown clock now (a rejected message must not throttle its own fix-up).
     antispam.arm_cooldown(body.session_id)
 
-    # message cap reached -> force escalation response (no model call)
-    if session.get("message_count", 0) >= settings.general()["max_messages_per_session"]:
+    # HARD message ceiling reached (soft cap x multiplier) -> force escalation
+    # response (no model call). The SOFT cap itself no longer closes anything:
+    # between the cap and this ceiling every turn is answered normally and the
+    # reply carries `cap_notice` (built in chat_service) so the widget shows the
+    # explain-and-choose block (escalate / finish) instead of a silent wall.
+    if session.get("message_count", 0) >= escalation.hard_message_limit():
         log.info(
             "chat_message_cap_reached session_id=%s count=%s",
             body.session_id, session.get("message_count", 0),
@@ -630,6 +634,11 @@ async def send_message(req: Request, body: MessageSend,
             "closing_suggestion": result.closing_suggestion,
             # True when the question looks resolved -> widget offers "finish chat".
             "resolved": result.resolved,
+            # {message, escalate_label, finish_label} once the chat reached the
+            # soft message cap: the client renders it (instead of the suggestion
+            # bubbles) with an escalate button (-> POST /escalate) and a finish
+            # button (-> POST /resolve). null under the cap / on a hand-off.
+            "cap_notice": result.cap_notice,
         },
     )
 

@@ -913,29 +913,36 @@ def _forbidden_topics_directive(
     return renderer(line)
 
 
-# Conversation-budget directive (Layer 3, per-request). A session dies at a hard
-# technical cap (`general.max_messages_per_session`): the turn that reaches it is
-# force-escalated and the widget closes the chat. Without warning that lands as a
-# wall — a live, productive conversation just stops (seen in prod on a 15-message
-# session). The model cannot see the counter, so the last turns before the cap
-# carry this line: wrap up, don't open new threads, and hand off deliberately
-# rather than letting the chat run out. Per-request (it depends on the counter),
-# so it can never ride in the byte-stable Layer-1 block.
+# Conversation-budget directive (Layer 3, per-request). The message cap
+# (`general.max_messages_per_session`) is SOFT: the turn that reaches it (and
+# every one after) is still answered, but the widget shows the cap notice with
+# the two ways out - hand over to a human, or finish the chat - instead of the
+# suggestion bubbles; only the hard ceiling (cap x escalation.HARD_CAP_MULTIPLIER)
+# force-closes. The model cannot see the counter, so the last turns before the
+# cap carry the wrap-up line, and past the cap it is told the notice is on
+# screen: answer fully but briefly, steer to a conclusion, don't open new
+# threads. Per-request (it depends on the counter), so it can never ride in the
+# byte-stable Layer-1 block.
 _TURN_BUDGET_NOTICE_TURNS = 2
 
 
 def _turn_budget_directive(turns_left: Optional[int]) -> Optional[str]:
-    """Layer-3 wrap-up notice for the last turns before the hard message cap.
+    """Layer-3 wrap-up notice for the last turns before (and past) the soft cap.
 
     `turns_left` is how many further exchanges fit AFTER the reply being built
-    (cap minus this turn's prospective count). None (or a comfortable budget)
-    ⇒ no block at all, so the prompt is unchanged for the whole normal chat.
+    (soft cap minus this turn's prospective count). None (or a comfortable
+    budget) ⇒ no block at all, so the prompt is unchanged for the whole normal
+    chat. Zero/negative ⇒ the conversation is at/over the soft cap: the player
+    sees the escalate/finish notice under every reply now.
     """
     if turns_left is None or turns_left > _TURN_BUDGET_NOTICE_TURNS:
         return None
     if turns_left <= 0:
-        tail = ("This is the LAST reply of this chat - afterwards the player "
-                "cannot write here any more.")
+        tail = (
+            "The chat is at that limit now: under every reply the player is "
+            "shown a notice with two buttons - hand the question over to a "
+            "human, or finish the chat."
+        )
     else:
         tail = (f"Only about {turns_left} more exchange"
                 f"{'s' if turns_left > 1 else ''} fit after this reply.")
