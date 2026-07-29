@@ -5140,13 +5140,18 @@ async def retention_appearance_context(product_id: int, retention_user_id: int
                                         ) -> dict[str, Any]:
     """The persona-appearance grounding for the retention Layer-3 block.
 
-    Returns {"base": [description, ...], "last_sent": description|None}:
+    Returns {"base": [...], "last_sent": description|None, "sent": [...]}:
     `base` is a small stable sample of the product's ACTIVE photo library
     (lowest stages first, deterministic order - the canonical look the model
-    may describe even when no photo is currently sendable); `last_sent` is the
-    description of the photo THIS player saw most recently ("what you look
-    like right now" to him). Descriptions doubling as appearance context is
-    why they matter beyond captions - see prompts._appearance_directive.
+    may describe even when no photo is currently sendable); `sent` is the
+    media THIS player already received, oldest-first ({description,
+    media_type, viewed_at}) - it feeds the SENT-media prompt block, so the
+    model can DESCRIBE a photo it sent earlier instead of refusing or sending
+    a new one ("describe the photo you showed me" used to dead-end because
+    only the newest photo was carried); `last_sent` stays the newest one
+    ("what you look like right now" to him). Descriptions doubling as
+    appearance context is why they matter beyond captions - see
+    prompts._appearance_directive / _sent_media_directive.
     """
     base_rows = await _fetch(
         "SELECT description FROM retention_photos "
@@ -5154,16 +5159,23 @@ async def retention_appearance_context(product_id: int, retention_user_id: int
         "ORDER BY stage, sort_order, id LIMIT 3",
         product_id,
     )
-    last_row = await _fetchrow(
-        "SELECT p.description FROM retention_photo_views v "
-        "JOIN retention_photos p ON p.id = v.photo_id "
-        "WHERE v.retention_user_id = $1 AND p.description <> '' "
-        "ORDER BY v.viewed_at DESC, v.id DESC LIMIT 1",
+    # Keyed on the player (not the session): views survive the idle chat
+    # rollover, so "that photo from yesterday" is answerable in a fresh chat.
+    sent_rows = await _fetch(
+        "SELECT p.description, p.media_type, v.viewed_at FROM ("
+        "  SELECT photo_id, viewed_at FROM retention_photo_views "
+        "  WHERE retention_user_id = $1 "
+        "  ORDER BY viewed_at DESC, id DESC LIMIT 8"
+        ") v JOIN retention_photos p ON p.id = v.photo_id "
+        "WHERE p.description <> '' ORDER BY v.viewed_at ASC",
         retention_user_id,
     )
+    sent = [{"description": r["description"], "media_type": r["media_type"],
+             "viewed_at": r["viewed_at"]} for r in sent_rows]
     return {
         "base": [r["description"] for r in base_rows],
-        "last_sent": last_row["description"] if last_row else None,
+        "last_sent": sent[-1]["description"] if sent else None,
+        "sent": sent,
     }
 
 

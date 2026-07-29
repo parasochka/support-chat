@@ -1450,7 +1450,17 @@ _RETENTION_PHOTO_DIRECTIVE = (
     "closer we get and the more we talk, the bolder my photos become (the "
     "PROGRESSION block gives you the facts) - and then firmly steer the chat "
     "somewhere new instead of circling the request. Repeating a promise you "
-    "have not kept is worse than a clear \"not yet\"."
+    "have not kept is worse than a clear \"not yet\".\n"
+    "- Asking ABOUT a photo is not asking FOR a photo. The MEDIA YOU ALREADY "
+    "SENT block in the user message lists every photo/video this player has "
+    "received from you, in order, with what is on each. When he asks what was "
+    "ON a photo you sent, asks you to describe it (\"опиши\", \"what did you "
+    "show me\"), or talks about one of them, do NOT send a new one and never "
+    "say you don't know or can't see it - find it in that block (by his hints: "
+    "which one, the outfit, the order) and describe it in your own words, in "
+    "character, matching the mood he asks for (playful, teasing, sensual), as "
+    "a woman talking about her own photo. Send a NEW photo only when he "
+    "clearly asks for ANOTHER one or the moment calls for it."
 )
 
 
@@ -1675,6 +1685,38 @@ def _appearance_directive(appearance: Optional[dict[str, Any]]) -> Optional[str]
         lines.append(
             "The photo the player saw LAST (your current look to him): "
             f"{' '.join(last.split())}")
+    return "\n".join(lines)
+
+
+def _sent_media_directive(appearance: Optional[dict[str, Any]]) -> Optional[str]:
+    """Layer-3 block listing the media THIS player already received.
+
+    The photos themselves are chrome (delivered via Telegram) - the history
+    only ever carries their captions - so without this block the model cannot
+    answer "describe the photo you sent me": it either sent a NEW unrequested
+    photo (the ask matches the photo-request stems, so candidates were
+    offered) or refused as not knowing what was on it. `appearance["sent"]`
+    comes from db.retention_appearance_context: oldest-first {description,
+    media_type, viewed_at}, keyed on the player so it survives the idle chat
+    rollover. Descriptions are admin/AI-written catalogue text, never player
+    input. Returns None when nothing was sent yet.
+    """
+    sent = [s for s in (appearance or {}).get("sent") or []
+            if (s.get("description") or "").strip()]
+    if not sent:
+        return None
+    lines = [
+        "=== MEDIA YOU ALREADY SENT to this player (oldest first) ===",
+        "When he asks about or refers to a photo/video you sent, this list is "
+        "what he means - describe the matching one from here in your own "
+        "words, in character; never claim you don't know what was on it, and "
+        "do not send a new photo when he only asks about one of these.",
+    ]
+    for i, s in enumerate(sent, 1):
+        kind = "video" if s.get("media_type") == "video" else "photo"
+        desc = " ".join(str(s["description"]).split())
+        lines.append(f"{i}. {kind}, sent {_rough_age_text(s.get('viewed_at'))}: "
+                     f"{desc}")
     return "\n".join(lines)
 
 
@@ -2020,6 +2062,9 @@ def build_retention_dynamic_prompt(
     appearance_block = _appearance_directive(appearance)
     if appearance_block:
         parts += [appearance_block, ""]
+    sent_block = _sent_media_directive(appearance)
+    if sent_block:
+        parts += [sent_block, ""]
     photo_block = _photo_candidates_directive(photo_candidates or [])
     if photo_block:
         parts += [photo_block, ""]
