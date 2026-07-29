@@ -60,6 +60,18 @@ KEYS: tuple[tuple[str, str, str], ...] = (
      "no button link for this product; only the boot-seeded default product "
      "then falls back to the deploy-level CONTACT_FORM_URL env default"),
     ("closing_suggestion", "server", "The declarative closing bubble (\"Issue solved.\")"),
+    # The long-chat (message-cap) notice. When a conversation reaches the soft
+    # message cap it no longer force-closes: every further reply carries this
+    # explanation + two actions (escalate to a human via the product's normal
+    # escalation flow, or finish the chat). Stable server copy, admin-editable
+    # like every translation — never model-generated.
+    ("cap_notice_message", "server",
+     "Long-chat notice shown once the conversation reaches the message cap: "
+     "explains the chat has stalled and offers to escalate or finish"),
+    ("cap_escalate_button", "server",
+     "Long-chat notice button: hand the question over to a human (runs the "
+     "normal escalation flow)"),
+    ("cap_finish_button", "server", "Long-chat notice button: finish the chat"),
     ("low_content_reply", "server", "Nudge for a message with nothing to answer"),
     ("model_error_reply", "server", "Nudge shown on a transient model failure"),
     # --- Retention / Telegram bot copy (scope 'retention') ------------------
@@ -185,6 +197,9 @@ DEFAULTS: dict[str, dict[str, str]] = {
         # default-language/English chain.
         "contact_url": "",
         "closing_suggestion": "Issue solved.",
+        "cap_notice_message": "Looks like we've been at this for a while and still haven't reached a solution. I can hand your question over to a human right now, or you can finish the chat if there's nothing left to add.",
+        "cap_escalate_button": "Hand over to a human",
+        "cap_finish_button": "End chat",
         "low_content_reply": "Could you describe your question in a sentence or two? I didn't catch a question I can help with.",
         "model_error_reply": "Sorry, I'm having a brief technical hiccup. Please send your message again in a moment.",
         "rtn_need_deeplink": "⚠️ Please open this chat from your account on the site so I know who you are.",
@@ -247,6 +262,9 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "escalation_message": "Я передам твой вопрос в службу поддержки. Дальше тебе помогут они.",
         "escalation_button": "Связаться с поддержкой",
         "closing_suggestion": "Проблема решена.",
+        "cap_notice_message": "Похоже, наш разговор затянулся, а решение так и не нашлось. Могу прямо сейчас передать твой вопрос человеку, или заверши чат, если добавить нечего.",
+        "cap_escalate_button": "Передать вопрос человеку",
+        "cap_finish_button": "Завершить чат",
         "low_content_reply": "Опиши, пожалуйста, свой вопрос в одном-двух предложениях: я не увидела вопроса, с которым могу помочь.",
         "model_error_reply": "Извини, у меня небольшие технические неполадки. Пожалуйста, отправь сообщение ещё раз через минуту.",
         "rtn_need_deeplink": "⚠️ Открой, пожалуйста, этот чат через свой кабинет на сайте, чтобы я знала, кто ты.",
@@ -309,6 +327,9 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "escalation_message": "Te conectaré con nuestro equipo de soporte. Ellos continuarán desde aquí.",
         "escalation_button": "Contactar soporte",
         "closing_suggestion": "Problema resuelto.",
+        "cap_notice_message": "Parece que llevamos un buen rato y todavía no llegamos a una solución. Puedo pasar tu pregunta a una persona ahora mismo, o puedes finalizar el chat si no queda nada más.",
+        "cap_escalate_button": "Pasar a una persona",
+        "cap_finish_button": "Finalizar chat",
         "low_content_reply": "¿Podrías describir tu pregunta en una o dos frases? No detecté una consulta con la que pueda ayudarte.",
         "model_error_reply": "Perdona, tengo un problema técnico temporal. Por favor, envía tu mensaje de nuevo en un momento.",
         "rtn_need_deeplink": "⚠️ Abre este chat desde tu cuenta en el sitio, por favor, para que sepa quién eres.",
@@ -371,6 +392,9 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "escalation_message": "Seni destek ekibimize bağlayacağım. Bundan sonrasını onlar halleder.",
         "escalation_button": "Desteğe ulaşın",
         "closing_suggestion": "Sorun çözüldü.",
+        "cap_notice_message": "Görünüşe göre epeydir konuşuyoruz ama hala bir çözüme ulaşamadık. Sorunu hemen bir insana aktarabilirim ya da eklemek istediğin bir şey yoksa sohbeti bitirebilirsin.",
+        "cap_escalate_button": "Bir insana aktar",
+        "cap_finish_button": "Sohbeti bitir",
         "low_content_reply": "Sorununu bir iki cümleyle yazar mısın? Yardımcı olabileceğim bir soru göremedim.",
         "model_error_reply": "Kusura bakma, geçici bir teknik sorun yaşıyorum. Lütfen mesajını birazdan tekrar gönder.",
         "rtn_need_deeplink": "⚠️ Bu sohbeti lütfen sitedeki hesabından aç ki kim olduğunu bileyim.",
@@ -433,6 +457,9 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "escalation_message": "Vou conectar você com nossa equipe de suporte. Eles continuarão a partir daqui.",
         "escalation_button": "Falar com o suporte",
         "closing_suggestion": "Problema resolvido.",
+        "cap_notice_message": "Parece que já estamos nisso há um tempo e ainda não chegamos a uma solução. Posso passar sua pergunta para uma pessoa agora mesmo, ou você pode encerrar o chat se não houver mais nada.",
+        "cap_escalate_button": "Passar para uma pessoa",
+        "cap_finish_button": "Encerrar chat",
         "low_content_reply": "Você poderia descrever sua dúvida em uma ou duas frases? Não identifiquei uma pergunta com a qual eu possa ajudar.",
         "model_error_reply": "Desculpe, estou com um problema técnico temporário. Por favor, envie sua mensagem novamente em instantes.",
         "rtn_need_deeplink": "⚠️ Abra este chat pela sua conta no site, por favor, para eu saber quem você é.",

@@ -102,7 +102,7 @@ export const GROUP_FIELDS = {
   general: [
     { name: 'session_ttl_hours', label: 'Session TTL (hours)', type: 'int', min: 1, max: 8760, module: 'support', help: 'How long a chat session stays valid.' },
     { name: 'admin_token_ttl_min', label: 'Admin token TTL (min)', type: 'int', min: 5, max: 10080, globalOnly: true, help: 'Admin inactivity window (5 min … 1 week). The session slides: daily use auto-renews it; an account untouched for this long is logged out. Default 1 week (10080).' },
-    { name: 'max_messages_per_session', label: 'Max messages / session', type: 'int', min: 1, max: 10000, module: 'support', help: 'Message cap before the session hands off to a human.' },
+    { name: 'max_messages_per_session', label: 'Max messages / session', type: 'int', min: 1, max: 10000, module: 'support', help: 'Soft message cap: past it every reply carries the escalate/finish notice instead of suggestion bubbles; the session force-escalates at twice this value.' },
     { name: 'history_max_turns', label: 'History turns to model', type: 'int', min: 1, max: 200, module: 'support', help: 'Recent turns fed into the prompt history (full transcript is always stored).' },
     { name: 'body_max_bytes', label: 'Max request body (bytes)', type: 'int', min: 1024, max: 104857600, globalOnly: true, help: 'Largest accepted request body (1 KiB … 100 MiB).' },
     { name: 'quality_review_enabled', label: 'Quality review (AI judge)', type: 'bool', help: 'Score finished conversations (support + Telegram) with a cheap AI pass. Results live on the Quality page.' },

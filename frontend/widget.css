@@ -334,6 +334,32 @@
   transition: background 0.12s ease;
 }
 .npchat-finish:hover { background: #059669; }
+/* Long-chat (message-cap) notice: an amber explainer above the two way-out
+   buttons, matching the escalation card's palette so it reads as a system
+   notice, not a Nika bubble. */
+.npchat-capnote {
+  align-self: stretch;
+  padding: 8px 12px;
+  border: 1px solid #fcd34d;
+  border-radius: 10px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 13px;
+}
+/* "Hand over to a human": the escalation action, amber like the contact button
+   on the escalation card it leads to; sits ABOVE the green finish button. */
+.npchat-cap-escalate {
+  align-self: stretch;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 16px;
+  background: #f59e0b;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.npchat-cap-escalate:hover { background: #d97706; }
 
 .npchat-inputrow {
   display: flex;

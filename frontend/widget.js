@@ -1187,10 +1187,72 @@ function applyTurnExtras(data, originalText, depth = 0) {
     scrollToBottom();
     return;
   }
+  // Past the soft message cap the backend swaps the suggestion bubbles for the
+  // long-chat notice: an explanation plus the two ways forward (escalate to a
+  // human above, finish the chat below). Rendered on every further turn.
+  if (data.cap_notice) {
+    renderCapNotice(data.cap_notice);
+    scrollToBottom();
+    return;
+  }
   renderSuggestions(data.suggestions, data.closing_suggestion, data.resolved);
   // The follow-up bubbles render AFTER the reply was scrolled into view and sit
   // outside the scroll container, so they shrink the transcript's viewport and
   // would otherwise clip the bottom of the fresh answer. Re-pin once they're in.
+  scrollToBottom();
+}
+
+// The long-chat (message-cap) notice. Once the conversation reaches the soft
+// message cap the backend still answers every turn, but the reply carries
+// `cap_notice` instead of suggestions: a stable localized explanation ("the
+// chat has stalled") with two explicit ways forward - hand the question over
+// to a human (the product's normal escalation flow, incl. the retention-bot
+// deeplink) on top, and finish the chat below it. The copy and labels come
+// from the server payload (translations registry), so the strip needs no
+// baked-in strings of its own.
+function renderCapNotice(cap) {
+  clearSuggestions();
+  if (!cap) return;
+  if (cap.message) {
+    els.suggestions.appendChild(el("div", "npchat-capnote", cap.message));
+  }
+  const esc = el("button", "npchat-cap-escalate", cap.escalate_label || "");
+  esc.addEventListener("click", () => capEscalate(cap));
+  els.suggestions.appendChild(esc);
+  const fin = el("button", "npchat-finish", cap.finish_label || t("finish"));
+  fin.addEventListener("click", finishChat);
+  els.suggestions.appendChild(fin);
+  els.suggestions.classList.remove("npchat-hidden");
+}
+
+// The cap notice's "hand over to a human" button: the explicit escalation flow
+// (POST /escalate -> HARD hand-off). Shows the same contact card as every other
+// escalation path (the retention-bot deeplink when the product runs one) and
+// ends the conversation. On a failure the notice is re-rendered so the player
+// can simply retry.
+async function capEscalate(cap) {
+  if (state.sending || !state.sessionId) return;
+  state.sending = true;
+  const gen = state.generation;
+  clearSuggestions();
+  try {
+    const { ok, data } = await api("/api/chat/escalate", {
+      auth: true,
+      body: { session_id: state.sessionId },
+    });
+    if (gen !== state.generation) return;
+    if (ok && data && data.escalation && data.escalation.active) {
+      addEscalation(data.escalation);
+      endConversation();
+    } else {
+      renderCapNotice(cap);
+    }
+  } catch (_) {
+    if (gen !== state.generation) return;
+    renderCapNotice(cap);
+  } finally {
+    if (gen === state.generation) state.sending = false;
+  }
   scrollToBottom();
 }
 

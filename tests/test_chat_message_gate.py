@@ -166,7 +166,10 @@ async def test_injection_with_complaint_intent_is_not_hard_blocked(monkeypatch):
     assert spy.called is True
 
 
-async def test_message_cap_forces_escalation_without_model(monkeypatch):
+async def test_hard_message_ceiling_forces_escalation_without_model(monkeypatch):
+    # The HARD ceiling (soft cap x HARD_CAP_MULTIPLIER; default 15 x 2 = 30) is
+    # the model-free force-escalation path. The soft cap itself no longer closes
+    # anything (see the cap-notice test below).
     spy = _common(monkeypatch, _open_session(message_count=30))
     captured = {}
 

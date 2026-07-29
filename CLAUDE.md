@@ -738,11 +738,13 @@ hot-reloaded `language` settings group (`default` + `supported`).
 ### Escalation (`escalation.py`) — two strengths: HARD closes, SOFT keeps chatting
 Escalation returns a contact-button payload only (no form, no live agent, no ticket/Telegram
 notifier). The payload carries a **`final`** flag mirroring the split:
-- **HARD (`final=true`)** — the model's `[[ESCALATE]]` sentinel, the message cap, or the explicit
-  `/escalate` tap. `db.mark_escalated` sets `status='escalated'` (+ `escalated=TRUE`), the widget
+- **HARD (`final=true`)** — the model's `[[ESCALATE]]` sentinel, the **hard message ceiling**
+  (soft cap × `escalation.HARD_CAP_MULTIPLIER`, the cost backstop), or the explicit
+  `/escalate` tap (incl. the cap notice's "hand over to a human" button — see below).
+  `db.mark_escalated` sets `status='escalated'` (+ `escalated=TRUE`), the widget
   ends the conversation, and further turns 409. `decide()` covers exactly these post-model
-  triggers (cap first, then `model_signalled`); the old `already_escalated` auto-trigger branch is
-  **gone** — a soft-escalated session keeps chatting normally.
+  triggers (ceiling first, then `model_signalled`); the old `already_escalated` auto-trigger branch
+  is **gone** — a soft-escalated session keeps chatting normally.
 - **SOFT (`final=false`)** — the keyword triggers (high-risk fraud/legal stems, explicit ask for a
   human), checked by `escalation.keyword_trigger()` in `chat_service` **BEFORE the model call**
   (they don't depend on the model, so the hand-off turn burns **no tokens**; the turn is persisted
@@ -763,19 +765,34 @@ the `суд` stem (the substring matcher used to escalate-and-close on those). B
 `escalation` settings group — `high_risk_keywords` and `human_request_keywords` — and their ONE
 admin editor is the **Common → Escalation keywords** page;
 the group is deliberately skipped in the generic Settings tab so the same knob is never editable
-from two places. The constants in `escalation.py` are only the built-in defaults. The cap
-fires on the turn whose prospective count (current + 1) reaches `max_messages_per_session` — a
-technical limit that lives in the **`general`** settings group (the legacy
-`escalation.max_messages_per_session` DB override is still honoured as a fallback); the
-model-free fast path in `app/api/chat.py` is the cheap belt-and-suspenders for a session already
-at/over the cap — complementary, not a duplicate. **The cap no longer lands as a wall**: the
-model cannot see the counter, so a live conversation used to just stop dead on the capped turn.
-`chat_service` now passes `turns_left` (cap minus this turn's prospective count) into
+from two places. The constants in `escalation.py` are only the built-in defaults.
+
+**The message cap is SOFT — it explains itself and offers a choice (`cap_notice`).**
+`max_messages_per_session` is a technical limit in the **`general`** settings group (the legacy
+`escalation.max_messages_per_session` DB override is still honoured as a fallback). The turn whose
+prospective count (current + 1) reaches it — and every turn after — is **still answered by the
+model**, but the `/message` response swaps the suggestion bubbles for **`cap_notice`**
+(`escalation.cap_notice_payload`): `{message, escalate_label, finish_label}` — a stable, localized
+explanation that the chat has stalled ("we've been at this a while without a solution") plus the
+two ways forward. The copy lives in the **translations registry** (`cap_notice_message`,
+`cap_escalate_button`, `cap_finish_button` — admin Translations tab, never model-generated). The
+widget (`widget.js` `renderCapNotice`) renders it in the suggestion strip: the amber
+**escalate button on top** (→ `POST /escalate`, the normal explicit HARD hand-off — so it lands in
+the retention-bot deeplink / contact card exactly like every other escalation path) and the green
+**finish button below** (→ `POST /resolve` via `finishChat`). If the player keeps chatting, the
+notice re-renders on every further turn (suggestions/closing/resolved are suppressed alongside it);
+it is skipped on a hand-off and on a topic switch. The old behaviour — force-escalate and close
+exactly at the cap with no explanation — is gone. The **HARD ceiling** remains as the cost
+backstop: at `max_messages_per_session × escalation.HARD_CAP_MULTIPLIER` (2) `decide()` fires
+`message_cap` and the model-free fast path in `app/api/chat.py` short-circuits a session already
+at/over the ceiling — complementary, not a duplicate. The model is kept in the loop:
+`chat_service` passes `turns_left` (soft cap minus this turn's prospective count) into
 `build_messages`, and `prompts._turn_budget_directive` adds a Layer-3 wrap-up notice on the last
-`_TURN_BUDGET_NOTICE_TURNS` (2) turns — answer fully now, open no new threads, and hand off
-deliberately ([[ESCALATE]]) if the issue cannot be finished here. It is per-request, so it never
+`_TURN_BUDGET_NOTICE_TURNS` (2) turns — and, at/past the cap, tells the model the escalate/finish
+notice is on screen: answer fully but briefly, open no new threads, hand off deliberately
+([[ESCALATE]]) if the issue cannot be finished here. It is per-request, so it never
 touches the byte-stable Layer 1, and it is skipped on a `closing` turn (the goodbye directive
-already ends the chat). The button URL is **per-language**: the
+already ends the chat). Tests: `tests/test_cap_notice.py`. The button URL is **per-language**: the
 `contact_url` key in the translations registry (admin Translations tab — each language can point
 at its own contact form) — **the ONE home for the URL**. A legacy hidden value stored by early
 builds in `app_settings.general.contact_form_url` (the old Settings tab wrote it; the field then

@@ -222,11 +222,12 @@ def test_turn_budget_notice_is_layer3_and_only_near_the_cap():
     # Comfortable budget (and the default None) → the prompt is unchanged.
     assert "CONVERSATION BUDGET" not in user_msg(None)
     assert "CONVERSATION BUDGET" not in user_msg(9)
-    # Nearing the cap → wrap up; on the final turn say so outright.
+    # Nearing the cap → wrap up; at/past the cap the model is told the player
+    # sees the escalate/finish notice (the cap is soft — the chat keeps going).
     assert "CONVERSATION BUDGET" in user_msg(2)
-    assert "LAST reply" in user_msg(0)
+    assert "hand the question over to a human" in user_msg(0)
     # A cap already overshot must not produce a cheerful "1 more exchange".
-    assert "LAST reply" in user_msg(-3)
+    assert "hand the question over to a human" in user_msg(-3)
     # The goodbye turn ends the chat by itself — no budget notice on top.
     msgs = prompts.build_messages({"user_context": {}}, kb_block=None,
                                   history=[], user_text="bye", resolved_lang="en",

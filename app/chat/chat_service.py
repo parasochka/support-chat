@@ -71,6 +71,12 @@ class ChatReply:
     # no turn was persisted, so api/chat releases the cooldown — the resend the
     # nudge asks for must not be throttled.
     model_error: bool = False
+    # The long-chat notice block ({message, escalate_label, finish_label}) once
+    # the conversation has reached the SOFT message cap: the widget renders it
+    # (with the escalate / finish buttons) instead of the suggestion bubbles on
+    # every further turn. None while the chat is under the cap, on a hand-off,
+    # or on a topic switch.
+    cap_notice: Optional[dict] = None
 
 
 async def _on_failover(session_id: Optional[str], reason: str) -> None:
@@ -488,6 +494,23 @@ async def handle_message(
         closing_suggestion = None
         resolved = False
 
+    # --- long-chat (soft cap) notice ----------------------------------------
+    # The turn that reaches the soft message cap - and every turn after it, up
+    # to the hard ceiling - still gets its real answer, but the reply swaps the
+    # guide-to-KB bubbles / finish nudge for the explicit cap notice: a stable
+    # localized explanation ("the chat has stalled") with the two actions the
+    # widget renders as buttons - escalate to a human (the normal escalation
+    # flow) or finish the chat. Skipped on a hand-off (the escalation card is
+    # already the ending) and on a topic switch (the routing turn shows nothing).
+    cap_notice: Optional[dict] = None
+    if (not decision.active and not suggested_topic
+            and prospective_count >= int(
+                settings.general()["max_messages_per_session"])):
+        cap_notice = escalation.cap_notice_payload(answer_lang)
+        suggestions = []
+        closing_suggestion = None
+        resolved = False
+
     # --- persist the turn atomically ----------------------------------------
     # `detected_lang` is the language the model ANSWERED in (from [[LANG:xx]]).
     # Per the language directive the model answers in the language of the player's
@@ -526,6 +549,7 @@ async def handle_message(
         suggestions=suggestions,
         closing_suggestion=closing_suggestion,
         resolved=resolved,
+        cap_notice=cap_notice,
     )
 
 

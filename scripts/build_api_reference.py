@@ -216,6 +216,14 @@ R(row(AREA_CHAT, _MSG, T_RESP, OUT, C_US, "closing_suggestion", "string|null", N
       desc="Системная опция завершения: отправить ход с closing=true, затем /resolve."))
 R(row(AREA_CHAT, _MSG, T_RESP, OUT, C_US, "resolved", "bool", YES, "true",
       desc="Вопрос выглядит закрытым — показать кнопку «завершить чат»."))
+R(row(AREA_CHAT, _MSG, T_RESP, OUT, C_US, "cap_notice",
+      "{message,escalate_label,finish_label}|null", NO,
+      '{"message":"…","escalate_label":"Передать вопрос человеку",'
+      '"finish_label":"Завершить чат"}',
+      desc="Мягкий лимит сообщений достигнут: показать предупреждение и две "
+           "кнопки — эскалация (POST /escalate) сверху и завершение "
+           "(POST /resolve) ниже — вместо suggestions/resolved. Чат остаётся "
+           "открытым; на 2x лимита сессия закрывается принудительно."))
 
 # --- resume / escalate / resolve -------------------------------------------
 R(row(AREA_CHAT, "GET /api/chat/session/{id}", T_EP, OUT, C_CLIENT, auth=AUTH_SESSION,
