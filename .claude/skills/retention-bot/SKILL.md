@@ -478,7 +478,11 @@ checklist lives in the admin — the **Retention → How it works** page.
   (`retention_rate_limited`/`retention_injection` WARNING; `retention_low_content`/
   `retention_need_deeplink`/`retention_subscription_gate` INFO) — the gates used to drop with
   no log line, making "my messages stopped arriving" undiagnosable from Railway logs. Then:
-  overlong input truncated (not rejected), low-content guard → localized model-free nudge
+  an inbound ATTACHMENT (photo/video/file/voice/sticker — `ParsedUpdate.has_media`) gets a
+  localized model-free "can't open those here, tell me in words" line
+  (`rtn_incoming_media_reply`; the bot has no vision pass by design, and the model used to
+  improvise "I don't see it - send again" loops), overlong input truncated (not rejected),
+  low-content guard → localized model-free nudge
   (`rtn_low_content_reply`), injection scan → sampled audit + (with `injection_hard_block`) a
   model-free in-persona deflection (`rtn_injection_reply`). The other `antispam` settings
   knobs are shared with the widget. The **subscription check is cached** (positive results only, 10 min,

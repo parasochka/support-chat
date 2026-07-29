@@ -48,6 +48,7 @@ class ParsedUpdate:
     callback_data: Optional[str] = None
     callback_id: Optional[str] = None
     language_code: Optional[str] = None
+    has_media: bool = False                # message carried a photo/video/file/…
 
 
 def parse_update(update: dict[str, Any]) -> ParsedUpdate:
@@ -72,7 +73,14 @@ def parse_update(update: dict[str, Any]) -> ParsedUpdate:
     if msg:
         frm = msg.get("from") or {}
         chat = msg.get("chat") or {}
-        text = msg.get("text") or ""
+        # The bot never LOOKS at inbound attachments (no vision pass by
+        # design) — it only needs to know one arrived, so the persona can
+        # honestly say "tell me in words" instead of the model claiming it
+        # sees nothing. A media message's caption rides as the text.
+        text = msg.get("text") or msg.get("caption") or ""
+        has_media = any(k in msg for k in (
+            "photo", "video", "document", "animation", "sticker",
+            "voice", "video_note", "audio"))
         start_param = None
         if text.startswith("/start"):
             parts = text.split(maxsplit=1)
@@ -85,6 +93,7 @@ def parse_update(update: dict[str, Any]) -> ParsedUpdate:
             text=text,
             start_param=start_param,
             language_code=frm.get("language_code"),
+            has_media=has_media,
         )
     return ParsedUpdate(kind="other")
 
