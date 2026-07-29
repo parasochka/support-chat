@@ -96,21 +96,31 @@ def _breaker_for(source: str) -> _Breaker:
 
 # ---------------------------------------------------------------------------
 # Pricing — USD per 1,000,000 tokens: (input, cached_input, output)
-# gpt-5-mini list prices verified 2026-06-23: input $0.25, cached input
-# $0.025, output $2.00 per 1M tokens. GPT-5.4 mini: input $0.75, cached input
-# $0.075, output $4.50 per 1M tokens. Re-verify against current OpenAI pricing
-# if the model or OpenAI's published rates change. An unlisted model costs 0 (a
-# silent under-count), so add every model the `model` settings group can select.
+# GPT-5.6 list prices verified 2026-07-29: Luna $1.00 input / $0.10 cached input
+# / $6.00 output, Terra $2.50 / $0.25 / $15.00, Sol $5.00 / $0.50 / $30.00 per 1M
+# tokens. gpt-5-mini verified 2026-06-23: input $0.25, cached input $0.025,
+# output $2.00. GPT-5.4 mini: input $0.75, cached input $0.075, output $4.50.
+# Re-verify against current OpenAI pricing if the model or OpenAI's published
+# rates change. An unlisted model costs 0 (a silent under-count), so add every
+# model the `model` settings group can select.
 # ---------------------------------------------------------------------------
 _PRICING: dict[str, tuple[float, float, float]] = {
     # model: (input, cached_input, output)  -- USD per 1M tokens
     # For each model both the alias and dated snapshot ids map to the same
-    # prices so cost accounting works whichever is configured.
+    # prices so cost accounting works whichever is configured. A `-YYYY-MM-DD`
+    # snapshot resolves to its alias automatically (_pricing_for_model); the
+    # compact `-YYYYMMDD` form GPT-5.6 ships does not, so it is listed here.
+    # GPT-5.6 family. `gpt-5.6` (no tier) is an alias for Sol, not Luna.
+    "gpt-5.6": (5.00, 0.50, 30.00),
+    "gpt-5.6-sol": (5.00, 0.50, 30.00),
+    "gpt-5.6-terra": (2.50, 0.25, 15.00),
+    # gpt-5.6-luna (the live default) — the cheapest tier of the 5.6 line.
+    "gpt-5.6-luna": (1.00, 0.10, 6.00),
+    "gpt-5.6-luna-20260709": (1.00, 0.10, 6.00),
     "gpt-5.5": (5.00, 0.50, 30.00),
     "gpt-5.4": (2.50, 0.25, 15.00),
     "gpt-5.4-mini": (0.75, 0.075, 4.50),
     "gpt-5.4-mini-2026-03-17": (0.75, 0.075, 4.50),
-    # gpt-5-mini (the live default).
     "gpt-5-mini": (0.25, 0.025, 2.00),
     "gpt-5-mini-2025-08-07": (0.25, 0.025, 2.00),
 }
