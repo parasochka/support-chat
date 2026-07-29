@@ -294,7 +294,9 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 8px 8px 0;
+  /* Bottom padding matters: with none the last control (the green finish /
+     cap-notice buttons) sat flush against the input row's top border. */
+  padding: 8px;
   background: #fff;
 }
 .npchat-suggestion {
