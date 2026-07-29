@@ -69,6 +69,41 @@ def test_history_content_shows_attached_link():
     ) == "hi"
 
 
+# --- the media already sent is visible in the prompt (describe ≠ send new) ----
+def test_sent_media_directive_lists_sent_photos():
+    block = prompts._sent_media_directive({"sent": [
+        {"description": "white bikini on a sunny beach", "media_type": "photo",
+         "viewed_at": None},
+        {"description": "short dancing clip", "media_type": "video",
+         "viewed_at": None},
+    ]})
+    assert "MEDIA YOU ALREADY SENT" in block
+    assert "1. photo," in block and "white bikini on a sunny beach" in block
+    assert "2. video," in block and "short dancing clip" in block
+    # Nothing sent yet (or no appearance data at all) — no block.
+    assert prompts._sent_media_directive({"sent": []}) is None
+    assert prompts._sent_media_directive(None) is None
+
+
+def test_dynamic_prompt_carries_sent_media_block():
+    out = prompts.build_retention_dynamic_prompt(
+        user_context={}, resolved_lang="en", user_text="опиши то фото",
+        appearance={"base": ["pink bob"], "last_sent": "white bikini",
+                    "sent": [{"description": "white bikini on a beach",
+                              "media_type": "photo", "viewed_at": None}]})
+    assert "MEDIA YOU ALREADY SENT" in out
+    assert "white bikini on a beach" in out
+
+
+def test_photo_directive_covers_describe_ask():
+    # The describe-vs-send rule: asking ABOUT a sent photo must not trigger a
+    # new send or an "I don't know what was on it" refusal.
+    d = prompts._RETENTION_PHOTO_DIRECTIVE
+    assert "Asking ABOUT a photo is not asking FOR a photo" in d
+    assert "MEDIA YOU ALREADY SENT" in d
+    assert "never say you don't know" in d
+
+
 # --- global-only settings never resolve from the product layer ---------------
 def test_global_only_fields_ignore_product_layer(monkeypatch):
     monkeypatch.setattr(settings, "_cache",
