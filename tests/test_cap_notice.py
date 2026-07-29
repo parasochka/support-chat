@@ -136,6 +136,35 @@ def test_under_cap_has_no_notice(monkeypatch):
     assert reply.suggestions == ["What about limits?"]
 
 
+def test_resolved_in_wrapup_window_shows_notice_not_lone_finish_button(monkeypatch):
+    # THE observed jarring case: on the last turns before the cap the turn-budget
+    # directive pushes the model to wrap up, it marks [[RESOLVED]], and the widget
+    # used to swap the bubbles for a single out-of-context green "End chat"
+    # button. Inside the wrap-up window (cap - _TURN_BUDGET_NOTICE_TURNS) that
+    # turn now carries the explain-and-choose notice instead.
+    monkeypatch.setitem(settings._cache, "general",
+                        {"max_messages_per_session": 5})
+    _wire(monkeypatch, "That is everything I have on this.\n[[RESOLVED]]")
+    # prospective count = 2 + 1 = 3 = cap - 2 -> inside the wrap-up window.
+    reply = asyncio.run(
+        chat_service.handle_message(_session(message_count=2), "hmm, ok"))
+    assert reply.cap_notice is not None
+    assert reply.resolved is False        # the lone green button is replaced
+    assert reply.escalation["active"] is False
+
+
+def test_resolved_in_a_short_chat_keeps_the_normal_finish_button(monkeypatch):
+    # A quickly-solved conversation is NOT a stalled one: well under the wrap-up
+    # window the model-driven finish button stays exactly as before.
+    monkeypatch.setitem(settings._cache, "general",
+                        {"max_messages_per_session": 5})
+    _wire(monkeypatch, "Glad it worked!\n[[RESOLVED]]")
+    reply = asyncio.run(
+        chat_service.handle_message(_session(message_count=0), "thanks, all clear"))
+    assert reply.cap_notice is None
+    assert reply.resolved is True
+
+
 def test_model_escalation_at_cap_wins_over_the_notice(monkeypatch):
     monkeypatch.setitem(settings._cache, "general",
                         {"max_messages_per_session": 5})

@@ -502,10 +502,20 @@ async def handle_message(
     # widget renders as buttons - escalate to a human (the normal escalation
     # flow) or finish the chat. Skipped on a hand-off (the escalation card is
     # already the ending) and on a topic switch (the routing turn shows nothing).
+    #
+    # The notice also covers the WRAP-UP WINDOW just before the cap: on those
+    # turns the Layer-3 turn-budget directive pushes the model to wrap up, so
+    # it tends to mark [[RESOLVED]] - and the widget then swapped the bubbles
+    # for a single out-of-context green "End chat" button (the observed jarring
+    # case: no explanation why, no way to escalate). A resolved turn inside the
+    # window therefore shows the explain-and-choose block instead of the lone
+    # button; a resolved turn in a short, normally-finished chat is untouched.
+    cap = int(settings.general()["max_messages_per_session"])
+    in_wrapup_window = (
+        prospective_count >= cap - prompts._TURN_BUDGET_NOTICE_TURNS)
     cap_notice: Optional[dict] = None
     if (not decision.active and not suggested_topic
-            and prospective_count >= int(
-                settings.general()["max_messages_per_session"])):
+            and (prospective_count >= cap or (resolved and in_wrapup_window))):
         cap_notice = escalation.cap_notice_payload(answer_lang)
         suggestions = []
         closing_suggestion = None

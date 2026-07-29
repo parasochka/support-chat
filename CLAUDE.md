@@ -781,7 +781,13 @@ widget (`widget.js` `renderCapNotice`) renders it in the suggestion strip: the a
 the retention-bot deeplink / contact card exactly like every other escalation path) and the green
 **finish button below** (→ `POST /resolve` via `finishChat`). If the player keeps chatting, the
 notice re-renders on every further turn (suggestions/closing/resolved are suppressed alongside it);
-it is skipped on a hand-off and on a topic switch. The old behaviour — force-escalate and close
+it is skipped on a hand-off and on a topic switch. The notice also covers the **wrap-up window**
+(the last `_TURN_BUDGET_NOTICE_TURNS` turns before the cap): there the turn-budget directive pushes
+the model to wrap up, it marks `[[RESOLVED]]`, and the widget used to swap the bubbles for a single
+out-of-context green "End chat" button (the observed jarring case — no explanation, no way to
+escalate). A `resolved` turn inside the window therefore returns `cap_notice` (with
+`resolved=false`) instead of the lone button; a resolved turn in a short, normally-finished chat is
+untouched. The old behaviour — force-escalate and close
 exactly at the cap with no explanation — is gone. The **HARD ceiling** remains as the cost
 backstop: at `max_messages_per_session × escalation.HARD_CAP_MULTIPLIER` (2) `decide()` fires
 `message_cap` and the model-free fast path in `app/api/chat.py` short-circuits a session already
