@@ -120,45 +120,30 @@ def test_site_map_accepts_english():
 
 
 # ---------------------------------------------------------------------------
-# /admin/meta pricing payload (the SPA's token/cost counters)
-#
-# There is no price-by-model accessor any more: one price — the current model's
-# — prices everything, so the payload resolves the model itself.
+# public pricing accessor (admin token/cost counters)
 # ---------------------------------------------------------------------------
-def _pin_model(monkeypatch, model_id):
-    monkeypatch.setattr(openai_client.settings, "model", lambda: {"model": model_id})
+def test_pricing_for_model_known():
+    p = openai_client.pricing_for_model("gpt-5-mini")
+    assert p == {"input_per_1m": 0.25, "cached_input_per_1m": 0.025,
+                 "output_per_1m": 2.00}
 
 
-def test_meta_pricing_payload(monkeypatch):
-    _pin_model(monkeypatch, "gpt-5-mini")
-    assert openai_client.current_model_pricing() == {
-        "model": "gpt-5-mini",
-        "pricing": {"input_per_1m": 0.25, "cached_input_per_1m": 0.025,
-                    "output_per_1m": 2.00},
-    }
+def test_pricing_for_model_unknown():
+    assert openai_client.pricing_for_model("no-such-model") is None
 
 
-def test_meta_pricing_payload_unknown_model(monkeypatch):
-    """Unknown model ⇒ pricing null: the SPA shows tokens, no cost estimate."""
-    _pin_model(monkeypatch, "no-such-model")
-    assert openai_client.current_model_pricing() == {"model": "no-such-model",
-                                                     "pricing": None}
+def test_pricing_covers_the_default_model():
+    # An unlisted model costs 0 — a silent under-count on every dashboard. The
+    # shipped default must always be priced.
+    assert openai_client.pricing_for_model(config.OPENAI_MODEL) is not None
 
 
-def test_pricing_covers_the_default_model(monkeypatch):
-    # An unlisted model costs 0 — and since the CURRENT model prices every
-    # figure, that is a silent under-count on every dashboard at once.
-    _pin_model(monkeypatch, config.OPENAI_MODEL)
-    assert openai_client.current_model_pricing()["pricing"] is not None
-
-
-def test_pricing_for_gpt_5_6_luna(monkeypatch):
+def test_pricing_for_gpt_5_6_luna():
+    p = openai_client.pricing_for_model("gpt-5.6-luna")
     # Repriced 2026-07-30 (-80%): $0.20 input / $0.02 cached / $1.20 output.
-    expected = (0.20, 0.02, 1.20)
-    _pin_model(monkeypatch, "gpt-5.6-luna")
-    assert openai_client.current_pricing() == expected
+    assert p == {"input_per_1m": 0.20, "cached_input_per_1m": 0.02,
+                 "output_per_1m": 1.20}
     # Both snapshot spellings price as the alias: the compact form GPT-5.6 ships
     # is listed explicitly, a dashed one resolves through _pricing_for_model.
-    for snapshot in ("gpt-5.6-luna-20260709", "gpt-5.6-luna-2026-07-09"):
-        _pin_model(monkeypatch, snapshot)
-        assert openai_client.current_pricing() == expected
+    assert openai_client.pricing_for_model("gpt-5.6-luna-20260709") == p
+    assert openai_client.pricing_for_model("gpt-5.6-luna-2026-07-09") == p
