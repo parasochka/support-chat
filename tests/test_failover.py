@@ -284,36 +284,18 @@ def _current_model(model_id):
 
 def test_cost_priced_from_the_current_model():
     with _current_model("gpt-5.4-mini"):
-        cost = openai_client.compute_cost(tokens_in=1_000_000, tokens_out=0,
-                                          cached_in=0)
-        assert cost == pytest.approx(0.75)
+        assert openai_client.compute_cost(1_000_000, 0, 0) == pytest.approx(0.75)
         # cached tokens priced lower
-        cost2 = openai_client.compute_cost(tokens_in=1_000_000, tokens_out=0,
-                                           cached_in=1_000_000)
-        assert cost2 == pytest.approx(0.075)
+        assert openai_client.compute_cost(1_000_000, 0, 1_000_000) == pytest.approx(0.075)
 
 
 def test_cost_follows_a_model_switch():
     """Same usage, different configured model ⇒ different cost, no arg passed.
 
-    This is the whole point of dropping the per-call model: one price — the
-    current one — prices everything the service reports.
+    Includes a dated snapshot id (priced as its alias) and an unpriced model.
     """
     usage = dict(tokens_in=1_000_000, tokens_out=1_000_000, cached_in=0)
-    with _current_model("gpt-5.5"):
-        assert openai_client.compute_cost(**usage) == pytest.approx(35.0)
-    with _current_model("gpt-5.6-luna"):
-        assert openai_client.compute_cost(**usage) == pytest.approx(1.40)
-
-
-def test_cost_snapshot_model_falls_back_to_alias():
-    with _current_model("gpt-5.5-2026-06-23"):
-        assert openai_client.compute_cost(
-            tokens_in=1_000_000, tokens_out=1_000_000, cached_in=0
-        ) == pytest.approx(35.0)
-
-
-def test_cost_unknown_model_zero():
-    with _current_model("nonexistent"):
-        assert openai_client.compute_cost(100, 100, 0) == 0.0
-        assert openai_client.current_pricing() == (0.0, 0.0, 0.0)
+    for model, expected in (("gpt-5.5", 35.0), ("gpt-5.6-luna", 1.40),
+                            ("gpt-5.5-2026-06-23", 35.0), ("nonexistent", 0.0)):
+        with _current_model(model):
+            assert openai_client.compute_cost(**usage) == pytest.approx(expected)

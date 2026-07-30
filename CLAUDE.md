@@ -568,27 +568,21 @@ exponential backoff up to `OPENAI_MAX_ATTEMPTS`. Every fallback engagement fires
 `_call_with_backoff` retries and the race) emits structured `log.info/warning` lines for
 Railway tracing.
 
-**COST: one price — the current model's — applied on READ (`_PRICING` +
-`openai_client.current_pricing()` + `db._cost_sql`).** The durable record of a call is its
-**token counts**; dollars are **derived at read time** from the price of the model configured
-*right now*, never frozen at call time and never keyed on the model a stored row happens to
-name. `compute_cost(tokens_in, tokens_out, cached_in)` therefore takes **no model argument**,
-and every money query in `db.py` sums the `_cost_sql()` expression over the token columns
-instead of the stored `cost_usd` (a write-time audit note of what the call was billed at the
-time — kept, never aggregated). Correcting a price in `_PRICING` or switching the model
-re-prices the whole history on the next page load: no backfill, no migration, and the admin can
-never show two prices at once. This replaced per-row historical pricing, which quietly kept
-reporting a stale rate forever (OpenAI cut GPT-5.6 Luna 80% three weeks after GA and the
-dashboards never moved). `_pricing_for_model` still strips a trailing `-YYYY-MM-DD` snapshot
-date and prices it as the stable alias, so a dated model id resolves; a model missing from
-`_PRICING` prices at **0 — now for every figure at once**, since the current model prices them
-all, so add every model the `model` settings group can select. The deliberate exception is the
+**COST: one price — the current model's — applied on READ.** Token counts are the durable
+record; dollars are derived at read time (`db._cost_sql` over the token columns, priced by
+`openai_client.current_pricing()`), never frozen per row. So `compute_cost(tokens_in,
+tokens_out, cached_in)` takes **no model argument**, no money query sums the stored `cost_usd`
+(a write-time audit note), and correcting a price in `_PRICING` or switching the model
+re-prices the whole history on the next page load — no backfill, no two prices on one screen.
+This replaced per-row historical pricing, which kept reporting a stale rate forever (OpenAI cut
+GPT-5.6 Luna 80% three weeks after GA and the dashboards never moved). A model missing from
+`_PRICING` now prices **every** figure at 0, so list every model the `model` group can select
+(`_pricing_for_model` resolves a dated `-YYYY-MM-DD` snapshot to its alias). Exception: the
 **per-touch ledgers** (`retention_outcomes`, `retention_v2_decisions`, `retention_pings`,
-`conversation_reviews`) and the `topic_switch` event payload: they store dollars, not tokens —
-a touch's cost is one of its frozen dimensions — so those figures stay at the price current
-when the touch went out. The same spend re-derived at today's price IS on the AI-cost
-histogram, which reads `ai_interaction_logs`. Tests: `tests/test_current_pricing.py`
-(incl. a static guard against a new query summing the stored column).
+`conversation_reviews`) and the `topic_switch` payload store dollars, not tokens — a touch's
+cost is one of its frozen dimensions — so they keep the price current at send time; the same
+spend re-derived is on the AI-cost histogram. Tests: `tests/test_current_pricing.py` (incl. a
+static guard against a new query summing the stored column).
 
 The default model is **GPT-5.6 Luna** (`gpt-5.6-luna`) — the cheapest tier of the GPT-5.6
 reasoning family (Sol > Terra > Luna), aimed at high-volume latency-sensitive chat. Reasoning models

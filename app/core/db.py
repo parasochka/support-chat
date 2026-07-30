@@ -1582,9 +1582,8 @@ async def persist_turn(
     Returns the new `message_count` for the session.
     When present, `ai_meta` carries: model, key_used, tokens_in, tokens_out,
     cached_in, cost_usd, latency_ms, ok, error. The TOKEN COUNTS are the durable
-    record — every reported cost figure is derived from them at read time
-    (`_cost_sql`); the stored `cost_usd` is only an audit note of what the call
-    was billed at the time and is never summed. Model-free backend replies
+    record (every cost figure derives from them, `_cost_sql`); `cost_usd` is an
+    audit note, never summed. Model-free backend replies
     (for example the message-cap hand-off) still persist the visible chat turn
     but intentionally skip `ai_interaction_logs` because no API call happened.
     `product_id` (the session's product) is denormalized onto the AI log row so
@@ -2635,33 +2634,16 @@ _LOG_SOURCE = ("COALESCE(l.source, CASE WHEN l.session_id IS NOT NULL "
                "THEN 'chat' ELSE 'legacy' END)")
 
 
-# ---------------------------------------------------------------------------
-# MONEY IS DERIVED, NEVER READ BACK (`_cost_sql`)
-#
-# Every cost figure the admin shows is computed from the row's stored TOKEN
-# COUNTS at the price of the model configured right now
-# (`openai_client.current_pricing()`) — the stored `cost_usd` column is a
-# write-time audit trail of what the call was billed at the time and is never
-# summed.
-#
-# Why: the price is a hand-maintained constant and OpenAI reprices without
-# warning (GPT-5.6 Luna -80% three weeks after GA), and the model itself is a
-# hot setting an admin can change at any moment. A stored dollar figure is
-# therefore true only for the day it was written, and a dashboard mixing rows
-# priced on different days answers no question anybody asks. Deriving at read
-# time gives ONE well-defined number — "what this traffic costs at today's
-# price" — and a corrected price or a model switch re-prices the whole history
-# on the next page load, with no backfill and no migration.
-#
-# Rows with no tokens at all (a user turn, a model-free reply) yield NULL, not
-# 0, so a per-turn view still renders "no AI call" and SUM() skips them.
-# ---------------------------------------------------------------------------
+# MONEY IS DERIVED, NEVER READ BACK: every cost figure is computed from the row's
+# TOKEN COUNTS at the current model's price, so a price fix or a model switch
+# re-prices all history on the next page load (no backfill). The stored
+# `cost_usd` is a write-time audit note and is never summed — a frozen dollar
+# figure is true only for the day it was written, and OpenAI reprices without
+# warning. Token-free rows (a player turn) yield NULL, not 0.
 def _cost_sql(alias: str = "l") -> str:
-    """A row's cost in USD derived from its token columns at the CURRENT price.
+    """Cost in USD from the token columns behind `alias` ("" = unaliased).
 
-    `alias` is the table alias the token columns hang off ("" for an unaliased
-    single-table query). Must be called PER QUERY, never cached in a module
-    constant: it bakes in the price in effect at call time.
+    Call PER QUERY — it bakes in the price in effect right now.
     """
     from app.ai import openai_client  # deferred: settings imports db
 
@@ -3081,9 +3063,8 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
     session = await get_session(session_id)
     if session is None:
         return None
-    # Per-turn cost is derived from the row's tokens at the current price, like
-    # every aggregate above it — otherwise a transcript's per-step costs would
-    # not add up to the `cost_usd_total` the Sessions list shows for it.
+    # Derived like every aggregate, so the per-step costs add up to the
+    # `cost_usd_total` the Sessions list shows.
     cost_sql = _cost_sql("")
     msgs = await _fetch(
         "SELECT role, content, lang, model, key_used, tokens_in, tokens_out, "
@@ -4272,10 +4253,8 @@ async def retention_v2_cost_today(product_id: int) -> float:
     Truncate in UTC explicitly: date_trunc('day', now()) truncates in the DB
     session timezone, so on a non-UTC Postgres the budget window would silently
     disagree with the day boundary the rest of the retention pacing uses."""
-    # Sums the ledger's stored dollars rather than re-deriving at today's price
-    # (_cost_sql): this is a same-day window, so every row in it was already
-    # written at the current price — and a budget stop switch should measure
-    # what today actually spent.
+    # Stored dollars, not _cost_sql: a same-day window is already at today's
+    # price, and a budget stop switch should measure what today actually spent.
     val = await _fetchval(
         "SELECT COALESCE(SUM(cost_usd), 0) FROM retention_v2_decisions "
         "WHERE product_id = $1 "
@@ -4422,12 +4401,8 @@ _OUTCOME_AGG = (
     "COUNT(*) FILTER (WHERE o.deposit_at IS NOT NULL)::int AS deposits, "
     "AVG(o.reply_latency_sec) FILTER (WHERE o.replied_at IS NOT NULL) "
     "  AS avg_reply_latency_sec, "
-    # The ONE cost figure that is NOT re-derived at today's price (_cost_sql):
-    # a touch's cost is a dimension of the touch, denormalized with the rest of
-    # them because the row must stay readable after the events are pruned and
-    # the media deleted — and this table stores dollars, not the tokens a
-    # re-derivation needs. Written with the price current at send time, so it
-    # only diverges for touches older than a price change.
+    # NOT re-derived (_cost_sql): this ledger stores dollars, not tokens — a
+    # touch's cost is one of its frozen dimensions.
     "COALESCE(SUM(o.cost_usd), 0) AS cost_usd"
 )
 
@@ -4780,9 +4755,8 @@ async def quality_overview(dt_from: Any, dt_to: Any, *,
         "  COUNT(*) FILTER (WHERE score <= 2)::int AS poor, "
         "  COUNT(*) FILTER (WHERE score >= 4)::int AS good, "
         "  COUNT(*) FILTER (WHERE consumer = 'telegram')::int AS telegram, "
-        # Per-verdict snapshot (this table stores dollars, not tokens), so it is
-        # not re-derived at today's price. The same spend re-derived IS on the
-        # AI-cost histogram, where it rides as source='review'.
+        # Stored dollars, not tokens; the re-derived figure is on the AI-cost
+        # histogram as source='review'.
         "  COALESCE(SUM(cost_usd), 0) AS cost_usd "
         f"FROM conversation_reviews WHERE {clause}", *args)
     tags = await _fetch(
