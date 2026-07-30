@@ -916,8 +916,8 @@ async def _generate_photo_meta(client: Any, photo: dict[str, Any],
                                     product_id=product_id,
                                     consumer="telegram", source="media")
         return {"id": photo["id"], "ok": False, "error": "model call failed"}
-    cost = openai_client.compute_cost(result.tokens_in, result.tokens_out,
-                                      result.cached_in)
+    cost = openai_client.compute_cost(result.model, result.tokens_in, result.tokens_out,
+                           result.cached_in)
     await db.log_ai_interaction(None, result.model, result.key_used,
                                 result.tokens_in, result.tokens_out,
                                 result.cached_in, cost, result.latency_ms,
