@@ -5162,7 +5162,7 @@ async def retention_appearance_context(product_id: int, retention_user_id: int
     # Keyed on the player (not the session): views survive the idle chat
     # rollover, so "that photo from yesterday" is answerable in a fresh chat.
     sent_rows = await _fetch(
-        "SELECT p.description, p.media_type, v.viewed_at FROM ("
+        "SELECT p.description, p.media_type, p.stage, v.viewed_at FROM ("
         "  SELECT photo_id, viewed_at FROM retention_photo_views "
         "  WHERE retention_user_id = $1 "
         "  ORDER BY viewed_at DESC, id DESC LIMIT 8"
@@ -5170,8 +5170,10 @@ async def retention_appearance_context(product_id: int, retention_user_id: int
         "WHERE p.description <> '' ORDER BY v.viewed_at ASC",
         retention_user_id,
     )
+    # `stage` feeds the Layer-3 OPENNESS LEVEL ladder: the boldest photo the
+    # player actually received bounds how bold Nika's WORDS may be.
     sent = [{"description": r["description"], "media_type": r["media_type"],
-             "viewed_at": r["viewed_at"]} for r in sent_rows]
+             "stage": r["stage"], "viewed_at": r["viewed_at"]} for r in sent_rows]
     return {
         "base": [r["description"] for r in base_rows],
         "last_sent": sent[-1]["description"] if sent else None,
