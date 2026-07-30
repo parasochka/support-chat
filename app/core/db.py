@@ -5171,13 +5171,24 @@ async def retention_appearance_context(product_id: int, retention_user_id: int
         retention_user_id,
     )
     # `stage` feeds the Layer-3 OPENNESS LEVEL ladder: the boldest photo the
-    # player actually received bounds how bold Nika's WORDS may be.
+    # player actually received bounds how bold Nika's WORDS may be. The ladder
+    # keys on `max_sent_stage` — an aggregate over ALL views, not the 8-view
+    # window above (and not gated on a description): a run of recent tamer
+    # photos must not silently drop the verbal register back down after he has
+    # already seen a bolder one.
+    max_sent_stage = await _fetchval(
+        "SELECT COALESCE(MAX(p.stage), 0) FROM retention_photo_views v "
+        "JOIN retention_photos p ON p.id = v.photo_id "
+        "WHERE v.retention_user_id = $1",
+        retention_user_id,
+    )
     sent = [{"description": r["description"], "media_type": r["media_type"],
              "stage": r["stage"], "viewed_at": r["viewed_at"]} for r in sent_rows]
     return {
         "base": [r["description"] for r in base_rows],
         "last_sent": sent[-1]["description"] if sent else None,
         "sent": sent,
+        "max_sent_stage": int(max_sent_stage or 0),
     }
 
 

@@ -159,7 +159,9 @@ checklist lives in the admin — the **Retention → How it works** page.
   list** (whose empty-state text steers away from the "I have no photos" flat refusal and
   toward an appearance-grounded tease + a once-per-chat progression hint) + the **openness
   ladder** (`prompts._verbal_register_directive` — how bold Nika's WORDS may be: keyed to the
-  boldest photo the player actually RECEIVED (falling back to his unlocked stage, capped at 2,
+  boldest photo the player actually RECEIVED — the all-time `max_sent_stage` aggregate in
+  `db.retention_appearance_context`, NOT the 8-view `sent` window, so a run of recent tamer
+  photos never drops the register back down (falling back to his unlocked stage, capped at 2,
   when nothing was sent), so the verbal register keeps pace with the photos instead of a fixed
   "never explicit" — a player getting stage-5 photos no longer gets stage-1 prudery in text;
   the tone-of-voice default defers to this block, and the ceiling stays short of pornography
