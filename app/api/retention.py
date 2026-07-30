@@ -410,8 +410,9 @@ async def register_webhook(product_id: int,
 # prompts.py (single source of truth); this endpoint shows the whole assembled
 # retention prompt for the product — Layer 1 (byte-stable retention core) +
 # Layer 2 (the retention-KB document) in the system message, and the Layer-3
-# user message (profile, personalization, language, photo candidates,
-# guardrails) — plus the prompt variables the RETENTION templates actually use
+# user message (profile, personalization, language, photo candidates, the
+# illustrative progression + openness-level ladder, guardrails) — plus the
+# prompt variables the RETENTION templates actually use
 # (their one editor stays the support Prompt → Prompt variables sub-tab).
 # ===========================================================================
 _RETENTION_PREVIEW_USER_TEXT = (
@@ -425,6 +426,16 @@ _RETENTION_PREVIEW_CANDIDATES = [{
                    "list is selected per turn",
     "tags": ["example"],
 }]
+
+# Illustrative progression so the operator sees the PROGRESSION and OPENNESS
+# LEVEL blocks' shape; the real numbers are computed per player each turn
+# (retention.progression_context / db.retention_appearance_context). Without
+# it both blocks returned None and the preview silently hid them — the
+# openness ladder looked missing from the prompt altogether.
+_RETENTION_PREVIEW_PROGRESSION = {
+    "stage": 2, "ceiling": 4, "vip_level": "Diamond",
+    "meaningful_msgs": 25, "next_threshold": 40, "at_ceiling": False,
+}
 
 
 @admin_router.get("/effective-prompt")
@@ -459,6 +470,7 @@ async def retention_effective_prompt(product_id: int,
         resolved_lang=lang,
         photo_candidates=_RETENTION_PREVIEW_CANDIDATES,
         appearance=appearance,
+        progression=_RETENTION_PREVIEW_PROGRESSION,
     )
     return JSONResponse(content={
         "effective_preview": {

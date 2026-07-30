@@ -1781,20 +1781,24 @@ def _verbal_register_directive(progression: Optional[dict[str, Any]],
     prudery in text and called the dissonance out himself («а голые фотки
     слать тогда зачем?» — the live transcript this fixes). The effective
     level is the boldest photo he has actually RECEIVED (words never run
-    ahead of the photos he has seen), falling back to his unlocked stage
-    (capped at 2) when nothing was sent yet. Per-request data → Layer 3
-    only, like the PROGRESSION block it sits next to; returns None without
-    progression data (e.g. the ping path), so the block never renders on a
-    turn that cannot ground it.
+    ahead of the photos he has seen) — `appearance["max_sent_stage"]`, an
+    all-time aggregate, so a run of recent tamer photos never drops the
+    register back down (the `sent` list is capped to the last 8 views and
+    is only the fallback for callers without the aggregate). With nothing
+    sent yet it falls back to his unlocked stage, capped at 2. Per-request
+    data → Layer 3 only, like the PROGRESSION block it sits next to;
+    returns None without progression data (e.g. the ping path), so the
+    block never renders on a turn that cannot ground it.
     """
     p = progression or {}
     stage = p.get("stage")
     if stage is None:
         return None
-    sent_stages = [int(s.get("stage") or 0)
-                   for s in (appearance or {}).get("sent") or []]
-    level = max([s for s in sent_stages if s > 0], default=0) \
-        or min(int(stage), 2)
+    app = appearance or {}
+    sent_stages = [int(s.get("stage") or 0) for s in app.get("sent") or []]
+    boldest = int(app.get("max_sent_stage") or 0) \
+        or max([s for s in sent_stages if s > 0], default=0)
+    level = boldest or min(int(stage), 2)
     ceiling = max(int(p.get("ceiling", stage)), level)
     return "\n".join([
         "=== OPENNESS LEVEL (how bold your WORDS may be) ===",

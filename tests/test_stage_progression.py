@@ -94,6 +94,90 @@ def test_progression_rides_through_build_retention_messages():
 
 
 # ---------------------------------------------------------------------------
+# The Layer-3 OPENNESS LEVEL block (verbal register ladder)
+# ---------------------------------------------------------------------------
+_PROGRESSION_S5 = {"stage": 5, "ceiling": 5, "vip_level": "Diamond",
+                   "meaningful_msgs": 200, "next_threshold": None,
+                   "at_ceiling": True}
+
+
+def test_openness_level_follows_boldest_sent_photo():
+    p = prompts.build_retention_dynamic_prompt(
+        user_context={}, resolved_lang="en", user_text="hey",
+        progression=_PROGRESSION_S5,
+        appearance={"base": [], "last_sent": None, "max_sent_stage": 5,
+                    "sent": [{"description": "d", "media_type": "photo",
+                              "stage": 5, "viewed_at": None}]})
+    assert "=== OPENNESS LEVEL" in p
+    assert "Current level: 5 of 5" in p
+
+
+def test_openness_level_all_time_max_beats_recent_window():
+    # The `sent` list is capped to the last 8 views; the all-time aggregate
+    # must win, so a run of recent tame photos never drops the register.
+    p = prompts.build_retention_dynamic_prompt(
+        user_context={}, resolved_lang="en", user_text="hey",
+        progression=_PROGRESSION_S5,
+        appearance={"base": [], "last_sent": None, "max_sent_stage": 5,
+                    "sent": [{"description": "d", "media_type": "photo",
+                              "stage": 1, "viewed_at": None}]})
+    assert "Current level: 5 of 5" in p
+
+
+def test_openness_level_fallback_without_aggregate():
+    # Callers without max_sent_stage (older context shape) still ground the
+    # level in the boldest row of the sent list.
+    p = prompts.build_retention_dynamic_prompt(
+        user_context={}, resolved_lang="en", user_text="hey",
+        progression=_PROGRESSION_S5,
+        appearance={"base": [], "last_sent": None,
+                    "sent": [{"description": "d", "media_type": "photo",
+                              "stage": 3, "viewed_at": None}]})
+    assert "Current level: 3 of 5" in p
+
+
+def test_openness_level_nothing_sent_caps_at_two():
+    # Words never run ahead of the photos he has seen: with no photo received
+    # yet, even an unlocked stage 4 keeps the verbal register at 2.
+    p = prompts.build_retention_dynamic_prompt(
+        user_context={}, resolved_lang="en", user_text="hey",
+        progression={"stage": 4, "ceiling": 5, "vip_level": "Diamond",
+                     "meaningful_msgs": 90, "next_threshold": 120,
+                     "at_ceiling": False})
+    assert "Current level: 2 of 5" in p
+
+
+def test_no_progression_no_openness_block():
+    p = prompts.build_retention_dynamic_prompt(
+        user_context={}, resolved_lang="en", user_text="hi",
+        appearance={"base": ["desc"], "last_sent": None, "max_sent_stage": 5,
+                    "sent": []})
+    assert "=== OPENNESS LEVEL" not in p
+
+
+def test_openness_block_stays_out_of_layer_one():
+    session = {"user_context": {}, "conv_lang": "en"}
+    msgs = prompts.build_retention_messages(
+        session=session, kb_block=None, history=[], user_text="hi",
+        resolved_lang="en", progression=_PROGRESSION_S5,
+        appearance={"base": [], "last_sent": None, "max_sent_stage": 2,
+                    "sent": []})
+    assert "=== OPENNESS LEVEL" in msgs[-1]["content"]
+    # Per-request data must never enter the byte-stable Layer-1 system message
+    # (the tone-of-voice may NAME the block, so key on the block header).
+    assert "=== OPENNESS LEVEL" not in msgs[0]["content"]
+
+
+def test_ping_path_carries_no_openness_block():
+    # Documented: the ping stack passes no progression, so the ladder never
+    # renders on a turn that cannot ground it.
+    msgs = prompts.build_retention_ping_messages(
+        session={"user_context": {}, "conv_lang": "en"}, kb_block=None,
+        history=[], resolved_lang="en", idle_days=3, reason="idle", intent="")
+    assert "=== OPENNESS LEVEL" not in msgs[-1]["content"]
+
+
+# ---------------------------------------------------------------------------
 # The stage-up celebration task (proactive ping stack variant)
 # ---------------------------------------------------------------------------
 def _stage_up_messages(at_ceiling: bool):
