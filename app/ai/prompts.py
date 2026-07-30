@@ -186,7 +186,9 @@ RETENTION_PROMPT_VARIABLES: tuple[tuple[str, str, Optional[str], Optional[str]],
      "warmth be what sparks attraction and makes him want to come back for "
      "more. Write naturally, like you're texting someone you genuinely enjoy "
      "flirting with. Never sound like customer support or an AI assistant. "
-     "Stay respectful, tasteful, and never explicit or vulgar.", None),
+     "Stay respectful and never crude or vulgar; how openly sensual your "
+     "words may be is set by the OPENNESS LEVEL block when the message "
+     "carries one - hold that line, but never speak colder than it allows.", None),
 )
 
 # Placeholder syntax mirrors the KB variables ({key}); only keys registered in
@@ -1768,6 +1770,56 @@ def _progression_directive(progression: Optional[dict[str, Any]]) -> Optional[st
     return "\n".join(lines)
 
 
+def _verbal_register_directive(progression: Optional[dict[str, Any]],
+                               appearance: Optional[dict[str, Any]]
+                               ) -> Optional[str]:
+    """Layer-3 openness ladder: how bold Nika's WORDS may be this turn.
+
+    Photo explicitness scales with the player's unlocked stage, but the
+    tone-of-voice used to pin the verbal register to "never explicit"
+    regardless — so a player receiving stage-5 nude photos got stage-1
+    prudery in text and called the dissonance out himself («а голые фотки
+    слать тогда зачем?» — the live transcript this fixes). The effective
+    level is the boldest photo he has actually RECEIVED (words never run
+    ahead of the photos he has seen), falling back to his unlocked stage
+    (capped at 2) when nothing was sent yet. Per-request data → Layer 3
+    only, like the PROGRESSION block it sits next to; returns None without
+    progression data (e.g. the ping path), so the block never renders on a
+    turn that cannot ground it.
+    """
+    p = progression or {}
+    stage = p.get("stage")
+    if stage is None:
+        return None
+    sent_stages = [int(s.get("stage") or 0)
+                   for s in (appearance or {}).get("sent") or []]
+    level = max([s for s in sent_stages if s > 0], default=0) \
+        or min(int(stage), 2)
+    ceiling = max(int(p.get("ceiling", stage)), level)
+    return "\n".join([
+        "=== OPENNESS LEVEL (how bold your WORDS may be) ===",
+        f"- Current level: {level} of {ceiling}. It follows how close you two "
+        "have become and the boldest photo he has actually received from you "
+        "- your words keep pace with your photos, never running ahead of "
+        "them.",
+        "- Levels 1-2: light, classy flirting - warmth, teasing, compliments; "
+        "no body talk.",
+        "- Levels 3-4: sensual and bolder - admiring compliments, playful "
+        "desire, tasteful references to your figure and to what his photos "
+        "of you already show.",
+        "- Level 5: openly sensual - you may describe your body and the mood "
+        "of the photos he has already received in warm, seductive words: "
+        "what he has SEEN, you may voice. Even here stay short of "
+        "pornography: no obscene words, no explicit descriptions of sex "
+        "acts - sensual suggestion is the ceiling.",
+        "- Match the level BOTH ways: never speak more openly than it "
+        "allows, but do not retreat below it either - answering a bold "
+        "moment you yourself created with prim distance reads as cold and "
+        "fake. When he pushes past the ceiling, keep your reply AT the "
+        "level and hold the line warmly, in fresh words each time.",
+    ])
+
+
 # Retention Layer-3 guardrail (recency). Lighter than the support _GUARDRAILS:
 # no "product support only" restriction (Nika chats), but still injection-proof
 # and off-task-proof.
@@ -1789,7 +1841,13 @@ _RETENTION_GUARDRAILS = (
     "scene you already used in this chat - if it does, find a different one; "
     "(2) it must not close with a two-option \"do you want X or Y?\" choice - "
     "end with a statement or a single open question instead; (3) it must not "
-    "repeat a question you already asked, in any wording."
+    "repeat a question you already asked, in any wording - and if the player "
+    "ALREADY ANSWERED a question of yours, react to his answer; asking it "
+    "again means you did not listen; (4) when this reply refuses or deflects "
+    "a bold request, do NOT end it by asking what he likes or finds "
+    "attractive about you - that question only re-invites the same push; "
+    "change the subject to something genuinely different instead (him, his "
+    "day, something of yours)."
 )
 
 
@@ -2071,6 +2129,9 @@ def build_retention_dynamic_prompt(
     progression_block = _progression_directive(progression)
     if progression_block:
         parts += [progression_block, ""]
+    register_block = _verbal_register_directive(progression, appearance)
+    if register_block:
+        parts += [register_block, ""]
     if intro_photo:
         parts += [_INTRO_PHOTO_DIRECTIVE, ""]
     if play_nudge:

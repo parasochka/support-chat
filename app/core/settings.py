@@ -73,7 +73,7 @@ _DEFAULT_RETENTION: dict[str, Any] = {
     },
     # accumulated meaningful player messages required to unlock stages 2 / 3 /
     # 4 / 5 ... (stage 1 is the baseline, always 0). One entry per stage above 1.
-    "stage_advance_msgs": [20, 40, 80, 160],
+    "stage_advance_msgs": [20, 40, 80, 120],
 }
 
 # Test/dev sandbox profile. In a real deployment the host site supplies the

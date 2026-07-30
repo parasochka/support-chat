@@ -255,7 +255,7 @@ def test_retention_settings_defaults():
     r = settings.retention()
     assert r["daily_photo_cap"] == 5
     assert r["candidate_list_size"] == 6
-    assert r["stage_advance_msgs"] == [20, 40, 80, 160]
+    assert r["stage_advance_msgs"] == [20, 40, 80, 120]
     assert "vip_tiers" in r and isinstance(r["max_stage_by_tier"], dict)
 
 
