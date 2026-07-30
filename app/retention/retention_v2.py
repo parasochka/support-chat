@@ -626,8 +626,8 @@ async def _decide(product_id: int, ru: dict[str, Any], evt: dict[str, Any],
         log.warning("retention_v2_decision_model_failed product=%s error=%s",
                     product_id, exc)
         return None, 0.0
-    cost = openai_client.compute_cost(result.model, result.tokens_in,
-                                      result.tokens_out, result.cached_in)
+    cost = openai_client.compute_cost(result.tokens_in, result.tokens_out,
+                                      result.cached_in)
     # The decision call spends on the PROACTIVE AGENT (no session to hang it
     # on) — labelled so it lands in the agent bucket, not the media one.
     await db.log_ai_interaction(

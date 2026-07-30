@@ -315,7 +315,9 @@ Map of what lives where:
   KB editors (support KB, retention KB, both prompt-variable editors, both
   prompt previews) render a live `TextStats` line — characters, estimated
   tokens, and the uncached-input cost for the CURRENT model, priced from
-  `GET /admin/meta`'s `model_pricing` block (`openai_client.pricing_for_model`). **Topic titles are
+  `GET /admin/meta`'s `model_pricing` block (`openai_client.current_model_pricing`
+  — the same current-model price every reported cost figure derives from; there
+  is no price-by-model lookup). **Topic titles are
   single-sourced** in Translations → Topic names; the KB form keeps only the
   canonical English title (the prompt is English-only) and links there. **SET-state
   is explicit**: `components/SetBadge` shows a green check for configured secrets

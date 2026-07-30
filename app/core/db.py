@@ -1581,7 +1581,9 @@ async def persist_turn(
 
     Returns the new `message_count` for the session.
     When present, `ai_meta` carries: model, key_used, tokens_in, tokens_out,
-    cached_in, cost_usd, latency_ms, ok, error. Model-free backend replies
+    cached_in, cost_usd, latency_ms, ok, error. The TOKEN COUNTS are the durable
+    record (every cost figure derives from them, `_cost_sql`); `cost_usd` is an
+    audit note, never summed. Model-free backend replies
     (for example the message-cap hand-off) still persist the visible chat turn
     but intentionally skip `ai_interaction_logs` because no API call happened.
     `product_id` (the session's product) is denormalized onto the AI log row so
@@ -2630,6 +2632,30 @@ def _scope_clauses(product_ids: Optional[list[int]],
 # ---------------------------------------------------------------------------
 _LOG_SOURCE = ("COALESCE(l.source, CASE WHEN l.session_id IS NOT NULL "
                "THEN 'chat' ELSE 'legacy' END)")
+
+
+# MONEY IS DERIVED, NEVER READ BACK: every cost figure is computed from the row's
+# TOKEN COUNTS at the current model's price, so a price fix or a model switch
+# re-prices all history on the next page load (no backfill). The stored
+# `cost_usd` is a write-time audit note and is never summed — a frozen dollar
+# figure is true only for the day it was written, and OpenAI reprices without
+# warning. Token-free rows (a player turn) yield NULL, not 0.
+def _cost_sql(alias: str = "l") -> str:
+    """Cost in USD from the token columns behind `alias` ("" = unaliased).
+
+    Call PER QUERY — it bakes in the price in effect right now.
+    """
+    from app.ai import openai_client  # deferred: settings imports db
+
+    inp, cached, out = openai_client.current_pricing()
+    a = f"{alias}." if alias else ""
+    return (
+        f"(CASE WHEN {a}tokens_in IS NULL AND {a}tokens_out IS NULL THEN NULL "
+        f"ELSE (GREATEST(COALESCE({a}tokens_in, 0) - COALESCE({a}cached_in, 0), 0)"
+        f" * {inp:.6f}"
+        f" + COALESCE({a}cached_in, 0) * {cached:.6f}"
+        f" + COALESCE({a}tokens_out, 0) * {out:.6f}) / 1000000.0 END)"
+    )
 _LOG_FACADE = "COALESCE(l.consumer, s.consumer)"
 _LOG_IS_SUPPORT = f"{_LOG_FACADE} = 'web'"
 _LOG_IS_RETENTION = (f"({_LOG_FACADE} = 'telegram' "
@@ -2667,9 +2693,10 @@ async def overview_aggregates(dt_from: Any, dt_to: Any,
         f"  AND consumer <> 'telegram'{scope}",
         *args,
     )
+    cost_sql = _cost_sql("l")
     cost = await _fetchrow(
         "SELECT "
-        f"  COALESCE(SUM(l.cost_usd) FILTER (WHERE {_LOG_SOURCE} = 'chat'), 0) "
+        f"  COALESCE(SUM({cost_sql}) FILTER (WHERE {_LOG_SOURCE} = 'chat'), 0) "
         "    AS cost_usd_total, "
         f"  COALESCE(SUM(l.cached_in) FILTER (WHERE {_LOG_SOURCE} = 'chat'), 0) "
         "    AS cached_in_total, "
@@ -2683,7 +2710,7 @@ async def overview_aggregates(dt_from: Any, dt_to: Any,
         # The AI judge's passes over SUPPORT conversations: they log with
         # session_id NULL, so they belong to no chat turn — a separate line,
         # never folded into the dialogue cost the per-session metrics divide.
-        f"  COALESCE(SUM(l.cost_usd) FILTER (WHERE {_LOG_SOURCE} = 'review'), 0) "
+        f"  COALESCE(SUM({cost_sql}) FILTER (WHERE {_LOG_SOURCE} = 'review'), 0) "
         "    AS cost_review_usd, "
         f"  COUNT(*) FILTER (WHERE {_LOG_SOURCE} = 'review') AS review_calls "
         "FROM ai_interaction_logs l "
@@ -2748,10 +2775,11 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
     # Cost metrics join chat_sessions, so their product filter qualifies the log
     # table; session metrics keep the bare `scope`. Same positional param.
     scope_l = scope.replace("product_id", "l.product_id")
+    cost_sql = _cost_sql("l")
     if metric == "cost":
         rows = await _fetch(
             f"SELECT date_trunc('{trunc}', l.created_at) AS bucket, "
-            "COALESCE(SUM(l.cost_usd), 0) AS value "
+            f"COALESCE(SUM({cost_sql}), 0) AS value "
             "FROM ai_interaction_logs l "
             "LEFT JOIN chat_sessions s ON s.id = l.session_id "
             f"WHERE {_LOG_IS_SUPPORT} AND {_LOG_SOURCE} = 'chat' "
@@ -2764,7 +2792,7 @@ async def timeseries(metric: str, dt_from: Any, dt_to: Any,
         # had at least one OpenAI call in the bucket. The "average price per day".
         rows = await _fetch(
             f"SELECT date_trunc('{trunc}', l.created_at) AS bucket, "
-            "COALESCE(SUM(l.cost_usd), 0) AS cost, "
+            f"COALESCE(SUM({cost_sql}), 0) AS cost, "
             "COUNT(DISTINCT l.session_id) AS sessions "
             "FROM ai_interaction_logs l "
             "LEFT JOIN chat_sessions s ON s.id = l.session_id "
@@ -2823,19 +2851,20 @@ async def ai_cost_timeseries(dt_from: Any, dt_to: Any,
     """
     args: list[Any] = [dt_from, dt_to]
     pid = _pid_where(product_ids, args, "l.product_id")
+    cost_sql = _cost_sql("l")
     rows = await _fetch(
         "SELECT date_trunc('day', l.created_at) AS day, "
-        "  COALESCE(SUM(l.cost_usd) FILTER "
+        f"  COALESCE(SUM({cost_sql}) FILTER "
         f"    (WHERE {_LOG_SOURCE} = 'chat'), 0) AS chat, "
-        "  COALESCE(SUM(l.cost_usd) FILTER "
+        f"  COALESCE(SUM({cost_sql}) FILTER "
         f"    (WHERE {_LOG_SOURCE} = 'agent'), 0) AS agent, "
-        "  COALESCE(SUM(l.cost_usd) FILTER "
+        f"  COALESCE(SUM({cost_sql}) FILTER "
         f"    (WHERE {_LOG_SOURCE} = 'media'), 0) AS media, "
-        "  COALESCE(SUM(l.cost_usd) FILTER "
+        f"  COALESCE(SUM({cost_sql}) FILTER "
         f"    (WHERE {_LOG_SOURCE} = 'review'), 0) AS review, "
-        "  COALESCE(SUM(l.cost_usd) FILTER "
+        f"  COALESCE(SUM({cost_sql}) FILTER "
         f"    (WHERE {_LOG_SOURCE} = 'legacy'), 0) AS legacy, "
-        "  COALESCE(SUM(l.cost_usd), 0) AS total, "
+        f"  COALESCE(SUM({cost_sql}), 0) AS total, "
         "  COUNT(*) AS calls "
         "FROM ai_interaction_logs l "
         f"WHERE {pid} AND l.created_at >= $1 AND l.created_at < $2 "
@@ -2868,7 +2897,7 @@ def _cost_cte(scope_cte: str, *, support_only: bool = True) -> str:
     telegram = "    AND cs.consumer <> 'telegram' " if support_only else ""
     return (
         "costs AS ("
-        "  SELECT l.session_id, SUM(l.cost_usd) AS cost_usd_total "
+        f"  SELECT l.session_id, SUM({_cost_sql('l')}) AS cost_usd_total "
         "  FROM ai_interaction_logs l "
         "  JOIN chat_sessions cs ON cs.id = l.session_id "
         f"  WHERE cs.created_at >= $1 AND cs.created_at < $2{scope_cte} "
@@ -3009,7 +3038,7 @@ async def list_sessions(dt_from: Any, dt_to: Any, *, topic: Optional[str] = None
         # Bound the cost aggregate to the same date window ($1/$2) rather than
         # scanning the whole unbounded ai_interaction_logs — per-session totals
         # for the (windowed, paginated) rows shown are unchanged.
-        f"LEFT JOIN (SELECT l.session_id, SUM(l.cost_usd) AS cost_usd_total "
+        f"LEFT JOIN (SELECT l.session_id, SUM({_cost_sql('l')}) AS cost_usd_total "
         f"           FROM ai_interaction_logs l "
         f"           JOIN chat_sessions cs ON cs.id = l.session_id "
         f"           WHERE cs.created_at >= $1 AND cs.created_at < $2 "
@@ -3034,21 +3063,27 @@ async def session_detail(session_id: str) -> Optional[dict[str, Any]]:
     session = await get_session(session_id)
     if session is None:
         return None
+    # Derived like every aggregate, so the per-step costs add up to the
+    # `cost_usd_total` the Sessions list shows.
+    cost_sql = _cost_sql("")
     msgs = await _fetch(
         "SELECT role, content, lang, model, key_used, tokens_in, tokens_out, "
-        "cached_in, cost_usd, ping_context, created_at FROM chat_messages "
+        f"cached_in, {cost_sql} AS cost_usd, ping_context, created_at "
+        "FROM chat_messages "
         "WHERE session_id = $1 ORDER BY id ASC",
         session_id,
     )
     logs = await _fetch(
-        "SELECT model, key_used, tokens_in, tokens_out, cached_in, cost_usd, "
+        f"SELECT model, key_used, tokens_in, tokens_out, cached_in, "
+        f"{cost_sql} AS cost_usd, "
         "latency_ms, ok, error, created_at FROM ai_interaction_logs "
         "WHERE session_id = $1 ORDER BY id ASC",
         session_id,
     )
     # Topic-switch markers: a cross-topic routing turn suppresses its (ungrounded)
     # answer and persists no chat_messages row, so its detect-call cost would look
-    # orphaned in the transcript. Returning these lets the admin view interleave a
+    # orphaned in the transcript. (The cost in this payload is frozen JSON written
+    # at switch time — the same call re-derived at today's price is in `logs`.) Returning these lets the admin view interleave a
     # "switched X -> Y" marker (with that call's cost) into the timeline, so the
     # path is traceable and the per-step costs add up to cost_usd_total.
     events = await _fetch(
@@ -4218,6 +4253,8 @@ async def retention_v2_cost_today(product_id: int) -> float:
     Truncate in UTC explicitly: date_trunc('day', now()) truncates in the DB
     session timezone, so on a non-UTC Postgres the budget window would silently
     disagree with the day boundary the rest of the retention pacing uses."""
+    # Stored dollars, not _cost_sql: a same-day window is already at today's
+    # price, and a budget stop switch should measure what today actually spent.
     val = await _fetchval(
         "SELECT COALESCE(SUM(cost_usd), 0) FROM retention_v2_decisions "
         "WHERE product_id = $1 "
@@ -4364,6 +4401,8 @@ _OUTCOME_AGG = (
     "COUNT(*) FILTER (WHERE o.deposit_at IS NOT NULL)::int AS deposits, "
     "AVG(o.reply_latency_sec) FILTER (WHERE o.replied_at IS NOT NULL) "
     "  AS avg_reply_latency_sec, "
+    # NOT re-derived (_cost_sql): this ledger stores dollars, not tokens — a
+    # touch's cost is one of its frozen dimensions.
     "COALESCE(SUM(o.cost_usd), 0) AS cost_usd"
 )
 
@@ -4716,6 +4755,8 @@ async def quality_overview(dt_from: Any, dt_to: Any, *,
         "  COUNT(*) FILTER (WHERE score <= 2)::int AS poor, "
         "  COUNT(*) FILTER (WHERE score >= 4)::int AS good, "
         "  COUNT(*) FILTER (WHERE consumer = 'telegram')::int AS telegram, "
+        # Stored dollars, not tokens; the re-derived figure is on the AI-cost
+        # histogram as source='review'.
         "  COALESCE(SUM(cost_usd), 0) AS cost_usd "
         f"FROM conversation_reviews WHERE {clause}", *args)
     tags = await _fetch(
@@ -5513,6 +5554,7 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
     # ("is the bot too chatty?" vs "is the judge too expensive?") and used to be
     # lumped together under photo metadata.
     pid3 = _pid_where(product_ids, args3, "l.product_id")
+    cost_sql = _cost_sql("l")
     args4: list[Any] = []
     pid4 = _pid_where(product_ids, args4)
     # Independent aggregates — run them concurrently (this feeds the admin's
@@ -5563,17 +5605,17 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
                 "  AND p.created_at >= $1 AND p.created_at < $2", *args2),
             _fetchrow(
                 "SELECT "
-                "  COALESCE(SUM(l.cost_usd) FILTER "
+                f"  COALESCE(SUM({cost_sql}) FILTER "
                 f"    (WHERE {_LOG_SOURCE} = 'chat'), 0) AS dialog, "
-                "  COALESCE(SUM(l.cost_usd) FILTER "
+                f"  COALESCE(SUM({cost_sql}) FILTER "
                 f"    (WHERE {_LOG_SOURCE} = 'agent'), 0) AS agent, "
-                "  COALESCE(SUM(l.cost_usd) FILTER "
+                f"  COALESCE(SUM({cost_sql}) FILTER "
                 f"    (WHERE {_LOG_SOURCE} = 'media'), 0) AS photo, "
-                "  COALESCE(SUM(l.cost_usd) FILTER "
+                f"  COALESCE(SUM({cost_sql}) FILTER "
                 f"    (WHERE {_LOG_SOURCE} = 'review'), 0) AS review, "
-                "  COALESCE(SUM(l.cost_usd) FILTER "
+                f"  COALESCE(SUM({cost_sql}) FILTER "
                 f"    (WHERE {_LOG_SOURCE} = 'legacy'), 0) AS legacy, "
-                "  COALESCE(SUM(l.cost_usd), 0) AS total "
+                f"  COALESCE(SUM({cost_sql}), 0) AS total "
                 "FROM ai_interaction_logs l "
                 "LEFT JOIN chat_sessions s ON s.id = l.session_id "
                 f"WHERE {pid3} AND {_LOG_IS_RETENTION} "
@@ -5722,19 +5764,20 @@ async def retention_timeseries(product_ids: Optional[list[int]], dt_from: Any,
     # attribution labels (see _LOG_SOURCE) rather than by "has a session".
     args = [dt_from, dt_to]
     pid = _pid_where(product_ids, args, "l.product_id")
+    cost_sql = _cost_sql("l")
     for r in await _fetch(
             "SELECT date_trunc('day', l.created_at) AS day, "
-            "  COALESCE(SUM(l.cost_usd) FILTER "
+            f"  COALESCE(SUM({cost_sql}) FILTER "
             f"    (WHERE {_LOG_SOURCE} = 'chat'), 0) AS dialog, "
-            "  COALESCE(SUM(l.cost_usd) FILTER "
+            f"  COALESCE(SUM({cost_sql}) FILTER "
             f"    (WHERE {_LOG_SOURCE} = 'agent'), 0) AS agent, "
-            "  COALESCE(SUM(l.cost_usd) FILTER "
+            f"  COALESCE(SUM({cost_sql}) FILTER "
             f"    (WHERE {_LOG_SOURCE} = 'media'), 0) AS photo, "
-            "  COALESCE(SUM(l.cost_usd) FILTER "
+            f"  COALESCE(SUM({cost_sql}) FILTER "
             f"    (WHERE {_LOG_SOURCE} = 'review'), 0) AS review, "
-            "  COALESCE(SUM(l.cost_usd) FILTER "
+            f"  COALESCE(SUM({cost_sql}) FILTER "
             f"    (WHERE {_LOG_SOURCE} = 'legacy'), 0) AS legacy, "
-            "  COALESCE(SUM(l.cost_usd), 0) AS cost "
+            f"  COALESCE(SUM({cost_sql}), 0) AS cost "
             "FROM ai_interaction_logs l "
             "LEFT JOIN chat_sessions s ON s.id = l.session_id "
             f"WHERE {pid} AND {_LOG_IS_RETENTION} "
@@ -5835,7 +5878,7 @@ async def list_retention_sessions(product_id: int, *, page: int = 1,
         # Scope the cost aggregate to THIS product's logs (product_id = $1, an
         # indexed column) instead of scanning the whole unbounded
         # ai_interaction_logs table for every page load.
-        "LEFT JOIN (SELECT session_id, SUM(cost_usd) AS cost_usd_total "
+        f"LEFT JOIN (SELECT session_id, SUM({_cost_sql('')}) AS cost_usd_total "
         "           FROM ai_interaction_logs WHERE product_id = $1 "
         "           GROUP BY session_id) c "
         "  ON c.session_id = s.id "

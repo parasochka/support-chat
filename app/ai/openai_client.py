@@ -20,8 +20,9 @@ whole transcript or a multi-MB image does not fit the interactive 30s.
 Backoff: 429 / Retry-After / timeouts / transient errors are retried with
 exponential backoff up to OPENAI_MAX_ATTEMPTS.
 
-Cost accounting: per-call cost computed from token usage via _PRICING and written
-to ai_interaction_logs + chat_messages.
+Cost accounting: token usage is logged per call (ai_interaction_logs +
+chat_messages); dollars are derived from it at read time at the CURRENT model's
+price (_PRICING / current_pricing / db._cost_sql), never frozen per row.
 """
 from __future__ import annotations
 
@@ -96,17 +97,17 @@ def _breaker_for(source: str) -> _Breaker:
 
 # ---------------------------------------------------------------------------
 # Pricing — USD per 1,000,000 tokens: (input, cached_input, output)
-# GPT-5.6 list prices verified 2026-07-30, the day OpenAI repriced the two
-# cheaper tiers (Luna -80%, Terra -20%, Sol unchanged): Luna $0.20 input / $0.02
-# cached input / $1.20 output (was $1.00 / $0.10 / $6.00), Terra $2.00 / $0.20 /
-# $12.00 (was $2.50 / $0.25 / $15.00), Sol $5.00 / $0.50 / $30.00 per 1M tokens.
-# Cached reads stay a 90% discount off the tier's input rate. gpt-5-mini verified
-# 2026-06-23: input $0.25, cached input $0.025, output $2.00 (it is no longer on
-# OpenAI's published page; kept so historical logs still price).
-# GPT-5.4 mini: input $0.75, cached input $0.075, output $4.50.
-# Re-verify against current OpenAI pricing if the model or OpenAI's published
-# rates change. An unlisted model costs 0 (a silent under-count), so add every
-# model the `model` settings group can select.
+#
+# ONE price is ever used: the CURRENT model's (`current_pricing()`). Dollars are
+# derived from stored token counts at read time (`db._cost_sql`), never frozen
+# at call time — so an edit here re-prices the whole history on the next page
+# load. (Prices are hand-maintained and OpenAI reprices without warning: it cut
+# Luna 80% three weeks after GA, and every stored figure kept the old rate.)
+#
+# Verified 2026-07-30, the day of that repricing (Luna -80%, Terra -20%, Sol
+# unchanged); cached reads are 90% off the tier's input rate. A model missing
+# here prices at 0 — now on every dashboard at once — so list every model the
+# `model` settings group can select.
 # ---------------------------------------------------------------------------
 _PRICING: dict[str, tuple[float, float, float]] = {
     # model: (input, cached_input, output)  -- USD per 1M tokens
@@ -144,17 +145,31 @@ def _pricing_for_model(model: str) -> Optional[tuple[float, float, float]]:
     return None
 
 
-def pricing_for_model(model: str) -> Optional[dict[str, float]]:
-    """Public pricing lookup for the admin UI (USD per 1M tokens), or None.
+def current_model() -> str:
+    """The model id in effect for the current product scope (hot setting)."""
+    return str(settings.model().get("model") or "")
 
-    Powers the admin's token-cost counters (/admin/meta `model_pricing`). Same
-    caveat as _PRICING: verify before trusting - prices may be stale.
+
+def current_pricing() -> tuple[float, float, float]:
+    """(input, cached_input, output) USD per 1M tokens of the CURRENT model.
+
+    THE price source — hence no public price-by-model lookup: pricing a row by
+    the model it names is the historical-pricing bug this replaced. Zeros for an
+    unpriced model; the admin shows that as `pricing: null`, not a wrong number.
     """
-    p = _pricing_for_model(model)
-    if not p:
-        return None
-    return {"input_per_1m": p[0], "cached_input_per_1m": p[1],
-            "output_per_1m": p[2]}
+    return _pricing_for_model(current_model()) or (0.0, 0.0, 0.0)
+
+
+def current_model_pricing() -> dict[str, Any]:
+    """`{model, pricing}` for /admin/meta — the SPA's token/cost counters."""
+    p = _pricing_for_model(current_model())
+    return {
+        "model": current_model(),
+        "pricing": None if not p else {
+            "input_per_1m": p[0], "cached_input_per_1m": p[1],
+            "output_per_1m": p[2],
+        },
+    }
 
 
 # A reasoning model (the GPT-5 family) can spend the WHOLE output budget on hidden
@@ -380,12 +395,13 @@ async def _call_with_backoff(kc: _KeyClient, messages: list[dict[str, str]],
     raise RuntimeError("backoff exhausted without result")  # pragma: no cover
 
 
-def compute_cost(model: str, tokens_in: int, tokens_out: int, cached_in: int) -> float:
-    """Cost in USD from token usage. Returns 0.0 for unknown models."""
-    pricing = _pricing_for_model(model)
-    if not pricing:
-        return 0.0
-    in_price, cached_price, out_price = pricing
+def compute_cost(tokens_in: int, tokens_out: int, cached_in: int) -> float:
+    """Cost in USD of a call's token usage at the CURRENT model's price.
+
+    No model argument on purpose (see the _PRICING header). Used for the
+    per-touch ledgers, which store dollars; the dashboards re-derive in SQL.
+    """
+    in_price, cached_price, out_price = current_pricing()
     fresh_in = max(tokens_in - cached_in, 0)
     cost = (
         fresh_in * in_price

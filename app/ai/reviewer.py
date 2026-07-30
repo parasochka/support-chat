@@ -132,8 +132,8 @@ async def review_session(product_id: int, session: dict[str, Any]
         log.warning("quality_review_model_failed product=%s session=%s error=%s",
                     product_id, session_id, exc)
         return None
-    cost = openai_client.compute_cost(result.model, result.tokens_in,
-                                      result.tokens_out, result.cached_in)
+    cost = openai_client.compute_cost(result.tokens_in, result.tokens_out,
+                                      result.cached_in)
     await db.log_ai_interaction(
         None, result.model, result.key_used, result.tokens_in,
         result.tokens_out, result.cached_in, cost, result.latency_ms, True,
