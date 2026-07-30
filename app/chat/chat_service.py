@@ -370,7 +370,7 @@ async def handle_message(
 
     # --- cost accounting -----------------------------------------------------
     cost = openai_client.compute_cost(
-        result.model, result.tokens_in, result.tokens_out, result.cached_in
+        result.tokens_in, result.tokens_out, result.cached_in
     )
 
     # --- escalation decision (post-model HARD triggers) ----------------------
@@ -815,7 +815,7 @@ async def handle_retention_message(
         await db.set_conv_lang(session_id, detected_lang)
 
     cost = openai_client.compute_cost(
-        result.model, result.tokens_in, result.tokens_out, result.cached_in
+        result.tokens_in, result.tokens_out, result.cached_in
     )
 
     if not clean_text:
@@ -940,7 +940,7 @@ async def generate_retention_ping(
         return None
 
     cost = openai_client.compute_cost(
-        result.model, result.tokens_in, result.tokens_out, result.cached_in
+        result.tokens_in, result.tokens_out, result.cached_in
     )
     answer_lang = detected_lang or lang
     return PingDraft(

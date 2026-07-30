@@ -7,6 +7,7 @@ primary key actually breaks.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import pytest
 
@@ -270,21 +271,49 @@ async def test_non_empty_reply_does_not_retry(monkeypatch):
     assert len(budgets) == 1  # no retry
 
 
-def test_cost_computation_known_model():
-    cost = openai_client.compute_cost("gpt-5.4-mini", tokens_in=1_000_000,
-                                      tokens_out=0, cached_in=0)
-    assert cost == pytest.approx(0.75)
-    # cached tokens priced lower
-    cost2 = openai_client.compute_cost("gpt-5.4-mini", tokens_in=1_000_000,
-                                       tokens_out=0, cached_in=1_000_000)
-    assert cost2 == pytest.approx(0.075)
+@contextlib.contextmanager
+def _current_model(model_id):
+    """Pin the hot `model` setting — the ONE thing that picks a price now."""
+    orig = openai_client.settings.model
+    openai_client.settings.model = lambda: {"model": model_id}
+    try:
+        yield
+    finally:
+        openai_client.settings.model = orig
 
 
-def test_cost_computation_snapshot_model_falls_back_to_alias():
-    cost = openai_client.compute_cost("gpt-5.5-2026-06-23", tokens_in=1_000_000,
-                                      tokens_out=1_000_000, cached_in=0)
-    assert cost == pytest.approx(35.0)
+def test_cost_priced_from_the_current_model():
+    with _current_model("gpt-5.4-mini"):
+        cost = openai_client.compute_cost(tokens_in=1_000_000, tokens_out=0,
+                                          cached_in=0)
+        assert cost == pytest.approx(0.75)
+        # cached tokens priced lower
+        cost2 = openai_client.compute_cost(tokens_in=1_000_000, tokens_out=0,
+                                           cached_in=1_000_000)
+        assert cost2 == pytest.approx(0.075)
+
+
+def test_cost_follows_a_model_switch():
+    """Same usage, different configured model ⇒ different cost, no arg passed.
+
+    This is the whole point of dropping the per-call model: one price — the
+    current one — prices everything the service reports.
+    """
+    usage = dict(tokens_in=1_000_000, tokens_out=1_000_000, cached_in=0)
+    with _current_model("gpt-5.5"):
+        assert openai_client.compute_cost(**usage) == pytest.approx(35.0)
+    with _current_model("gpt-5.6-luna"):
+        assert openai_client.compute_cost(**usage) == pytest.approx(1.40)
+
+
+def test_cost_snapshot_model_falls_back_to_alias():
+    with _current_model("gpt-5.5-2026-06-23"):
+        assert openai_client.compute_cost(
+            tokens_in=1_000_000, tokens_out=1_000_000, cached_in=0
+        ) == pytest.approx(35.0)
 
 
 def test_cost_unknown_model_zero():
-    assert openai_client.compute_cost("nonexistent", 100, 100, 0) == 0.0
+    with _current_model("nonexistent"):
+        assert openai_client.compute_cost(100, 100, 0) == 0.0
+        assert openai_client.current_pricing() == (0.0, 0.0, 0.0)

@@ -96,17 +96,33 @@ def _breaker_for(source: str) -> _Breaker:
 
 # ---------------------------------------------------------------------------
 # Pricing — USD per 1,000,000 tokens: (input, cached_input, output)
+#
+# ONE PRICE RULES EVERY FIGURE IN THE SERVICE: the price of the CURRENTLY
+# configured model (`current_pricing()`), as listed below right now. Cost is
+# never frozen at call time and never keyed on the model a stored row happens to
+# name — every admin figure is DERIVED from stored token counts at read time
+# (`db._cost_sql`), so changing the model or correcting a price here re-prices
+# the whole history on the next page load.
+#
+# That is deliberate. This table is a hand-maintained copy of OpenAI's list
+# prices and OpenAI reprices without warning (it cut GPT-5.6 Luna 80% and Terra
+# 20% three weeks after the family shipped), so a dollar figure frozen at call
+# time is only ever true for the day it was written. The one number the service
+# can defend is "what this traffic costs at today's price", and that is the
+# number it reports.
+#
 # GPT-5.6 list prices verified 2026-07-30, the day OpenAI repriced the two
 # cheaper tiers (Luna -80%, Terra -20%, Sol unchanged): Luna $0.20 input / $0.02
 # cached input / $1.20 output (was $1.00 / $0.10 / $6.00), Terra $2.00 / $0.20 /
 # $12.00 (was $2.50 / $0.25 / $15.00), Sol $5.00 / $0.50 / $30.00 per 1M tokens.
 # Cached reads stay a 90% discount off the tier's input rate. gpt-5-mini verified
 # 2026-06-23: input $0.25, cached input $0.025, output $2.00 (it is no longer on
-# OpenAI's published page; kept so historical logs still price).
+# OpenAI's published page; kept so a deployment still pinned to it prices).
 # GPT-5.4 mini: input $0.75, cached input $0.075, output $4.50.
-# Re-verify against current OpenAI pricing if the model or OpenAI's published
-# rates change. An unlisted model costs 0 (a silent under-count), so add every
-# model the `model` settings group can select.
+# Re-verify against current OpenAI pricing when the rates change. A model missing
+# from this table prices at 0 — a silent under-count on EVERY dashboard, since
+# the current model prices all of them — so add every model the `model` settings
+# group can select.
 # ---------------------------------------------------------------------------
 _PRICING: dict[str, tuple[float, float, float]] = {
     # model: (input, cached_input, output)  -- USD per 1M tokens
@@ -142,6 +158,22 @@ def _pricing_for_model(model: str) -> Optional[tuple[float, float, float]]:
     if len(parts) == 4 and all(p.isdigit() for p in parts[1:]):
         return _PRICING.get(parts[0])
     return None
+
+
+def current_model() -> str:
+    """The model id in effect for the current product scope (hot setting)."""
+    return str(settings.model().get("model") or "")
+
+
+def current_pricing() -> tuple[float, float, float]:
+    """(input, cached_input, output) USD per 1M tokens of the CURRENT model.
+
+    The single price source for every cost figure the service reports. Falls
+    back to zeros for a model this file does not price — the same silent
+    under-count an unpriced model always produced, now visible in one place
+    (the admin's /admin/meta `model_pricing` reports None for it).
+    """
+    return _pricing_for_model(current_model()) or (0.0, 0.0, 0.0)
 
 
 def pricing_for_model(model: str) -> Optional[dict[str, float]]:
@@ -380,12 +412,21 @@ async def _call_with_backoff(kc: _KeyClient, messages: list[dict[str, str]],
     raise RuntimeError("backoff exhausted without result")  # pragma: no cover
 
 
-def compute_cost(model: str, tokens_in: int, tokens_out: int, cached_in: int) -> float:
-    """Cost in USD from token usage. Returns 0.0 for unknown models."""
-    pricing = _pricing_for_model(model)
-    if not pricing:
-        return 0.0
-    in_price, cached_price, out_price = pricing
+def compute_cost(tokens_in: int, tokens_out: int, cached_in: int) -> float:
+    """Cost in USD of a call's token usage at the CURRENT model's price.
+
+    Takes no model argument on purpose: the price of the model configured RIGHT
+    NOW prices everything (see the _PRICING header). Callers that used to pass
+    `result.model` were pricing per response — which quietly meant a dated
+    snapshot id or a mid-conversation model change costed differently from the
+    dashboard around it.
+
+    This is the write-time value stored on the per-touch ledgers (a retention
+    ping, an agent decision, a review). The aggregate dashboards do not read it
+    back — they re-derive from token counts in SQL (`db._cost_sql`), so they
+    follow a later price change too.
+    """
+    in_price, cached_price, out_price = current_pricing()
     fresh_in = max(tokens_in - cached_in, 0)
     cost = (
         fresh_in * in_price
