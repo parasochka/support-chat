@@ -5580,6 +5580,7 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
     # ("is the bot too chatty?" vs "is the judge too expensive?") and used to be
     # lumped together under photo metadata.
     pid3 = _pid_where(product_ids, args3, "l.product_id")
+    cost_sql = _cost_sql("l")
     args4: list[Any] = []
     pid4 = _pid_where(product_ids, args4)
     # Independent aggregates — run them concurrently (this feeds the admin's
@@ -5630,17 +5631,17 @@ async def retention_overview(product_ids: Optional[list[int]], dt_from: Any,
                 "  AND p.created_at >= $1 AND p.created_at < $2", *args2),
             _fetchrow(
                 "SELECT "
-                f"  COALESCE(SUM({_cost_sql('l')}) FILTER "
+                f"  COALESCE(SUM({cost_sql}) FILTER "
                 f"    (WHERE {_LOG_SOURCE} = 'chat'), 0) AS dialog, "
-                f"  COALESCE(SUM({_cost_sql('l')}) FILTER "
+                f"  COALESCE(SUM({cost_sql}) FILTER "
                 f"    (WHERE {_LOG_SOURCE} = 'agent'), 0) AS agent, "
-                f"  COALESCE(SUM({_cost_sql('l')}) FILTER "
+                f"  COALESCE(SUM({cost_sql}) FILTER "
                 f"    (WHERE {_LOG_SOURCE} = 'media'), 0) AS photo, "
-                f"  COALESCE(SUM({_cost_sql('l')}) FILTER "
+                f"  COALESCE(SUM({cost_sql}) FILTER "
                 f"    (WHERE {_LOG_SOURCE} = 'review'), 0) AS review, "
-                f"  COALESCE(SUM({_cost_sql('l')}) FILTER "
+                f"  COALESCE(SUM({cost_sql}) FILTER "
                 f"    (WHERE {_LOG_SOURCE} = 'legacy'), 0) AS legacy, "
-                f"  COALESCE(SUM({_cost_sql('l')}), 0) AS total "
+                f"  COALESCE(SUM({cost_sql}), 0) AS total "
                 "FROM ai_interaction_logs l "
                 "LEFT JOIN chat_sessions s ON s.id = l.session_id "
                 f"WHERE {pid3} AND {_LOG_IS_RETENTION} "
@@ -5789,19 +5790,20 @@ async def retention_timeseries(product_ids: Optional[list[int]], dt_from: Any,
     # attribution labels (see _LOG_SOURCE) rather than by "has a session".
     args = [dt_from, dt_to]
     pid = _pid_where(product_ids, args, "l.product_id")
+    cost_sql = _cost_sql("l")
     for r in await _fetch(
             "SELECT date_trunc('day', l.created_at) AS day, "
-            f"  COALESCE(SUM({_cost_sql('l')}) FILTER "
+            f"  COALESCE(SUM({cost_sql}) FILTER "
             f"    (WHERE {_LOG_SOURCE} = 'chat'), 0) AS dialog, "
-            f"  COALESCE(SUM({_cost_sql('l')}) FILTER "
+            f"  COALESCE(SUM({cost_sql}) FILTER "
             f"    (WHERE {_LOG_SOURCE} = 'agent'), 0) AS agent, "
-            f"  COALESCE(SUM({_cost_sql('l')}) FILTER "
+            f"  COALESCE(SUM({cost_sql}) FILTER "
             f"    (WHERE {_LOG_SOURCE} = 'media'), 0) AS photo, "
-            f"  COALESCE(SUM({_cost_sql('l')}) FILTER "
+            f"  COALESCE(SUM({cost_sql}) FILTER "
             f"    (WHERE {_LOG_SOURCE} = 'review'), 0) AS review, "
-            f"  COALESCE(SUM({_cost_sql('l')}) FILTER "
+            f"  COALESCE(SUM({cost_sql}) FILTER "
             f"    (WHERE {_LOG_SOURCE} = 'legacy'), 0) AS legacy, "
-            f"  COALESCE(SUM({_cost_sql('l')}), 0) AS cost "
+            f"  COALESCE(SUM({cost_sql}), 0) AS cost "
             "FROM ai_interaction_logs l "
             "LEFT JOIN chat_sessions s ON s.id = l.session_id "
             f"WHERE {pid} AND {_LOG_IS_RETENTION} "

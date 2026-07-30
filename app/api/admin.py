@@ -82,7 +82,6 @@ async def meta(product_id: Optional[int] = None,
     # character/token/cost counters on prompt and KB editors. `pricing` is None
     # for a model missing from openai_client._PRICING (the SPA then shows
     # tokens without a cost estimate).
-    mdl = str(settings_mod.model().get("model") or "")
     return JSONResponse(content={
         "languages": language.selectable_languages(),
         "supported": language.supported_codes(),
@@ -90,8 +89,7 @@ async def meta(product_id: Optional[int] = None,
         "iso_catalog": [{"code": c, "name": n}
                         for c, n in sorted(language.ISO_639_1.items(),
                                            key=lambda kv: kv[1])],
-        "model_pricing": {"model": mdl,
-                          "pricing": openai_client.pricing_for_model(mdl)},
+        "model_pricing": openai_client.current_model_pricing(),
         # Media-upload body cap: the SPA pre-checks file sizes against it so an
         # oversized video gets a clear error instead of the browser's bare
         # "failed to fetch" (a 413 mid-upload aborts the connection).

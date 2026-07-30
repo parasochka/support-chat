@@ -168,25 +168,26 @@ def current_model() -> str:
 def current_pricing() -> tuple[float, float, float]:
     """(input, cached_input, output) USD per 1M tokens of the CURRENT model.
 
-    The single price source for every cost figure the service reports. Falls
-    back to zeros for a model this file does not price — the same silent
-    under-count an unpriced model always produced, now visible in one place
-    (the admin's /admin/meta `model_pricing` reports None for it).
+    THE price source: everything the service reports in dollars resolves here,
+    which is why there is no public price-by-model lookup — pricing a row by the
+    model it happens to name is the historical-pricing bug this replaced. Falls
+    back to zeros for a model this file does not price; the admin surfaces that
+    as `pricing: null` (tokens shown, no cost estimate) rather than a wrong
+    number.
     """
     return _pricing_for_model(current_model()) or (0.0, 0.0, 0.0)
 
 
-def pricing_for_model(model: str) -> Optional[dict[str, float]]:
-    """Public pricing lookup for the admin UI (USD per 1M tokens), or None.
-
-    Powers the admin's token-cost counters (/admin/meta `model_pricing`). Same
-    caveat as _PRICING: verify before trusting - prices may be stale.
-    """
-    p = _pricing_for_model(model)
-    if not p:
-        return None
-    return {"input_per_1m": p[0], "cached_input_per_1m": p[1],
-            "output_per_1m": p[2]}
+def current_model_pricing() -> dict[str, Any]:
+    """`{model, pricing}` for /admin/meta — the SPA's token/cost counters."""
+    p = _pricing_for_model(current_model())
+    return {
+        "model": current_model(),
+        "pricing": None if not p else {
+            "input_per_1m": p[0], "cached_input_per_1m": p[1],
+            "output_per_1m": p[2],
+        },
+    }
 
 
 # A reasoning model (the GPT-5 family) can spend the WHOLE output budget on hidden
