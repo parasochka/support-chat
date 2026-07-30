@@ -140,8 +140,9 @@ def test_pricing_covers_the_default_model():
 
 def test_pricing_for_gpt_5_6_luna():
     p = openai_client.pricing_for_model("gpt-5.6-luna")
-    assert p == {"input_per_1m": 1.00, "cached_input_per_1m": 0.10,
-                 "output_per_1m": 6.00}
+    # Repriced 2026-07-30 (-80%): $0.20 input / $0.02 cached / $1.20 output.
+    assert p == {"input_per_1m": 0.20, "cached_input_per_1m": 0.02,
+                 "output_per_1m": 1.20}
     # Both snapshot spellings price as the alias: the compact form GPT-5.6 ships
     # is listed explicitly, a dashed one resolves through _pricing_for_model.
     assert openai_client.pricing_for_model("gpt-5.6-luna-20260709") == p

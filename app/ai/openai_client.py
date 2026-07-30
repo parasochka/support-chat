@@ -96,10 +96,14 @@ def _breaker_for(source: str) -> _Breaker:
 
 # ---------------------------------------------------------------------------
 # Pricing — USD per 1,000,000 tokens: (input, cached_input, output)
-# GPT-5.6 list prices verified 2026-07-29: Luna $1.00 input / $0.10 cached input
-# / $6.00 output, Terra $2.50 / $0.25 / $15.00, Sol $5.00 / $0.50 / $30.00 per 1M
-# tokens. gpt-5-mini verified 2026-06-23: input $0.25, cached input $0.025,
-# output $2.00. GPT-5.4 mini: input $0.75, cached input $0.075, output $4.50.
+# GPT-5.6 list prices verified 2026-07-30, the day OpenAI repriced the two
+# cheaper tiers (Luna -80%, Terra -20%, Sol unchanged): Luna $0.20 input / $0.02
+# cached input / $1.20 output (was $1.00 / $0.10 / $6.00), Terra $2.00 / $0.20 /
+# $12.00 (was $2.50 / $0.25 / $15.00), Sol $5.00 / $0.50 / $30.00 per 1M tokens.
+# Cached reads stay a 90% discount off the tier's input rate. gpt-5-mini verified
+# 2026-06-23: input $0.25, cached input $0.025, output $2.00 (it is no longer on
+# OpenAI's published page; kept so historical logs still price).
+# GPT-5.4 mini: input $0.75, cached input $0.075, output $4.50.
 # Re-verify against current OpenAI pricing if the model or OpenAI's published
 # rates change. An unlisted model costs 0 (a silent under-count), so add every
 # model the `model` settings group can select.
@@ -113,10 +117,10 @@ _PRICING: dict[str, tuple[float, float, float]] = {
     # GPT-5.6 family. `gpt-5.6` (no tier) is an alias for Sol, not Luna.
     "gpt-5.6": (5.00, 0.50, 30.00),
     "gpt-5.6-sol": (5.00, 0.50, 30.00),
-    "gpt-5.6-terra": (2.50, 0.25, 15.00),
+    "gpt-5.6-terra": (2.00, 0.20, 12.00),
     # gpt-5.6-luna (the live default) — the cheapest tier of the 5.6 line.
-    "gpt-5.6-luna": (1.00, 0.10, 6.00),
-    "gpt-5.6-luna-20260709": (1.00, 0.10, 6.00),
+    "gpt-5.6-luna": (0.20, 0.02, 1.20),
+    "gpt-5.6-luna-20260709": (0.20, 0.02, 1.20),
     "gpt-5.5": (5.00, 0.50, 30.00),
     "gpt-5.4": (2.50, 0.25, 15.00),
     "gpt-5.4-mini": (0.75, 0.075, 4.50),
