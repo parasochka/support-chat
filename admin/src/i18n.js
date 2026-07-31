@@ -2152,6 +2152,10 @@ const RU = {
     "д",
   "Triggers (any that crosses the threshold fires)":
     "Триггеры (срабатывает любой, пересёкший порог)",
+  // ----- last stragglers found by the full-SPA sweep -----
+  'All': 'Все',
+  '(deleted)': '(удалено)',
+  'disabled': 'выключено',
 };
 
 const current = getAdminLang();

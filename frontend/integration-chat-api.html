@@ -97,9 +97,15 @@
       "finish_label": "Завершить чат" }
 }</code></pre>
 <p>Ошибки: <code>401</code>, <code>409 session_closed</code> (сессия закрыта — начать новую),
-<code>429</code> (rate-limit/cooldown), <code>400</code> (слишком длинно / injection),
+<code>429</code> (rate-limit/cooldown), <code>400</code> (слишком длинно / пусто / injection),
 <code>413</code>/<code>411</code> (body cap). <code>escalation.final=true</code> — диалог завершён
 (hand-off), <code>final=false</code> — карточка показана, чат продолжается.</p>
+<div class="warnbox">Модельно-независимые ответы (малосодержательное сообщение, жёсткий потолок
+ходов) возвращают <b>урезанную форму</b> — только <code>reply</code>, <code>lang</code>,
+<code>escalation</code>, <code>message_count</code>; остальные ключи <b>отсутствуют</b>, а не
+равны <code>null</code>. Читайте <code>suggested_topic</code> / <code>suggestions</code> /
+<code>closing_suggestion</code> / <code>resolved</code> / <code>cap_notice</code> как
+опциональные.</div>
 
 <div class="endpoint"><span class="tag get">GET</span><code>/api/chat/session/{id}</code></div>
 <p>Резюме сессии: статус + история (bearer обязателен). Ошибки: <code>401</code>,
