@@ -281,12 +281,15 @@ const FLOWS = [
         label: t('Guards — the hard rails'),
         note: t('every block is ledgered with its reason'),
         details: t(
-          'Deterministic and never overridable by the AI: subscribed, not /stop-muted, bot not blocked, min gap since the last touch, daily touch cap, daily AI budget, same-event cooldown (one reaction per event type per window; for bet_settled even a "stay silent" verdict latches it, so a losing streak doesn\'t re-run paid decisions per bet), and the loss comfort window — after real losses the photo action is removed and a hard empathy constraint is injected.'
+          'Deterministic and never overridable by the AI, in a FIXED order: ① the RG guard (responsible gaming — self-exclusion beats everything), ② hard denies (subscribed, not /stop-muted, bot not blocked), ③ the holdout control group (never touched — that is what makes uplift measurable), ④ frequency — the adaptive channel × cohort cap matrix with P1..P5 priorities when the orchestrator switch is on, else the legacy static caps (min gap, daily touch cap), ⑤ the daily AI budget, ⑥ the same-event cooldown (one reaction per event type per window; for bet_settled even a "stay silent" verdict latches it, so a losing streak doesn\'t re-run paid decisions per bet), ⑦ the loss comfort window — after real losses the photo action is removed and a hard empathy constraint is injected. Steps ①③④ are the orchestrator layer — see its own map.'
         ),
         knobs: [
           { label: t('Daily cap / min gap / budget / cooldown / comfort window'), href: PARAMS },
+          { label: t('RG guard (Orchestrator)'), href: '#/orchestrator?tab=rg' },
+          { label: t('Holdout (Orchestrator → Measurement)'), href: '#/orchestrator?tab=measurement' },
+          { label: t('Frequency matrix (Orchestrator)'), href: '#/orchestrator?tab=frequency' },
         ],
-        module: 'retention_v2.py',
+        module: 'retention_v2.py · rg_guard.py · measurement.py · frequency.py',
       },
       {
         id: 'decide',
@@ -348,8 +351,75 @@ const FLOWS = [
     ],
   },
   {
+    id: 'orchestrator',
+    title: t('4 · Orchestrator — the layer over every proactive touch'),
+    intro: t('Journeys, offers, channels and measurement sit ON TOP of the agent and the ladder: they add candidate touches and extra gates, never bypass them. Full map: Retention → Orchestrator → How it works.'),
+    steps: [
+      {
+        id: 'journeys',
+        kind: 'input',
+        label: t('Journeys (multi-step scenarios)'),
+        note: t('a third source of touches, next to events and the ladder'),
+        details: t(
+          'Declarative trajectories stored as data: an event or a schedule (recovery by cohort, weekly rituals, cashier abandonment) enrolls a player; steps fire after their delays, each passing the FULL guard chain. A blocked step defers and retries; a terminal reason (RG, /stop, holdout) exits the journey. The step text is usually a persona BRIEF from the template library — ops set the intent, Nika writes.'
+        ),
+        knobs: [
+          { label: t('Journeys editor'), href: '#/orchestrator?tab=journeys' },
+          { label: t('Template library'), href: '#/orchestrator?tab=templates' },
+        ],
+        module: 'journeys.py · scenario_library.py',
+      },
+      {
+        id: 'orchguards',
+        kind: 'gate',
+        label: t('Orchestrator gates (RG → holdout → frequency)'),
+        note: t('run inside the guard chain of flow 3'),
+        details: t(
+          'The responsible-gaming guard (casino-fed rg_status; self-exclusion is absolute), the deterministic holdout control group, and the adaptive frequency layer (cap matrix channel × cohort, priorities P1..P5, smart send time shifting non-urgent touches into the player\'s active hours). Every evaluation lands in the RG audit / guard ledgers.'
+        ),
+        knobs: [
+          { label: t('RG guard'), href: '#/orchestrator?tab=rg' },
+          { label: t('Frequency + send time'), href: '#/orchestrator?tab=frequency' },
+        ],
+        module: 'rg_guard.py · measurement.py · frequency.py',
+      },
+      {
+        id: 'offers',
+        kind: 'action',
+        label: t('Offer engine (real bonuses)'),
+        note: t('grant first — mention only after the casino confirms'),
+        details: t(
+          'A trigger (loss tier, journey step) can attach a REAL bonus: the catalog row references the casino\'s bonus-CMS ID, deterministic checks (RG, VIP suppression, eligibility, cooldowns, the stimulus budget) run BEFORE the model, the grant call to the casino is idempotent, and the persona mentions the gift only after the casino confirms. High-loss VIPs route to the human host queue instead.'
+        ),
+        knobs: [{ label: t('Offer catalog + triggers + ledger'), href: '#/orchestrator?tab=offers' }],
+        module: 'offers.py · partner_out.py',
+      },
+      {
+        id: 'router',
+        kind: 'action',
+        label: t('Multichannel router'),
+        note: t('strict opt-in, no fallback to a non-consented channel'),
+        details: t(
+          'Picks the delivery channel per touch: telegram (own transport), email (Customer.io), delegated push / in-app (a delivery order to the casino + the delivery-status callback), vip_host (a human task). Consent is absolute; with multichannel off, everything flows to Telegram exactly as before.'
+        ),
+        knobs: [{ label: t('Channels + delivery monitor'), href: '#/orchestrator?tab=channels' }],
+        module: 'channels.py · delivery.py',
+      },
+      {
+        id: 'uplift',
+        kind: 'store',
+        label: t('Holdout + uplift measurement'),
+        details: t(
+          'The held-out players\' conversions are the base rate; touched players\' conversions minus that base rate = uplift in percentage points, per return and per deposit — the honest answer to "does retention pay for itself". Rotating the experiment salt re-buckets everyone (a new experiment).'
+        ),
+        knobs: [{ label: t('Measurement tab'), href: '#/orchestrator?tab=measurement' }],
+        module: 'measurement.py · outcomes.py',
+      },
+    ],
+  },
+  {
     id: 'idle',
-    title: t('4 · Idle re-engagement — silence becomes a ping'),
+    title: t('5 · Idle re-engagement — silence becomes a ping'),
     intro: t('A quiet player produces no events, so the rules ladder writes first.'),
     steps: [
       {
@@ -547,7 +617,7 @@ const AlgorithmMapTab = () => {
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
             {rich(
               t(
-                'The whole retention algorithm as four flows. **Click any block** for a plain-language explanation, the settings that govern exactly that step, and the module implementing it. Click a legend chip to highlight all blocks of that kind.'
+                'The whole retention algorithm as five flows — the dialogue, the data feed, the event agent, the orchestrator layer and the idle ladder. **Click any block** for a plain-language explanation, the settings that govern exactly that step, and the module implementing it. Click a legend chip to highlight all blocks of that kind.'
               )
             )}
           </Typography>
@@ -611,7 +681,7 @@ const AlgorithmMapTab = () => {
       <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
         {rich(
           t(
-            'Deeper operator material: the [Proactive agent guide](#/retention-agent) (testing checklist, guard-reason table with your current values, cost model) and the numeric knobs on [Retention → Settings → Parameters](#/retention-settings?tab=params).'
+            'Deeper operator material: the [Proactive agent guide](#/retention-agent) (testing checklist, guard-reason table with your current values, cost model), the [Orchestrator — How it works](#/orchestrator?tab=how) map of the layer on top, and the numeric knobs on [Retention → Settings → Parameters](#/retention-settings?tab=params).'
           )
         )}
       </Typography>

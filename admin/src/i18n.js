@@ -1700,6 +1700,401 @@ const RU = {
     'Если платформа строит сквозную атрибуцию: согласовать экспорт наших фактовых строк (касания, конверсии, доставки) — прямой доступ на чтение или периодический экспорт.',
   'Nothing on our side (uplift works locally)':
     'Ничего на нашей стороне (uplift считается локально)',
+  // ----- retention orchestrator page + algorithm-map orchestrator flow -----
+  "Saved":
+    "Сохранено",
+  "Invalid JSON":
+    "Некорректный JSON",
+  "Holdout control group":
+    "Холдаут — контрольная группа",
+  "A deterministic share of players is never touched proactively — their behaviour is the base rate uplift compares against. Rotating the salt starts a NEW experiment (every player re-buckets).":
+    "Детерминированная доля игроков никогда не получает проактивных касаний — их поведение задаёт базовый уровень, с которым сравнивается uplift. Смена соли начинает НОВЫЙ эксперимент (все игроки распределяются заново).",
+  "Holdout %":
+    "Холдаут, %",
+  "Experiment salt":
+    "Соль эксперимента",
+  "Note":
+    "Заметка",
+  "treatment":
+    "основная группа",
+  "holdout":
+    "холдаут",
+  "unassigned":
+    "не распределены",
+  "Uplift (last 28 days)":
+    "Uplift (последние 28 дней)",
+  "Conversion of touched (treatment) vs held-out players, by the group at touch time. Uplift in percentage points is the honest answer to “does retention work”.":
+    "Конверсия игроков с касаниями (основная группа) против холдаута, по группе на момент касания. Uplift в процентных пунктах — честный ответ на вопрос «работает ли ретеншен».",
+  "Conversion":
+    "Конверсия",
+  "Treatment players":
+    "Игроки основной группы",
+  "Holdout players":
+    "Игроки холдаута",
+  "Treatment rate":
+    "Конверсия основной",
+  "Holdout rate":
+    "Конверсия холдаута",
+  "Uplift (pp)":
+    "Uplift (п.п.)",
+  "low confidence":
+    "низкая достоверность",
+  "holdout disabled":
+    "холдаут выключен",
+  "Settles open outcome rows immediately (normally a background sweep does this every few minutes) and refreshes the uplift table.":
+    "Немедленно закрывает открытые строки исходов (обычно это делает фоновый проход раз в несколько минут) и обновляет таблицу uplift.",
+  "Attribution sweep done":
+    "Проход атрибуции выполнен",
+  "Run attribution now":
+    "Запустить атрибуцию",
+  "Player RG status":
+    "RG-статус игрока",
+  "The casino platform is the source of truth (player-update feed). Manual marking is the bridge while the feed is not wired — global admin only.":
+    "Источник истины — платформа казино (фид player-update). Ручная отметка — мост, пока фид не подключён; доступна только глобальному админу.",
+  "Player ID":
+    "ID игрока",
+  "Lookup failed":
+    "Не удалось найти",
+  "Look up":
+    "Найти",
+  "Set status":
+    "Установить статус",
+  "RG status set":
+    "RG-статус установлен",
+  "Apply":
+    "Применить",
+  "Behavioral signals":
+    "Поведенческие сигналы",
+  "Config-driven and DISABLED by default (MVP). computed = derived from the event feed; casino_flag = accepted pre-computed from the casino risk engine.":
+    "Управляются конфигом и ВЫКЛЮЧЕНЫ по умолчанию (MVP). computed — вычисляется из фида событий; casino_flag — принимается готовым от risk-движка казино.",
+  "Signal":
+    "Сигнал",
+  "Block class":
+    "Класс блокировки",
+  "Compliance audit (global admin)":
+    "Комплаенс-аудит (глобальный админ)",
+  "Append-only, 5+ years retention, every evaluation including passes.":
+    "Только добавление, хранение 5+ лет, каждая проверка — включая пропуски.",
+  "checks":
+    "проверок",
+  "Reason":
+    "Причина",
+  "Population":
+    "База игроков",
+  "A live snapshot of the player base by each scoring dimension. Recomputed by the background scoring sweep (hourly by default) — enable \"Scoring\" in Retention → Settings → Orchestrator for it to fill.":
+    "Живой срез базы игроков по каждому измерению скоринга. Пересчитывается фоновым проходом (по умолчанию раз в час) — включите «Скоринг» в Ретеншен → Настройки → Оркестратор, чтобы срез заполнялся.",
+  "Dormancy cohorts (days of inactivity)":
+    "Когорты неактивности (дни простоя)",
+  "How many idle days put a player into each dormancy cohort. Each cohort is a from–to range in days; \"lost\" starts at its threshold and has no upper bound. Journeys and recovery scenarios target these cohorts, so a boundary change re-aims them too.":
+    "Сколько дней простоя помещают игрока в каждую когорту. Когорта — диапазон «от–до» в днях; «lost» начинается со своего порога и не имеет верхней границы. На когорты нацелены journeys и сценарии возврата, так что смена границы перенацеливает и их.",
+  "Cohort":
+    "Когорта",
+  "From (days)":
+    "От (дней)",
+  "To (days)":
+    "До (дней)",
+  "Players idle at least this many days count as lost — the deepest cohort, no upper bound.":
+    "Игроки, молчащие не меньше этого числа дней, считаются потерянными — самая глубокая когорта, без верхней границы.",
+  "Save cohorts":
+    "Сохранить когорты",
+  "Value tiers (lifetime deposits, USD)":
+    "Value-тиры (депозиты за всё время, USD)",
+  "The minimum lifetime-deposit sum that puts a player into each tier. Frequency caps and offer eligibility can differ by tier.":
+    "Минимальная сумма депозитов за всё время, помещающая игрока в тир. Частотные капы и доступность офферов могут различаться по тирам.",
+  "Save tiers":
+    "Сохранить тиры",
+  "VIP mapping (casino loyalty class → segment)":
+    "VIP-маппинг (класс лояльности казино → сегмент)",
+  "Maps the loyalty class the casino reports (vip_level in the profile) onto the orchestrator segments: mass, vip, vip_plus. VIP segments get relaxed frequency caps, and a high-loss VIP goes to the host queue instead of an auto-bonus. Class names are matched case-insensitively.":
+    "Сопоставляет класс лояльности, который сообщает казино (vip_level в профиле), сегментам оркестратора: mass, vip, vip_plus. VIP-сегменты получают ослабленные частотные капы, а VIP с крупным проигрышем идёт в очередь хоста вместо автобонуса. Имена классов сравниваются без учёта регистра.",
+  "Casino class":
+    "Класс казино",
+  "Segment":
+    "Сегмент",
+  "Remove":
+    "Убрать",
+  "Add class":
+    "Добавить класс",
+  "Save mapping":
+    "Сохранить маппинг",
+  "Recent cohort transitions":
+    "Недавние переходы когорт",
+  "One row whenever a player crosses a dormancy boundary (at most one per player per cohort per day) — the raw material of \"who just went quiet\".":
+    "Строка на каждый переход игрока через границу когорты (не чаще одного на игрока и когорту в день) — сырьё для ответа «кто только что затих».",
+  "Idle days":
+    "Дней простоя",
+  "Cap matrix (channel × cohort)":
+    "Матрица капов (канал × когорта)",
+  "Stored rows override the built-in defaults shown greyed. Email rides its OWN row — it never consumes the intrusive-touch budget (intrusive = push + Telegram). P1/P2 touches are never cut by a cap.":
+    "Сохранённые строки перекрывают встроенные дефолты (показаны серым). Email идёт ОТДЕЛЬНОЙ строкой — он не расходует бюджет «навязчивых» касаний (навязчивые = push + Telegram). Касания P1/P2 капами не режутся никогда.",
+  "Per day":
+    "В день",
+  "Per week":
+    "В неделю",
+  "Burst / hour":
+    "Всплеск / час",
+  "stored":
+    "сохранено",
+  "Save row":
+    "Сохранить строку",
+  "Touch priorities (P1 critical … P5 discovery)":
+    "Приоритеты касаний (P1 критичные … P5 знакомство)",
+  "P1 = service-critical (always goes out), P2 = money moments, P3 = event reactions, P4 = recovery, P5 = discovery. When a cap is hit, lower-priority touches are cut first; P1/P2 are never cut.":
+    "P1 — сервисно-критичные (уходят всегда), P2 — денежные моменты, P3 — реакции на события, P4 — возврат, P5 — знакомство с продуктом. При достигнутом капе первыми режутся низкоприоритетные; P1/P2 не режутся никогда.",
+  "Touch type":
+    "Тип касания",
+  "Switch channel on cap":
+    "Сменить канал при капе",
+  "Stimulus budget today":
+    "Бюджет стимулов сегодня",
+  "granting blocked (zero budget)":
+    "выдача заблокирована (нулевой бюджет)",
+  "Offer catalog (bonus-CMS IDs)":
+    "Каталог офферов (ID бонус-CMS)",
+  "The casino’s Bonus Engine owns the mechanics; a catalog row references the bonus by its CMS ID and carries the cost estimate for the budget guard. Granting = calling the casino: “credit bonus <ID> to player <X>”.":
+    "Механика бонуса живёт в бонусном движке казино; строка каталога ссылается на бонус по его CMS ID и несёт оценку стоимости для бюджетного гварда. Выдача = вызов казино: «начисли бонус <ID> игроку <X>».",
+  "Bonus CMS ID":
+    "ID бонуса в CMS",
+  "Cost est. $":
+    "Оценка стоимости, $",
+  "Description (English)":
+    "Описание (по-английски)",
+  "Save offer":
+    "Сохранить оффер",
+  "Direct triggers (loss tiers)":
+    "Прямые триггеры (уровни проигрыша)",
+  "The MVP event path: loss_mid / loss_high map straight to an offer. Recovery-by-cohort granting lives in Journeys — keep a cohort’s direct trigger OFF when its journey is active. VIP suppress: a high-loss VIP is routed to the host queue instead of an auto-bonus.":
+    "MVP-путь по событиям: loss_mid / loss_high напрямую ведут к офферу. Выдача возврата по когортам живёт в Journeys — держите прямой триггер когорты ВЫКЛЮЧЕННЫМ, пока активен её journey. VIP suppress: VIP с крупным проигрышем идёт в очередь хоста вместо автобонуса.",
+  "Offer key":
+    "Ключ оффера",
+  "VIP suppress":
+    "VIP-подавление",
+  "Save trigger":
+    "Сохранить триггер",
+  "Grant ledger":
+    "Журнал выдач",
+  "Every offer decision that reached the casino: granted / fraud_hold / failed, the casino's reference and the cost. The persona mentions a bonus only after a granted row.":
+    "Каждое решение об оффере, дошедшее до казино: granted / fraud_hold / failed, референс казино и стоимость. Персона упоминает бонус только после строки granted.",
+  "Offer":
+    "Оффер",
+  "Partner ref":
+    "Референс казино",
+  "VIP host queue":
+    "Очередь VIP-хоста",
+  "Human route: high-loss VIPs and vip_host journey steps land here — a manager reaches out personally, the bot never writes on this route.":
+    "Человеческий маршрут: сюда попадают VIP с крупным проигрышем и шаги journeys с каналом vip_host — менеджер связывается лично, бот на этом маршруте не пишет никогда.",
+  "This journey overlaps enabled idle-ladder rungs — disable them on the Idle pings tab to avoid double touches":
+    "Этот journey пересекается с включёнными ступенями лестницы пингов — отключите их на вкладке «Пинги неактивности», чтобы не дублировать касания",
+  "Journeys":
+    "Journeys",
+  "Declarative multi-step trajectories. Everything seeds as draft + dry-run; activate one by one after reviewing. Every step passes the full guard chain (RG, holdout, frequency, comfort).":
+    "Декларативные многошаговые цепочки. Всё сеется как draft + dry-run; активируйте по одной после проверки. Каждый шаг проходит полную цепочку гвардов (RG, холдаут, частота, comfort).",
+  "Creates the starter journey pack (recovery × 5 cohorts, loss scenarios, FTD onboarding, weekly ritual, cashier abandonment) as draft + dry-run. Idempotent: a journey you already edited is never overwritten.":
+    "Создаёт стартовый пакет journeys (возврат × 5 когорт, сценарии проигрыша, онбординг FTD, недельный ритуал, брошенная касса) как draft + dry-run. Идемпотентно: уже отредактированный вами journey не перезаписывается.",
+  "Starter library seeded (draft + dry-run)":
+    "Стартовая библиотека засеяна (draft + dry-run)",
+  "Seed starter library":
+    "Засеять стартовую библиотеку",
+  "Runs scheduled matching + the due-step drain immediately instead of waiting for the background sweep.":
+    "Немедленно выполняет плановый матчинг и просроченные шаги, не дожидаясь фонового прохода.",
+  "Journey sweep executed":
+    "Проход journeys выполнен",
+  "Run due steps now":
+    "Выполнить шаги сейчас",
+  "Dry-run":
+    "Dry-run",
+  "Enrollments":
+    "Прохождения",
+  "Definition":
+    "Определение",
+  "Save definition":
+    "Сохранить определение",
+  "Template library":
+    "Библиотека шаблонов",
+  "persona_brief (default): the template is a managed BRIEF — marketing-ops sets the occasion/intent, the persona writes the final text. verbatim: exact copy (legal wording), bypasses the persona by explicit choice.":
+    "persona_brief (по умолчанию): шаблон — управляемый БРИФ: маркетинг задаёт повод/намерение, финальный текст пишет персона. verbatim: точная копия (юридические формулировки), осознанно минует персону.",
+  "Mode":
+    "Режим",
+  "Intent (English brief)":
+    "Намерение (бриф по-английски)",
+  "Casino endpoints (outbound)":
+    "Эндпоинты казино (исходящие)",
+  "OUR calls TO the casino: the bonus-grant endpoint (offer engine) and the delegated push/in-app delivery endpoint. The Bearer secret for them (partner outbound key) and the Customer.io key are set in Structure → product secrets.":
+    "НАШИ вызовы В казино: эндпоинт начисления бонуса (движок офферов) и эндпоинт делегированной доставки push/in-app. Bearer-секрет для них (partner outbound key) и ключ Customer.io задаются в Structure → секреты продукта.",
+  "Offer-grant URL":
+    "URL начисления бонуса",
+  "Delivery endpoint URL":
+    "URL доставки",
+  "Channels":
+    "Каналы",
+  "Strict opt-in: the router never picks a channel the player has not consented to — no fallback, no exception. No consented channel at all = undeliverable.":
+    "Строгий opt-in: роутер никогда не выбирает канал, на который игрок не давал согласия — без fallback и без исключений. Нет ни одного согласованного канала — касание недоставляемо.",
+  "Delivery monitor":
+    "Монитор доставок",
+  "The delivery ledger across all channels: status, attempts and the failure reason. Transient failures retry with backoff (1m / 5m / 30m); permanent ones never retry.":
+    "Журнал доставок по всем каналам: статус, попытки и причина сбоя. Временные сбои ретраятся с backoff (1m / 5m / 30m); постоянные не ретраятся никогда.",
+  "Attempts":
+    "Попытки",
+  "Failure":
+    "Сбой",
+  "The orchestrator in one paragraph":
+    "Оркестратор в одном абзаце",
+  "The orchestrator is the layer BETWEEN \"something happened\" and \"the player got a message\". The bot underneath (dialogue, persona, photos) is unchanged — the orchestrator decides WHETHER, WHEN, over WHICH channel and WITH WHAT stimulus a proactive touch goes out, and then MEASURES what it achieved. Each mechanic ships behind its own switch in Retention → Settings → Orchestrator; with every switch off the behaviour is exactly the pre-orchestrator bot. The full bot pipeline (dialogue turns, the event agent, the idle ladder) is drawn on Retention → How it works — this page describes the layer on top of it.":
+    "Оркестратор — слой МЕЖДУ «что-то произошло» и «игрок получил сообщение». Бот под ним (диалог, персона, фото) не менялся — оркестратор решает, ПИСАТЬ ЛИ вообще, КОГДА, по КАКОМУ каналу и с КАКИМ стимулом уйдёт проактивное касание, а затем ИЗМЕРЯЕТ, что оно дало. Каждая механика включается своим переключателем в Ретеншен → Настройки → Оркестратор; со всеми выключенными поведение — в точности прежний бот. Полный конвейер бота (диалоги, событийный агент, лестница пингов) нарисован на Ретеншен → Как это работает — эта страница описывает слой над ним.",
+  "Bot algorithm map":
+    "Карта алгоритма бота",
+  "Orchestrator switches (Settings)":
+    "Переключатели оркестратора (Настройки)",
+  "Orchestrator":
+    "Оркестратор",
+  "Deterministic and never overridable by the AI, in a FIXED order: ① the RG guard (responsible gaming — self-exclusion beats everything), ② hard denies (subscribed, not /stop-muted, bot not blocked), ③ the holdout control group (never touched — that is what makes uplift measurable), ④ frequency — the adaptive channel × cohort cap matrix with P1..P5 priorities when the orchestrator switch is on, else the legacy static caps (min gap, daily touch cap), ⑤ the daily AI budget, ⑥ the same-event cooldown (one reaction per event type per window; for bet_settled even a \"stay silent\" verdict latches it, so a losing streak doesn't re-run paid decisions per bet), ⑦ the loss comfort window — after real losses the photo action is removed and a hard empathy constraint is injected. Steps ①③④ are the orchestrator layer — see its own map.":
+    "Детерминированы и не переопределяются ИИ, в ФИКСИРОВАННОМ порядке: ① RG-guard (ответственная игра — самоисключение бьёт всё), ② жёсткие запреты (подписан, не заглушён /stop, бот не заблокирован), ③ холдаут-группа (её не трогаем — именно это делает uplift измеримым), ④ частота — адаптивная матрица капов канал × когорта с приоритетами P1..P5 при включённом переключателе оркестратора, иначе прежние статические капы (мин. интервал, дневной кап), ⑤ дневной AI-бюджет, ⑥ кулдаун по типу события (одна реакция на тип события за окно; для bet_settled даже вердикт «промолчать» фиксирует его, чтобы серия проигрышей не гоняла платные решения по каждой ставке), ⑦ окно утешения после проигрыша — после реальных потерь фото-действие убирается и вводится жёсткое требование эмпатии. Шаги ①③④ — слой оркестратора, у него своя карта.",
+  "RG guard (Orchestrator)":
+    "RG-guard (Оркестратор)",
+  "Holdout (Orchestrator → Measurement)":
+    "Холдаут (Оркестратор → Измерение)",
+  "Frequency matrix (Orchestrator)":
+    "Матрица частоты (Оркестратор)",
+  "Outcome attribution (the feedback loop)":
+    "Атрибуция исходов (петля обратной связи)",
+  "measures what the touch achieved":
+    "измеряет, что дало касание",
+  "Every DELIVERED touch opens an outcome row; a sweep then looks forward from it: did the player answer and how fast, did he come back to the casino, did he deposit. It feeds three things — the agent's next decision for this player (a streak of unanswered touches pushes it toward silence), the photo and CTA-page ordering (what earns replies goes first), and the effectiveness tables in Analytics with cost per reply, return and deposit.":
+    "Каждое ДОСТАВЛЕННОЕ касание открывает строку исхода; затем проход смотрит вперёд: ответил ли игрок и как быстро, вернулся ли в казино, сделал ли депозит. Это питает три вещи — следующее решение агента по этому игроку (серия безответных касаний склоняет к молчанию), порядок фото и CTA-страниц (что приносит ответы, идёт первым) и таблицы результативности в Аналитике со стоимостью ответа, возврата и депозита.",
+  "Effectiveness tables":
+    "Таблицы результативности",
+  "Result column of the Decisions ledger":
+    "Колонка «Результат» леджера решений",
+  "4 · Orchestrator — the layer over every proactive touch":
+    "4 · Оркестратор — слой над каждым проактивным касанием",
+  "Journeys, offers, channels and measurement sit ON TOP of the agent and the ladder: they add candidate touches and extra gates, never bypass them. Full map: Retention → Orchestrator → How it works.":
+    "Journeys, офферы, каналы и измерение сидят ПОВЕРХ агента и лестницы: они добавляют касания-кандидаты и дополнительные гейты, но никогда не обходят их. Полная карта: Ретеншен → Оркестратор → Как это работает.",
+  "Journeys (multi-step scenarios)":
+    "Journeys (многошаговые сценарии)",
+  "a third source of touches, next to events and the ladder":
+    "третий источник касаний — рядом с событиями и лестницей",
+  "Declarative trajectories stored as data: an event or a schedule (recovery by cohort, weekly rituals, cashier abandonment) enrolls a player; steps fire after their delays, each passing the FULL guard chain. A blocked step defers and retries; a terminal reason (RG, /stop, holdout) exits the journey. The step text is usually a persona BRIEF from the template library — ops set the intent, Nika writes.":
+    "Декларативные траектории, хранящиеся как данные: событие или расписание (возврат по когортам, недельные ритуалы, брошенная касса) записывает игрока в цепочку; шаги срабатывают после своих задержек, каждый проходит ПОЛНУЮ цепочку гвардов. Заблокированный шаг откладывается и повторяется; терминальная причина (RG, /stop, холдаут) завершает journey. Текст шага — обычно БРИФ для персоны из библиотеки шаблонов: маркетинг задаёт намерение, пишет Ника.",
+  "Journeys editor":
+    "Редактор journeys",
+  "Orchestrator gates (RG → holdout → frequency)":
+    "Гейты оркестратора (RG → холдаут → частота)",
+  "run inside the guard chain of flow 3":
+    "работают внутри цепочки гвардов потока 3",
+  "The responsible-gaming guard (casino-fed rg_status; self-exclusion is absolute), the deterministic holdout control group, and the adaptive frequency layer (cap matrix channel × cohort, priorities P1..P5, smart send time shifting non-urgent touches into the player's active hours). Every evaluation lands in the RG audit / guard ledgers.":
+    "Гвард ответственной игры (rg_status из казино; самоисключение абсолютно), детерминированная холдаут-группа и адаптивный слой частоты (матрица капов канал × когорта, приоритеты P1..P5, Smart Send Time сдвигает несрочные касания в активные часы игрока). Каждая проверка попадает в RG-аудит / леджеры гвардов.",
+  "RG guard":
+    "RG-guard",
+  "Frequency + send time":
+    "Частота + время отправки",
+  "Offer engine (real bonuses)":
+    "Движок офферов (настоящие бонусы)",
+  "grant first — mention only after the casino confirms":
+    "сначала начислить — упоминать только после подтверждения казино",
+  "A trigger (loss tier, journey step) can attach a REAL bonus: the catalog row references the casino's bonus-CMS ID, deterministic checks (RG, VIP suppression, eligibility, cooldowns, the stimulus budget) run BEFORE the model, the grant call to the casino is idempotent, and the persona mentions the gift only after the casino confirms. High-loss VIPs route to the human host queue instead.":
+    "Триггер (уровень проигрыша, шаг journey) может прикрепить НАСТОЯЩИЙ бонус: строка каталога ссылается на ID бонуса в CMS казино, детерминированные проверки (RG, VIP-подавление, доступность, кулдауны, бюджет стимулов) идут ДО модели, вызов начисления в казино идемпотентен, а персона упоминает подарок только после подтверждения казино. VIP с крупным проигрышем уходит в человеческую очередь хоста.",
+  "Offer catalog + triggers + ledger":
+    "Каталог офферов + триггеры + журнал",
+  "Multichannel router":
+    "Мультиканальный роутер",
+  "strict opt-in, no fallback to a non-consented channel":
+    "строгий opt-in, без fallback на несогласованный канал",
+  "Picks the delivery channel per touch: telegram (own transport), email (Customer.io), delegated push / in-app (a delivery order to the casino + the delivery-status callback), vip_host (a human task). Consent is absolute; with multichannel off, everything flows to Telegram exactly as before.":
+    "Выбирает канал доставки для каждого касания: telegram (собственный транспорт), email (Customer.io), делегированные push / in-app (заказ на доставку в казино + колбэк delivery-status), vip_host (задача человеку). Согласие абсолютно; с выключенной мультиканальностью всё идёт в Telegram, как раньше.",
+  "Channels + delivery monitor":
+    "Каналы + монитор доставок",
+  "Holdout + uplift measurement":
+    "Холдаут + измерение uplift",
+  "The held-out players' conversions are the base rate; touched players' conversions minus that base rate = uplift in percentage points, per return and per deposit — the honest answer to \"does retention pay for itself\". Rotating the experiment salt re-buckets everyone (a new experiment).":
+    "Конверсии холдаута — базовый уровень; конверсии игроков с касаниями минус эта база = uplift в процентных пунктах, по возврату и по депозиту — честный ответ на «окупается ли ретеншен». Смена соли эксперимента распределяет всех заново (новый эксперимент).",
+  "Measurement tab":
+    "Вкладка «Измерение»",
+  "5 · Idle re-engagement — silence becomes a ping":
+    "5 · Возврат неактивных — тишина становится пингом",
+  "Outcome attribution per rung":
+    "Атрибуция исходов по ступеням",
+  "Idle pings are attributed like every other touch, carrying the RUNG that fired — which is what makes \"does the 30-day step actually bring anyone back?\" answerable, per rule, in the Replies column here and in the Analytics effectiveness tables.":
+    "Пинги неактивности атрибутируются как любое касание, с указанием сработавшей СТУПЕНИ — именно это делает вопрос «возвращает ли кого-то шаг 30 дней?» отвечаемым: по каждому правилу, в колонке «Ответы» здесь и в таблицах результативности Аналитики.",
+  "The whole retention algorithm as five flows — the dialogue, the data feed, the event agent, the orchestrator layer and the idle ladder. **Click any block** for a plain-language explanation, the settings that govern exactly that step, and the module implementing it. Click a legend chip to highlight all blocks of that kind.":
+    "Весь алгоритм ретеншена в пяти потоках — диалог, поток данных, событийный агент, слой оркестратора и лестница пингов. **Кликните любой блок** — получите объяснение простым языком, настройки, управляющие именно этим шагом, и реализующий его модуль. Клик по чипу легенды подсвечивает все блоки этого типа.",
+  "Deeper operator material: the [Proactive agent guide](#/retention-agent) (testing checklist, guard-reason table with your current values, cost model), the [Orchestrator — How it works](#/orchestrator?tab=how) map of the layer on top, and the numeric knobs on [Retention → Settings → Parameters](#/retention-settings?tab=params).":
+    "Материал глубже: [гайд проактивного агента](#/retention-agent) (чек-лист тестирования, таблица причин гвардов с вашими текущими значениями, модель стоимости), карта [Оркестратор — Как это работает](#/orchestrator?tab=how) слоя сверху и числовые настройки на [Ретеншен → Настройки → Параметры](#/retention-settings?tab=params).",
+  "1. Triggers — what can start a touch":
+    "1. Триггеры — что может породить касание",
+  "Three sources: a casino event (deposit, loss, level-up — the proactive agent), a rung of the idle-pings ladder (the player went quiet), or a step of a journey (a declarative multi-step scenario). All three produce a CANDIDATE touch — nothing is sent yet.":
+    "Три источника: событие казино (депозит, проигрыш, новый уровень — проактивный агент), ступень лестницы пингов неактивности (игрок затих) или шаг journey (декларативный многошаговый сценарий). Все три порождают КАНДИДАТА на касание — пока ничего не отправлено.",
+  "2. Guard chain — may we contact this player at all?":
+    "2. Цепочка гвардов — можно ли вообще писать этому игроку?",
+  "Every candidate passes the same checks in a FIXED order, and the first failed check stops it: ① RG guard (responsible gaming — self-exclusion beats everything), ② hard denies (/stop, unsubscribed, blocked bot), ③ holdout (the control group never gets proactive touches — that is what makes uplift measurable), ④ frequency (adaptive caps by channel × cohort and priorities P1..P5 — or the legacy static caps when adaptive is off), ⑤ daily AI budget, ⑥ same-event cooldown, ⑦ the post-loss comfort window. Every verdict — pass or block — is written to a ledger with its reason.":
+    "Каждый кандидат проходит одни и те же проверки в ФИКСИРОВАННОМ порядке, и первая непройденная останавливает его: ① RG-guard (ответственная игра — самоисключение бьёт всё), ② жёсткие запреты (/stop, отписка, заблокированный бот), ③ холдаут (контрольная группа не получает проактив — именно это делает uplift измеримым), ④ частота (адаптивные капы канал × когорта и приоритеты P1..P5 — или прежние статические капы, если адаптив выключен), ⑤ дневной AI-бюджет, ⑥ кулдаун по типу события, ⑦ окно утешения после проигрыша. Каждый вердикт — пропуск или блок — пишется в леджер с причиной.",
+  "Measurement":
+    "Измерение",
+  "Frequency":
+    "Частота",
+  "3. Who is the player — scoring":
+    "3. Кто этот игрок — скоринг",
+  "The background sweep keeps per-player dimensions fresh: the dormancy cohort (active … lost), RFM bands, the value tier by lifetime deposits, and the VIP segment mapped from the casino loyalty class. Journeys target cohorts, frequency caps differ by cohort, and offers/host-routing read the VIP segment.":
+    "Фоновый проход держит измерения игрока свежими: когорта неактивности (active … lost), RFM-полосы, value-тир по депозитам за всё время и VIP-сегмент из класса лояльности казино. На когорты нацеливаются journeys, капы частоты различаются по когортам, а офферы и маршрут к хосту читают VIP-сегмент.",
+  "Segmentation":
+    "Сегментация",
+  "4. Offers — a real bonus, resolved BEFORE the model":
+    "4. Офферы — настоящий бонус, решённый ДО модели",
+  "When a trigger maps to an offer, deterministic code resolves it first: trigger enabled → RG → VIP suppression → eligibility → cooldown/lifetime caps → the stimulus budget. Only a fully approved offer is granted at the casino (by its bonus-CMS ID, idempotently) — and ONLY after the casino confirms does the persona mention the gift. A high-loss VIP goes to the host queue instead of an auto-bonus.":
+    "Когда триггер ведёт к офферу, сначала его разрешает детерминированный код: триггер включён → RG → VIP-подавление → доступность → кулдауны/лимиты → бюджет стимулов. Только полностью одобренный оффер начисляется в казино (по его ID в бонус-CMS, идемпотентно) — и ТОЛЬКО после подтверждения казино персона упоминает подарок. VIP с крупным проигрышем идёт в очередь хоста вместо автобонуса.",
+  "Offers":
+    "Офферы",
+  "5. The text — briefs, not canned copy":
+    "5. Текст — брифы, а не заготовки",
+  "A journey step references a template. In persona_brief mode (the default) the template is only the INTENT — the persona writes the final text in the player's language with all her usual rules; verbatim mode (exact legal copy) exists behind an explicit flag. Event reactions and idle pings are written the same way the bot always wrote them.":
+    "Шаг journey ссылается на шаблон. В режиме persona_brief (по умолчанию) шаблон — только НАМЕРЕНИЕ: финальный текст пишет персона на языке игрока со всеми её обычными правилами; режим verbatim (точная юридическая копия) существует за явным флагом. Реакции на события и пинги неактивности пишутся так же, как бот писал всегда.",
+  "Templates":
+    "Шаблоны",
+  "6. The channel — strict opt-in routing":
+    "6. Канал — маршрутизация со строгим opt-in",
+  "The router picks the delivery channel: telegram (our bot), email (Customer.io), push / in-app (delegated: we send a delivery order to the casino, the casino delivers on-device and reports status back), or vip_host (a human task, never a bot message). A channel without the player's consent is NEVER used — not even as a fallback; with multichannel off everything goes to Telegram as before.":
+    "Роутер выбирает канал доставки: telegram (наш бот), email (Customer.io), push / in-app (делегированно: мы отправляем казино заказ на доставку, казино доставляет на устройство и сообщает статус обратно) или vip_host (задача человеку, никогда не сообщение бота). Канал без согласия игрока НЕ используется никогда — даже как fallback; с выключенной мультиканальностью всё идёт в Telegram, как раньше.",
+  "7. Delivery, retries, and the ledgers":
+    "7. Доставка, ретраи и леджеры",
+  "Deliveries live in their own ledger with backoff retries (1m / 5m / 30m; permanent failures never retry). The casino confirms delegated deliveries via the delivery-status callback (statuses only move forward). Every touch also opens an outcome row.":
+    "Доставки живут в собственном леджере с ретраями по backoff (1m / 5m / 30m; постоянные сбои не ретраятся). Делегированные доставки казино подтверждает колбэком delivery-status (статусы движутся только вперёд). Каждое касание также открывает строку исхода.",
+  "8. Measurement — did it work?":
+    "8. Измерение — сработало ли?",
+  "The outcome sweep settles each touch: did the player reply, come back, deposit — inside fixed windows. Because the holdout group was never touched, comparing its conversion against touched players gives the uplift in percentage points: the honest answer to \"does retention pay for itself\". The feedback also loops into the agent's next decision and the photo/CTA ordering.":
+    "Проход исходов закрывает каждое касание: ответил ли игрок, вернулся ли, сделал ли депозит — в фиксированных окнах. Холдаут никогда не трогали, поэтому сравнение его конверсии с конверсией игроков с касаниями даёт uplift в процентных пунктах — честный ответ на «окупается ли ретеншен». Обратная связь также замыкается на следующее решение агента и порядок фото/CTA.",
+  "The whole orchestrator as one pipeline — read this first.":
+    "Весь оркестратор как один конвейер — начните отсюда.",
+  "The holdout control group and the uplift it makes measurable: does retention actually bring players back?":
+    "Холдаут-группа и uplift, который она делает измеримым: действительно ли ретеншен возвращает игроков?",
+  "Responsible gaming: who must never be touched, and the audit trail proving it.":
+    "Ответственная игра: кого нельзя трогать никогда — и аудит, это доказывающий.",
+  "Who the player is: dormancy cohorts, value tiers and VIP segments the other mechanics target.":
+    "Кто этот игрок: когорты неактивности, value-тиры и VIP-сегменты, на которые нацелены остальные механики.",
+  "How often we may write: cap matrix per channel × cohort, touch priorities, smart send time.":
+    "Как часто можно писать: матрица капов канал × когорта, приоритеты касаний, Smart Send Time.",
+  "Real bonuses by their bonus-CMS IDs: catalog, triggers, budget, the grant ledger and the VIP host queue.":
+    "Настоящие бонусы по ID бонус-CMS: каталог, триггеры, бюджет, журнал выдач и очередь VIP-хоста.",
+  "Declarative multi-step scenarios: recovery by cohort, FTD onboarding, weekly rituals, cashier abandonment.":
+    "Декларативные многошаговые сценарии: возврат по когортам, онбординг FTD, недельные ритуалы, брошенная касса.",
+  "The scenario library: briefs the persona writes from (or exact copy when required).":
+    "Библиотека сценариев: брифы, по которым пишет персона (или точная копия, когда это необходимо).",
+  "Where a touch is delivered: Telegram, email, delegated push/in-app, VIP host — strict opt-in.":
+    "Куда доставляется касание: Telegram, email, делегированные push/in-app, VIP-хост — строгий opt-in.",
+  "Dormancy cohort":
+    "Когорта неактивности",
+  "Value tier":
+    "Value-тир",
+  "VIP segment":
+    "VIP-сегмент",
+  "Own transport (the bot). Always executable.":
+    "Собственный транспорт (бот). Выполним всегда.",
+  "Customer.io App API. Needs the email API key (product secrets) + region/from in the config.":
+    "App API Customer.io. Нужны email-ключ (секреты продукта) + регион/From в конфиге.",
+  "Delegated: the casino delivers on-device. Needs the delivery endpoint URL + partner key.":
+    "Делегированный: казино доставляет на устройство. Нужны URL доставки + партнёрский ключ.",
+  "Delegated, like push.":
+    "Делегированный, как push.",
+  "Human route — a task in the host queue, never a bot message.":
+    "Человеческий маршрут — задача в очереди хоста, никогда не сообщение бота.",
 };
 
 const current = getAdminLang();
