@@ -729,17 +729,23 @@ CREATE TABLE IF NOT EXISTS retention_activity_profile (
 -- PLAYER SCORING (dormancy cohorts / RFM / value tiers) ----------------
 -- Cohort transition log (analytics + the one-transition-per-day dedup).
 CREATE TABLE IF NOT EXISTS retention_cohort_transitions (
-  id              BIGSERIAL PRIMARY KEY,
-  product_id      INT NOT NULL REFERENCES products(id),
-  player_id       TEXT NOT NULL,
-  from_cohort     TEXT NOT NULL,
-  to_cohort       TEXT NOT NULL,
-  days_inactive   INT NOT NULL DEFAULT 0,
-  transitioned_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  id                BIGSERIAL PRIMARY KEY,
+  product_id        INT NOT NULL REFERENCES products(id),
+  player_id         TEXT NOT NULL,
+  from_cohort       TEXT NOT NULL,
+  to_cohort         TEXT NOT NULL,
+  days_inactive     INT NOT NULL DEFAULT 0,
+  transitioned_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Plain column populated at write time so the dedup index below can be a
+  -- regular b-tree index. `transitioned_at::date` depends on the session
+  -- timezone, so Postgres refuses to build a functional index on it
+  -- (InvalidObjectDefinitionError: functions in index expression must be
+  -- marked IMMUTABLE). Storing the date explicitly avoids that entirely.
+  transitioned_date DATE NOT NULL DEFAULT CURRENT_DATE
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_retention_cohort_transition_dedup
   ON retention_cohort_transitions(product_id, player_id, to_cohort,
-                                  (transitioned_at::date));
+                                  transitioned_date);
 CREATE INDEX IF NOT EXISTS idx_retention_cohort_transitions_product
   ON retention_cohort_transitions(product_id, transitioned_at);
 
@@ -6325,7 +6331,7 @@ async def log_cohort_transition(product_id: int, player_id: str, *,
         "INSERT INTO retention_cohort_transitions (product_id, player_id, "
         " from_cohort, to_cohort, days_inactive) "
         "VALUES ($1, $2, $3, $4, $5) "
-        "ON CONFLICT (product_id, player_id, to_cohort, (transitioned_at::date)) "
+        "ON CONFLICT (product_id, player_id, to_cohort, transitioned_date) "
         "DO NOTHING RETURNING id",
         product_id, player_id, from_cohort, to_cohort, int(days_inactive),
     )
