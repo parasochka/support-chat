@@ -108,7 +108,8 @@ R(row(AREA_CHAT, _SESSION, T_EP, BOTH, C_SITE,
       auth=AUTH_NONE + " + Cloudflare Turnstile (advisory)",
       limits="Лимит session:{ip}; сессия создаётся лениво — по выбору темы",
       errors="429 rate_limited · 403 bad_widget_key | no_product | turnstile_failed · "
-             "401 bad_handshake · 411/413 кап тела (64 KiB)",
+             "401 bad_handshake · 411 length_required / 413 кап тела (настройка "
+             "body_max_bytes, по умолч. 64 KiB; действует на ВСЕ ручки)",
       desc="Создание сессии чата: выдаёт токен и каталог тем. "
            "Точка входа для любого клиента (виджет, своё приложение, мобилка)."))
 R(row(AREA_CHAT, _SESSION, T_REQ, IN, C_SITE, "widget_key", "string (wk_…)", COND,
@@ -149,15 +150,20 @@ R(row(AREA_CHAT, _SESSION, T_RESP, OUT, C_US, "languages", "[string]", YES,
 # --- GET /topics, /i18n ----------------------------------------------------
 R(row(AREA_CHAT, "GET /api/chat/topics", T_EP, OUT, C_SITE,
       auth=AUTH_NONE, limits="Лимит catalogue:{ip} (600) · Cache-Control 60 с",
-      errors="429 rate_limited · 403 bad_widget_key",
+      errors="429 rate_limited · 403 bad_widget_key | no_product",
       desc="Каталог тем без создания сессии — для мгновенной отрисовки экрана выбора."))
+R(row(AREA_CHAT, "GET /api/chat/topics", T_RESP, OUT, C_US,
+      "topics / lang / languages", "[{slug,title,order}] / string / [string]", YES,
+      '{"topics":[…],"lang":"ru","languages":["en","ru"]}',
+      desc="Каталог тем (other всегда последняя), язык заголовков и список "
+           "поддерживаемых языков."))
 R(row(AREA_CHAT, "GET /api/chat/topics", T_REQ, IN, C_SITE, "widget_key",
       "query string", COND, "wk_7f3a…", desc="Продукт, чей каталог отдать."))
 R(row(AREA_CHAT, "GET /api/chat/topics", T_REQ, IN, C_SITE, "lang | locale",
       "query string", NO, "ru", desc="Язык заголовков тем."))
 R(row(AREA_CHAT, "GET /api/chat/i18n", T_EP, OUT, C_SITE,
       auth=AUTH_NONE, limits="Лимит catalogue:{ip} (600) · Cache-Control 60 с",
-      errors="429 · 403 bad_widget_key",
+      errors="429 · 403 bad_widget_key | no_product",
       desc="Строки интерфейса + публичный ключ Turnstile продукта. Позволяет менять "
            "тексты и капчу без редеплоя клиента."))
 R(row(AREA_CHAT, "GET /api/chat/i18n", T_RESP, OUT, C_US, "strings",
@@ -165,6 +171,8 @@ R(row(AREA_CHAT, "GET /api/chat/i18n", T_RESP, OUT, C_US, "strings",
       desc="Копия интерфейса по языкам."))
 R(row(AREA_CHAT, "GET /api/chat/i18n", T_RESP, OUT, C_US, "turnstile_site_key",
       "string|null", NO, "0x4AAA…", desc="Публичный ключ капчи продукта."))
+R(row(AREA_CHAT, "GET /api/chat/i18n", T_RESP, OUT, C_US, "languages", "[string]",
+      YES, '["en","ru","es"]', desc="Поддерживаемые языки продукта."))
 
 # --- POST /topic -----------------------------------------------------------
 R(row(AREA_CHAT, "POST /api/chat/topic", T_EP, IN, C_CLIENT,
@@ -182,11 +190,16 @@ R(row(AREA_CHAT, "POST /api/chat/topic", T_REQ, IN, C_CLIENT, "topic_slug", "str
 _MSG = "POST /api/chat/message"
 R(row(AREA_CHAT, _MSG, T_EP, BOTH, C_CLIENT, auth=AUTH_SESSION,
       limits="Порядок гейтов: токен → открытость сессии → лимит по IP → кулдаун → "
-             "длина → пустое сообщение → инъекция → кап ходов → эскалация по "
-             "ключевым словам → вызов модели",
+             "длина/пустое → малосодержательное (модельный ответ не зовётся, "
+             "возвращается 200-подсказка) → инъекция → жёсткий потолок ходов "
+             "(2x мягкого капа) → эскалация по ключевым словам → вызов модели",
       errors="401 · 409 session_closed · 429 rate_limited | cooldown · "
-             "400 too_long | rejected",
-      desc="Один ход диалога. Пишется атомарно: сообщения + счётчик + лог вызова ИИ."))
+             "400 too_long | empty | rejected",
+      desc="Один ход диалога. Пишется атомарно: сообщения + счётчик + лог вызова ИИ. "
+           "ВАЖНО: модельно-независимые ответы (малосодержательное сообщение, "
+           "жёсткий потолок) возвращают только {reply, lang, escalation, "
+           "message_count} — остальные ключи ОТСУТСТВУЮТ, клиент обязан "
+           "читать их опционально."))
 R(row(AREA_CHAT, _MSG, T_REQ, IN, C_CLIENT, "session_id", "uuid", YES, "3f6d1c2e-…"))
 R(row(AREA_CHAT, _MSG, T_REQ, IN, C_CLIENT, "text", "string (≤500 симв. по умолч.)",
       YES, "Как вывести деньги?", desc="Сообщение игрока. Предел — настройка продукта."))
@@ -214,8 +227,9 @@ R(row(AREA_CHAT, _MSG, T_RESP, OUT, C_US, "suggestions", "[string] (≤2)", NO,
 R(row(AREA_CHAT, _MSG, T_RESP, OUT, C_US, "closing_suggestion", "string|null", NO,
       "Проблема решена.",
       desc="Системная опция завершения: отправить ход с closing=true, затем /resolve."))
-R(row(AREA_CHAT, _MSG, T_RESP, OUT, C_US, "resolved", "bool", YES, "true",
-      desc="Вопрос выглядит закрытым — показать кнопку «завершить чат»."))
+R(row(AREA_CHAT, _MSG, T_RESP, OUT, C_US, "resolved", "bool", COND, "true",
+      desc="Вопрос выглядит закрытым — показать кнопку «завершить чат». "
+           "В модельно-независимых ответах ключ отсутствует."))
 R(row(AREA_CHAT, _MSG, T_RESP, OUT, C_US, "cap_notice",
       "{message,escalate_label,finish_label}|null", NO,
       '{"message":"…","escalate_label":"Передать вопрос человеку",'
@@ -236,12 +250,23 @@ R(row(AREA_CHAT, "GET /api/chat/session/{id}", T_RESP, OUT, C_US, "status",
 R(row(AREA_CHAT, "GET /api/chat/session/{id}", T_RESP, OUT, C_US, "history",
       "[{role,content,lang}]", YES, '[{"role":"user","content":"…"}]',
       desc="role ∈ user|assistant."))
+R(row(AREA_CHAT, "GET /api/chat/session/{id}", T_RESP, OUT, C_US,
+      "session_id / escalated / lang / message_count",
+      "uuid / bool / string / int", YES,
+      '{"escalated":false,"lang":"ru","message_count":4}',
+      desc="Остальные поля возобновления: идентификатор, признак эскалации, "
+           "язык сессии и счётчик ходов."))
+R(row(AREA_CHAT, "POST /api/chat/topic", T_RESP, OUT, C_US, "ok", "bool", YES,
+      '{"ok":true}', desc="Подтверждение выбора темы."))
 R(row(AREA_CHAT, "POST /api/chat/escalate", T_EP, BOTH, C_CLIENT, auth=AUTH_SESSION,
       limits="Бюджет chat-op:{ip} (300)", errors="401 · 404 · 409 · 429",
-      desc="Явный запрос человека: жёсткая эскалация, сессия закрывается."))
+      desc="Явный запрос человека: жёсткая эскалация, сессия закрывается. "
+           "Ответ — {escalation: {…}} (контракт escalation ниже)."))
 R(row(AREA_CHAT, "POST /api/chat/resolve", T_EP, IN, C_CLIENT, auth=AUTH_SESSION,
-      limits="Идемпотентно; не перекрывает уже эскалированную сессию",
-      errors="401 · 404 · 429", desc="Игрок завершил чат."))
+      limits="Идемпотентно; не перекрывает уже эскалированную сессию · "
+             "бюджет chat-op:{ip} (300)",
+      errors="401 · 404 · 429", desc="Игрок завершил чат. "
+      'Ответ — {"ok":true,"status":"resolved"}.'))
 
 # --- контракт профиля игрока ----------------------------------------------
 _CTX = "Контракт: user_context / signed_context"
@@ -295,8 +320,10 @@ _PU = "POST /partner/{product_id}/player-update"
 R(row(AREA_PARTNER, _PU, T_EP, IN, C_CRM, auth=AUTH_PARTNER,
       limits="Частичное обновление: поля со значением null не затираются · "
              "лимит partner:{ip}",
-      errors="401 unauthorized (единый ответ на все причины) · 429 rate_limited",
-      desc="Push профиля игрока из CRM в наш снапшот."))
+      errors="401 unauthorized (единый ответ на все причины) · "
+             "422 invalid_rg_status · 429 rate_limited",
+      desc="Push профиля игрока из CRM в наш снапшот. Все вебхуки /partner/* "
+           "лимитируются по IP ДО аутентификации."))
 R(row(AREA_PARTNER, _PU, T_HDR, IN, C_CRM, "Authorization",
       "Bearer <handshake_secret>", YES, "Bearer 8f2c…",
       auth=AUTH_PARTNER, desc="Тот же секрет продукта, что подписывает handshake."))
@@ -345,7 +372,12 @@ R(row(AREA_PARTNER, _PU, T_REQ, IN, C_CRM,
       "email_opt_in / email_verified / push_opt_in / push_available / "
       "in_app_available / sms_opt_in", "bool", NO, "true",
       desc="Согласия и доступность каналов. Строгий opt-in: канал без "
-           "согласия никогда не используется, даже как fallback."))
+           "согласия никогда не используется, даже как fallback. "
+           "sms_opt_in принимается «на вырост» — sms-канала пока нет."))
+R(row(AREA_PARTNER, _PU, T_REQ, IN, C_CRM, "channel_prefs", "object", NO,
+      '{"preferred":"email"}',
+      desc="Предпочтения игрока по каналам (свободная структура казино); "
+           "хранится рядом с согласиями."))
 
 # ---------------------------------------------------------------------------
 # Partner API — POST /partner/{product_id}/delivery-status (callback)
@@ -359,20 +391,25 @@ R(row(AREA_PARTNER, _DS, T_EP, IN, C_CRM, auth=AUTH_PARTNER,
 R(row(AREA_PARTNER, _DS, T_REQ, IN, C_CRM, "delivery_id", "string", YES,
       "dl_a1b2c3d4e5f6", desc="Наш ключ идемпотентности заказа доставки."))
 R(row(AREA_PARTNER, _DS, T_REQ, IN, C_CRM, "status", "enum", YES,
-      "delivered", desc="sent | delivered | opened | clicked | bounced."))
+      "delivered", desc="queued | sending | sent | delivered | opened | "
+      "clicked | bounced. Порядок монотонный: более ранний статус после "
+      "более позднего игнорируется."))
 
 # ---------------------------------------------------------------------------
 # Outbound — the offer-grant endpoint the CASINO implements
 # ---------------------------------------------------------------------------
 _OG = "POST <offer_grant_url> (реализует казино)"
 R(row(AREA_OUT, _OG, T_EP, OUT, C_US,
-      auth="Bearer <partner outbound key продукта>",
+      auth="Bearer <partner_out_key продукта>; без ключа заголовок "
+           "Authorization не отправляется",
       limits="Идемпотентно по offer_grant_id (повтор возвращает тот же "
              "результат, второй бонус не создаётся) · таймаут "
              "retention.offer_grant_timeout_sec",
-      errors="401 · 400 unsupported_offer_type · 422 player_not_found",
+      errors="Любой 4xx (кроме 429) = постоянная ошибка, без ретраев; "
+             "429 и 5xx — транзиентные, ретраятся",
       desc="Выдача бонуса по его ID из бонус-CMS казино (offer engine). "
-           "URL задаётся per product в админке."))
+           "URL задаётся per product в админке "
+           "(PUT /admin/retention/partner-endpoints)."))
 R(row(AREA_OUT, _OG, T_REQ, OUT, C_US, "offer_grant_id", "string", YES,
       "og_a1b2c3d4e5f6", desc="Наш детерминированный ключ идемпотентности."))
 R(row(AREA_OUT, _OG, T_REQ, OUT, C_US, "player_id / bonus_id / offer_type / "
@@ -381,14 +418,17 @@ R(row(AREA_OUT, _OG, T_REQ, OUT, C_US, "player_id / bonus_id / offer_type / "
       desc="Кому и какой бонус начислить (bonus_id — ID в бонус-CMS)."))
 R(row(AREA_OUT, _OG, T_RESP, IN, C_CRM, "status", "enum", YES, "granted",
       desc="granted | fraud_hold | duplicate | failed (+ partner_ref, "
-           "credited_usd). Персона упоминает бонус ТОЛЬКО после granted."))
+           "credited_usd, reason). duplicate трактуется как granted; "
+           "неизвестный статус — как failed. Персона упоминает бонус "
+           "ТОЛЬКО после granted."))
 
 # ---------------------------------------------------------------------------
 # Outbound — the delegated delivery endpoint the CASINO implements
 # ---------------------------------------------------------------------------
 _DL = "POST <delivery_endpoint_url> (реализует казино)"
 R(row(AREA_OUT, _DL, T_EP, OUT, C_US,
-      auth="Bearer <partner outbound key продукта>",
+      auth="Bearer <partner_out_key продукта>; без ключа заголовок "
+           "Authorization не отправляется",
       limits="Идемпотентно по delivery_id · таймаут "
              "retention.push_delivery_timeout_sec · транзиентные ошибки "
              "ретраятся (1m/5m/30m), permanent — нет",
@@ -402,8 +442,31 @@ R(row(AREA_OUT, _DL, T_REQ, OUT, C_US, "delivery_id / player_id / channel / "
       '{"channel":"push","ttl_sec":86400}',
       desc="Заказ доставки; channel: push | in_app."))
 R(row(AREA_OUT, _DL, T_RESP, IN, C_CRM, "status", "enum", YES, "sent",
-      desc="sent | queued | delivered | failed (+ reason, permanent, "
-           "provider_ref)."))
+      desc="sent | queued | delivered = успех; failed (+ reason, permanent, "
+           "provider_ref). Ретраи только при включённой настройке "
+           "retention.delivery_retry_enabled."))
+
+# ---------------------------------------------------------------------------
+# Outbound — Customer.io transactional email (наш вызов провайдера)
+# ---------------------------------------------------------------------------
+_EM = "POST https://api[-eu].customer.io/v1/send/email"
+R(row(AREA_OUT, _EM, T_EP, OUT, C_US,
+      auth="Bearer <email_api_key продукта> (App API key, секрет продукта)",
+      limits="Регион us/eu — из конфигурации канала email · HTTP ≥400 = "
+             "постоянная ошибка, кроме 429/500/502/503/504 (ретраи 1m/5m/30m)",
+      errors="no_email_api_key / no_email_address — постоянные, без ретраев",
+      desc="Email-канал мультиканального роутера: транзакционная отправка "
+           "через Customer.io. Статусы провайдера прилетают тем же коллбеком "
+           "delivery-status."))
+R(row(AREA_OUT, _EM, T_REQ, OUT, C_US,
+      "to / identifiers.id / subject / body / from? / transactional_message_id?",
+      "string / string / string / string (HTML)", YES,
+      '{"to":"player@example.com","identifiers":{"id":"1048576"}}',
+      desc="from и transactional_message_id — из конфигурации канала email "
+           "продукта."))
+R(row(AREA_OUT, _EM, T_RESP, IN, C_CRM, "delivery_id", "string", YES,
+      "cio_01H…", desc="Референс провайдера; сохраняется как provider_ref "
+      "доставки."))
 
 _EV = "POST /partner/{product_id}/event"
 R(row(AREA_PARTNER, _EV, T_EP, IN, C_CRM, auth=AUTH_PARTNER,
@@ -426,7 +489,8 @@ R(row(AREA_PARTNER, _EV, T_REQ, IN, C_CRM, "tg_user_id", "int", NO, "584210394",
            "Telegram-аккаунтами."))
 R(row(AREA_PARTNER, _EV, T_REQ, IN, C_CRM, "timestamp", "string (ISO-8601)", NO,
       "2026-07-28T10:15:00Z",
-      desc="Время события. Значение из будущего приводится к текущему моменту."))
+      desc="Время события (в пакетной/сырой форме принимается и алиас ts). "
+           "Значение из будущего приводится к текущему моменту."))
 R(row(AREA_PARTNER, _EV, T_REQ, IN, C_CRM, "event_version", "string", NO, "1",
       desc="Версия схемы события на стороне отправителя."))
 R(row(AREA_PARTNER, _EV, T_REQ, IN, C_CRM, "payload", "object (≤8 KiB)", NO,
@@ -435,16 +499,25 @@ R(row(AREA_PARTNER, _EV, T_REQ, IN, C_CRM, "payload", "object (≤8 KiB)", NO,
 R(row(AREA_PARTNER, _EV, T_REQ, IN, C_CRM, "events", "[object] (≤500)", NO,
       '[{"event_id":"…","event_name":"…"}]',
       desc="Пакетная форма. Взаимоисключима с плоскими полями выше."))
-R(row(AREA_PARTNER, _EV, T_RESP, OUT, C_US, "stored / duplicates / invalid",
-      "int|bool", YES, '{"ok":true,"stored":12,"duplicates":3}',
-      desc="Итог приёма: сколько принято, сколько дублей, сколько отвергнуто."))
+R(row(AREA_PARTNER, _EV, T_RESP, OUT, C_US,
+      "ok / stored / duplicates / errors", "bool / int / int / [{index,error}]",
+      YES, '{"ok":true,"stored":12,"duplicates":3,"errors":[]}',
+      desc="Ответ ПАКЕТНОЙ формы: сколько принято, сколько дублей и список "
+           "отвергнутых с причинами."))
+R(row(AREA_PARTNER, _EV, T_RESP, OUT, C_US, "ok / stored / duplicate / id",
+      "bool / bool / bool / int|null", YES,
+      '{"ok":true,"stored":true,"duplicate":false,"id":8412}',
+      desc="Ответ ОДИНОЧНОЙ (плоской) формы — форма ответа отличается от "
+           "пакетной."))
 
 # --- таксономия событий ----------------------------------------------------
 _EVENTS = [
     ("session_started", "Сессия", "обновляет last_login_at",
      "Игрок начал сессию на сайте или в приложении."),
     ("session_ended", "Сессия", "обновляет last_login_at", "Игрок завершил сессию."),
-    ("deposit_initiated", "Платежи", "—", "Депозит начат, ещё не подтверждён."),
+    ("deposit_initiated", "Платежи", "взводит таймер брошенной кассы",
+     "Депозит начат, ещё не подтверждён. Таймер снимается событием "
+     "deposit_confirmed; по истечении может стартовать journey «брошенная касса»."),
     ("deposit_confirmed", "Платежи", "обновляет last_deposit_at",
      "Депозит зачислен — сильнейший позитивный сигнал."),
     ("deposit_failed", "Платежи", "—", "Депозит не прошёл."),
@@ -475,25 +548,30 @@ for name, group, bridge, desc in _EVENTS:
 # ===========================================================================
 # Telegram / deeplink
 # ===========================================================================
-_DL = "POST /api/retention/deeplink"
-R(row(AREA_TG, _DL, T_EP, BOTH, C_SITE, auth=AUTH_NONE + " + лимит по IP",
-      limits="Нонс одноразовый, живёт 120 с (настраивается)",
+_DPL = "POST /api/retention/deeplink"
+R(row(AREA_TG, _DPL, T_EP, BOTH, C_SITE, auth=AUTH_NONE + " + лимит по IP",
+      limits="Нонс одноразовый, живёт 120 с (настраивается) · "
+             "лимит deeplink:{ip}",
       errors="403 bad_widget_key | retention_disabled · 409 no_bot · "
              "401 bad_handshake · 429",
       desc="Сайт получает одноразовую ссылку в Telegram-бота с профилем игрока."))
-R(row(AREA_TG, _DL, T_REQ, IN, C_SITE, "widget_key", "string (wk_…)", COND, "wk_7f3a…",
+R(row(AREA_TG, _DPL, T_REQ, IN, C_SITE, "widget_key", "string (wk_…)", COND, "wk_7f3a…",
       desc="Продукт, чей бот открывать."))
-R(row(AREA_TG, _DL, T_REQ, IN, C_SITE, "signed_context", "string (подпись)", COND,
+R(row(AREA_TG, _DPL, T_REQ, IN, C_SITE, "signed_context", "string (подпись)", COND,
       "eyJpZCI6…​.QkFTRTY0", desc="Профиль игрока — те же поля и та же подпись, "
       "что в Chat API."))
-R(row(AREA_TG, _DL, T_REQ, IN, C_SITE, "escalation", "bool", NO, "true",
+R(row(AREA_TG, _DPL, T_REQ, IN, C_SITE, "user_context", "object", NO,
+      '{"full_name":"Andrey"}',
+      desc="Неподписанный профиль — принимается только в dev (как в Chat API); "
+           "в проде обнуляется."))
+R(row(AREA_TG, _DPL, T_REQ, IN, C_SITE, "escalation", "bool", NO, "true",
       desc="true — точка входа «к менеджеру»."))
-R(row(AREA_TG, _DL, T_REQ, IN, C_SITE, "lang", "string (код или локаль)", NO, "ru",
+R(row(AREA_TG, _DPL, T_REQ, IN, C_SITE, "lang", "string (код или локаль)", NO, "ru",
       desc="Язык, в котором откроется бот."))
-R(row(AREA_TG, _DL, T_RESP, OUT, C_US, "deep_link", "string (URL)", YES,
+R(row(AREA_TG, _DPL, T_RESP, OUT, C_US, "deep_link", "string (URL)", YES,
       "https://t.me/brand_bot?start=Ax7…",
       desc="Ссылка для кнопки. Нонс погашается при первом /start."))
-R(row(AREA_TG, _DL, T_RESP, OUT, C_US, "nonce", "string", YES, "Ax7kQ…",
+R(row(AREA_TG, _DPL, T_RESP, OUT, C_US, "nonce", "string", YES, "Ax7kQ…",
       desc="Тот же одноразовый токен отдельным полем."))
 
 _WH = "POST /telegram/webhook/{secret}"
@@ -501,7 +579,8 @@ R(row(AREA_TG, _WH, T_EP, IN, C_TG,
       auth="путь = webhook-токен продукта (роутинг) + заголовок "
            "X-Telegram-Bot-Api-Secret-Token",
       limits="Всегда быстрый 200 (иначе Telegram ретраит); ход ИИ выполняется в фоне",
-      errors="403 bad_secret_token · неизвестный токен пути → тихий 200",
+      errors="403 bad_secret_token · неизвестный токен пути, неактивный "
+             "продукт или выключенный ретеншен → тихий 200",
       desc="Приём апдейтов Telegram — второй фасад над тем же ИИ-ядром."))
 R(row(AREA_TG, _WH, T_HDR, IN, C_TG, "X-Telegram-Bot-Api-Secret-Token", "string", YES,
       "b4c9…", desc="Секрет, заданный при регистрации вебхука. Защищает от подделки "
@@ -518,9 +597,11 @@ R(row(AREA_ADMIN, "POST /admin/login", T_EP, BOTH, C_ADMIN, auth=AUTH_NONE,
 R(row(AREA_ADMIN, "POST /admin/login", T_REQ, IN, C_ADMIN, "email / password",
       "string / string", YES, "ops@brand.com",
       desc="Учётная запись администратора."))
-R(row(AREA_ADMIN, "POST /admin/login", T_RESP, OUT, C_US, "token", "string (JWT)",
-      YES, "eyJhbGciOiJIUzI1NiJ9…",
-      desc="Админ-токен; продлевается сам при активной работе."))
+R(row(AREA_ADMIN, "POST /admin/login", T_RESP, OUT, C_US,
+      "token / role / email / memberships", "string (JWT) / string / string / "
+      "[{scope,role,…}]", YES, "eyJhbGciOiJIUzI1NiJ9…",
+      desc="Админ-токен (продлевается сам при активной работе) + роль, email "
+           "и список членств для проверки прав на своей стороне."))
 R(row(AREA_ADMIN, "* /admin/*", T_HDR, IN, C_ADMIN, "Authorization",
       "Bearer <JWT> | Bearer sak_…", YES, "Bearer sak_9f2c…", auth=AUTH_ADMIN,
       limits="Сервисный ключ несёт ОДНУ роль в ОДНОМ скоупе (global/partner/product); "
@@ -545,10 +626,14 @@ R(row(AREA_ADMIN, "PUT /admin/products/{id}", T_REQ, IN, C_ADMIN,
       desc="Публичная конфигурация продукта."))
 R(row(AREA_ADMIN, "PUT /admin/products/{id}/secrets", T_REQ, IN, C_ADMIN,
       "openai_key_primary, openai_key_fallback, handshake_secret, "
-      "telegram_bot_token, player_api_key, turnstile_secret", "string", NO,
+      "telegram_bot_token, player_api_key, turnstile_secret, "
+      "partner_out_key, email_api_key", "string", NO,
       '{"handshake_secret":"…"}', auth=AUTH_ADMIN,
       limits="Только запись: наружу возвращаются лишь флаги «задан/не задан»",
-      desc="Секреты продукта. Хранятся зашифрованными; через API не читаются."))
+      desc="Секреты продукта. Хранятся зашифрованными; через API не читаются. "
+           "partner_out_key — Bearer наших исходящих вызовов в казино "
+           "(offer-grant, delivery-order); email_api_key — App API key "
+           "Customer.io."))
 R(row(AREA_ADMIN, "POST /admin/products/{id}/widget-key", T_EP, BOTH, C_ADMIN,
       auth=AUTH_ADMIN, desc="Ротация публичного ключа виджета."))
 R(row(AREA_ADMIN, "GET /admin/overview, /timeseries, /by-topic, /by-language",
@@ -567,9 +652,28 @@ R(row(AREA_ADMIN, "GET /admin/audit", T_EP, OUT, C_ADMIN, auth=AUTH_ADMIN,
 R(row(AREA_ADMIN, "GET /admin/quality/overview, /admin/quality/reviews", T_EP, OUT,
       C_ADMIN, auth=AUTH_ADMIN,
       desc="Оценки качества диалогов (1..5, теги, пробелы в базе знаний)."))
-R(row(AREA_ADMIN, "GET /admin/retention/overview, /funnel, /effectiveness", T_EP, OUT,
+R(row(AREA_ADMIN, "GET /admin/retention/overview, /timeseries, /funnel, "
+      "/effectiveness", T_EP, OUT,
       C_ADMIN, auth=AUTH_ADMIN,
       desc="Метрики Telegram-фасада: воронка и результативность касаний."))
+R(row(AREA_ADMIN, "PUT /admin/retention/partner-endpoints", T_REQ, IN, C_ADMIN,
+      "offer_grant_url, delivery_endpoint_url", "string (https URL)", NO,
+      '{"offer_grant_url":"https://cms.brand.com/bonus/grant"}', auth=AUTH_ADMIN,
+      limits="Только публичные адреса (защита от SSRF, пиннинг DNS)",
+      desc="Куда наш сервис шлёт исходящие вызовы казино: выдача бонуса и "
+           "заказ делегированной доставки (см. область «Исходящие»)."))
+R(row(AREA_ADMIN, "GET|PUT|POST /admin/integration-checklist*", T_EP, BOTH, C_ADMIN,
+      auth=AUTH_ADMIN + "; запись — только глобальный админ",
+      desc="Деплой-уровневый чек-лист интеграционных зависимостей от внешних "
+           "команд (бонус-CMS, RG-фид, доставка push, Customer.io, BI): "
+           "статусы и заметки по каждому пункту."))
+R(row(AREA_ADMIN, "GET|PUT /admin/retention/* (оркестратор)", T_EP, BOTH, C_ADMIN,
+      auth=AUTH_ADMIN,
+      limits="Скоуп продукта; RG-аудит и set-status — глобальный админ",
+      desc="Управление оркестратором ретеншена: holdout/uplift, RG-guard, "
+           "частотные капы и приоритеты, скоринг/когорты, каталог офферов и "
+           "гранты, journeys, шаблоны сценариев, каналы и журнал доставок. "
+           "Полный список ручек — /integration-admin."))
 R(row(AREA_ADMIN, "POST /admin/api-keys", T_EP, BOTH, C_ADMIN,
       auth="только человек-админ (ключом ключ не выпустить)",
       limits="Открытый текст ключа возвращается РОВНО ОДИН РАЗ; хранится только хеш",

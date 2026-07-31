@@ -67,7 +67,9 @@
   <tr><td><a href="/integration-data" style="color:var(--accent)"><code>/integration-data</code></a></td>
       <td><b>Передача и синхронизация данных игрока</b>: whitelist полей, подписанный handshake
           (+ примеры кода), ленивый pull из Player API, push-webhook из CRM, сигналы активности,
-          тест-профиль.</td></tr>
+          тест-профиль. Там же — <b>исходящие контракты, которые реализует казино</b>: выдача
+          бонуса по ID бонус-CMS (offer-grant), делегированная доставка push/in-app и колбэк
+          <code>delivery-status</code>, плюс RG-статусы и согласия на каналы.</td></tr>
   <tr><td><a href="/integration-chat-api" style="color:var(--accent)"><code>/integration-chat-api</code></a></td>
       <td><b>Публичный Chat API</b> (справочник ручек) + обязательная клиентская логика, если вы
           строите собственный UI чата вместо готового виджета.</td></tr>
@@ -103,9 +105,17 @@
       (Structure), передаётся виджетом при создании сессии. Ключ не секрет (лежит в HTML страницы),
       но неугадываем и его можно ротировать.</li>
   <li>Секреты продукта (OpenAI-ключи, handshake-секрет, токен Telegram-бота, ключ Player API,
-      секрет Turnstile) хранятся в БД <b>в зашифрованном виде</b>
+      секрет Turnstile, <code>partner_out_key</code> — Bearer наших исходящих вызовов в казино,
+      <code>email_api_key</code> — Customer.io) хранятся в БД <b>в зашифрованном виде</b>
       (мастер-ключ — только в окружении деплоя) и через API никогда не возвращаются — только флаги
       «задан/не задан». Если у продукта нет своих ключей, используется глобальный ключ деплоя.</li>
+  <li>Поверх Telegram-бота работает <b>оркестратор ретеншена</b> (per-product):
+      холдаут-группа и измерение uplift, RG-guard (ответственная игра), адаптивная частота
+      + Smart Send Time, скоринг/когорты, движок офферов по ID бонус-CMS, journeys-цепочки и
+      мультиканальный роутер (telegram / email / push / in-app / vip-host). У продукта появляются
+      исходящие эндпоинты казино (<code>offer_grant_url</code>, <code>delivery_endpoint_url</code>)
+      и RG-статусы/согласия игроков из player-update. Контракты — на
+      <a href="/integration-data" style="color:var(--accent)">странице передачи данных</a>.</li>
 </ul>
 <div class="note">Сессия чата привязана к продукту. Все ответы, копирайт, эскалация и статистика
 считаются в разрезе продукта; админка агрегирует по продукту, по партнёру и глобально.</div>
@@ -129,6 +139,19 @@
           Product secrets), см. <a href="/integration-data#handshake"
           style="color:var(--accent)">передачу данных игрока</a>.</td></tr>
   <tr><td><code>CORS_ALLOW_ORIGINS</code></td><td>Домены сайтов, где встраивается виджет.</td></tr>
+  <tr><td><code>APP_ENV</code></td>
+      <td>При <code>production</code> сервис <b>откажется стартовать</b> с совпадающими или
+          короткими секретами (минимум 32 символа) — защита от копипасты dev-значений.</td></tr>
+  <tr><td><code>PUBLIC_BASE_URL</code></td>
+      <td>Публичный URL деплоя — нужен для регистрации Telegram-вебхука и раздачи медиа.</td></tr>
+  <tr><td><code>RETENTION_SCHEDULER_ENABLED</code></td>
+      <td>Включает фоновые воркеры инстанса (проактивный агент, пинги, атрибуция, аудит
+          качества). На мульти-инстансном деплое включается на одном.</td></tr>
+  <tr><td><code>OPENAI_MODEL</code></td>
+      <td>Модель по умолчанию (<code>gpt-5.6-luna</code>); дальше меняется горячо в админке.</td></tr>
+  <tr><td><code>EXPOSE_API_DOCS</code></td>
+      <td>Отдавать ли <code>/openapi.json</code>, <code>/docs</code>, <code>/redoc</code>
+          (по умолчанию выключено).</td></tr>
   <tr><td><code>TURNSTILE_SITE_KEY</code>/<code>TURNSTILE_SECRET</code> (фолбэк-пара Cloudflare
       Turnstile — у продукта приоритетна его собственная, см. <a href="/integration-widget#turnstile"
       style="color:var(--accent)">страницу виджета</a>), <code>TRUSTED_PROXY_*</code>,

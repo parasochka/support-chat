@@ -145,7 +145,7 @@ const PhotosTab = ({ productId }) => {
   // while non-empty; recomputed on every file selection.
   const [fileErrors, setFileErrors] = useState([]);
   const [validating, setValidating] = useState(false);
-  const [filters, setFilters] = useState({ q: '', stage: 'all', level: 'all', status: 'all', type: 'all' });
+  const [filters, setFilters] = useState({ stage: 'all', level: 'all', status: 'all', type: 'all' });
   const [page, setPage] = useState(1);
   // The product's real gate ranges — Stage 1..maxStage, Level 0..tiers-1 — so
   // the pickers below can only offer values the delivery gate can actually serve
@@ -462,10 +462,6 @@ const PhotosTab = ({ productId }) => {
     if (filters.type !== 'all' && (ph.media_type || 'photo') !== filters.type) return false;
     if (filters.stage !== 'all' && Number(ph.stage) !== Number(filters.stage)) return false;
     if (filters.level !== 'all' && Number(ph.level_min) !== Number(filters.level)) return false;
-    if (filters.q) {
-      const hay = `${ph.description || ''} ${(ph.tags || []).join(' ')} ${ph.category || ''}`.toLowerCase();
-      if (!hay.includes(filters.q.toLowerCase())) return false;
-    }
     return true;
   });
   const stageOptions = [...new Set(items.map((ph) => Number(ph.stage)))].sort((a, b) => a - b);
@@ -730,21 +726,17 @@ const PhotosTab = ({ productId }) => {
 
       <Card sx={{ mb: 2 }}>
         <CardContent>
-          <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
-            <TextField
-              size="small"
-              label={t('Search (description, tags, category)')}
-              value={filters.q}
-              onChange={(e) => setFilter({ q: e.target.value })}
-              sx={{ minWidth: 200, flexGrow: 1 }}
-            />
+          {/* One row, no wrap: the four selects share the width equally
+              (the free-text search was dropped — the selects are the real
+              workflow and the search ate a whole row). */}
+          <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
             <TextField
               select
               size="small"
               label={t('Stage')}
               value={filters.stage}
               onChange={(e) => setFilter({ stage: e.target.value })}
-              sx={{ minWidth: 96 }}
+              sx={{ flex: 1, minWidth: 0 }}
             >
               <MenuItem value="all">{t('all')}</MenuItem>
               {stageOptions.map((s) => (
@@ -759,7 +751,7 @@ const PhotosTab = ({ productId }) => {
               label={t('Level min')}
               value={filters.level}
               onChange={(e) => setFilter({ level: e.target.value })}
-              sx={{ minWidth: 96 }}
+              sx={{ flex: 1, minWidth: 0 }}
             >
               <MenuItem value="all">{t('all')}</MenuItem>
               {levelOptions.map((l) => (
@@ -774,7 +766,7 @@ const PhotosTab = ({ productId }) => {
               label={t('Type')}
               value={filters.type}
               onChange={(e) => setFilter({ type: e.target.value })}
-              sx={{ minWidth: 96 }}
+              sx={{ flex: 1, minWidth: 0 }}
             >
               <MenuItem value="all">{t('all')}</MenuItem>
               <MenuItem value="photo">{t('photos')}</MenuItem>
@@ -786,7 +778,7 @@ const PhotosTab = ({ productId }) => {
               label={t('Status')}
               value={filters.status}
               onChange={(e) => setFilter({ status: e.target.value })}
-              sx={{ minWidth: 96 }}
+              sx={{ flex: 1, minWidth: 0 }}
             >
               <MenuItem value="all">{t('all')}</MenuItem>
               <MenuItem value="active">{t('active')}</MenuItem>

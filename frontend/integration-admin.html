@@ -227,7 +227,9 @@ bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию
       <td>Создать казино (widget key генерируется, стартовая KB сеется) / изменить.</td></tr>
   <tr><td><span class="tag put">PUT</span><code>/admin/products/{id}/secrets</code></td>
       <td>Write-only секреты продукта: OpenAI-ключи, handshake, токен Telegram-бота,
-          player-API-ключ, секрет Turnstile. Хранятся шифрованно; в ответ только has_*-флаги.</td></tr>
+          player-API-ключ, секрет Turnstile, <code>partner_out_key</code> (Bearer для исходящих
+          вызовов в казино: offer-grant, delivery-order), <code>email_api_key</code> (Customer.io
+          App API key для email-канала). Хранятся шифрованно; в ответ только has_*-флаги.</td></tr>
   <tr><td><span class="tag post">POST</span><code>/admin/products/{id}/widget-key</code></td>
       <td>Ротация widget key (старые сниппеты перестают работать сразу).</td></tr>
 </table>
@@ -299,6 +301,90 @@ bearer JWT, живёт <code>admin_token_ttl_min</code> (по умолчанию
           (очистка тестовых данных — по строке или целиком). Сами события казино партнёр
           шлёт в <code>POST /partner/{product_id}/event</code> — см.
           <a href="/integration-data" style="color:var(--accent)">страницу передачи данных</a>.</td></tr>
+</table>
+
+<h3>Оркестратор ретеншена (SPA: Retention → Orchestrator)</h3>
+<p>Все ручки — под <code>/admin/retention/…</code>, скоуп продукта: чтение — роль
+<code>manager</code>, запись — <code>admin</code> в скоупе продукта; исключения с
+глобальной записью помечены. Механики включаются per-product переключателями в группе
+настроек <code>retention</code> (секция orchestrator).</p>
+<table>
+  <tr><th>Эндпоинт(ы)</th><th>Что делает</th></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag put">PUT</span><code>/admin/retention/holdout/config</code>
+          · <span class="tag get">GET</span><code>…/holdout/status</code>
+          · <span class="tag get">GET</span><code>…/uplift</code>
+          · <span class="tag post">POST</span><code>…/attribution/run</code></td>
+      <td>Измерение: процент и соль холдаут-группы, распределение игроков по группам,
+          uplift (конверсии treatment vs holdout), ручной прогон атрибуции.</td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag put">PUT</span><code>/admin/retention/rg/signals</code>
+          · <span class="tag get">GET</span><code>…/rg/status</code>
+          · <span class="tag post">POST</span><code>…/rg/set-status</code>
+          · <span class="tag get">GET</span><code>…/rg/audit</code></td>
+      <td>Ответственная игра: конфиг поведенческих сигналов, RG-статус игрока, ручная
+          установка статуса (мост, пока фид казино не подключён) и append-only журнал всех
+          RG-решений. <b>set-status и audit — только глобальный админ.</b></td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag put">PUT</span><code>/admin/retention/frequency/caps</code>
+          · <code>…/frequency/priorities</code>
+          · <span class="tag get">GET</span><code>…/send-time/profile</code></td>
+      <td>Адаптивная частота: матрица капов канал × когорта, приоритеты типов касаний
+          P1..P5, профиль активных часов игрока (Smart Send Time).</td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag put">PUT</span><code>/admin/retention/scoring/config</code>
+          · <span class="tag get">GET</span><code>…/scoring/player</code>
+          · <code>…/scoring/distribution</code> · <code>…/scoring/transitions</code></td>
+      <td>Скоринг: границы когорт неактивности / RFM / value-тиров, карточка игрока,
+          распределение базы по когортам, журнал переходов.</td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag put">PUT</span><code>/admin/retention/offers/catalog</code>
+          · <span class="tag del">DEL</span><code>…/offers/catalog/{offer_key}</code>
+          · <span class="tag get">GET</span><span class="tag put">PUT</span><code>…/offers/triggers</code>
+          · <span class="tag get">GET</span><code>…/offers/grants</code></td>
+      <td>Движок офферов: каталог бонусов (ссылки на ID бонус-CMS казино), правила
+          триггеров, журнал выдач (granted / fraud_hold / failed).</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/retention/host-tasks</code>
+          · <span class="tag put">PUT</span><code>…/host-tasks/{task_id}</code></td>
+      <td>Очередь VIP-хоста: задачи «спасение VIP после крупного проигрыша» и смена их
+          статуса.</td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag put">PUT</span><code>/admin/retention/journeys</code>
+          · <span class="tag put">PUT</span><code>…/journeys/{key}/status</code>
+          · <span class="tag del">DEL</span><code>…/journeys/{key}</code>
+          · <span class="tag get">GET</span><code>…/journeys/{key}/enrollments</code>
+          · <span class="tag post">POST</span><code>…/journeys/run</code></td>
+      <td>Journeys — многошаговые цепочки как данные (триггер, шаги с каналами и
+          задержками, условия входа/выхода), активация/пауза, журнал прохождений, ручной
+          прогон шагов.</td></tr>
+  <tr><td><span class="tag post">POST</span><code>/admin/retention/scenarios/seed</code>
+          · <span class="tag get">GET</span><span class="tag put">PUT</span><code>…/templates</code>
+          · <span class="tag del">DEL</span><code>…/templates/{template_key}</code></td>
+      <td>Библиотека сценариев: сид стартовых паков (draft + dry-run, идемпотентный) и
+          CRUD шаблонов-брифов, на которые ссылаются шаги journeys.</td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag put">PUT</span><code>/admin/retention/channels</code>
+          · <span class="tag put">PUT</span><code>…/partner-endpoints</code>
+          · <span class="tag get">GET</span><code>…/deliveries</code></td>
+      <td>Каналы: конфиг per-канал (telegram / email / push / in_app / vip_host),
+          исходящие URL казино (<code>offer_grant_url</code>, <code>delivery_endpoint_url</code>;
+          проверка SSRF + пиннинг DNS) и журнал доставок с ретраями.</td></tr>
+</table>
+
+<h3>Системные</h3>
+<table>
+  <tr><th>Эндпоинт(ы)</th><th>Что делает</th></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/integration-checklist</code>
+          · <span class="tag put">PUT</span><code>…/{item_key}</code>
+          · <span class="tag post">POST</span><code>/admin/integration-checklist</code></td>
+      <td>Чек-лист интеграционных зависимостей от внешних команд (бонус-CMS, RG-фид,
+          доставка push, Customer.io, BI): статусы и заметки. Запись — глобальный админ.
+          SPA: System → Integration checklist.</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/meta</code> · <code>/admin/me</code></td>
+      <td>Метаданные деплоя (модель, цены) и «кто я» (роль + членства вызывающего).</td></tr>
+  <tr><td><span class="tag get">GET</span><span class="tag put">PUT</span><code>/admin/test-profile</code></td>
+      <td>Тестовый профиль игрока для проверок из админки.</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/logs</code> · <code>…/logs/unread</code>
+          · <span class="tag post">POST</span><code>…/logs/read</code></td>
+      <td>Системный журнал сервиса + счётчик непрочитанного.</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/audit</code></td>
+      <td>Аудит административных изменений (SIEM/комплаенс).</td></tr>
+  <tr><td><span class="tag get">GET</span><code>/admin/retention/effective-prompt</code>
+          · <span class="tag post">POST</span><code>/admin/retention/photos/normalize</code></td>
+      <td>Read-only сборка промпта Telegram-персоны · ручной запуск нормализации медиа.</td></tr>
 </table>
 
 <h2 id="curl">6. Примеры curl</h2>

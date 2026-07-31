@@ -218,9 +218,10 @@ async function openNika(signedContext) {
 
 <h2 id="pings">7. Проактивный агент — реакции на события казино и неактивность</h2>
 <p>Единственное место, где бот пишет игроку <b>первым</b>, — по двум триггерам: <b>события казино</b>
-(этот раздел) и <b>неактивность игрока</b> (правила «молчит N дней → Ника пишет первой», лестница
-7/14/30 дней, управляется в админке → Ретеншен → Proactive agent → Idle pings; те же гварды, леджеры и
-dry-run). Казино шлёт канонические события
+(этот раздел) и <b>неактивность игрока</b> (правила «молчит N дней → Ника пишет первой»; новому
+продукту сеется готовая лестница 3/5/7/10/14/21/30/45/60 дней, управляется в админке → Ретеншен →
+Proactive agent → Idle pings; те же гварды, леджеры и dry-run; правило может следить за любой из
+трёх осей неактивности — чат / казино / депозит). Казино шлёт канонические события
 (<code>POST /partner/{product_id}/event</code>, Bearer — партнёрский секрет продукта; одно событие
 или батч <code>{events:[…]}</code> до 500, идемпотентно по <code>event_id</code>): депозит,
 крупный проигрыш, новый уровень, пройденный KYC и т.д. Фоновый воркер разбирает очередь
@@ -274,6 +275,28 @@ Retention bot → «Proactive agent» и «Send-frequency guards»), депло�
 второй инстанс сервиса могут работать одновременно — одно событие никогда не даст двух сообщений.
 В админке есть симулятор событий и кнопка ручного прогона для тестов до подключения казино.</p>
 
+<h3>Оркестратор поверх агента</h3>
+<p>С июля 2026 проактивные касания проходят ещё один слой — <b>оркестратор ретеншена</b>
+(админка → Retention → Orchestrator). Перед каждой отправкой в фиксированном порядке проверяются:
+<b>RG-guard</b> (ответственная игра: self-exclude/rg-hold — полный блок, cool-off и отсутствие
+маркетингового согласия блокируют игровые триггеры), <b>холдаут-группа</b> (по умолчанию 15%
+игроков — контрольная группа для измерения uplift, им проактив не уходит), <b>адаптивные частотные
+капы</b> (матрица канал × когорта, приоритеты касаний P1..P5) и <b>Smart Send Time</b> (сдвиг
+не-срочных касаний в активные часы игрока). Telegram при этом — один из каналов
+мультиканального роутера (telegram / email / push / in-app / vip-host, строгий opt-in); контракты
+каналов и офферов — на <a href="/integration-data#outbound" style="color:var(--accent)">странице
+передачи данных</a>. Все механики, кроме RG-guard и холдаута, выключены по умолчанию — с
+выключенными переключателями поведение агента в точности прежнее.</p>
+
+<h3>Входящие медиа и «смелость» переписки</h3>
+<p>Входящее фото/видео/файл/голос/стикер от игрока бот <b>не анализирует</b> — уходит
+модельно-независимый локализованный ответ (ключ перевода <code>rtn_incoming_media_reply</code>,
+правится в Translations). При этом Ника умеет <b>описывать уже отправленные ею</b> медиа (блок
+«MEDIA YOU ALREADY SENT» в промпте) вместо повторной отправки. Вербальная «смелость» переписки
+привязана к стадии откровенности самой смелой фотографии, которую игрок уже получил (лестница
+открытости; пороги прогрессии — настройка <code>stage_advance_msgs</code>, по умолчанию
+[20, 40, 80, 120] сообщений).</p>
+
 <h2 id="api">8. Справочник API</h2>
 <h3>Публичные ручки</h3>
 <table>
@@ -282,9 +305,16 @@ Retention bot → «Proactive agent» и «Send-frequency guards»), депло�
       <td>handshake → <code>{nonce, deep_link}</code></td></tr>
   <tr><td><span class="tag post">POST</span><code>/partner/{product_id}/player-update</code></td><td>CRM казино</td>
       <td>push профиля + сигналов активности (частичный, partner-секрет)</td></tr>
+  <tr><td><span class="tag post">POST</span><code>/partner/{product_id}/event</code></td><td>CRM казино</td>
+      <td>канонические события (фид агента; батч до 500, идемпотентно по <code>event_id</code>)</td></tr>
+  <tr><td><span class="tag post">POST</span><code>/partner/{product_id}/delivery-status</code></td><td>CRM казино</td>
+      <td>коллбек статусов делегированной доставки push/in-app (см.
+          <a href="/integration-data#delivery-status" style="color:var(--accent)">передачу данных, §5.2</a>)</td></tr>
   <tr><td><span class="tag post">POST</span><code>/telegram/webhook/{secret}</code></td><td>Telegram</td>
       <td>апдейты бота (secret-token в заголовке; настраивается из админки, вручную не зовётся)</td></tr>
 </table>
+<p class="muted">Все <code>/partner/*</code>-вебхуки лимитируются по IP до аутентификации
+(возможен 429); любая ошибка аутентификации — единый непрозрачный 401.</p>
 <h3>Admin API (раздел Ретеншен, под <code>require_admin</code>)</h3>
 <table>
   <tr><th>Метод / путь</th><th>Назначение</th></tr>
@@ -310,9 +340,12 @@ Retention bot → «Proactive agent» и «Send-frequency guards»), депло�
           <a href="/integration-admin" style="color:var(--accent)">странице интеграции с общей
           админкой</a></td></tr>
   <tr><td><span class="tag put">PUT</span><code>/admin/settings/retention</code></td>
-      <td>группа настроек ретеншна (лимиты фото, прогрессия, VIP-тиры)</td></tr>
+      <td>группа настроек ретеншна (лимиты фото, прогрессия и лестница открытости
+          <code>stage_advance_msgs</code>, VIP-тиры, гварды агента + секция orchestrator —
+          переключатели механик оркестратора)</td></tr>
   <tr><td><span class="tag put">PUT</span><code>/admin/products/{product_id}/secrets</code></td>
-      <td>секреты продукта: <code>telegram_bot_token</code>, <code>player_api_key</code> (наружу только флаги)</td></tr>
+      <td>секреты продукта: <code>telegram_bot_token</code>, <code>player_api_key</code>,
+          <code>partner_out_key</code>, <code>email_api_key</code> (наружу только флаги)</td></tr>
 </table>
 <p class="muted">Секреты — как OpenAI-ключи: шифруются в БД, через API возвращаются только флаги
 «задан/не задан». Авторизация admin-роутов — строго против конкретного продукта.</p>

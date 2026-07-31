@@ -1637,6 +1637,69 @@ const RU = {
   'Call type': 'Тип вызова',
   'All types': 'Все типы',
   'Total for the range': 'Итого за период',
+
+  // ----- integration checklist (System → Integration checklist) -----
+  'Integration checklist': 'Чек-лист интеграции',
+  'What the external teams (casino platform, email, BI) still owe us to wire the retention orchestrator end to end — and what each item blocks on our side. Update the status as agreements land; add items as new dependencies appear.':
+    'Что внешние команды (платформа казино, email, BI) ещё должны нам для полного запуска ретеншен-оркестратора — и что каждый пункт блокирует на нашей стороне. Обновляйте статус по мере договорённостей; добавляйте пункты по мере появления новых зависимостей.',
+  'Blocks on our side': 'Блокирует',
+  'Add item': 'Добавить пункт',
+  'Owner': 'Ответственный',
+  'Key (a-z, -)': 'Ключ (a-z, -)',
+  // status values (served by the API)
+  'waiting': 'ожидаем',
+  'in_progress': 'в работе',
+  'received': 'получено',
+  'wired': 'подключено',
+  'not_needed': 'не требуется',
+  // seeded item owners
+  'casino platform (Anton)': 'платформа казино (Антон)',
+  'email/devops': 'email/devops',
+  'operations': 'операционная команда',
+  'BI / platform': 'BI / платформа',
+  // seeded items (translated at render time; an operator-edited row shows as saved)
+  'Bonus CMS: grant endpoint + bonus ID list':
+    'Бонусная CMS: эндпоинт начисления + список ID бонусов',
+  'Endpoint that credits a bonus by its CMS ID to a player (our POST payload: offer_grant_id, player_id, bonus_id, params). Idempotent by offer_grant_id; statuses granted / fraud_hold / duplicate / failed. Plus the catalogue of bonus IDs with descriptions.':
+    'Эндпоинт, начисляющий игроку бонус по его CMS ID (наш POST-запрос: offer_grant_id, player_id, bonus_id, params). Идемпотентен по offer_grant_id; статусы granted / fraud_hold / duplicate / failed. Плюс каталог ID бонусов с описаниями.',
+  'Offer engine production enablement (until then: dry-run)':
+    'Боевое включение движка офферов (до этого — dry-run)',
+  'RG status feed in player-update':
+    'RG-статус в player-update',
+  'Send rg_status (ok/cool_off/rg_hold/self_exclude), rg_status_until, marketing_consent and optional rg_flags on every change + an initial backfill. The platform is the source of truth for self-exclusion.':
+    'Передавать rg_status (ok/cool_off/rg_hold/self_exclude), rg_status_until, marketing_consent и опционально rg_flags при каждом изменении + первичную выгрузку. Источник истины по самоисключению — платформа.',
+  'Real RG blocks (manual admin marking works meanwhile)':
+    'Настоящие RG-блокировки (пока работает ручная отметка в админке)',
+  'player-update: timezone + channel consents':
+    'player-update: часовой пояс + согласия на каналы',
+  'Optional fields: timezone (geo-IP derived), email_opt_in, email_verified, push_opt_in, push_available, in_app_available, channel_prefs; plus a consent-change event.':
+    'Необязательные поля: timezone (по geo-IP), email_opt_in, email_verified, push_opt_in, push_available, in_app_available, channel_prefs; плюс событие изменения согласий.',
+  'Smart Send Time precision; email/push routing consents':
+    'Точность Smart Send Time; согласия для маршрутизации email/push',
+  'Delegated push/in_app delivery endpoint':
+    'Эндпоинт делегированной доставки push/in_app',
+  'Endpoint accepting our delivery order (delivery_id, player_id, channel, title, body, cta_url, ttl_sec), idempotent by delivery_id, permanent/transient error split, plus the delivery-status callback to POST /partner/{id}/delivery-status.':
+    'Эндпоинт, принимающий наш заказ на доставку (delivery_id, player_id, channel, title, body, cta_url, ttl_sec), идемпотентен по delivery_id, различает постоянные/временные ошибки, плюс колбэк статуса доставки в POST /partner/{id}/delivery-status.',
+  'Push / in-app channels going live':
+    'Запуск каналов push / in-app',
+  'Email: Customer.io workspace + credentials':
+    'Email: воркспейс Customer.io + доступы',
+  'Customer.io App API key (stored as a product secret), region (us/eu), sending domain with SPF/DKIM/DMARC, From/Reply-To, unsubscribe handling.':
+    'App API-ключ Customer.io (хранится как секрет продукта), регион (us/eu), отправляющий домен с SPF/DKIM/DMARC, From/Reply-To, обработка отписок.',
+  'Email channel going live':
+    'Запуск email-канала',
+  'VIP host process for the host-task queue':
+    'Процесс VIP-хоста для очереди задач',
+  'Who works the retention_host_tasks queue (loss-rescue for VIPs) and whether an export (webhook/email) to an external CRM is needed.':
+    'Кто разбирает очередь retention_host_tasks (спасение VIP после проигрыша) и нужен ли экспорт (вебхук/email) во внешнюю CRM.',
+  'VIP loss-rescue handling beyond the queue itself':
+    'Обработка спасения VIP после проигрыша за пределами самой очереди',
+  'BI / warehouse export of fact rows':
+    'Экспорт фактовых строк в BI / хранилище',
+  'If the platform builds cross-surface attribution: agree the export of our fact rows (touches, conversions, deliveries) — direct read access or periodic export.':
+    'Если платформа строит сквозную атрибуцию: согласовать экспорт наших фактовых строк (касания, конверсии, доставки) — прямой доступ на чтение или периодический экспорт.',
+  'Nothing on our side (uplift works locally)':
+    'Ничего на нашей стороне (uplift считается локально)',
 };
 
 const current = getAdminLang();
