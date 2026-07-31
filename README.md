@@ -268,6 +268,20 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `RETENTION_OUTCOME_CONVERSION_WINDOW_HOURS` | no | `72` | Same, for coming back to the casino / depositing after a touch (a deposit follows with more lag than a chat reply). |
 | `RETENTION_OUTCOME_SWEEP_INTERVAL_SEC` | no | `300` | How often the attribution sweep settles open outcome rows per product (it rides the retention worker tick; this only paces it). |
 | `RETENTION_OUTCOME_SWEEP_BATCH` | no | `500` | Max open outcome rows one sweep pass settles per product. |
+| `RETENTION_HOLDOUT_PCT` | no | `15` | Orchestrator (measurement): share of players deterministically held out of ALL proactive touches (the control group uplift is measured against). 0 = off. Ships at 15 by business decision. |
+| `RETENTION_HOLDOUT_SALT` | no | `default` | The experiment salt — rotating it re-buckets every player (a new experiment). |
+| `RETENTION_RG_ENABLED` | no | `true` | RG guard (responsible gaming) — ON by default; self-excluded players never get proactive touches or offers. |
+| `RETENTION_RG_REQUIRE_CONSENT` | no | `false` | Require `marketing_consent=true` for game touches (Tier-1 markets). OFF at MVP. |
+| `RETENTION_RG_UNKNOWN_STATUS_POLICY` | no | `warn` | How to treat a player whose RG status was never reported: `warn` (pass with an audit mark) or `block`. |
+| `RETENTION_RG_DIALOGUE_SUPPRESSION` | no | `true` | Strip game CTAs from dialogue replies to RG-restricted players. |
+| `RETENTION_ADAPTIVE_FREQUENCY_ENABLED` | no | `false` | Priority/cohort-aware frequency caps (P1/P2 never cut; email rides its own budget). OFF = the static guards apply unchanged. |
+| `RETENTION_SMART_SEND_TIME_ENABLED` | no | `false` | Shift non-urgent touches into the player's active hours (their timezone from the casino, else the product offset). |
+| `RETENTION_SCORING_ENABLED` | no | `false` | Player scoring: dormancy cohorts, RFM, value tiers, VIP segment. |
+| `RETENTION_OFFERS_ENABLED` | no | `false` | Offer engine master switch (grants real bonuses by their bonus-CMS IDs via the casino endpoint). |
+| `RETENTION_OFFER_DRY_RUN` | no | `true` | Offers decide + log without calling the casino. |
+| `RETENTION_OFFER_DAILY_BUDGET_USD` | no | `0` | Daily stimulus budget; 0 = granting blocked (safe default). |
+| `RETENTION_JOURNEYS_ENABLED` | no | `false` | Journey engine (multi-step trajectories; each journey still seeds draft + dry-run). |
+| `RETENTION_MULTICHANNEL_ENABLED` | no | `false` | Channel router beyond Telegram (email via Customer.io, delegated push/in-app). Strict per-channel opt-in. |
 | `QUALITY_REVIEW_ENABLED` | no | `true` | Default for `general.quality_review_enabled` — the LLM-as-judge pass that scores finished conversations (both facades). The verdicts feed the admin Quality page; the judge never changes anything itself. |
 | `QUALITY_REVIEW_DAILY_MAX` | no | `100` | Default for `general.quality_review_daily_max` — cost cap: reviews per product per UTC day (0 = pause). |
 | `QUALITY_REVIEW_MIN_MESSAGES` | no | `4` | Default for `general.quality_review_min_messages` — shorter conversations are skipped (nothing to judge in a one-liner). |

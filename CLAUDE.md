@@ -1052,6 +1052,152 @@ adds the CTA pages that actually earned responses as an explicit **hint, not an
 order** (the rotation rule and fitting the moment still win) — it only breaks the
 tie the blind rotation was guessing at.
 
+### RETENTION ORCHESTRATOR — measurement / RG / frequency / scoring / offers / journeys / channels
+The DOC-0..DOC-7 layer over the proactive agent: eight additive mechanics, each
+its own module in `app/retention/`, each behind a hot `retention`-group switch
+(precedence product → global → env → default), each shipping OFF/dry-run EXCEPT
+the RG guard (protection, ON) and the holdout (15% by owner decision). With the
+switches off, behaviour is bit-for-bit pre-orchestrator. Admin surface: the
+**Retention → Orchestrator** page (tabs per mechanic,
+`admin/src/pages/Orchestrator.jsx`, API `app/api/orchestrator.py`) + the
+on/off knobs in Retention → Settings (schema section `orchestrator`).
+
+- **Measurement (`measurement.py`)** — the deterministic holdout control group:
+  `sha256(product:player:salt) % 100 < holdout_pct` (cache on
+  `retention_users.holdout_group/.holdout_salt`; salt rotation re-buckets
+  lazily = a NEW experiment). Holdout is a GUARD: `guard_check` returns
+  `held_out` BEFORE any model call and opens a **virtual outcome row**
+  (`retention_outcomes.kind='holdout'`, `holdout_group_at_time`) so the control
+  group has a measurable base rate; the idle sweep does the same per matched
+  rung. `db.retention_uplift` cuts conversions (return / deposit) by the group
+  AT touch time → `GET /admin/retention/uplift`. A player with no `player_id`
+  is always treatment (cannot convert in the casino).
+- **RG guard (`rg_guard.py`)** — responsible gaming, FIRST in the guard order,
+  beats everything including holdout. The CASINO is the source of truth:
+  `rg_status` (`ok/cool_off/rg_hold/self_exclude`) arrives via player-update
+  (+ `marketing_consent`, `rg_flags`, `rg_status_until`) or is set manually
+  (global-admin bridge while the feed is unwired). `self_exclude`/`rg_hold` =
+  permanent block (no touch, no offer, ever); `cool_off` until expiry (lazy
+  auto-clear) and a missing consent (gate `rg_require_consent`, OFF at MVP) =
+  conditional: GAME triggers (`offer_grant`, `loss_recovery`, `idle_ping` —
+  a come-back invite is game marketing) are blocked, a general event reaction
+  passes WITH the no-play-talk constraint. Behavioral signals are config rows
+  (`rg_signal_config`, shipped disabled; `computed` from the feed or
+  `casino_flag` accepted precomputed). EVERY evaluation — pass included —
+  lands in append-only `rg_guard_audit` (never pruned; read = global admin,
+  the MVP compliance role). Dialogue side: `rg_guard.dialogue_suppression_due`
+  → `rg_suppress` through `handle_retention_message` →
+  `build_retention_dynamic_prompt` injects the RG PROTECTION block and drops
+  the play nudge.
+- **Adaptive frequency + Smart Send Time (`frequency.py`)** — when
+  `adaptive_frequency_enabled` is ON, `guard_check`'s static gap/cap checks
+  are replaced by the priority/cohort-aware gate: touch priorities P1..P5
+  (`retention_touch_priority` + code defaults; P1/P2 are NEVER cut by a cap),
+  cap matrix per channel × cohort (`retention_frequency_caps` + defaults;
+  the VIP cohort runs relaxed rows; **email rides its own row** — by owner
+  decision it never consumes the intrusive-touch budget, intrusive = push +
+  Telegram). SST (`smart_send_time_enabled`) shifts NON-timing-critical
+  touches (journey steps) into the player's active hours: deterministic
+  activity profiles (`retention_activity_profile`, swept from the event feed)
+  clamped to hint ± `sst_max_shift_hours`, never violating quiet hours.
+  Player timezone: `retention_users.tz` from player-update (casino geo-IP) →
+  else the product `quiet_hours_utc_offset`.
+- **Scoring (`scoring.py`)** — dormancy cohorts
+  (active/d7/d10/d14/d21/d30/lost, EPIC-5 boundaries, config-driven), banded
+  deterministic RFM, value tiers by lifetime deposits, `vip_segment` mapped
+  from the casino loyalty class (EPIC-7 classes player..platinum→mass,
+  vip→vip, vip_plus→vip_plus; `vip_mapping` config). Cache on
+  `retention_users`, recomputed by the paced sweep; the resolver appends the
+  dimensions ADDITIVELY when `scoring_enabled` (OFF = snapshot unchanged).
+  Return detection is HOT-path (`mark_recovered` on activity events);
+  transitions log to `retention_cohort_transitions` (one per player/cohort/
+  day). `scoring.is_vip` is the ONE VIP predicate (offers + frequency read it).
+- **Offer engine (`offers.py`)** — the bonus-CMS-ID model (owner decision A5):
+  a catalog row (`retention_offer_catalog`) references the casino's bonus by
+  `partner_bonus_id`; granting = POST to the product's `offer_grant_url`
+  ("credit bonus ID to player X"), idempotent by `offer_grant_id`
+  (`og_` + sha1(product:player:decision-ref)) on both sides. Deterministic
+  resolve BEFORE the model (trigger enabled → RG → VIP suppression on
+  loss_high → eligibility → cooldown/lifetime → the SEPARATE stimulus budget,
+  0 = blocked): only then does `grant_offer` enter `allowed_actions` with a
+  constraint line describing the gift. Order invariant: create → partner
+  confirms → ONLY THEN the persona mentions it; `fraud_hold` → message
+  without the bonus, `failed` → silence. A high-loss VIP routes to
+  `retention_host_tasks` instead of an auto-bonus. Triple-guarded defaults:
+  `offers_enabled` OFF + `offer_dry_run` ON + zero budget.
+- **Journeys (`journeys.py`)** — declarative multi-step trajectories as data
+  (`retention_journeys`: trigger `{type: event|scheduled}`, entry/exit
+  conditions, steps with mandatory `channel`, delays, per-step conditions).
+  Event matching runs at the tail of `_process_event` (enrollment only —
+  never an immediate touch); scheduled matching (recovery by cohort, weekly
+  by day, cashier abandonment by the `deposit_initiated_at` timer) + the
+  due-step drain ride the worker sweep. EVERY step passes the full
+  `guard_check`. Blocked-step semantics (owner-approved Б4): frequency-class
+  reasons defer the step (+2h, retried); terminal reasons (RG, opt-out,
+  holdout, unsubscribed) exit the journey (`exited_terminal`). Exits: goal
+  (`exit_conditions`, empty list = no goal), return (activity after
+  enrollment; default for scheduled journeys, event journeys opt in via
+  `metadata.exit_on_return`), completion. `eval_conditions` returns **None on
+  an unresolvable field** — fail-safe: no enrollment / `blocked_unresolvable`
+  exit, never a silent pass. One active enrollment per (player, journey)
+  (partial unique index), capped by `journey_max_active_per_player`.
+- **Scenario/template library (`scenario_library.py`)** — templates are
+  BRIEFS by default (`persona_brief`: ops controls intent, the persona
+  writes; `verbatim` = exact copy behind an explicit flag); journey steps
+  resolve `template_key` → intent via `step_intent`. Starter packs (recovery
+  × 5 cohorts, loss, FTD spine, weekly, abandonment) seed via
+  `POST /admin/retention/scenarios/seed` as draft + dry-run + `is_starter`
+  (idempotent — an operator-edited row is never overwritten). Activating a
+  recovery journey returns the **ladder-overlap warning** (A7): the idle
+  rungs on the same quiet days should be disabled by the operator.
+- **Channels (`channels.py` + `partner_out.py`)** — the router is
+  deterministic code with **STRICT opt-in** (never a non-consented channel,
+  not even as fallback; nothing consented = `undeliverable`).
+  `multichannel_enabled` OFF = router always answers telegram. Adapters:
+  telegram (the existing `delivery.py` seam), email (Customer.io App API
+  transactional send, `POST https://api[-eu].customer.io/v1/send/email`,
+  App API key = encrypted product secret `email_api_key`, region/from in the
+  channel config row), push/in_app (DELEGATED: we POST a delivery order to
+  the product's `delivery_endpoint_url`, the casino delivers on-device and
+  reports back via `POST /partner/{id}/delivery-status` — statuses never move
+  backwards), vip_host (a task in the queue, never a bot message). Lifecycle
+  + backoff retries ([1m, 5m, 30m], permanent failures never retry) in
+  `retention_deliveries`. **Outbound partner calls** (offer-grant + deliver)
+  are orchestrator→casino ("partner" = the operator running a casino on the
+  platform): per-product URLs on the product row, Bearer =
+  `partner_out_key` (encrypted), SSRF-guarded + DNS-pinned exactly like the
+  Player-API pull.
+- **Idle ladder trigger kinds** — a rule now carries `trigger_kinds` (list;
+  legacy `trigger_kind` kept in sync): a rung fires when ANY of its
+  dimensions (chat / casino / deposit inactivity) crosses the threshold, the
+  most-idle one wins and names the reason; the anti-cascade memory counts a
+  multi-kind rung toward every kind it watches. DEFAULT = all three (owner
+  decision; boot backfill flipped existing rules, `create_retention_rule`
+  defaults new ones, the starter ladder ships all-three).
+- **Integration checklist** — the deploy-level list of what external teams
+  still owe us (`integration_checklist`, seeded insert-only on boot:
+  bonus-CMS contract, RG feed, player-update extensions, push delivery
+  endpoint, Customer.io, VIP-host process, BI export), edited on the System →
+  Integration checklist page (`GET/PUT/POST /admin/integration-checklist*`,
+  writes global-admin).
+- **Partner contract additions (all additive):** player-update accepts
+  `rg_status`/`rg_status_until`/`marketing_consent`/`rg_flags`/`timezone` +
+  per-channel consents (`email_opt_in`, `email_verified`, `push_opt_in`,
+  `push_available`, `in_app_available`, `sms_opt_in`, `channel_prefs`);
+  new inbound `POST /partner/{id}/delivery-status`; new OUTBOUND contracts
+  the partner implements: the offer-grant endpoint and the delivery-order
+  endpoint (idempotent by our `offer_grant_id`/`delivery_id`).
+- Worker-sweep tail order (each self-paced, each swallowing its own errors):
+  idle pings → attribution → scoring → activity profiles → journeys
+  (scheduled matching + step drain) → delivery retries.
+- Guard order (fixed): **RG → hard denies (sub/opt-out/blocked) → holdout →
+  frequency (adaptive or legacy static) → budget → same-event cooldown →
+  comfort.** Tests: `tests/test_retention_measurement.py`, `test_rg_guard.py`,
+  `test_retention_frequency.py`, `test_retention_scoring.py`,
+  `test_retention_offers.py`, `test_retention_journeys.py`,
+  `test_retention_scenarios.py`, `test_retention_channels.py`,
+  `test_idle_trigger_kinds.py`.
+
 ### SPEND ATTRIBUTION — whose money is it (`ai_interaction_logs.consumer/.source`)
 Every OpenAI call is logged (invariant §4), but only a DIALOGUE turn carries a
 `session_id` — the quality judge, the proactive agent's decision call and the media

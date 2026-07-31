@@ -51,6 +51,7 @@ const SECTION_LABELS = {
   agent: 'Proactive agent (event-driven)',
   guards: 'Send-frequency guards (per-player protection)',
   delivery: 'Delivery',
+  orchestrator: 'Orchestrator (measurement · RG · offers · journeys · channels)',
 };
 
 // Per-module tab labels where the group name alone would mislead (the
