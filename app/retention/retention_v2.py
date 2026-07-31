@@ -384,6 +384,42 @@ async def run_product_events(product: dict[str, Any], *,
         attributed = await outcomes.run_product_attribution(pid)
         if attributed.get("attributed"):
             stats["attributed"] = attributed["attributed"]
+        # Scoring (dormancy cohorts / RFM / value tiers): self-paced recompute
+        # of the per-player cache the guards, offers and journeys read.
+        try:
+            from app.retention import scoring
+            scored = await scoring.run_product_scoring(pid, cfg)
+            if scored.get("scored"):
+                stats["scored"] = scored["scored"]
+        except Exception:  # noqa: BLE001
+            log.exception("retention_scoring_sweep_failed product=%s", pid)
+        # Activity profiles (Smart Send Time input): self-paced, only when SST
+        # is on for the product.
+        try:
+            from app.retention import frequency
+            prof = await frequency.run_product_activity_profiles(pid, cfg)
+            if prof.get("updated"):
+                stats["profiles"] = prof["updated"]
+        except Exception:  # noqa: BLE001
+            log.exception("retention_profile_sweep_failed product=%s", pid)
+        # Journeys (DOC-6a): scheduled matching + due-step drain, self-paced,
+        # gated by `journeys_enabled` per product.
+        try:
+            from app.retention import journeys
+            jstats = await journeys.run_product_journeys(product, cfg)
+            for k in ("enrolled", "executed", "exited"):
+                if jstats.get(k):
+                    stats[f"journey_{k}"] = jstats[k]
+        except Exception:  # noqa: BLE001
+            log.exception("journey_sweep_failed product=%s", pid)
+        # Delivery retries (DOC-7): transient non-telegram failures, backoff.
+        try:
+            from app.retention import channels
+            retried = await channels.drain_delivery_retries(product, cfg)
+            if retried:
+                stats["delivery_retries"] = retried
+        except Exception:  # noqa: BLE001
+            log.exception("delivery_retry_sweep_failed product=%s", pid)
         return stats
 
 
@@ -451,7 +487,7 @@ async def resolve_player_state(product_id: int, ru: dict[str, Any],
     else:
         lifecycle = "d181_plus_veteran"
 
-    return {
+    state = {
         "user_status": user_status,
         "risk_state": risk_state,
         "lifecycle_stage": lifecycle,
@@ -463,6 +499,11 @@ async def resolve_player_state(product_id: int, ru: dict[str, Any],
         "pings_muted": bool(ru.get("pings_muted")),
         "subscribed": bool(ru.get("subscribed")),
     }
+    # ADDITIVE scoring dimensions (dormancy cohort / RFM / value tier / VIP
+    # segment, DOC-5) — appended from the sweep-maintained cache only when
+    # scoring is enabled; the base fields above never change semantics.
+    from app.retention import scoring  # late: scoring imports this module
+    return scoring.annotate_state(state, ru, cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -487,6 +528,20 @@ async def guard_check(product_id: int, ru: dict[str, Any],
     """The hard rails. Returns {"allow", "reasons", "allowed_actions",
     "constraints", "comfort"} — every deny carries its reason so the ledger
     explains itself."""
+    # RG FIRST — responsible gaming beats everything (holdout, frequency, the
+    # model). A permanent status denies outright; a conditional one lets a
+    # non-game touch through WITH the no-play-talk constraint (collected below).
+    rg_constraint: Optional[str] = None
+    from app.retention import rg_guard  # late: rg_guard imports db only
+    rg_verdict = await rg_guard.gate(product_id, ru, "event_reaction", cfg)
+    if rg_verdict is not None:
+        if rg_verdict.get("deny"):
+            return {"allow": False, "reasons": [rg_verdict["reason"]],
+                    "allowed_actions": [], "constraints": [],
+                    "comfort": False,
+                    "holdout_group": ru.get("holdout_group") or "treatment"}
+        rg_constraint = rg_verdict.get("constraint")
+
     reasons: list[str] = []
     if not ru.get("subscribed"):
         reasons.append("not_subscribed")
@@ -494,17 +549,47 @@ async def guard_check(product_id: int, ru: dict[str, Any],
         reasons.append("player_opted_out")
     if ru.get("unreachable"):
         reasons.append("bot_blocked_by_player")
-    # Shared anti-annoyance state (the per-player ping counters/gaps).
-    gap_h = int(cfg["ping_min_gap_hours"])
-    last_ping_days = days_since(ru.get("last_ping_at"))
-    if last_ping_days is not None and last_ping_days * 24 < gap_h:
-        reasons.append("min_gap_not_elapsed")
-    pings_day = ru.get("pings_day")
-    # UTC: same clock as the DB-side day rollover (see db.record_retention_ping).
-    today = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
-    if (pings_day is not None and str(pings_day)[:10] == today
-            and int(ru.get("pings_sent_today") or 0) >= int(cfg["ping_daily_cap"])):
-        reasons.append("daily_cap_reached")
+    # HOLDOUT (measurement): a deterministically held-out player never gets a
+    # proactive touch — instead a VIRTUAL outcome row records the would-have
+    # moment so uplift has a base rate. Checked only when the hard denies
+    # passed (a blocked player would not have been touched anyway, so a
+    # virtual row there would poison the base rate), and BEFORE any further
+    # guard work or model call.
+    if not reasons:
+        from app.retention import measurement  # late: measurement imports db only
+        grp = await measurement.resolve_holdout_group(product_id, ru, cfg)
+        if grp == measurement.HOLDOUT:
+            await measurement.open_virtual_outcome(product_id, ru,
+                                                   evt.get("event_name"))
+            return {"allow": False, "reasons": ["held_out"],
+                    "allowed_actions": [], "constraints": [],
+                    "comfort": False, "holdout_group": grp}
+    # Frequency: the ADAPTIVE priority/cohort-aware gate when enabled (DOC-4;
+    # P1/P2 touches are never cut, VIP cohorts may run relaxed rows), else the
+    # legacy static guards bit-for-bit.
+    from app.retention import frequency
+    if evt.get("event_name") == "bet_settled":
+        _touch_type = "loss_rescue"
+    elif evt.get("event_name") in ("level_up", "class_up"):
+        _touch_type = "level_up"
+    else:
+        _touch_type = "event_reaction"
+    fq = await frequency.gate(product_id, ru, _touch_type, cfg)
+    if fq is not None:
+        if not fq["allow"] and fq["reason"]:
+            reasons.append(fq["reason"])
+    else:
+        # Shared anti-annoyance state (the per-player ping counters/gaps).
+        gap_h = int(cfg["ping_min_gap_hours"])
+        last_ping_days = days_since(ru.get("last_ping_at"))
+        if last_ping_days is not None and last_ping_days * 24 < gap_h:
+            reasons.append("min_gap_not_elapsed")
+        pings_day = ru.get("pings_day")
+        # UTC: same clock as the DB-side day rollover (see db.record_retention_ping).
+        today = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
+        if (pings_day is not None and str(pings_day)[:10] == today
+                and int(ru.get("pings_sent_today") or 0) >= int(cfg["ping_daily_cap"])):
+            reasons.append("daily_cap_reached")
     # NB: quiet hours are NOT a guard reason — the worker defers CLAIMING
     # during the window (run_product_events), so a night event is reacted to
     # in the morning instead of being consumed as 'blocked'.
@@ -549,12 +634,14 @@ async def guard_check(product_id: int, ru: dict[str, Any],
 
     allowed = ["silence", "message"]
     constraints: list[str] = []
+    if rg_constraint:
+        constraints.append(rg_constraint)
     if comfort:
         constraints.append(
             "comfort mode - the player recently lost money: empathetic tone "
             "only, never mention amounts, no play invitation, no photo, "
             "no link")
-    elif evt.get("event_name") in _PHOTO_EVENTS:
+    elif evt.get("event_name") in _PHOTO_EVENTS and not rg_constraint:
         allowed.append("photo")
     return {
         "allow": not reasons,
@@ -562,6 +649,7 @@ async def guard_check(product_id: int, ru: dict[str, Any],
         "allowed_actions": allowed,
         "constraints": constraints,
         "comfort": comfort,
+        "holdout_group": ru.get("holdout_group") or "treatment",
     }
 
 
@@ -742,6 +830,15 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
             return "skipped"
         return None
 
+    # Return detection (scoring): real activity flips a dormant cohort back to
+    # 'active' on the HOT path — a returned player must never be treated as
+    # dormant for up to a sweep interval (recovery journeys key on the cohort).
+    from app.retention import scoring
+    if (scoring.scoring_enabled(cfg)
+            and evt.get("event_name") in ("session_started", "session_ended",
+                                          "deposit_confirmed", "bet_settled")):
+        await scoring.mark_recovered(pid, ru)
+
     state = await resolve_player_state(pid, ru, cfg)
     if not _is_decision_worthy(evt, state, cfg):
         return None
@@ -760,6 +857,29 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
                  ",".join(guard["reasons"]))
         return "blocked"
 
+    # OFFER RESOLVE (deterministic, BEFORE the model): when the event matches
+    # an enabled offer trigger and every offer guard (RG, VIP suppression,
+    # eligibility, cooldown, budget) says yes, 'grant_offer' joins the model's
+    # allowed actions with a constraint line describing the stimulus. The
+    # model can only choose it — never conjure it.
+    from app.retention import offers
+    offer = None
+    offer_deny: Optional[str] = None
+    if offers.offers_enabled(cfg):
+        trigger_key = offers.classify_offer_trigger(evt, state, cfg)
+        if trigger_key:
+            offer, offer_deny = await offers.resolve_offer(
+                pid, ru, trigger_key, cfg, state)
+            if offer is not None:
+                guard = dict(guard)
+                guard["allowed_actions"] = (list(guard["allowed_actions"])
+                                            + ["grant_offer"])
+                guard["constraints"] = (list(guard["constraints"])
+                                        + [offers.offer_constraint_line(offer)])
+            elif offer_deny:
+                guard = dict(guard)
+                guard["offer_denied"] = offer_deny
+
     decision, decision_cost = await _decide(pid, ru, evt, state, guard)
     if decision is None:
         await db.insert_retention_v2_decision(
@@ -775,7 +895,46 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
     detail: Optional[str] = None
     facts: dict[str, Any] = {}
     total_cost = decision_cost
-    if action in ("message", "photo") and not dry_run:
+    grant: Optional[dict[str, Any]] = None
+    if action == "grant_offer" and offer is not None:
+        # Order of operations (invariant): create the pending bonus -> the
+        # partner confirms -> ONLY THEN the persona writes a message that
+        # mentions it. fraud_hold -> message without the bonus; failed ->
+        # silence. Idempotent by the event id, so a retried event can never
+        # grant twice.
+        grant = await offers.do_offer_grant(product, ru, offer, evt["id"],
+                                            cfg)
+        status = str(grant.get("status") or "failed")
+        detail = f"offer:{status}"
+        decision = dict(decision)
+        if status == "granted":
+            desc = str(offer.get("description") or offer.get("offer_key"))
+            decision["intent"] = (
+                f"{decision['intent']} | A real gift was JUST credited to "
+                f"the player's account: {desc}. Mention it warmly and "
+                "concretely; never invent terms beyond this description."
+            )[:900]
+            if not dry_run:
+                delivered, send_cost, sdetail, facts = await _send_touch(
+                    product, ru, evt, decision, comfort=guard["comfort"],
+                    cfg=cfg)
+                total_cost += send_cost
+                if sdetail:
+                    detail = f"offer:granted; {sdetail}"
+        elif status == "dry_run":
+            pass  # shadow grant: ledger only, nothing sent
+        elif status == "fraud_hold":
+            # The touch may still go out — without any mention of a bonus.
+            if not dry_run:
+                delivered, send_cost, sdetail, facts = await _send_touch(
+                    product, ru, evt, decision, comfort=guard["comfort"],
+                    cfg=cfg)
+                total_cost += send_cost
+        else:  # failed — never promise what was not credited
+            action = "silence"
+            decision["reason"] = (decision.get("reason") or "") + \
+                " (offer grant failed -> silence)"
+    elif action in ("message", "photo") and not dry_run:
         delivered, send_cost, detail, facts = await _send_touch(
             product, ru, evt, decision, comfort=guard["comfort"], cfg=cfg)
         total_cost += send_cost
@@ -786,6 +945,13 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
         action=action, intent=decision["intent"], tone=decision["tone"],
         reason=decision["reason"], dry_run=dry_run, delivered=delivered,
         detail=detail, cost_usd=total_cost)
+    if grant is not None:
+        # Back-link the grant to its ledger row (the row id exists only now).
+        try:
+            await db.link_offer_grant_decision(pid, grant["offer_grant_id"],
+                                               decision_id)
+        except Exception:  # noqa: BLE001 - the grant row itself is durable
+            log.exception("offer_grant_link_failed product=%s", pid)
     # Attribution: a touch that actually went out opens an outcome row, so the
     # next decision for this player can read what he did with the last one.
     if delivered:
@@ -809,6 +975,13 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
         "tone=%s dry_run=%s delivered=%s detail=%s cost_usd=%.6f",
         pid, player_id, evt.get("event_name"), action, decision["tone"],
         dry_run, delivered, detail, total_cost)
+    # Event-triggered journey enrollment (DOC-6a): AFTER the single reaction —
+    # enrollment only schedules future steps, it never touches the player now.
+    try:
+        from app.retention import journeys
+        await journeys.match_event_journeys(product, evt, ru, state, cfg)
+    except Exception:  # noqa: BLE001 - matching must never wedge the pipeline
+        log.exception("journey_matching_failed product=%s", pid)
     return "sent" if delivered else action
 
 

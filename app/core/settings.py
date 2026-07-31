@@ -551,6 +551,83 @@ def retention() -> dict[str, Any]:
         # (retention_v2.DECISION_EVENTS); bet_settled is special-cased on the
         # loss threshold and never listed here.
         "v2_decision_events": db_v.get("v2_decision_events"),
+        # --- Orchestrator: measurement (holdout + uplift) -----------------
+        "holdout_pct": db_v.get("holdout_pct", config.RETENTION_HOLDOUT_PCT),
+        "holdout_salt": db_v.get("holdout_salt", config.RETENTION_HOLDOUT_SALT),
+        # --- Orchestrator: RG guard (responsible gaming) ------------------
+        "rg_enabled": db_v.get("rg_enabled", config.RETENTION_RG_ENABLED),
+        "rg_require_consent": db_v.get("rg_require_consent",
+                                       config.RETENTION_RG_REQUIRE_CONSENT),
+        "rg_unknown_status_policy": db_v.get(
+            "rg_unknown_status_policy",
+            config.RETENTION_RG_UNKNOWN_STATUS_POLICY),
+        "rg_dialogue_suppression": db_v.get(
+            "rg_dialogue_suppression",
+            config.RETENTION_RG_DIALOGUE_SUPPRESSION),
+        # --- Orchestrator: adaptive frequency + smart send time -----------
+        "adaptive_frequency_enabled": db_v.get(
+            "adaptive_frequency_enabled",
+            config.RETENTION_ADAPTIVE_FREQUENCY_ENABLED),
+        "smart_send_time_enabled": db_v.get(
+            "smart_send_time_enabled",
+            config.RETENTION_SMART_SEND_TIME_ENABLED),
+        "sst_max_shift_hours": db_v.get("sst_max_shift_hours",
+                                        config.RETENTION_SST_MAX_SHIFT_HOURS),
+        "sst_min_sample": db_v.get("sst_min_sample",
+                                   config.RETENTION_SST_MIN_SAMPLE),
+        "activity_profile_sweep_interval_sec": db_v.get(
+            "activity_profile_sweep_interval_sec",
+            config.RETENTION_ACTIVITY_PROFILE_SWEEP_INTERVAL_SEC),
+        # --- Orchestrator: player scoring ---------------------------------
+        "scoring_enabled": db_v.get("scoring_enabled",
+                                    config.RETENTION_SCORING_ENABLED),
+        "scoring_sweep_interval_sec": db_v.get(
+            "scoring_sweep_interval_sec",
+            config.RETENTION_SCORING_SWEEP_INTERVAL_SEC),
+        "rfm_window_days": db_v.get("rfm_window_days",
+                                    config.RETENTION_RFM_WINDOW_DAYS),
+        # --- Orchestrator: offer engine -----------------------------------
+        "offers_enabled": db_v.get("offers_enabled",
+                                   config.RETENTION_OFFERS_ENABLED),
+        "offer_dry_run": db_v.get("offer_dry_run",
+                                  config.RETENTION_OFFER_DRY_RUN),
+        "offer_daily_budget_usd": db_v.get(
+            "offer_daily_budget_usd", config.RETENTION_OFFER_DAILY_BUDGET_USD),
+        "offer_cooldown_hours": db_v.get(
+            "offer_cooldown_hours", config.RETENTION_OFFER_COOLDOWN_HOURS),
+        "offer_lifetime_cap": db_v.get("offer_lifetime_cap",
+                                       config.RETENTION_OFFER_LIFETIME_CAP),
+        "offer_grant_timeout_sec": db_v.get(
+            "offer_grant_timeout_sec",
+            config.RETENTION_OFFER_GRANT_TIMEOUT_SEC),
+        # --- Orchestrator: journey engine ---------------------------------
+        "journeys_enabled": db_v.get("journeys_enabled",
+                                     config.RETENTION_JOURNEYS_ENABLED),
+        "journeys_dry_run_default": db_v.get(
+            "journeys_dry_run_default",
+            config.RETENTION_JOURNEYS_DRY_RUN_DEFAULT),
+        "journey_step_sweep_interval_sec": db_v.get(
+            "journey_step_sweep_interval_sec",
+            config.RETENTION_JOURNEY_STEP_SWEEP_INTERVAL_SEC),
+        "journey_max_active_per_player": db_v.get(
+            "journey_max_active_per_player",
+            config.RETENTION_JOURNEY_MAX_ACTIVE_PER_PLAYER),
+        # --- Orchestrator: scenario / template library --------------------
+        "scenario_library_autoseed": db_v.get(
+            "scenario_library_autoseed", config.RETENTION_SCENARIO_AUTOSEED),
+        "abandonment_delay_hours": db_v.get(
+            "abandonment_delay_hours",
+            config.RETENTION_ABANDONMENT_DELAY_HOURS),
+        # --- Orchestrator: channel abstraction ----------------------------
+        "multichannel_enabled": db_v.get(
+            "multichannel_enabled", config.RETENTION_MULTICHANNEL_ENABLED),
+        "channel_auto_priority": db_v.get(
+            "channel_auto_priority", config.RETENTION_CHANNEL_AUTO_PRIORITY),
+        "delivery_retry_enabled": db_v.get(
+            "delivery_retry_enabled", config.RETENTION_DELIVERY_RETRY_ENABLED),
+        "push_delivery_timeout_sec": db_v.get(
+            "push_delivery_timeout_sec",
+            config.RETENTION_PUSH_DELIVERY_TIMEOUT_SEC),
     }
 
 
@@ -711,6 +788,44 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
             raise ValueError("v2_send_delay_max_sec must be >= v2_send_delay_min_sec")
         _require_bool(value, "idle_pings_enabled")
         _require_int(value, "idle_sweep_interval_sec", 60, 86_400)
+        # Orchestrator: measurement
+        _require_int(value, "holdout_pct", 0, 50)
+        _require_nonempty_str(value, "holdout_salt")
+        # Orchestrator: RG guard
+        _require_bool(value, "rg_enabled")
+        _require_bool(value, "rg_require_consent")
+        _require_choice(value, "rg_unknown_status_policy", ("warn", "block"))
+        _require_bool(value, "rg_dialogue_suppression")
+        # Orchestrator: adaptive frequency + smart send time
+        _require_bool(value, "adaptive_frequency_enabled")
+        _require_bool(value, "smart_send_time_enabled")
+        _require_int(value, "sst_max_shift_hours", 1, 4)
+        _require_int(value, "sst_min_sample", 5, 100)
+        _require_int(value, "activity_profile_sweep_interval_sec", 600, 86_400)
+        # Orchestrator: player scoring
+        _require_bool(value, "scoring_enabled")
+        _require_int(value, "scoring_sweep_interval_sec", 600, 86_400)
+        _require_int(value, "rfm_window_days", 7, 180)
+        # Orchestrator: offer engine
+        _require_bool(value, "offers_enabled")
+        _require_bool(value, "offer_dry_run")
+        _require_float(value, "offer_daily_budget_usd", 0.0, 1_000_000.0)
+        _require_int(value, "offer_cooldown_hours", 0, 8_760)
+        _require_int(value, "offer_lifetime_cap", 0, 100_000)
+        _require_int(value, "offer_grant_timeout_sec", 5, 30)
+        # Orchestrator: journey engine
+        _require_bool(value, "journeys_enabled")
+        _require_bool(value, "journeys_dry_run_default")
+        _require_int(value, "journey_step_sweep_interval_sec", 60, 3_600)
+        _require_int(value, "journey_max_active_per_player", 1, 10)
+        # Orchestrator: scenario / template library
+        _require_bool(value, "scenario_library_autoseed")
+        _require_int(value, "abandonment_delay_hours", 1, 24)
+        # Orchestrator: channel abstraction
+        _require_bool(value, "multichannel_enabled")
+        _require_nonempty_str(value, "channel_auto_priority")
+        _require_bool(value, "delivery_retry_enabled")
+        _require_int(value, "push_delivery_timeout_sec", 5, 30)
         if value.get("v2_decision_events") is not None:
             from app.retention import player_sync  # lazy: avoid an import cycle at module load
             v = value["v2_decision_events"]

@@ -1190,12 +1190,17 @@ async def _run_nika_turn(client: TelegramClient, product: dict[str, Any],
     # Native "typing…" indicator while the model thinks — a reasoning turn can
     # take many seconds and dead silence before a sudden paragraph is a bot tell.
     async with _typing(client, pu.chat_id):
+        from app.retention import rg_guard
         reply = await chat_service.handle_retention_message(
             session, text, candidates, appearance=appearance,
             # The player's real closeness/VIP progress (Layer-3 PROGRESSION
             # block) so Nika can explain how photos unlock accurately.
             progression=progression_context(ru),
-            intro_photo=intro)
+            intro_photo=intro,
+            # RG dialogue suppression: a restricted player who writes himself
+            # still gets warm answers, but no play/deposit/bonus CTAs.
+            rg_suppress=rg_guard.dialogue_suppression_due(
+                ru, settings.retention()))
 
     # Keep the retention_users row's sticky language in step with the answer
     # drift (chat_service persists it on the session; the ru copy drives the

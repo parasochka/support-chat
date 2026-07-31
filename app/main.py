@@ -23,6 +23,7 @@ from app.api import admin as admin_api
 from app.api import admin_auth as admin_auth_api
 from app.api import chat as chat_api
 from app.api import health as health_api
+from app.api import orchestrator as orchestrator_api
 from app.api import quality as quality_api
 from app.api import retention as retention_api
 
@@ -381,6 +382,8 @@ app.include_router(admin_auth_api.router)   # /admin/login + require_admin
 app.include_router(admin_api.router)        # /admin/* data + management (guarded)
 app.include_router(retention_api.public_router)  # telegram webhook + deeplink + CRM
 app.include_router(retention_api.admin_router)    # /admin/retention/* (guarded)
+app.include_router(orchestrator_api.router)       # /admin/retention/* orchestrator (guarded)
+app.include_router(orchestrator_api.system_router)  # /admin/integration-checklist
 app.include_router(quality_api.router)            # /admin/quality/* (guarded)
 
 

@@ -58,7 +58,11 @@ async def record(product_id: int, ru: Optional[dict[str, Any]], *, kind: str,
             kind=kind, session_id=session_id, decision_id=decision_id,
             rule_id=rule_id, event_name=event_name, action=action, tone=tone,
             photo_id=photo_id, media_type=media_type, link_url=link_url,
-            cost_usd=cost_usd)
+            cost_usd=cost_usd,
+            # The holdout label AT touch time (uplift cuts by it). A proactive
+            # touch only ever goes to a treatment player; carrying the label
+            # explicitly keeps the uplift query one flat filter.
+            holdout_group=(ru or {}).get("holdout_group") or "treatment")
     except Exception:  # noqa: BLE001 - analytics must never break a send
         log.exception("retention_outcome_record_failed product=%s kind=%s",
                       product_id, kind)

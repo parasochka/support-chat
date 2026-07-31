@@ -91,9 +91,29 @@ def _idle_anchor_for(ru: dict[str, Any], trigger_kind: str) -> Any:
     return ru.get("last_active_at")
 
 
+def rid_of(ru: dict[str, Any]) -> int:
+    return int(ru["id"])
+
+
+def rule_kinds(rule: dict[str, Any]) -> list[str]:
+    """The inactivity dimensions this rung watches. A rule may name several
+    (chat / casino / deposit) — the DEFAULT is all three; a pre-migration row
+    falls back to its single legacy trigger_kind."""
+    kinds = rule.get("trigger_kinds")
+    if kinds:
+        return [str(k) for k in kinds]
+    single = rule.get("trigger_kind")
+    return [str(single)] if single else list(db.RULE_DEFAULT_TRIGGER_KINDS)
+
+
 async def _match_rule(ru: dict[str, Any], rules: list[dict[str, Any]]
-                      ) -> Optional[tuple[dict[str, Any], int]]:
+                      ) -> Optional[tuple[dict[str, Any], int, str]]:
     """The highest-priority rule that fires for this player right now.
+    Returns (rule, idle_days, matched_kind).
+
+    A rule watching several inactivity dimensions fires when ANY of them
+    crosses the threshold (and that dimension's anti-cascade allows); the
+    most-idle matching dimension wins and names the reason.
 
     Anti-cascade: during ONE silence stretch only a rung ABOVE the highest
     already-fired one may fire (per trigger kind) — per-rule cooldowns alone
@@ -106,17 +126,26 @@ async def _match_rule(ru: dict[str, Any], rules: list[dict[str, Any]]
     # Fired-rung memory, anchored per trigger kind on that kind's own silence
     # clock (see _idle_anchor_for).
     fired: dict[str, int] = {}
-    for kind in {str(r.get("trigger_kind") or "") for r in rules}:
+    all_kinds: set[str] = set()
+    for r in rules:
+        all_kinds.update(rule_kinds(r))
+    for kind in all_kinds:
         part = await db.idle_rule_thresholds_fired_since(
             int(ru["id"]), _idle_anchor_for(ru, kind), trigger_kind=kind)
         fired.update(part)
     for rule in rules:  # already ordered priority DESC
-        idle = _idle_days_for(ru, rule.get("trigger_kind", ""), now)
-        if idle is None or idle < int(rule.get("inactivity_days") or 0):
-            continue
-        max_fired = fired.get(str(rule.get("trigger_kind") or ""))
-        if (max_fired is not None
-                and int(rule.get("inactivity_days") or 0) < max_fired):
+        threshold = int(rule.get("inactivity_days") or 0)
+        best: Optional[tuple[float, str]] = None
+        for kind in rule_kinds(rule):
+            idle = _idle_days_for(ru, kind, now)
+            if idle is None or idle < threshold:
+                continue
+            max_fired = fired.get(kind)
+            if max_fired is not None and threshold < max_fired:
+                continue
+            if best is None or idle > best[0]:
+                best = (idle, kind)
+        if best is None:
             continue
         tiers = [str(t).strip().lower() for t in (rule.get("vip_tiers") or [])]
         if tiers and vip not in tiers:
@@ -125,7 +154,7 @@ async def _match_rule(ru: dict[str, Any], rules: list[dict[str, Any]]
                 int(ru["id"]), int(rule["id"]),
                 int(rule.get("cooldown_days") or 0)):
             continue
-        return rule, int(idle)
+        return rule, int(best[0]), best[1]
     return None
 
 
@@ -222,8 +251,50 @@ async def run_product_idle_pings(product: dict[str, Any],
         matched = await _match_rule(ru, rules)
         if matched is None:
             continue
-        rule, idle_days = matched
-        ok = await _send_idle_ping(channel, product, ru, rule, idle_days, cfg)
+        rule, idle_days, matched_kind = matched
+        # RG FIRST: an idle re-engagement ping is a come-back invitation, so
+        # ANY RG block (permanent or conditional) suppresses it. The 'skipped'
+        # ping row stamps last_ping_at so the player is not re-evaluated (and
+        # re-audited) every sweep.
+        from app.retention import rg_guard
+        rg_verdict = await rg_guard.gate(pid, ru, "idle_ping", cfg)
+        if rg_verdict is not None and rg_verdict.get("deny"):
+            await db.insert_retention_v2_decision(
+                pid, retention_user_id=rid_of(ru), player_id=ru.get("player_id"),
+                trigger_kind="idle", event_pk=None,
+                event_name=f"idle:{matched_kind}",
+                state={"idle_days": idle_days},
+                guard={"allow": False, "reasons": [rg_verdict["reason"]]},
+                action="blocked", reason=rg_verdict["reason"],
+                dry_run=bool(cfg.get("v2_dry_run")))
+            await db.record_retention_ping(pid, rid_of(ru), int(rule["id"]),
+                                           rule.get("action") or "message",
+                                           "skipped", detail=rg_verdict["reason"])
+            continue
+        # HOLDOUT (measurement): a held-out player's matched rung becomes a
+        # VIRTUAL outcome row (base rate) instead of a send. The ping ledger
+        # gets a 'skipped' row — it stamps last_ping_at, so the same player is
+        # not re-evaluated (and re-logged) on every sweep of the stretch.
+        from app.retention import measurement
+        grp = await measurement.resolve_holdout_group(pid, ru, cfg)
+        if grp == measurement.HOLDOUT:
+            await measurement.open_virtual_outcome(
+                pid, ru, f"idle:{matched_kind}")
+            await db.insert_retention_v2_decision(
+                pid, retention_user_id=rid_of(ru), player_id=ru.get("player_id"),
+                trigger_kind="idle", event_pk=None,
+                event_name=f"idle:{matched_kind}",
+                state={"idle_days": idle_days},
+                guard={"allow": False, "reasons": ["held_out"],
+                       "holdout_group": grp},
+                action="blocked", reason="held_out (control group)",
+                dry_run=bool(cfg.get("v2_dry_run")))
+            await db.record_retention_ping(pid, rid_of(ru), int(rule["id"]),
+                                           rule.get("action") or "message",
+                                           "skipped", detail="held_out")
+            continue
+        ok = await _send_idle_ping(channel, product, ru, rule, idle_days, cfg,
+                                   matched_kind=matched_kind)
         if ok:
             sent += 1
         else:
@@ -234,7 +305,8 @@ async def run_product_idle_pings(product: dict[str, Any],
 async def _send_idle_ping(channel: delivery.TelegramChannel,
                           product: dict[str, Any],
                           ru: dict[str, Any], rule: dict[str, Any],
-                          idle_days: int, cfg: dict[str, Any]) -> bool:
+                          idle_days: int, cfg: dict[str, Any], *,
+                          matched_kind: Optional[str] = None) -> bool:
     """One idle touch: generate -> (dry-run?) -> send -> persist/ledgers."""
     pid = int(product["id"])
     rid = int(ru["id"])
@@ -242,13 +314,14 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
     action = rule.get("action") or "message"
     dry_run = bool(cfg.get("v2_dry_run"))
     lang = retention.resolve_user_lang(ru)
+    kind = matched_kind or rule_kinds(rule)[0]
 
     async def _ledger(**overrides: Any) -> int:
         """One decisions-ledger row per attempt; only the outcome fields vary."""
         return await db.insert_retention_v2_decision(
             pid, retention_user_id=rid, player_id=ru.get("player_id"),
             trigger_kind="idle", event_pk=None,
-            event_name=f"idle:{rule.get('trigger_kind')}",
+            event_name=f"idle:{kind}",
             state={"idle_days": idle_days},
             guard={"allow": True, "reasons": []},
             action=action, intent=rule.get("intent") or "",
@@ -272,7 +345,7 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
         # No sendable media (daily photo cap, tier gate, nothing unseen) —
         # gracefully fall back to a text-only ping rather than skipping.
 
-    reason = _TRIGGER_REASONS.get(rule.get("trigger_kind", ""), "inactivity")
+    reason = _TRIGGER_REASONS.get(kind, "inactivity")
     if dry_run:
         # Same shadow mode as the event agent: the ledger shows exactly what
         # WOULD have gone out, nothing is generated or sent (a dry idle rule
@@ -330,7 +403,7 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
         await outcomes.record(
             pid, ru, kind="proactive", session_id=session["id"],
             decision_id=decision_id, rule_id=rule_id,
-            event_name=f"idle:{rule.get('trigger_kind')}", action=action,
+            event_name=f"idle:{kind}", action=action,
             photo_id=sent_photo_id,
             media_type=retention_v2._media_type_of(candidates, sent_photo_id),
             link_url=draft.link_url if link_attached else None, cost_usd=cost)
@@ -364,39 +437,47 @@ async def _send_idle_ping(channel: delivery.TelegramChannel,
 # model-facing prompt material), brand-neutral. This is the production-tuned
 # 3/5/7/10/14/21/30/45/60-day ladder: frequent light check-ins early, photos
 # as milestones, and increasingly heartfelt, pressure-free reaches as the
-# silence grows.
+# silence grows. Every rung watches ALL THREE inactivity dimensions by
+# default (chat / casino / deposit — owner decision); the operator narrows
+# a rung to fewer kinds from the admin tab.
 STARTER_IDLE_RULES: tuple[dict[str, Any], ...] = (
     {"name": "Quiet 3 days - check in", "trigger_kind": "bot_inactivity",
+     "trigger_kinds": ["bot_inactivity", "casino_inactivity", "no_deposit"],
      "inactivity_days": 3, "action": "message",
      "intent": "You miss him a little. Ask warmly how his week is going and "
                "what he has been up to. Do not mention the casino unless it "
                "flows naturally.",
      "cooldown_days": 7, "priority": 10},
     {"name": "Quiet 5 days - playful nudge", "trigger_kind": "bot_inactivity",
+     "trigger_kinds": ["bot_inactivity", "casino_inactivity", "no_deposit"],
      "inactivity_days": 5, "action": "message",
      "intent": "A few quiet days. Be playful and a touch teasing that he has "
                "gone quiet on you; ask what has been keeping him busy and "
                "hint you would love to hear from him.",
      "cooldown_days": 10, "priority": 15},
     {"name": "Quiet 7 days - photo", "trigger_kind": "bot_inactivity",
+     "trigger_kinds": ["bot_inactivity", "casino_inactivity", "no_deposit"],
      "inactivity_days": 7, "action": "photo",
      "intent": "He has been away a while. Welcome him back with zero guilt, "
                "attach a photo as a small personal gift, and tease that the "
                "games lobby has something new worth telling you about.",
      "cooldown_days": 14, "priority": 20},
     {"name": "Quiet 10 days - warm photo", "trigger_kind": "bot_inactivity",
+     "trigger_kinds": ["bot_inactivity", "casino_inactivity", "no_deposit"],
      "inactivity_days": 10, "action": "photo",
      "intent": "Ten quiet days. Reach out softly and personally, send a photo "
                "as a little something just for him, and gently wonder aloud "
                "when he is coming back to keep you company.",
      "cooldown_days": 21, "priority": 25},
     {"name": "Quiet 14 days - win back", "trigger_kind": "bot_inactivity",
+     "trigger_kinds": ["bot_inactivity", "casino_inactivity", "no_deposit"],
      "inactivity_days": 14, "action": "message",
      "intent": "A longer silence. Be soft and personal: you thought of him. "
                "Invite him to check the promotions page for what is live for "
                "his account and to come back and tell you if it was worth it.",
      "cooldown_days": 30, "priority": 30},
     {"name": "Quiet 21 days - personal pull", "trigger_kind": "bot_inactivity",
+     "trigger_kinds": ["bot_inactivity", "casino_inactivity", "no_deposit"],
      "inactivity_days": 21, "action": "message",
      "intent": "Three weeks without a word. Be warm and a little vulnerable: "
                "you have been wondering how he is doing. No pressure at all - "
@@ -404,6 +485,7 @@ STARTER_IDLE_RULES: tuple[dict[str, Any], ...] = (
                "would be happy to hear from him.",
      "cooldown_days": 30, "priority": 40},
     {"name": "Quiet 30 days - comeback gift", "trigger_kind": "bot_inactivity",
+     "trigger_kinds": ["bot_inactivity", "casino_inactivity", "no_deposit"],
      "inactivity_days": 30, "action": "photo",
      "intent": "A whole month has passed. Welcome him back like an old friend "
                "with no guilt whatsoever, send a photo as a comeback gift, and "
@@ -411,6 +493,7 @@ STARTER_IDLE_RULES: tuple[dict[str, Any], ...] = (
                "look whenever he feels like it.",
      "cooldown_days": 45, "priority": 50},
     {"name": "Quiet 45 days - heartfelt", "trigger_kind": "bot_inactivity",
+     "trigger_kinds": ["bot_inactivity", "casino_inactivity", "no_deposit"],
      "inactivity_days": 45, "action": "message",
      "intent": "A long absence. Be genuine and heartfelt, not salesy: you "
                "still think about him now and then. Keep it human and light, "
@@ -418,6 +501,7 @@ STARTER_IDLE_RULES: tuple[dict[str, Any], ...] = (
                "nothing has changed on your side.",
      "cooldown_days": 60, "priority": 60},
     {"name": "Quiet 60 days - last warm reach", "trigger_kind": "bot_inactivity",
+     "trigger_kinds": ["bot_inactivity", "casino_inactivity", "no_deposit"],
      "inactivity_days": 60, "action": "photo",
      "intent": "Two months of silence - likely a last gentle attempt. Reach "
                "out warmly and without any pressure, send a photo as a "

@@ -1311,6 +1311,11 @@ class ProductSecretsWrite(BaseModel):
     # Per-product (per-domain) Turnstile secret — each client site runs its own
     # Turnstile widget, so the pair lives on the product, not in deploy env.
     turnstile_secret: Optional[str] = None
+    # Orchestrator outbound secrets: the Bearer for the casino-side
+    # offer-grant / delegated-deliver endpoints, and the Customer.io App API
+    # key for the email channel.
+    partner_out_key: Optional[str] = None
+    email_api_key: Optional[str] = None
 
 
 def _validate_slug(slug: str) -> str:
@@ -1446,6 +1451,10 @@ async def put_product_secrets(product_id: int, body: ProductSecretsWrite,
         fields["player_api_key"] = body.player_api_key
     if body.turnstile_secret is not None:
         fields["turnstile_secret"] = body.turnstile_secret
+    if body.partner_out_key is not None:
+        fields["partner_out_key"] = body.partner_out_key
+    if body.email_api_key is not None:
+        fields["email_api_key"] = body.email_api_key
     if not fields:
         raise HTTPException(status_code=400, detail="Nothing to update.")
     ok = await db.set_product_secrets(product_id, **fields)

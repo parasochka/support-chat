@@ -725,6 +725,7 @@ async def handle_retention_message(
     appearance: Optional[dict[str, Any]] = None,
     progression: Optional[dict[str, Any]] = None,
     intro_photo: bool = False,
+    rg_suppress: bool = False,
 ) -> RetentionReply:
     """Process one retention (Telegram) turn for an already-linked session.
 
@@ -751,7 +752,8 @@ async def handle_retention_message(
     kb_block, history, previous_history, client = await _retention_context(session)
     # Periodic play reminder: every N-th reply carries the Layer-3 nudge task
     # (a light in-context invitation to play + a one-tap site-map button).
-    nudge = play_nudge_due(session.get("message_count", 0), str(session_id))
+    nudge = (play_nudge_due(session.get("message_count", 0), str(session_id))
+             and not rg_suppress)
     # On a nudge turn only: the CTA pages whose buttons actually earned a
     # response (attribution ledger) — a tie-breaker for the rotation, which
     # otherwise picks blind. One cheap query every ~5th turn, best-effort.
@@ -774,6 +776,7 @@ async def handle_retention_message(
         intro_photo=intro_photo,
         appearance=appearance,
         progression=progression,
+        rg_suppress=rg_suppress,
         # The audience clock (same offset the quiet hours run on) — without it
         # the model guesses the time of day ("enjoy your evening" at 10:00).
         tz_offset_hours=settings.retention()["quiet_hours_utc_offset"],
