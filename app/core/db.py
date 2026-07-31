@@ -739,7 +739,7 @@ CREATE TABLE IF NOT EXISTS retention_cohort_transitions (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_retention_cohort_transition_dedup
   ON retention_cohort_transitions(product_id, player_id, to_cohort,
-                                  (transitioned_at::date));
+                                  ((transitioned_at at time zone 'utc')::date));
 CREATE INDEX IF NOT EXISTS idx_retention_cohort_transitions_product
   ON retention_cohort_transitions(product_id, transitioned_at);
 
@@ -6325,7 +6325,8 @@ async def log_cohort_transition(product_id: int, player_id: str, *,
         "INSERT INTO retention_cohort_transitions (product_id, player_id, "
         " from_cohort, to_cohort, days_inactive) "
         "VALUES ($1, $2, $3, $4, $5) "
-        "ON CONFLICT (product_id, player_id, to_cohort, (transitioned_at::date)) "
+        "ON CONFLICT (product_id, player_id, to_cohort, "
+        " ((transitioned_at at time zone 'utc')::date)) "
         "DO NOTHING RETURNING id",
         product_id, player_id, from_cohort, to_cohort, int(days_inactive),
     )
