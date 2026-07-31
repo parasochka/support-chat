@@ -2095,6 +2095,63 @@ const RU = {
     "Делегированный, как push.",
   "Human route — a task in the host queue, never a bot message.":
     "Человеческий маршрут — задача в очереди хоста, никогда не сообщение бота.",
+  // ----- orchestrator settings section + idle-pings multi-trigger -----
+  "Holdout control group (%)":
+    "Холдаут — контрольная группа (%)",
+  "Share of players deterministically held out of ALL proactive touches to measure real uplift (business decision: 15% by default). 0 = off. Change the salt on the Orchestrator → Measurement tab to start a new experiment.":
+    "Доля игроков, детерминированно исключаемая из ВСЕХ проактивных касаний для измерения настоящего uplift (бизнес-решение: 15% по умолчанию). 0 = выкл. Смените соль на вкладке Оркестратор → Измерение, чтобы начать новый эксперимент.",
+  "RG guard (responsible gaming)":
+    "RG-guard (ответственная игра)",
+  "ON by default — protection, not a feature. Self-excluded players (casino-reported or manually marked) never get proactive touches or offers.":
+    "ВКЛЮЧЁН по умолчанию — это защита, а не фича. Самоисключённые игроки (по данным казино или отмеченные вручную) никогда не получают проактивных касаний и бонусов.",
+  "Require marketing consent":
+    "Требовать маркетинговое согласие",
+  "When ON, players without marketing_consent=true get no game touches (Tier-1 markets). OFF at MVP.":
+    "Если ВКЛ, игроки без marketing_consent=true не получают игровых касаний (рынки Tier-1). На MVP выключено.",
+  "RG: strip game CTAs in dialogue":
+    "RG: убирать игровые CTA в диалоге",
+  "A restricted player who writes to the bot still gets warm answers, but play/deposit/bonus invitations are stripped from replies.":
+    "Ограниченный игрок, пишущий боту, по-прежнему получает тёплые ответы, но приглашения играть/пополнить/бонусы из ответов убираются.",
+  "Adaptive frequency caps":
+    "Адаптивные частотные капы",
+  "Priority/cohort-aware cap matrix (P1/P2 touches are never cut; VIP rows may relax; email rides its own budget). OFF = the static guards above apply unchanged.":
+    "Матрица капов с учётом приоритетов и когорт (касания P1/P2 не режутся; строки VIP могут быть мягче; email живёт в своём бюджете). ВЫКЛ = статические гварды выше работают как раньше.",
+  "Smart send time":
+    "Smart Send Time",
+  "Shift non-urgent touches into the hours the player is actually active (their timezone from the casino, else the product offset). Loss reactions keep the short delay.":
+    "Сдвигать несрочные касания в часы, когда игрок реально активен (его таймзона от казино, иначе смещение продукта). Реакции на проигрыш сохраняют короткую задержку.",
+  "Player scoring (cohorts / RFM / value)":
+    "Скоринг игроков (когорты / RFM / value)",
+  "Dormancy cohorts (d7/d10/d14/d21/d30), RFM and value tiers, recomputed in the background. Recovery journeys and VIP handling read them.":
+    "Когорты неактивности (d7/d10/d14/d21/d30), RFM и value-тиры, пересчитываются в фоне. Их читают journeys возврата и обработка VIP.",
+  "Offer engine":
+    "Движок офферов",
+  "Master switch for granting real bonuses (by their bonus-CMS IDs) via the casino endpoint. Also needs dry-run OFF and a non-zero budget below.":
+    "Главный переключатель выдачи настоящих бонусов (по их ID в бонус-CMS) через эндпоинт казино. Также нужны выключенный dry-run и ненулевой бюджет ниже.",
+  "Offers: dry-run":
+    "Офферы: dry-run",
+  "ON: the engine decides and logs grants without calling the casino. Turn off only after the Bonus CMS contract is wired.":
+    "ВКЛ: движок решает и логирует выдачи, не вызывая казино. Выключайте только после подключения контракта бонус-CMS.",
+  "Offers: daily budget (USD)":
+    "Офферы: дневной бюджет (USD)",
+  "Hard daily stop for granted stimulus value (cost estimates from the catalog). 0 = granting blocked (the safe default).":
+    "Жёсткий дневной стоп на стоимость выданных стимулов (оценки из каталога). 0 = выдача заблокирована (безопасный дефолт).",
+  "Offers: per-player cooldown (hours)":
+    "Офферы: кулдаун на игрока (часы)",
+  "Minimum hours between two offers to the same player (separate from message cooldowns).":
+    "Минимум часов между двумя офферами одному игроку (отдельно от кулдаунов сообщений).",
+  "Journey engine":
+    "Движок journeys",
+  "Multi-step trajectories (recovery by cohort, FTD spine, weekly rhythm, cashier abandonment). Journeys still seed as draft + dry-run and are activated one by one.":
+    "Многошаговые траектории (возврат по когортам, цепочка FTD, недельный ритм, брошенная касса). Journeys по-прежнему сеются как draft + dry-run и активируются по одной.",
+  "Multi-channel delivery":
+    "Мультиканальная доставка",
+  "Enable the channel router beyond Telegram (email via Customer.io, delegated push/in-app via the casino). Strict opt-in per channel. OFF = Telegram only, as before.":
+    "Включает роутер каналов за пределами Telegram (email через Customer.io, делегированные push/in-app через казино). Строгий opt-in по каждому каналу. ВЫКЛ = только Telegram, как раньше.",
+  "d":
+    "д",
+  "Triggers (any that crosses the threshold fires)":
+    "Триггеры (срабатывает любой, пересёкший порог)",
 };
 
 const current = getAdminLang();
