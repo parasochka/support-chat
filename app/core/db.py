@@ -607,6 +607,382 @@ CREATE INDEX IF NOT EXISTS idx_retention_outcomes_player
 CREATE INDEX IF NOT EXISTS idx_retention_outcomes_photo
   ON retention_outcomes(photo_id) WHERE photo_id IS NOT NULL;
 
+-- MEASUREMENT (holdout / uplift) --------------------------------------
+-- Holdout experiment config per product (history kept append-style; the
+-- ACTIVE row is the newest with active=TRUE). The hot settings keys
+-- (retention.holdout_pct/holdout_salt) mirror the active row for the guard's
+-- hot path; PUT /admin/retention/holdout/config writes both in one call.
+CREATE TABLE IF NOT EXISTS retention_holdout_config (
+  id           BIGSERIAL PRIMARY KEY,
+  product_id   INT NOT NULL REFERENCES products(id),
+  holdout_pct  INT NOT NULL DEFAULT 0,          -- 0..50; 0 = off
+  holdout_salt TEXT NOT NULL DEFAULT 'default', -- rotation = new experiment
+  active       BOOLEAN NOT NULL DEFAULT TRUE,
+  note         TEXT,
+  created_by   TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_retention_holdout_product
+  ON retention_holdout_config(product_id, id DESC);
+
+-- Materialized uplift slices for the dashboard (a projection, not the source
+-- of truth — that is retention_outcomes + the holdout labels).
+CREATE TABLE IF NOT EXISTS retention_uplift_snapshots (
+  id                    BIGSERIAL PRIMARY KEY,
+  product_id            INT NOT NULL REFERENCES products(id),
+  window_from           TIMESTAMPTZ NOT NULL,
+  window_to             TIMESTAMPTZ NOT NULL,
+  conversion_type       TEXT NOT NULL,          -- 'reply'|'return'|'deposit'
+  treatment_players     INT NOT NULL DEFAULT 0,
+  holdout_players       INT NOT NULL DEFAULT 0,
+  treatment_conversions INT NOT NULL DEFAULT 0,
+  holdout_conversions   INT NOT NULL DEFAULT 0,
+  treatment_rate        NUMERIC,
+  holdout_rate          NUMERIC,
+  uplift_pp             NUMERIC,
+  computed_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_retention_uplift_product
+  ON retention_uplift_snapshots(product_id, computed_at);
+
+-- RG GUARD (responsible gaming) ---------------------------------------
+-- Append-only compliance audit: one row per RG evaluation (including 'pass').
+-- NEVER pruned (5+ years licensing retention); read access is gated to
+-- global-admin (the MVP compliance role).
+CREATE TABLE IF NOT EXISTS rg_guard_audit (
+  id                 BIGSERIAL PRIMARY KEY,
+  product_id         INT NOT NULL REFERENCES products(id),
+  player_id          TEXT NOT NULL,
+  trigger            TEXT NOT NULL,   -- 'event_reaction'|'idle_ping'|'offer_grant'|'journey_step'|'dialogue'
+  decision           TEXT NOT NULL,   -- 'pass'|'block_conditional'|'block_permanent'
+  reason             TEXT NOT NULL,
+  signals_triggered  JSONB NOT NULL DEFAULT '[]',
+  rg_status_snapshot TEXT,
+  allow_general      BOOLEAN NOT NULL DEFAULT TRUE,
+  decided_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_rg_guard_audit_product
+  ON rg_guard_audit(product_id, decided_at);
+CREATE INDEX IF NOT EXISTS idx_rg_guard_audit_player
+  ON rg_guard_audit(product_id, player_id, decided_at);
+
+-- Config-driven behavioral signal thresholds (hot, compliance-logged).
+CREATE TABLE IF NOT EXISTS rg_signal_config (
+  id          BIGSERIAL PRIMARY KEY,
+  product_id  INT NOT NULL REFERENCES products(id),
+  signal_key  TEXT NOT NULL,           -- 'chase_pattern'|'deposit_frequency_spike'|...
+  enabled     BOOLEAN NOT NULL DEFAULT FALSE,
+  block_class TEXT NOT NULL DEFAULT 'conditional',  -- 'permanent'|'conditional'
+  params      JSONB NOT NULL DEFAULT '{}',
+  source      TEXT NOT NULL DEFAULT 'computed',     -- 'computed'|'casino_flag'
+  updated_by  TEXT,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (product_id, signal_key)
+);
+
+-- ADAPTIVE FREQUENCY + SMART SEND TIME --------------------------------
+-- Caps per product x channel x cohort. The telegram/mass row defaults to the
+-- legacy static guards (ping_daily_cap / min-gap-as-burst); email rides its
+-- OWN row and does NOT consume the intrusive-touch budget (business decision:
+-- intrusive touches = push + Telegram pings, email is counted separately).
+CREATE TABLE IF NOT EXISTS retention_frequency_caps (
+  id             BIGSERIAL PRIMARY KEY,
+  product_id     INT NOT NULL REFERENCES products(id),
+  channel        TEXT NOT NULL DEFAULT 'telegram',
+  cohort         TEXT NOT NULL DEFAULT 'mass',   -- 'mass'|'vip'|'vip_plus'|'dormant'|...
+  per_day        INT NOT NULL DEFAULT 3,
+  per_week       INT NOT NULL DEFAULT 10,
+  burst_per_hour INT NOT NULL DEFAULT 1,
+  enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+  updated_by     TEXT,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (product_id, channel, cohort)
+);
+
+-- Touch type -> priority (P1 critical .. P5 discovery). P1/P2 are never cut
+-- by a frequency cap.
+CREATE TABLE IF NOT EXISTS retention_touch_priority (
+  id                    BIGSERIAL PRIMARY KEY,
+  product_id            INT NOT NULL REFERENCES products(id),
+  touch_type            TEXT NOT NULL,   -- 'rg_warning'|'loss_rescue'|'level_up'|'event_reaction'|'idle_ping'|'reload_offer'|...
+  priority              INT NOT NULL DEFAULT 3,
+  channel_switch_on_cap BOOLEAN NOT NULL DEFAULT FALSE,
+  updated_by            TEXT,
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (product_id, touch_type)
+);
+
+-- Deterministic per-player activity profile (Smart Send Time input),
+-- recomputed by the sweep; the hot path only reads it.
+CREATE TABLE IF NOT EXISTS retention_activity_profile (
+  product_id         INT NOT NULL REFERENCES products(id),
+  player_id          TEXT NOT NULL,
+  median_active_hour INT,
+  peak_hours         JSONB NOT NULL DEFAULT '[]',
+  dow_pattern        JSONB NOT NULL DEFAULT '{}',
+  response_by_hour   JSONB NOT NULL DEFAULT '{}',
+  sample_size        INT NOT NULL DEFAULT 0,
+  computed_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (product_id, player_id)
+);
+
+-- PLAYER SCORING (dormancy cohorts / RFM / value tiers) ----------------
+-- Cohort transition log (analytics + the one-transition-per-day dedup).
+CREATE TABLE IF NOT EXISTS retention_cohort_transitions (
+  id              BIGSERIAL PRIMARY KEY,
+  product_id      INT NOT NULL REFERENCES products(id),
+  player_id       TEXT NOT NULL,
+  from_cohort     TEXT NOT NULL,
+  to_cohort       TEXT NOT NULL,
+  days_inactive   INT NOT NULL DEFAULT 0,
+  transitioned_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_retention_cohort_transition_dedup
+  ON retention_cohort_transitions(product_id, player_id, to_cohort,
+                                  (transitioned_at::date));
+CREATE INDEX IF NOT EXISTS idx_retention_cohort_transitions_product
+  ON retention_cohort_transitions(product_id, transitioned_at);
+
+-- Config-driven scoring thresholds (dormancy boundaries, value tiers, RFM
+-- windows) — one row per config key per product.
+CREATE TABLE IF NOT EXISTS retention_scoring_config (
+  id         BIGSERIAL PRIMARY KEY,
+  product_id INT NOT NULL REFERENCES products(id),
+  config_key TEXT NOT NULL,   -- 'dormancy_boundaries'|'value_tiers'|'vip_mapping'
+  params     JSONB NOT NULL DEFAULT '{}',
+  updated_by TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (product_id, config_key)
+);
+
+-- OFFER ENGINE --------------------------------------------------------
+-- Offer catalog: the bonus-CMS-ID model — the casino's Bonus Engine owns the
+-- bonus mechanics; our catalog row references the CMS bonus by its ID and
+-- carries only what the orchestrator needs (cost estimate for the budget
+-- guard, eligibility, enablement).
+CREATE TABLE IF NOT EXISTS retention_offer_catalog (
+  id                BIGSERIAL PRIMARY KEY,
+  product_id        INT NOT NULL REFERENCES products(id),
+  offer_key         TEXT NOT NULL,     -- stable key: 'loss_cashback'|'reload_bonus'|...
+  offer_type        TEXT NOT NULL DEFAULT 'bonus',  -- 'cashback'|'reload'|'free_spins'|'bonus'
+  partner_bonus_id  TEXT,              -- the bonus ID in the casino's bonus CMS
+  params            JSONB NOT NULL DEFAULT '{}',
+  cost_estimate_usd NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  enabled           BOOLEAN NOT NULL DEFAULT FALSE,
+  min_deposit_usd   NUMERIC(12, 2),
+  allowed_countries JSONB NOT NULL DEFAULT '[]',
+  description       TEXT NOT NULL DEFAULT '',
+  updated_by        TEXT,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (product_id, offer_key)
+);
+
+-- Deterministic trigger -> offer mapping (the MVP direct path; journeys
+-- take over cohort-driven granting once active — mutually exclusive by
+-- enabled flags).
+CREATE TABLE IF NOT EXISTS retention_offer_triggers (
+  id           BIGSERIAL PRIMARY KEY,
+  product_id   INT NOT NULL REFERENCES products(id),
+  trigger_key  TEXT NOT NULL,   -- 'loss_mid'|'loss_high'|'idle_d10'|'idle_d14'|'ftd_d1'
+  offer_key    TEXT NOT NULL,
+  vip_suppress BOOLEAN NOT NULL DEFAULT TRUE,
+  enabled      BOOLEAN NOT NULL DEFAULT FALSE,
+  updated_by   TEXT,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (product_id, trigger_key)
+);
+
+-- Grant ledger: one row per offer grant attempt, idempotent by
+-- (product_id, offer_grant_id).
+CREATE TABLE IF NOT EXISTS retention_offer_grants (
+  id               BIGSERIAL PRIMARY KEY,
+  product_id       INT NOT NULL REFERENCES products(id),
+  player_id        TEXT NOT NULL,
+  offer_grant_id   TEXT NOT NULL,
+  decision_id      BIGINT REFERENCES retention_v2_decisions(id) ON DELETE SET NULL,
+  offer_key        TEXT NOT NULL,
+  offer_type       TEXT NOT NULL DEFAULT 'bonus',
+  partner_bonus_id TEXT,
+  params_snapshot  JSONB NOT NULL DEFAULT '{}',
+  cost_usd         NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  status           TEXT NOT NULL DEFAULT 'pending', -- 'pending'|'granted'|'fraud_hold'|'failed'|'dry_run'
+  partner_ref      TEXT,
+  detail           TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at       TIMESTAMPTZ,
+  UNIQUE (product_id, offer_grant_id)
+);
+CREATE INDEX IF NOT EXISTS idx_retention_offer_grants_product
+  ON retention_offer_grants(product_id, created_at);
+
+-- Per-player offer anti-abuse state (separate from message cooldowns).
+CREATE TABLE IF NOT EXISTS retention_offer_cooldowns (
+  product_id           INT NOT NULL REFERENCES products(id),
+  player_id            TEXT NOT NULL,
+  last_offer_at        TIMESTAMPTZ,
+  offers_granted_total INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (product_id, player_id)
+);
+
+-- JOURNEY ENGINE ------------------------------------------------------
+-- Journey definitions as data (declarative trigger + conditions + steps).
+CREATE TABLE IF NOT EXISTS retention_journeys (
+  id               BIGSERIAL PRIMARY KEY,
+  product_id       INT NOT NULL REFERENCES products(id),
+  journey_key      TEXT NOT NULL,
+  name             TEXT NOT NULL,
+  version          INT NOT NULL DEFAULT 1,
+  status           TEXT NOT NULL DEFAULT 'draft',   -- 'draft'|'active'|'paused'
+  trigger          JSONB NOT NULL DEFAULT '{}',     -- {type:'event'|'scheduled', ...}
+  entry_conditions JSONB NOT NULL DEFAULT '[]',
+  exit_conditions  JSONB NOT NULL DEFAULT '[]',
+  steps            JSONB NOT NULL DEFAULT '[]',
+  dry_run          BOOLEAN NOT NULL DEFAULT TRUE,
+  priority         INT NOT NULL DEFAULT 3,
+  metadata         JSONB NOT NULL DEFAULT '{}',
+  is_starter       BOOLEAN NOT NULL DEFAULT FALSE,
+  updated_by       TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (product_id, journey_key, version)
+);
+
+-- Active/finished journey passes per player.
+CREATE TABLE IF NOT EXISTS retention_journey_enrollments (
+  id                BIGSERIAL PRIMARY KEY,
+  product_id        INT NOT NULL REFERENCES products(id),
+  player_id         TEXT NOT NULL,
+  retention_user_id BIGINT REFERENCES retention_users(id),
+  journey_key       TEXT NOT NULL,
+  journey_version   INT NOT NULL DEFAULT 1,
+  current_step      INT NOT NULL DEFAULT 0,
+  status            TEXT NOT NULL DEFAULT 'active', -- 'active'|'completed'|'exited_goal'|'exited_return'|'exited_terminal'|'skipped_exit'
+  enrolled_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  next_step_at      TIMESTAMPTZ,
+  exit_reason       TEXT,
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_journey_enrollment_active
+  ON retention_journey_enrollments(product_id, player_id, journey_key)
+  WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_journey_enrollments_due
+  ON retention_journey_enrollments(product_id, next_step_at)
+  WHERE status = 'active';
+
+-- Step execution audit.
+CREATE TABLE IF NOT EXISTS retention_journey_steps_log (
+  id            BIGSERIAL PRIMARY KEY,
+  product_id    INT NOT NULL REFERENCES products(id),
+  enrollment_id BIGINT NOT NULL REFERENCES retention_journey_enrollments(id),
+  step_id       INT NOT NULL,
+  outcome       TEXT NOT NULL,  -- 'sent'|'offer_granted'|'skipped_condition'|'blocked_guard'|'deferred_frequency'|'channel_unavailable'|'dry_run'|'waited'
+  decision_id   BIGINT REFERENCES retention_v2_decisions(id) ON DELETE SET NULL,
+  detail        TEXT,
+  executed_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_journey_steps_log_enrollment
+  ON retention_journey_steps_log(enrollment_id, executed_at);
+
+-- TEMPLATE LIBRARY ----------------------------------------------------
+-- Structured briefs (persona_brief mode: the persona writes the text) or
+-- verbatim copy, referenced from journey steps by template_key.
+CREATE TABLE IF NOT EXISTS retention_templates (
+  id            BIGSERIAL PRIMARY KEY,
+  product_id    INT NOT NULL REFERENCES products(id),
+  template_key  TEXT NOT NULL,
+  type          TEXT NOT NULL DEFAULT 'telegram', -- channel metadata: 'telegram'|'push'|'email'|'in_app'
+  version       INT NOT NULL DEFAULT 1,
+  status        TEXT NOT NULL DEFAULT 'draft',    -- 'draft'|'active'
+  mode          TEXT NOT NULL DEFAULT 'persona_brief',  -- 'persona_brief'|'verbatim'
+  intent        TEXT NOT NULL DEFAULT '',         -- model-facing English brief
+  localizations JSONB NOT NULL DEFAULT '{}',      -- {lang: {title, body, cta}}
+  variables     JSONB NOT NULL DEFAULT '{}',
+  ab_variants   JSONB,
+  is_starter    BOOLEAN NOT NULL DEFAULT FALSE,
+  updated_by    TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (product_id, template_key, version)
+);
+
+-- CHANNEL ABSTRACTION -------------------------------------------------
+-- Per-product channel enablement + routing priority. Secrets (email API key,
+-- delivery endpoint key) live in the encrypted product secrets, not here.
+CREATE TABLE IF NOT EXISTS retention_channel_config (
+  id         BIGSERIAL PRIMARY KEY,
+  product_id INT NOT NULL REFERENCES products(id),
+  channel    TEXT NOT NULL,    -- 'telegram'|'email'|'push'|'in_app'|'vip_host'
+  enabled    BOOLEAN NOT NULL DEFAULT FALSE,
+  priority   INT NOT NULL DEFAULT 100,
+  config     JSONB NOT NULL DEFAULT '{}',
+  updated_by TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (product_id, channel)
+);
+
+-- Unified delivery tracking across channels (lifecycle + retry state).
+CREATE TABLE IF NOT EXISTS retention_deliveries (
+  id                BIGSERIAL PRIMARY KEY,
+  product_id        INT NOT NULL REFERENCES products(id),
+  player_id         TEXT,
+  retention_user_id BIGINT REFERENCES retention_users(id),
+  delivery_id       TEXT NOT NULL,
+  decision_id       BIGINT REFERENCES retention_v2_decisions(id) ON DELETE SET NULL,
+  channel           TEXT NOT NULL,
+  intended_channel  TEXT,
+  status            TEXT NOT NULL DEFAULT 'queued', -- queued|sending|sent|delivered|opened|clicked|bounced|failed|suppressed|undeliverable|routed_host
+  attempts          INT NOT NULL DEFAULT 0,
+  next_attempt_at   TIMESTAMPTZ,
+  provider_ref      TEXT,
+  fail_reason       TEXT,
+  permanent_fail    BOOLEAN NOT NULL DEFAULT FALSE,
+  title             TEXT,
+  body              TEXT,
+  cta_url           TEXT,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (product_id, delivery_id)
+);
+CREATE INDEX IF NOT EXISTS idx_retention_deliveries_product
+  ON retention_deliveries(product_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_retention_deliveries_retry
+  ON retention_deliveries(product_id, next_attempt_at)
+  WHERE status = 'failed' AND NOT permanent_fail;
+
+-- VIP-host task queue (a ROUTE, not a send: a human handles it).
+CREATE TABLE IF NOT EXISTS retention_host_tasks (
+  id         BIGSERIAL PRIMARY KEY,
+  product_id INT NOT NULL REFERENCES products(id),
+  player_id  TEXT NOT NULL,
+  reason     TEXT NOT NULL,
+  context    JSONB NOT NULL DEFAULT '{}',
+  status     TEXT NOT NULL DEFAULT 'open',  -- 'open'|'claimed'|'done'
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_retention_host_tasks_product
+  ON retention_host_tasks(product_id, status, created_at);
+
+-- INTEGRATION CHECKLIST -----------------------------------------------
+-- The living list of external integration dependencies (what we still need
+-- from the casino platform / partner teams to wire everything up). Global
+-- (deploy-level), edited from the admin System section; seeded with the
+-- known items on boot (insert-only, never overwrites operator edits).
+CREATE TABLE IF NOT EXISTS integration_checklist (
+  id          BIGSERIAL PRIMARY KEY,
+  item_key    TEXT NOT NULL UNIQUE,
+  title       TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  owner       TEXT NOT NULL DEFAULT '',       -- who provides it (e.g. 'casino platform')
+  status      TEXT NOT NULL DEFAULT 'waiting',-- 'waiting'|'in_progress'|'received'|'wired'|'not_needed'
+  blocking    TEXT NOT NULL DEFAULT '',       -- what it blocks on our side
+  notes       TEXT NOT NULL DEFAULT '',
+  updated_by  TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- QUALITY REVIEW ------------------------------------------------------
 -- The LLM-as-judge verdict on ONE finished conversation (support widget or
 -- Telegram). One row per review; a conversation is re-reviewed only when it
@@ -936,6 +1312,107 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         "session_id UUID",
         "CREATE INDEX IF NOT EXISTS idx_photo_views_session "
         "ON retention_photo_views(session_id) WHERE session_id IS NOT NULL",
+        # --- Retention orchestrator (measurement / RG / frequency / scoring /
+        # offers / journeys / channels) — columns on pre-existing tables. -----
+        # Holdout (measurement): the cached deterministic group + the salt it
+        # was computed under (salt rotation invalidates the cache lazily).
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "holdout_group TEXT",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "holdout_salt TEXT",
+        # RG (responsible gaming) status from the casino + computed block cache.
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "rg_status TEXT",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "rg_status_source TEXT",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "rg_status_until TIMESTAMPTZ",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "rg_block_level TEXT",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "rg_signals JSONB",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "marketing_consent BOOLEAN",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "rg_updated_at TIMESTAMPTZ",
+        # Player timezone (IANA name or a fixed offset like '+03:00'), fed by
+        # the casino (geo-IP detection on their side) via player-update; falls
+        # back to the product's quiet_hours_utc_offset when absent.
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "tz TEXT",
+        # Scoring cache (dormancy cohort / RFM / value tier / VIP segment) —
+        # recomputed by the sweep, read by the hot path.
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "dormancy_cohort TEXT",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "dormancy_since TIMESTAMPTZ",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "rfm_recency INT",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "rfm_frequency INT",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "rfm_monetary NUMERIC(14, 2)",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "rfm_score INT",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "value_tier TEXT",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "vip_segment TEXT",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "total_deposit_lifetime NUMERIC(14, 2)",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "score_computed_at TIMESTAMPTZ",
+        # Cashier abandonment timer (armed on deposit_initiated, cleared on
+        # deposit_confirmed).
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "deposit_initiated_at TIMESTAMPTZ",
+        # Per-channel opt-in / availability (fed by player-update; strict
+        # opt-in — the router never falls back to a non-consented channel).
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "email_opt_in BOOLEAN",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "email_verified BOOLEAN",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "push_opt_in BOOLEAN",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "push_available BOOLEAN",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "in_app_available BOOLEAN",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "sms_opt_in BOOLEAN",
+        "ALTER TABLE retention_users ADD COLUMN IF NOT EXISTS "
+        "channel_prefs JSONB",
+        # Idle rules: a rule may fire on SEVERAL inactivity dimensions at once
+        # (chat / casino / deposit). trigger_kinds is the list; the legacy
+        # trigger_kind column stays for stored-data compatibility (rows with a
+        # NULL/empty trigger_kinds fall back to it).
+        "ALTER TABLE retention_rules ADD COLUMN IF NOT EXISTS "
+        "trigger_kinds JSONB",
+        # Backfill: existing rules (all shipped with the single
+        # trigger_kind='bot_inactivity') switch to the new DEFAULT — a rung
+        # watches ALL THREE inactivity dimensions (chat / casino / deposit) at
+        # once (owner decision). Only rows that never had trigger_kinds are
+        # touched, so an operator's later narrowing is never overwritten.
+        "UPDATE retention_rules SET trigger_kinds = "
+        "'[\"bot_inactivity\", \"casino_inactivity\", \"no_deposit\"]'::jsonb "
+        "WHERE trigger_kinds IS NULL",
+        # Outcome rows: the holdout group snapshot at touch time (uplift cuts
+        # by the group AT the touch, not the current one). Virtual rows for the
+        # control group carry kind='holdout'.
+        "ALTER TABLE retention_outcomes ADD COLUMN IF NOT EXISTS "
+        "holdout_group_at_time TEXT",
+        # Outbound partner endpoints (orchestrator -> casino calls): the bonus
+        # grant endpoint (offer engine) and the delegated push/in_app delivery
+        # endpoint. Bearer secret = partner_out_key_enc (encrypted).
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "offer_grant_url TEXT",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "delivery_endpoint_url TEXT",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "partner_out_key_enc TEXT",
+        # Email channel (Customer.io App API) credential, encrypted at rest.
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
+        "email_api_key_enc TEXT",
     ]
     for stmt in alters:
         await conn.execute(stmt)
@@ -1094,6 +1571,136 @@ async def init_db() -> None:
             default_product_id = await _migrate_tenancy(conn)
             await seed_kb_variables(conn, default_product_id)
             await _migrate_legacy_contact_url(conn, default_product_id)
+            await _seed_integration_checklist(conn)
+
+
+# The known external integration dependencies (what the casino platform /
+# partner teams still owe us to wire everything up). Seeded insert-only —
+# the operator's status edits and notes are never overwritten on boot.
+_INTEGRATION_CHECKLIST_SEED: tuple[dict[str, str], ...] = (
+    {"item_key": "bonus_cms_contract",
+     "title": "Bonus CMS: grant endpoint + bonus ID list",
+     "description": "Endpoint that credits a bonus by its CMS ID to a player "
+                    "(our POST payload: offer_grant_id, player_id, bonus_id, "
+                    "params). Idempotent by offer_grant_id; statuses granted "
+                    "/ fraud_hold / duplicate / failed. Plus the catalogue "
+                    "of bonus IDs with descriptions.",
+     "owner": "casino platform (Anton)",
+     "blocking": "Offer engine production enablement (until then: dry-run)"},
+    {"item_key": "rg_status_feed",
+     "title": "RG status feed in player-update",
+     "description": "Send rg_status (ok/cool_off/rg_hold/self_exclude), "
+                    "rg_status_until, marketing_consent and optional "
+                    "rg_flags on every change + an initial backfill. The "
+                    "platform is the source of truth for self-exclusion.",
+     "owner": "casino platform (Anton)",
+     "blocking": "Real RG blocks (manual admin marking works meanwhile)"},
+    {"item_key": "player_update_extensions",
+     "title": "player-update: timezone + channel consents",
+     "description": "Optional fields: timezone (geo-IP derived), "
+                    "email_opt_in, email_verified, push_opt_in, "
+                    "push_available, in_app_available, channel_prefs; plus "
+                    "a consent-change event.",
+     "owner": "casino platform (Anton)",
+     "blocking": "Smart Send Time precision; email/push routing consents"},
+    {"item_key": "push_delivery_endpoint",
+     "title": "Delegated push/in_app delivery endpoint",
+     "description": "Endpoint accepting our delivery order (delivery_id, "
+                    "player_id, channel, title, body, cta_url, ttl_sec), "
+                    "idempotent by delivery_id, permanent/transient error "
+                    "split, plus the delivery-status callback to "
+                    "POST /partner/{id}/delivery-status.",
+     "owner": "casino platform (Anton)",
+     "blocking": "Push / in-app channels going live"},
+    {"item_key": "email_customerio",
+     "title": "Email: Customer.io workspace + credentials",
+     "description": "Customer.io App API key (stored as a product secret), "
+                    "region (us/eu), sending domain with SPF/DKIM/DMARC, "
+                    "From/Reply-To, unsubscribe handling.",
+     "owner": "email/devops",
+     "blocking": "Email channel going live"},
+    {"item_key": "vip_host_process",
+     "title": "VIP host process for the host-task queue",
+     "description": "Who works the retention_host_tasks queue (loss-rescue "
+                    "for VIPs) and whether an export (webhook/email) to an "
+                    "external CRM is needed.",
+     "owner": "operations",
+     "blocking": "VIP loss-rescue handling beyond the queue itself"},
+    {"item_key": "bi_export",
+     "title": "BI / warehouse export of fact rows",
+     "description": "If the platform builds cross-surface attribution: agree "
+                    "the export of our fact rows (touches, conversions, "
+                    "deliveries) — direct read access or periodic export.",
+     "owner": "BI / platform",
+     "blocking": "Nothing on our side (uplift works locally)"},
+)
+
+
+async def _seed_integration_checklist(conn: asyncpg.Connection) -> None:
+    for item in _INTEGRATION_CHECKLIST_SEED:
+        await conn.execute(
+            "INSERT INTO integration_checklist (item_key, title, "
+            " description, owner, blocking) VALUES ($1, $2, $3, $4, $5) "
+            "ON CONFLICT (item_key) DO NOTHING",
+            item["item_key"], item["title"], item["description"],
+            item["owner"], item["blocking"])
+
+
+async def list_integration_checklist() -> list[dict[str, Any]]:
+    rows = await _fetch(
+        "SELECT * FROM integration_checklist ORDER BY id")
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        _iso_fields(d, "created_at", "updated_at")
+        items.append(d)
+    return items
+
+
+async def update_integration_checklist(item_key: str, *,
+                                       status: Optional[str] = None,
+                                       notes: Optional[str] = None,
+                                       title: Optional[str] = None,
+                                       description: Optional[str] = None,
+                                       owner: Optional[str] = None,
+                                       blocking: Optional[str] = None,
+                                       updated_by: Optional[str] = None
+                                       ) -> Optional[dict[str, Any]]:
+    row = await _fetchrow(
+        "UPDATE integration_checklist SET "
+        " status = COALESCE($2, status), notes = COALESCE($3, notes), "
+        " title = COALESCE($4, title), "
+        " description = COALESCE($5, description), "
+        " owner = COALESCE($6, owner), blocking = COALESCE($7, blocking), "
+        " updated_by = $8, updated_at = now() "
+        "WHERE item_key = $1 RETURNING *",
+        item_key, status, notes, title, description, owner, blocking,
+        updated_by)
+    if row is None:
+        return None
+    d = dict(row)
+    d["id"] = int(d["id"])
+    _iso_fields(d, "created_at", "updated_at")
+    return d
+
+
+async def create_integration_checklist_item(item_key: str, *, title: str,
+                                            description: str, owner: str,
+                                            blocking: str,
+                                            updated_by: Optional[str]
+                                            ) -> Optional[dict[str, Any]]:
+    row = await _fetchrow(
+        "INSERT INTO integration_checklist (item_key, title, description, "
+        " owner, blocking, updated_by) VALUES ($1, $2, $3, $4, $5, $6) "
+        "ON CONFLICT (item_key) DO NOTHING RETURNING *",
+        item_key, title, description, owner, blocking, updated_by)
+    if row is None:
+        return None
+    d = dict(row)
+    d["id"] = int(d["id"])
+    _iso_fields(d, "created_at", "updated_at")
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -1858,6 +2465,12 @@ def _row_to_product(row: asyncpg.Record) -> dict[str, Any]:
         # secret (encrypted) surfaces as a presence flag only.
         "turnstile_site_key": row["turnstile_site_key"],
         "has_turnstile_secret": row["turnstile_secret_enc"] is not None,
+        # Orchestrator outbound endpoints (plain config) + their secrets
+        # (presence flags only, like every product secret).
+        "offer_grant_url": row["offer_grant_url"],
+        "delivery_endpoint_url": row["delivery_endpoint_url"],
+        "has_partner_out_key": row["partner_out_key_enc"] is not None,
+        "has_email_api_key": row["email_api_key_enc"] is not None,
         "created_at": _iso(row["created_at"]),
         "updated_at": _iso(row["updated_at"]),
     }
@@ -1870,6 +2483,8 @@ _PRODUCT_COLS = ("id, partner_id, slug, name, widget_key, active, "
                  "telegram_channel_id, telegram_channel_url, player_api_url, "
                  "site_url, player_api_key_enc, retention_enabled, "
                  "turnstile_site_key, turnstile_secret_enc, "
+                 "offer_grant_url, delivery_endpoint_url, "
+                 "partner_out_key_enc, email_api_key_enc, "
                  "created_at, updated_at")
 
 
@@ -2041,7 +2656,9 @@ async def set_product_secrets(product_id: int, *,
                               handshake_secret: Any = UNSET,
                               telegram_bot_token: Any = UNSET,
                               player_api_key: Any = UNSET,
-                              turnstile_secret: Any = UNSET) -> bool:
+                              turnstile_secret: Any = UNSET,
+                              partner_out_key: Any = UNSET,
+                              email_api_key: Any = UNSET) -> bool:
     """Write per-product secrets (encrypted at rest). Empty string clears one.
 
     Values are encrypted with secretbox before they touch the table; the
@@ -2058,7 +2675,9 @@ async def set_product_secrets(product_id: int, *,
                      ("handshake_secret_enc", handshake_secret),
                      ("telegram_bot_token_enc", telegram_bot_token),
                      ("player_api_key_enc", player_api_key),
-                     ("turnstile_secret_enc", turnstile_secret)):
+                     ("turnstile_secret_enc", turnstile_secret),
+                     ("partner_out_key_enc", partner_out_key),
+                     ("email_api_key_enc", email_api_key)):
         if val is UNSET:
             continue
         args.append(secretbox.encrypt(val.strip()) if isinstance(val, str)
@@ -3314,9 +3933,20 @@ def _row_to_retention_user(row: asyncpg.Record) -> dict[str, Any]:
         d["id"] = int(d["id"])
     if d.get("session_id") is not None:
         d["session_id"] = str(d["session_id"])
+    for jf in ("rg_signals", "channel_prefs"):
+        if isinstance(d.get(jf), str):
+            try:
+                d[jf] = json.loads(d[jf])
+            except ValueError:
+                d[jf] = None
+    for nf in ("rfm_monetary", "total_deposit_lifetime"):
+        if d.get(nf) is not None:
+            d[nf] = float(d[nf])
     _iso_fields(d, "profile_updated_at", "last_stage_advance_at", "last_active_at",
                "created_at", "updated_at", "photos_day", "last_login_at",
-               "last_played_at", "last_deposit_at", "last_ping_at", "pings_day")
+               "last_played_at", "last_deposit_at", "last_ping_at", "pings_day",
+               "rg_status_until", "rg_updated_at", "dormancy_since",
+               "score_computed_at", "deposit_initiated_at")
     return d
 
 
@@ -3328,6 +3958,14 @@ _RU_COLS = (
     "msgs_since_photo, photos_day, photos_sent_today, conv_lang, session_id, "
     "last_active_at, last_login_at, last_played_at, last_deposit_at, "
     "pings_muted, unreachable, last_ping_at, pings_day, pings_sent_today, "
+    "holdout_group, holdout_salt, "
+    "rg_status, rg_status_source, rg_status_until, rg_block_level, "
+    "rg_signals, marketing_consent, rg_updated_at, tz, "
+    "dormancy_cohort, dormancy_since, rfm_recency, rfm_frequency, "
+    "rfm_monetary, rfm_score, value_tier, vip_segment, "
+    "total_deposit_lifetime, score_computed_at, deposit_initiated_at, "
+    "email_opt_in, email_verified, push_opt_in, push_available, "
+    "in_app_available, sms_opt_in, channel_prefs, "
     "created_at, updated_at"
 )
 
@@ -3507,9 +4145,15 @@ async def set_retention_unreachable(rid: int, unreachable: bool = True) -> None:
 # with the v1 ping matrix, restored as PART of the agent regime: the same
 # worker sweeps them, the same guards/ledgers bound them.
 # ---------------------------------------------------------------------------
-_RULE_COLS = ("id, product_id, name, enabled, trigger_kind, inactivity_days, "
+_RULE_COLS = ("id, product_id, name, enabled, trigger_kind, trigger_kinds, "
+              "inactivity_days, "
               "action, intent, vip_tiers, cooldown_days, priority, updated_by, "
               "created_at, updated_at")
+
+# The default for a rule that doesn't name its trigger kinds: watch all three
+# inactivity dimensions at once (owner decision — chat, casino AND deposit).
+RULE_DEFAULT_TRIGGER_KINDS = ("bot_inactivity", "casino_inactivity",
+                              "no_deposit")
 
 
 def _row_to_rule(row: asyncpg.Record) -> dict[str, Any]:
@@ -3521,6 +4165,16 @@ def _row_to_rule(row: asyncpg.Record) -> dict[str, Any]:
             d["vip_tiers"] = json.loads(tiers)
         except ValueError:
             d["vip_tiers"] = []
+    kinds = d.get("trigger_kinds")
+    if isinstance(kinds, str):
+        try:
+            kinds = json.loads(kinds)
+        except ValueError:
+            kinds = None
+    if not kinds:
+        # Pre-migration row: fall back to the legacy single kind.
+        kinds = [d.get("trigger_kind") or "bot_inactivity"]
+    d["trigger_kinds"] = [str(k) for k in kinds]
     _iso_fields(d, "created_at", "updated_at")
     return d
 
@@ -3536,14 +4190,23 @@ async def list_retention_rules(product_id: int,
 
 async def create_retention_rule(product_id: int, fields: dict[str, Any],
                                 updated_by: Optional[str] = None) -> dict[str, Any]:
+    # trigger_kinds (the list) is authoritative; the legacy trigger_kind column
+    # keeps the first kind so pre-migration readers stay coherent. A rule that
+    # names neither watches ALL THREE dimensions (the default).
+    kinds = fields.get("trigger_kinds")
+    if not kinds:
+        single = fields.get("trigger_kind")
+        kinds = [single] if single else list(RULE_DEFAULT_TRIGGER_KINDS)
+    kinds = [str(k) for k in kinds]
     row = await _fetchrow(
         "INSERT INTO retention_rules (product_id, name, enabled, trigger_kind, "
+        " trigger_kinds, "
         " inactivity_days, action, intent, vip_tiers, cooldown_days, priority, "
         " updated_by) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
+        "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12) "
         f"RETURNING {_RULE_COLS}",
         product_id, fields["name"], bool(fields.get("enabled", True)),
-        fields.get("trigger_kind", "bot_inactivity"),
+        kinds[0], json.dumps(kinds),
         int(fields.get("inactivity_days", 7)),
         fields.get("action", "message"), fields.get("intent", ""),
         json.dumps(fields.get("vip_tiers") or []),
@@ -3561,6 +4224,11 @@ async def update_retention_rule(rule_id: int, product_id: int,
     sets = ["updated_at = now()", "updated_by = $3"]
     args: list[Any] = [rule_id, product_id, updated_by]
     scalar = {"name": str, "trigger_kind": str, "action": str, "intent": str}
+    # A single-kind write (legacy clients) collapses trigger_kinds to it so the
+    # two columns never disagree.
+    if "trigger_kind" in fields and "trigger_kinds" not in fields:
+        fields = dict(fields)
+        fields["trigger_kinds"] = [str(fields["trigger_kind"])]
     for f, cast in scalar.items():
         if f in fields:
             args.append(cast(fields[f]))
@@ -3575,6 +4243,15 @@ async def update_retention_rule(rule_id: int, product_id: int,
     if "vip_tiers" in fields:
         args.append(json.dumps(fields.get("vip_tiers") or []))
         sets.append(f"vip_tiers = ${len(args)}")
+    if "trigger_kinds" in fields:
+        kinds = [str(k) for k in (fields.get("trigger_kinds") or [])]
+        if not kinds:
+            kinds = list(RULE_DEFAULT_TRIGGER_KINDS)
+        args.append(json.dumps(kinds))
+        sets.append(f"trigger_kinds = ${len(args)}::jsonb")
+        if "trigger_kind" not in fields:
+            args.append(kinds[0])
+            sets.append(f"trigger_kind = ${len(args)}")
     row = await _fetchrow(
         f"UPDATE retention_rules SET {', '.join(sets)} "
         f"WHERE id = $1 AND product_id = $2 RETURNING {_RULE_COLS}",
@@ -3706,11 +4383,21 @@ async def idle_rule_thresholds_fired_since(rid: int, since: Any,
     `trigger_kind` so the caller can query per-kind with the matching anchor;
     None counts every fired ping across kinds."""
     since_ts = _as_ts(since)
-    args: list[Any] = [rid, since_ts]
-    kind_sql = ""
     if trigger_kind is not None:
-        args.append(trigger_kind)
-        kind_sql = f" AND r.trigger_kind = ${len(args)}"
+        # A multi-kind rung (trigger_kinds list) counts toward EVERY kind it
+        # watches — the ping ledger doesn't record which dimension matched, and
+        # counting it everywhere is the anti-spam-safe direction.
+        val = await _fetchval(
+            "SELECT MAX(r.inactivity_days) FROM retention_pings p "
+            "JOIN retention_rules r ON r.id = p.rule_id "
+            f"WHERE p.retention_user_id = $1 AND {_PING_FIRED} "
+            "  AND p.created_at > COALESCE($2::timestamptz, "
+            "                              '-infinity'::timestamptz) "
+            "  AND (r.trigger_kinds ? $3 "
+            "       OR (r.trigger_kinds IS NULL AND r.trigger_kind = $3))",
+            rid, since_ts, trigger_kind,
+        )
+        return {trigger_kind: int(val)} if val is not None else {}
     rows = await _fetch(
         "SELECT r.trigger_kind, MAX(r.inactivity_days) AS days "
         "FROM retention_pings p "
@@ -3718,9 +4405,8 @@ async def idle_rule_thresholds_fired_since(rid: int, since: Any,
         f"WHERE p.retention_user_id = $1 AND {_PING_FIRED} "
         "  AND p.created_at > COALESCE($2::timestamptz, "
         "                              '-infinity'::timestamptz)"
-        + kind_sql +
         " GROUP BY r.trigger_kind",
-        *args,
+        rid, since_ts,
     )
     return {str(r["trigger_kind"]): int(r["days"]) for r in rows
             if r["days"] is not None}
@@ -4245,17 +4931,23 @@ async def record_retention_outcome(
         event_name: Optional[str] = None, action: Optional[str] = None,
         tone: Optional[str] = None, photo_id: Optional[int] = None,
         media_type: Optional[str] = None, link_url: Optional[str] = None,
-        cost_usd: Optional[float] = None) -> int:
-    """Open one attribution row for a touch that was actually delivered."""
+        cost_usd: Optional[float] = None,
+        holdout_group: Optional[str] = None) -> int:
+    """Open one attribution row for a touch that was actually delivered
+    (kind='holdout' opens the VIRTUAL row for a held-out control player —
+    no touch went out, but the would-have-been moment and the following
+    conversions are recorded so uplift has a base rate to compare against)."""
     row = await _fetchrow(
         "INSERT INTO retention_outcomes (product_id, retention_user_id, "
         " player_id, session_id, kind, decision_id, rule_id, event_name, "
-        " action, tone, photo_id, media_type, link_url, cost_usd) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) "
+        " action, tone, photo_id, media_type, link_url, cost_usd, "
+        " holdout_group_at_time) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, "
+        "        $15) "
         "RETURNING id",
         product_id, retention_user_id, player_id, session_id, kind,
         decision_id, rule_id, event_name, action, tone, photo_id, media_type,
-        link_url, cost_usd,
+        link_url, cost_usd, holdout_group,
     )
     return int(row["id"])
 
@@ -4351,6 +5043,1462 @@ async def recent_touch_outcomes(product_id: int, player_id: str,
             "settled": bool(r["closed"]),
         })
     return out
+
+
+# ---------------------------------------------------------------------------
+# RG guard: status, signal config, the append-only compliance audit (DOC-3)
+# ---------------------------------------------------------------------------
+_RG_PROFILE_FIELDS = ("rg_status", "rg_status_until", "marketing_consent",
+                      "rg_signals", "tz")
+
+
+async def set_rg_status(product_id: int, rid: int, status: str, *,
+                        source: str = "manual",
+                        until: Any = None) -> None:
+    """Set a player's RG status (manual admin action or the lazy auto-clear).
+    The partner feed writes through update_retention_profile instead."""
+    await _execute(
+        "UPDATE retention_users SET rg_status = $3, rg_status_source = $4, "
+        "rg_status_until = $5, rg_updated_at = now(), updated_at = now() "
+        "WHERE product_id = $1 AND id = $2",
+        product_id, rid, status, source, _as_ts(until),
+    )
+
+
+async def update_rg_profile(product_id: int, player_id: str,
+                            fields: dict[str, Any], *,
+                            source: str = "casino_push") -> int:
+    """RG/channel fields arriving on the partner player-update push. Partial:
+    absent fields stay untouched. Returns rows affected."""
+    sets: list[str] = []
+    args: list[Any] = [product_id, player_id]
+    if "rg_status" in fields:
+        args.append(str(fields["rg_status"]))
+        sets.append(f"rg_status = ${len(args)}")
+        args.append(source)
+        sets.append(f"rg_status_source = ${len(args)}")
+        sets.append("rg_updated_at = now()")
+    if "rg_status_until" in fields:
+        args.append(_as_ts(fields["rg_status_until"]))
+        sets.append(f"rg_status_until = ${len(args)}")
+    if "marketing_consent" in fields:
+        args.append(bool(fields["marketing_consent"])
+                    if fields["marketing_consent"] is not None else None)
+        sets.append(f"marketing_consent = ${len(args)}")
+    if "rg_flags" in fields and isinstance(fields["rg_flags"], dict):
+        args.append(json.dumps(fields["rg_flags"]))
+        sets.append(f"rg_signals = ${len(args)}::jsonb")
+    if "timezone" in fields and fields["timezone"]:
+        args.append(str(fields["timezone"])[:64])
+        sets.append(f"tz = ${len(args)}")
+    for f in ("email_opt_in", "email_verified", "push_opt_in",
+              "push_available", "in_app_available", "sms_opt_in"):
+        if f in fields and fields[f] is not None:
+            args.append(bool(fields[f]))
+            sets.append(f"{f} = ${len(args)}")
+    if "channel_prefs" in fields and isinstance(fields["channel_prefs"], dict):
+        args.append(json.dumps(fields["channel_prefs"]))
+        sets.append(f"channel_prefs = ${len(args)}::jsonb")
+    if not sets:
+        return 0
+    sets.append("updated_at = now()")
+    result = await _execute(
+        f"UPDATE retention_users SET {', '.join(sets)} "
+        "WHERE product_id = $1 AND player_id = $2",
+        *args,
+    )
+    return _affected(result)
+
+
+async def insert_rg_audit(product_id: int, *, player_id: str, trigger: str,
+                          decision: str, reason: str,
+                          signals: list[str],
+                          status_snapshot: Optional[str],
+                          allow_general: bool) -> int:
+    row = await _fetchrow(
+        "INSERT INTO rg_guard_audit (product_id, player_id, trigger, "
+        " decision, reason, signals_triggered, rg_status_snapshot, "
+        " allow_general) "
+        "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8) RETURNING id",
+        product_id, player_id, trigger, decision, reason,
+        json.dumps(signals or []), status_snapshot, allow_general,
+    )
+    return int(row["id"])
+
+
+async def list_rg_audit(product_id: int, *, page: int = 1,
+                        page_size: int = 50,
+                        decision: Optional[str] = None) -> dict[str, Any]:
+    offset = max(page - 1, 0) * page_size
+    where = "product_id = $1" + (" AND decision = $4" if decision else "")
+    args: list[Any] = [product_id, page_size, offset]
+    if decision:
+        args.append(decision)
+    total = await _fetchval(
+        f"SELECT COUNT(*) FROM rg_guard_audit WHERE {where}",
+        *([product_id] + ([decision] if decision else [])))
+    rows = await _fetch(
+        f"SELECT * FROM rg_guard_audit WHERE {where} "
+        "ORDER BY id DESC LIMIT $2 OFFSET $3", *args)
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        d["signals_triggered"] = _json_value(d.get("signals_triggered")) or []
+        _iso_fields(d, "decided_at")
+        items.append(d)
+    return {"items": items, "total": int(total or 0)}
+
+
+async def rg_audit_summary(product_id: int) -> dict[str, Any]:
+    rows = await _fetch(
+        "SELECT decision, COUNT(*) AS n FROM rg_guard_audit "
+        "WHERE product_id = $1 GROUP BY decision", product_id)
+    by_decision = {str(r["decision"]): int(r["n"]) for r in rows}
+    statuses = await _fetch(
+        "SELECT COALESCE(rg_status, 'unknown') AS status, COUNT(*) AS n "
+        "FROM retention_users WHERE product_id = $1 GROUP BY 1", product_id)
+    return {"checks": sum(by_decision.values()), "by_decision": by_decision,
+            "players_by_status": {str(r["status"]): int(r["n"])
+                                  for r in statuses}}
+
+
+async def list_rg_signal_config(product_id: int,
+                                only_enabled: bool = False
+                                ) -> list[dict[str, Any]]:
+    q = ("SELECT * FROM rg_signal_config WHERE product_id = $1 "
+         + ("AND enabled " if only_enabled else "") + "ORDER BY signal_key")
+    rows = await _fetch(q, product_id)
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        d["params"] = _json_value(d.get("params")) or {}
+        _iso_fields(d, "updated_at")
+        items.append(d)
+    return items
+
+
+async def upsert_rg_signal_config(product_id: int, *, signal_key: str,
+                                  enabled: bool, block_class: str,
+                                  params: dict[str, Any], source: str,
+                                  updated_by: Optional[str]) -> dict[str, Any]:
+    row = await _fetchrow(
+        "INSERT INTO rg_signal_config (product_id, signal_key, enabled, "
+        " block_class, params, source, updated_by) "
+        "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7) "
+        "ON CONFLICT (product_id, signal_key) DO UPDATE SET "
+        " enabled = EXCLUDED.enabled, block_class = EXCLUDED.block_class, "
+        " params = EXCLUDED.params, source = EXCLUDED.source, "
+        " updated_by = EXCLUDED.updated_by, updated_at = now() "
+        "RETURNING *",
+        product_id, signal_key, enabled, block_class,
+        json.dumps(params or {}), source, updated_by,
+    )
+    d = dict(row)
+    d["id"] = int(d["id"])
+    d["params"] = _json_value(d.get("params")) or {}
+    _iso_fields(d, "updated_at")
+    return d
+
+
+async def rg_chase_count(product_id: int, player_id: str, *,
+                         window_days: int, hours_after_loss: int) -> int:
+    """Computed chase_pattern signal: deposits made within N hours after a
+    losing settled bet, inside the window."""
+    val = await _fetchval(
+        "SELECT COUNT(*) FROM retention_events d "
+        "WHERE d.product_id = $1 AND d.player_id = $2 "
+        "  AND d.event_name = 'deposit_confirmed' "
+        "  AND d.ts > now() - make_interval(days => $3) "
+        "  AND EXISTS (SELECT 1 FROM retention_events l "
+        "      WHERE l.product_id = d.product_id "
+        "        AND l.player_id = d.player_id "
+        "        AND l.event_name = 'bet_settled' "
+        f"       AND {_payload_num('win_amount')} < {_payload_num('amount')} "
+        "        AND l.ts < d.ts "
+        "        AND l.ts > d.ts - make_interval(hours => $4))",
+        product_id, player_id, int(window_days), int(hours_after_loss),
+    )
+    return int(val or 0)
+
+
+async def rg_deposit_counts(product_id: int, player_id: str) -> tuple[int, int]:
+    """(deposits last 7d, deposits last 30d) for the frequency-spike signal."""
+    row = await _fetchrow(
+        "SELECT COUNT(*) FILTER (WHERE ts > now() - interval '7 days') AS d7, "
+        "       COUNT(*) FILTER (WHERE ts > now() - interval '30 days') AS d30 "
+        "FROM retention_events "
+        "WHERE product_id = $1 AND player_id = $2 "
+        "  AND event_name = 'deposit_confirmed'",
+        product_id, player_id,
+    )
+    return int(row["d7"] or 0), int(row["d30"] or 0)
+
+
+# ---------------------------------------------------------------------------
+# Template library (DOC-6b)
+# ---------------------------------------------------------------------------
+def _row_to_template(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    d["id"] = int(d["id"])
+    d["localizations"] = _json_value(d.get("localizations")) or {}
+    d["variables"] = _json_value(d.get("variables")) or {}
+    d["ab_variants"] = _json_value(d.get("ab_variants"))
+    _iso_fields(d, "created_at", "updated_at")
+    return d
+
+
+async def list_templates(product_id: int) -> list[dict[str, Any]]:
+    rows = await _fetch(
+        "SELECT * FROM retention_templates WHERE product_id = $1 "
+        "ORDER BY template_key, version DESC", product_id)
+    return [_row_to_template(r) for r in rows]
+
+
+async def get_template(product_id: int, template_key: str
+                       ) -> Optional[dict[str, Any]]:
+    row = await _fetchrow(
+        "SELECT * FROM retention_templates WHERE product_id = $1 "
+        "AND template_key = $2 ORDER BY version DESC LIMIT 1",
+        product_id, template_key)
+    return _row_to_template(row) if row else None
+
+
+async def upsert_template(product_id: int, *, template_key: str, type_: str,
+                          mode: str, intent: str,
+                          localizations: dict[str, Any],
+                          variables: dict[str, Any], status: str,
+                          is_starter: bool,
+                          updated_by: Optional[str],
+                          version: int = 1) -> dict[str, Any]:
+    row = await _fetchrow(
+        "INSERT INTO retention_templates (product_id, template_key, type, "
+        " version, status, mode, intent, localizations, variables, "
+        " is_starter, updated_by) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11) "
+        "ON CONFLICT (product_id, template_key, version) DO UPDATE SET "
+        " type = EXCLUDED.type, status = EXCLUDED.status, "
+        " mode = EXCLUDED.mode, intent = EXCLUDED.intent, "
+        " localizations = EXCLUDED.localizations, "
+        " variables = EXCLUDED.variables, "
+        " is_starter = EXCLUDED.is_starter, "
+        " updated_by = EXCLUDED.updated_by, updated_at = now() RETURNING *",
+        product_id, template_key, type_, int(version), status, mode, intent,
+        json.dumps(localizations or {}), json.dumps(variables or {}),
+        is_starter, updated_by,
+    )
+    return _row_to_template(row)
+
+
+async def delete_template(product_id: int, template_key: str) -> bool:
+    result = await _execute(
+        "DELETE FROM retention_templates "
+        "WHERE product_id = $1 AND template_key = $2",
+        product_id, template_key)
+    return not result.endswith("0")
+
+
+# ---------------------------------------------------------------------------
+# Channel abstraction (DOC-7): channel config + the delivery ledger
+# ---------------------------------------------------------------------------
+async def list_channel_config(product_id: int) -> list[dict[str, Any]]:
+    rows = await _fetch(
+        "SELECT * FROM retention_channel_config WHERE product_id = $1 "
+        "ORDER BY priority, channel", product_id)
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        d["config"] = _json_value(d.get("config")) or {}
+        _iso_fields(d, "updated_at")
+        items.append(d)
+    return items
+
+
+async def upsert_channel_config(product_id: int, *, channel: str,
+                                enabled: bool, priority: int,
+                                channel_config: dict[str, Any],
+                                updated_by: Optional[str]) -> dict[str, Any]:
+    row = await _fetchrow(
+        "INSERT INTO retention_channel_config (product_id, channel, enabled, "
+        " priority, config, updated_by) VALUES ($1, $2, $3, $4, $5::jsonb, $6) "
+        "ON CONFLICT (product_id, channel) DO UPDATE SET "
+        " enabled = EXCLUDED.enabled, priority = EXCLUDED.priority, "
+        " config = EXCLUDED.config, updated_by = EXCLUDED.updated_by, "
+        " updated_at = now() RETURNING *",
+        product_id, channel, enabled, int(priority),
+        json.dumps(channel_config or {}), updated_by,
+    )
+    d = dict(row)
+    d["id"] = int(d["id"])
+    d["config"] = _json_value(d.get("config")) or {}
+    _iso_fields(d, "updated_at")
+    return d
+
+
+def _row_to_delivery(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    d["id"] = int(d["id"])
+    if d.get("retention_user_id") is not None:
+        d["retention_user_id"] = int(d["retention_user_id"])
+    _iso_fields(d, "created_at", "updated_at", "next_attempt_at")
+    return d
+
+
+async def get_delivery(product_id: int, delivery_id: str
+                       ) -> Optional[dict[str, Any]]:
+    row = await _fetchrow(
+        "SELECT * FROM retention_deliveries "
+        "WHERE product_id = $1 AND delivery_id = $2",
+        product_id, delivery_id)
+    return _row_to_delivery(row) if row else None
+
+
+async def upsert_delivery(product_id: int, delivery_id: str, *,
+                          player_id: Optional[str],
+                          retention_user_id: Optional[int],
+                          channel: str, intended_channel: Optional[str],
+                          status: str, title: Optional[str] = None,
+                          body: Optional[str] = None,
+                          cta_url: Optional[str] = None,
+                          decision_id: Optional[int] = None) -> None:
+    await _execute(
+        "INSERT INTO retention_deliveries (product_id, delivery_id, "
+        " player_id, retention_user_id, channel, intended_channel, status, "
+        " title, body, cta_url, decision_id) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
+        "ON CONFLICT (product_id, delivery_id) DO UPDATE SET "
+        " status = EXCLUDED.status, updated_at = now()",
+        product_id, delivery_id, player_id, retention_user_id, channel,
+        intended_channel, status, title, body, cta_url, decision_id,
+    )
+
+
+async def update_delivery(product_id: int, delivery_id: str, *,
+                          status: Optional[str] = None,
+                          provider_ref: Optional[str] = None,
+                          fail_reason: Optional[str] = None,
+                          permanent_fail: Optional[bool] = None,
+                          next_attempt_at: Any = UNSET,
+                          attempts: Optional[int] = None) -> None:
+    sets = ["updated_at = now()"]
+    args: list[Any] = [product_id, delivery_id]
+    if status is not None:
+        args.append(status)
+        sets.append(f"status = ${len(args)}")
+    if provider_ref is not None:
+        args.append(provider_ref)
+        sets.append(f"provider_ref = ${len(args)}")
+    if fail_reason is not None:
+        args.append(fail_reason)
+        sets.append(f"fail_reason = ${len(args)}")
+    if permanent_fail is not None:
+        args.append(bool(permanent_fail))
+        sets.append(f"permanent_fail = ${len(args)}")
+    if next_attempt_at is not UNSET:
+        args.append(_as_ts(next_attempt_at))
+        sets.append(f"next_attempt_at = ${len(args)}")
+    if attempts is not None:
+        args.append(int(attempts))
+        sets.append(f"attempts = ${len(args)}")
+    await _execute(
+        f"UPDATE retention_deliveries SET {', '.join(sets)} "
+        "WHERE product_id = $1 AND delivery_id = $2",
+        *args,
+    )
+
+
+async def due_delivery_retries(product_id: int, limit: int = 20
+                               ) -> list[dict[str, Any]]:
+    rows = await _fetch(
+        "SELECT * FROM retention_deliveries "
+        "WHERE product_id = $1 AND status = 'failed' AND NOT permanent_fail "
+        "  AND next_attempt_at IS NOT NULL AND next_attempt_at <= now() "
+        "ORDER BY next_attempt_at LIMIT $2",
+        product_id, int(limit))
+    return [_row_to_delivery(r) for r in rows]
+
+
+async def list_deliveries(product_id: int, status: Optional[str] = None,
+                          page: int = 1, page_size: int = 50
+                          ) -> dict[str, Any]:
+    offset = max(page - 1, 0) * page_size
+    where = "product_id = $1" + (" AND status = $4" if status else "")
+    args: list[Any] = [product_id, page_size, offset]
+    if status:
+        args.append(status)
+    total = await _fetchval(
+        f"SELECT COUNT(*) FROM retention_deliveries WHERE {where}",
+        *([product_id] + ([status] if status else [])))
+    rows = await _fetch(
+        f"SELECT * FROM retention_deliveries WHERE {where} "
+        "ORDER BY id DESC LIMIT $2 OFFSET $3", *args)
+    return {"items": [_row_to_delivery(r) for r in rows],
+            "total": int(total or 0)}
+
+
+# ---------------------------------------------------------------------------
+# Journey engine (DOC-6a): definitions, enrollments, step log
+# ---------------------------------------------------------------------------
+def _row_to_journey(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    d["id"] = int(d["id"])
+    for jf in ("trigger", "entry_conditions", "exit_conditions", "steps",
+               "metadata"):
+        d[jf] = _json_value(d.get(jf)) or ({} if jf in ("trigger", "metadata")
+                                           else [])
+    _iso_fields(d, "created_at", "updated_at")
+    return d
+
+
+async def list_journeys(product_id: int) -> list[dict[str, Any]]:
+    rows = await _fetch(
+        "SELECT * FROM retention_journeys WHERE product_id = $1 "
+        "ORDER BY journey_key, version DESC", product_id)
+    return [_row_to_journey(r) for r in rows]
+
+
+async def list_active_journeys(product_id: int, *,
+                               trigger_type: Optional[str] = None
+                               ) -> list[dict[str, Any]]:
+    rows = await _fetch(
+        "SELECT * FROM retention_journeys "
+        "WHERE product_id = $1 AND status = 'active' "
+        + ("AND trigger->>'type' = $2 " if trigger_type else "")
+        + "ORDER BY priority, journey_key",
+        *([product_id, trigger_type] if trigger_type else [product_id]))
+    return [_row_to_journey(r) for r in rows]
+
+
+async def get_journey(product_id: int, journey_key: str, *,
+                      version: Optional[int] = None
+                      ) -> Optional[dict[str, Any]]:
+    if version is not None:
+        row = await _fetchrow(
+            "SELECT * FROM retention_journeys WHERE product_id = $1 "
+            "AND journey_key = $2 AND version = $3",
+            product_id, journey_key, int(version))
+    else:
+        row = await _fetchrow(
+            "SELECT * FROM retention_journeys WHERE product_id = $1 "
+            "AND journey_key = $2 ORDER BY version DESC LIMIT 1",
+            product_id, journey_key)
+    return _row_to_journey(row) if row else None
+
+
+async def upsert_journey(product_id: int, journey: dict[str, Any], *,
+                         updated_by: Optional[str] = None,
+                         is_starter: bool = False) -> dict[str, Any]:
+    row = await _fetchrow(
+        "INSERT INTO retention_journeys (product_id, journey_key, name, "
+        " version, status, trigger, entry_conditions, exit_conditions, "
+        " steps, dry_run, priority, metadata, is_starter, updated_by) "
+        "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, "
+        "        $9::jsonb, $10, $11, $12::jsonb, $13, $14) "
+        "ON CONFLICT (product_id, journey_key, version) DO UPDATE SET "
+        " name = EXCLUDED.name, status = EXCLUDED.status, "
+        " trigger = EXCLUDED.trigger, "
+        " entry_conditions = EXCLUDED.entry_conditions, "
+        " exit_conditions = EXCLUDED.exit_conditions, "
+        " steps = EXCLUDED.steps, dry_run = EXCLUDED.dry_run, "
+        " priority = EXCLUDED.priority, metadata = EXCLUDED.metadata, "
+        " is_starter = EXCLUDED.is_starter, "
+        " updated_by = EXCLUDED.updated_by, updated_at = now() RETURNING *",
+        product_id, str(journey["journey_key"]),
+        str(journey.get("name") or journey["journey_key"]),
+        int(journey.get("version") or 1),
+        str(journey.get("status") or "draft"),
+        json.dumps(journey.get("trigger") or {}),
+        json.dumps(journey.get("entry_conditions") or []),
+        json.dumps(journey.get("exit_conditions") or []),
+        json.dumps(journey.get("steps") or []),
+        bool(journey.get("dry_run", True)),
+        int(journey.get("priority") or 3),
+        json.dumps(journey.get("metadata") or {}),
+        is_starter, updated_by,
+    )
+    return _row_to_journey(row)
+
+
+async def set_journey_status(product_id: int, journey_key: str, status: str,
+                             *, dry_run: Optional[bool] = None) -> bool:
+    result = await _execute(
+        "UPDATE retention_journeys SET status = $3, "
+        " dry_run = COALESCE($4, dry_run), updated_at = now() "
+        "WHERE product_id = $1 AND journey_key = $2",
+        product_id, journey_key, status, dry_run)
+    return not result.endswith("0")
+
+
+async def delete_journey(product_id: int, journey_key: str) -> bool:
+    async with _acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM retention_journey_steps_log WHERE enrollment_id "
+                "IN (SELECT id FROM retention_journey_enrollments "
+                "    WHERE product_id = $1 AND journey_key = $2)",
+                product_id, journey_key)
+            await conn.execute(
+                "DELETE FROM retention_journey_enrollments "
+                "WHERE product_id = $1 AND journey_key = $2",
+                product_id, journey_key)
+            result = await conn.execute(
+                "DELETE FROM retention_journeys "
+                "WHERE product_id = $1 AND journey_key = $2",
+                product_id, journey_key)
+    return not result.endswith("0")
+
+
+def _row_to_enrollment(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    d["id"] = int(d["id"])
+    if d.get("retention_user_id") is not None:
+        d["retention_user_id"] = int(d["retention_user_id"])
+    _iso_fields(d, "enrolled_at", "next_step_at", "updated_at")
+    return d
+
+
+async def create_enrollment(product_id: int, *, player_id: str,
+                            retention_user_id: Optional[int],
+                            journey_key: str,
+                            journey_version: int) -> Optional[int]:
+    """Idempotent: one ACTIVE pass per (player, journey); a duplicate returns
+    None (the partial unique index enforces it)."""
+    try:
+        row = await _fetchrow(
+            "INSERT INTO retention_journey_enrollments (product_id, "
+            " player_id, retention_user_id, journey_key, journey_version) "
+            "VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            product_id, player_id, retention_user_id, journey_key,
+            int(journey_version))
+    except asyncpg.UniqueViolationError:
+        return None
+    return int(row["id"])
+
+
+async def count_active_enrollments(product_id: int, player_id: str) -> int:
+    val = await _fetchval(
+        "SELECT COUNT(*) FROM retention_journey_enrollments "
+        "WHERE product_id = $1 AND player_id = $2 AND status = 'active'",
+        product_id, player_id)
+    return int(val or 0)
+
+
+async def due_enrollments(product_id: int, limit: int = 50
+                          ) -> list[dict[str, Any]]:
+    rows = await _fetch(
+        "SELECT * FROM retention_journey_enrollments "
+        "WHERE product_id = $1 AND status = 'active' "
+        "  AND next_step_at IS NOT NULL AND next_step_at <= now() "
+        "ORDER BY next_step_at LIMIT $2",
+        product_id, int(limit))
+    return [_row_to_enrollment(r) for r in rows]
+
+
+async def set_enrollment_next_step(product_id: int, enrollment_id: int, *,
+                                   next_step_at: Any) -> None:
+    await _execute(
+        "UPDATE retention_journey_enrollments SET next_step_at = $3, "
+        "updated_at = now() WHERE product_id = $1 AND id = $2",
+        product_id, int(enrollment_id), _as_ts(next_step_at))
+
+
+async def advance_enrollment(product_id: int, enrollment_id: int, *,
+                             current_step: int) -> None:
+    await _execute(
+        "UPDATE retention_journey_enrollments SET current_step = $3, "
+        "next_step_at = NULL, updated_at = now() "
+        "WHERE product_id = $1 AND id = $2",
+        product_id, int(enrollment_id), int(current_step))
+
+
+async def finish_enrollment(product_id: int, enrollment_id: int,
+                            status: str, *, reason: Optional[str]) -> None:
+    await _execute(
+        "UPDATE retention_journey_enrollments SET status = $3, "
+        "exit_reason = $4, next_step_at = NULL, updated_at = now() "
+        "WHERE product_id = $1 AND id = $2",
+        product_id, int(enrollment_id), status, reason)
+
+
+async def log_journey_step(product_id: int, enrollment_id: int, step_id: int,
+                           outcome: str, decision_id: Optional[int],
+                           detail: Optional[str]) -> None:
+    await _execute(
+        "INSERT INTO retention_journey_steps_log (product_id, enrollment_id, "
+        " step_id, outcome, decision_id, detail) "
+        "VALUES ($1, $2, $3, $4, $5, $6)",
+        product_id, int(enrollment_id), int(step_id), outcome, decision_id,
+        detail)
+
+
+async def journey_enrollment_stats(product_id: int, journey_key: str
+                                   ) -> dict[str, int]:
+    rows = await _fetch(
+        "SELECT status, COUNT(*) AS n FROM retention_journey_enrollments "
+        "WHERE product_id = $1 AND journey_key = $2 GROUP BY status",
+        product_id, journey_key)
+    return {str(r["status"]): int(r["n"]) for r in rows}
+
+
+async def list_enrollments(product_id: int, journey_key: Optional[str] = None,
+                           status: Optional[str] = None,
+                           limit: int = 100) -> list[dict[str, Any]]:
+    where = ["product_id = $1"]
+    args: list[Any] = [product_id]
+    if journey_key:
+        args.append(journey_key)
+        where.append(f"journey_key = ${len(args)}")
+    if status:
+        args.append(status)
+        where.append(f"status = ${len(args)}")
+    args.append(int(limit))
+    rows = await _fetch(
+        f"SELECT * FROM retention_journey_enrollments "
+        f"WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ${len(args)}",
+        *args)
+    return [_row_to_enrollment(r) for r in rows]
+
+
+async def get_retention_user_by_id(product_id: int, rid: int
+                                   ) -> Optional[dict[str, Any]]:
+    row = await _fetchrow(
+        f"SELECT {_RU_COLS} FROM retention_users "
+        "WHERE product_id = $1 AND id = $2", product_id, int(rid))
+    return _row_to_retention_user(row) if row else None
+
+
+async def journey_scheduled_candidates(product_id: int,
+                                       match: dict[str, Any],
+                                       limit: int = 100
+                                       ) -> list[dict[str, Any]]:
+    """Players matching a scheduled journey trigger. Supported match keys:
+    dormancy_cohort, deposit_initiated_older_than_h (+ implicit
+    not-confirmed: the timer column is cleared on confirmation),
+    day_of_week (evaluated by the caller — every linked player is a
+    candidate)."""
+    where = ["product_id = $1", "player_id IS NOT NULL", "player_id <> ''",
+             "subscribed", "NOT pings_muted", "NOT unreachable"]
+    args: list[Any] = [product_id]
+    if match.get("dormancy_cohort") is not None:
+        args.append(str(match["dormancy_cohort"]))
+        where.append(f"dormancy_cohort = ${len(args)}")
+    if match.get("deposit_initiated_older_than_h") is not None:
+        args.append(int(match["deposit_initiated_older_than_h"]))
+        where.append("deposit_initiated_at IS NOT NULL "
+                     f"AND deposit_initiated_at < now() - "
+                     f"make_interval(hours => ${len(args)})")
+    args.append(int(limit))
+    rows = await _fetch(
+        f"SELECT {_RU_COLS} FROM retention_users "
+        f"WHERE {' AND '.join(where)} ORDER BY id LIMIT ${len(args)}",
+        *args)
+    return [_row_to_retention_user(r) for r in rows]
+
+
+async def arm_deposit_initiated(product_id: int, player_id: str,
+                                ts: Any) -> None:
+    await _execute(
+        "UPDATE retention_users SET deposit_initiated_at = $3, "
+        "updated_at = now() WHERE product_id = $1 AND player_id = $2",
+        product_id, player_id, _as_ts(ts))
+
+
+async def clear_deposit_initiated(product_id: int, rid: int) -> None:
+    await _execute(
+        "UPDATE retention_users SET deposit_initiated_at = NULL, "
+        "updated_at = now() WHERE product_id = $1 AND id = $2",
+        product_id, int(rid))
+
+
+async def clear_deposit_initiated_by_player(product_id: int,
+                                            player_id: str) -> None:
+    await _execute(
+        "UPDATE retention_users SET deposit_initiated_at = NULL, "
+        "updated_at = now() WHERE product_id = $1 AND player_id = $2",
+        product_id, player_id)
+
+
+# ---------------------------------------------------------------------------
+# Offer engine (DOC-2, bonus-CMS-ID model) + the VIP host queue
+# ---------------------------------------------------------------------------
+def _row_to_offer(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    d["id"] = int(d["id"])
+    d["params"] = _json_value(d.get("params")) or {}
+    d["allowed_countries"] = _json_value(d.get("allowed_countries")) or []
+    for f in ("cost_estimate_usd", "min_deposit_usd"):
+        if d.get(f) is not None:
+            d[f] = float(d[f])
+    _iso_fields(d, "created_at", "updated_at")
+    return d
+
+
+async def list_offer_catalog(product_id: int) -> list[dict[str, Any]]:
+    rows = await _fetch(
+        "SELECT * FROM retention_offer_catalog WHERE product_id = $1 "
+        "ORDER BY offer_key", product_id)
+    return [_row_to_offer(r) for r in rows]
+
+
+async def get_offer_by_key(product_id: int, offer_key: str
+                           ) -> Optional[dict[str, Any]]:
+    row = await _fetchrow(
+        "SELECT * FROM retention_offer_catalog "
+        "WHERE product_id = $1 AND offer_key = $2",
+        product_id, offer_key)
+    return _row_to_offer(row) if row else None
+
+
+async def upsert_offer_catalog(product_id: int, *, offer_key: str,
+                               offer_type: str,
+                               partner_bonus_id: Optional[str],
+                               params: dict[str, Any],
+                               cost_estimate_usd: float, enabled: bool,
+                               min_deposit_usd: Optional[float],
+                               allowed_countries: list[str],
+                               description: str,
+                               updated_by: Optional[str]) -> dict[str, Any]:
+    row = await _fetchrow(
+        "INSERT INTO retention_offer_catalog (product_id, offer_key, "
+        " offer_type, partner_bonus_id, params, cost_estimate_usd, enabled, "
+        " min_deposit_usd, allowed_countries, description, updated_by) "
+        "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10, $11) "
+        "ON CONFLICT (product_id, offer_key) DO UPDATE SET "
+        " offer_type = EXCLUDED.offer_type, "
+        " partner_bonus_id = EXCLUDED.partner_bonus_id, "
+        " params = EXCLUDED.params, "
+        " cost_estimate_usd = EXCLUDED.cost_estimate_usd, "
+        " enabled = EXCLUDED.enabled, "
+        " min_deposit_usd = EXCLUDED.min_deposit_usd, "
+        " allowed_countries = EXCLUDED.allowed_countries, "
+        " description = EXCLUDED.description, "
+        " updated_by = EXCLUDED.updated_by, updated_at = now() RETURNING *",
+        product_id, offer_key, offer_type, partner_bonus_id,
+        json.dumps(params or {}), cost_estimate_usd, enabled,
+        min_deposit_usd, json.dumps(allowed_countries or []), description,
+        updated_by,
+    )
+    return _row_to_offer(row)
+
+
+async def delete_offer_catalog(product_id: int, offer_key: str) -> bool:
+    result = await _execute(
+        "DELETE FROM retention_offer_catalog "
+        "WHERE product_id = $1 AND offer_key = $2", product_id, offer_key)
+    return result.endswith("1")
+
+
+async def list_offer_triggers(product_id: int) -> list[dict[str, Any]]:
+    rows = await _fetch(
+        "SELECT * FROM retention_offer_triggers WHERE product_id = $1 "
+        "ORDER BY trigger_key", product_id)
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        _iso_fields(d, "updated_at")
+        items.append(d)
+    return items
+
+
+async def get_offer_trigger(product_id: int, trigger_key: str
+                            ) -> Optional[dict[str, Any]]:
+    row = await _fetchrow(
+        "SELECT * FROM retention_offer_triggers "
+        "WHERE product_id = $1 AND trigger_key = $2",
+        product_id, trigger_key)
+    if row is None:
+        return None
+    d = dict(row)
+    d["id"] = int(d["id"])
+    _iso_fields(d, "updated_at")
+    return d
+
+
+async def upsert_offer_trigger(product_id: int, *, trigger_key: str,
+                               offer_key: str, vip_suppress: bool,
+                               enabled: bool,
+                               updated_by: Optional[str]) -> dict[str, Any]:
+    row = await _fetchrow(
+        "INSERT INTO retention_offer_triggers (product_id, trigger_key, "
+        " offer_key, vip_suppress, enabled, updated_by) "
+        "VALUES ($1, $2, $3, $4, $5, $6) "
+        "ON CONFLICT (product_id, trigger_key) DO UPDATE SET "
+        " offer_key = EXCLUDED.offer_key, "
+        " vip_suppress = EXCLUDED.vip_suppress, "
+        " enabled = EXCLUDED.enabled, updated_by = EXCLUDED.updated_by, "
+        " updated_at = now() RETURNING *",
+        product_id, trigger_key, offer_key, vip_suppress, enabled, updated_by,
+    )
+    d = dict(row)
+    d["id"] = int(d["id"])
+    _iso_fields(d, "updated_at")
+    return d
+
+
+def _row_to_grant(row: asyncpg.Record) -> dict[str, Any]:
+    d = dict(row)
+    d["id"] = int(d["id"])
+    d["params_snapshot"] = _json_value(d.get("params_snapshot")) or {}
+    if d.get("cost_usd") is not None:
+        d["cost_usd"] = float(d["cost_usd"])
+    if d.get("decision_id") is not None:
+        d["decision_id"] = int(d["decision_id"])
+    _iso_fields(d, "created_at", "expires_at")
+    return d
+
+
+async def get_offer_grant(product_id: int, offer_grant_id: str
+                          ) -> Optional[dict[str, Any]]:
+    row = await _fetchrow(
+        "SELECT * FROM retention_offer_grants "
+        "WHERE product_id = $1 AND offer_grant_id = $2",
+        product_id, offer_grant_id)
+    return _row_to_grant(row) if row else None
+
+
+async def upsert_offer_grant(product_id: int, offer_grant_id: str, *,
+                             player_id: str, decision_id: Optional[int],
+                             offer_key: str, offer_type: str,
+                             partner_bonus_id: Optional[str],
+                             params_snapshot: dict[str, Any],
+                             cost_usd: float, status: str) -> None:
+    await _execute(
+        "INSERT INTO retention_offer_grants (product_id, player_id, "
+        " offer_grant_id, decision_id, offer_key, offer_type, "
+        " partner_bonus_id, params_snapshot, cost_usd, status) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10) "
+        "ON CONFLICT (product_id, offer_grant_id) DO UPDATE SET "
+        " status = EXCLUDED.status",
+        product_id, player_id, offer_grant_id, decision_id, offer_key,
+        offer_type, partner_bonus_id, json.dumps(params_snapshot or {}),
+        cost_usd, status,
+    )
+
+
+async def update_offer_grant(product_id: int, offer_grant_id: str, *,
+                             status: str, partner_ref: Optional[str] = None,
+                             detail: Optional[str] = None,
+                             cost_usd: Optional[float] = None) -> None:
+    await _execute(
+        "UPDATE retention_offer_grants SET status = $3, "
+        " partner_ref = COALESCE($4, partner_ref), "
+        " detail = COALESCE($5, detail), "
+        " cost_usd = COALESCE($6, cost_usd) "
+        "WHERE product_id = $1 AND offer_grant_id = $2",
+        product_id, offer_grant_id, status, partner_ref, detail, cost_usd,
+    )
+
+
+async def link_offer_grant_decision(product_id: int, offer_grant_id: str,
+                                    decision_id: int) -> None:
+    await _execute(
+        "UPDATE retention_offer_grants SET decision_id = $3 "
+        "WHERE product_id = $1 AND offer_grant_id = $2",
+        product_id, offer_grant_id, int(decision_id),
+    )
+
+
+async def list_offer_grants(product_id: int, page: int = 1,
+                            page_size: int = 50) -> dict[str, Any]:
+    offset = max(page - 1, 0) * page_size
+    total = await _fetchval(
+        "SELECT COUNT(*) FROM retention_offer_grants WHERE product_id = $1",
+        product_id)
+    rows = await _fetch(
+        "SELECT * FROM retention_offer_grants WHERE product_id = $1 "
+        "ORDER BY id DESC LIMIT $2 OFFSET $3",
+        product_id, page_size, offset)
+    return {"items": [_row_to_grant(r) for r in rows],
+            "total": int(total or 0)}
+
+
+async def offers_cost_today(product_id: int) -> float:
+    """Stimulus spend today (UTC) — the offer budget's numerator. Counts
+    granted + pending (a pending call may still land)."""
+    val = await _fetchval(
+        "SELECT COALESCE(SUM(cost_usd), 0) FROM retention_offer_grants "
+        "WHERE product_id = $1 AND status IN ('granted', 'pending') "
+        "  AND created_at >= date_trunc('day', now() at time zone 'utc') "
+        "      at time zone 'utc'",
+        product_id)
+    return float(val or 0)
+
+
+async def get_offer_cooldown(product_id: int, player_id: str
+                             ) -> Optional[dict[str, Any]]:
+    if not player_id:
+        return None
+    row = await _fetchrow(
+        "SELECT * FROM retention_offer_cooldowns "
+        "WHERE product_id = $1 AND player_id = $2",
+        product_id, player_id)
+    if row is None:
+        return None
+    d = dict(row)
+    _iso_fields(d, "last_offer_at")
+    return d
+
+
+async def touch_offer_cooldown(product_id: int, player_id: str) -> None:
+    await _execute(
+        "INSERT INTO retention_offer_cooldowns (product_id, player_id, "
+        " last_offer_at, offers_granted_total) VALUES ($1, $2, now(), 1) "
+        "ON CONFLICT (product_id, player_id) DO UPDATE SET "
+        " last_offer_at = now(), "
+        " offers_granted_total = retention_offer_cooldowns"
+        ".offers_granted_total + 1",
+        product_id, player_id,
+    )
+
+
+async def create_host_task(product_id: int, player_id: str, *, reason: str,
+                           context: dict[str, Any]) -> int:
+    row = await _fetchrow(
+        "INSERT INTO retention_host_tasks (product_id, player_id, reason, "
+        " context) VALUES ($1, $2, $3, $4::jsonb) RETURNING id",
+        product_id, player_id, reason, json.dumps(context or {}),
+    )
+    return int(row["id"])
+
+
+async def list_host_tasks(product_id: int, status: Optional[str] = None,
+                          limit: int = 100) -> list[dict[str, Any]]:
+    where = "product_id = $1" + (" AND status = $3" if status else "")
+    args: list[Any] = [product_id, int(limit)]
+    if status:
+        args.append(status)
+    rows = await _fetch(
+        f"SELECT * FROM retention_host_tasks WHERE {where} "
+        "ORDER BY id DESC LIMIT $2", *args)
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        d["context"] = _json_value(d.get("context")) or {}
+        _iso_fields(d, "created_at", "updated_at")
+        items.append(d)
+    return items
+
+
+async def update_host_task(product_id: int, task_id: int,
+                           status: str) -> bool:
+    result = await _execute(
+        "UPDATE retention_host_tasks SET status = $3, updated_at = now() "
+        "WHERE product_id = $1 AND id = $2",
+        product_id, task_id, status)
+    return result.endswith("1")
+
+
+async def set_product_partner_endpoints(product_id: int, *,
+                                        offer_grant_url: Optional[str],
+                                        delivery_endpoint_url: Optional[str]
+                                        ) -> bool:
+    """The outbound casino endpoints (plain config; empty string clears)."""
+    def _norm(v: Optional[str]) -> Any:
+        if v is None:
+            return UNSET
+        v = v.strip()
+        return v or None
+
+    sets = ["updated_at = now()"]
+    args: list[Any] = []
+    for col, val in (("offer_grant_url", _norm(offer_grant_url)),
+                     ("delivery_endpoint_url", _norm(delivery_endpoint_url))):
+        if val is UNSET:
+            continue
+        args.append(val)
+        sets.append(f"{col} = ${len(args)}")
+    args.append(product_id)
+    row = await _fetchrow(
+        f"UPDATE products SET {', '.join(sets)} "
+        f"WHERE id = ${len(args)} RETURNING id", *args)
+    return row is not None
+
+
+async def get_product_partner_out_key(product_id: int) -> Optional[str]:
+    """Decrypted outbound partner key (offer-grant / deliver calls)."""
+    import logging
+    from app.core import secretbox
+    enc = await _fetchval(
+        "SELECT partner_out_key_enc FROM products WHERE id = $1", product_id)
+    if not enc:
+        return None
+    try:
+        return secretbox.decrypt(enc)
+    except secretbox.SecretBoxError:
+        logging.getLogger(__name__).warning(
+            "product_secret_undecryptable product_id=%s kind=partner_out",
+            product_id)
+        return None
+
+
+async def get_product_email_api_key(product_id: int) -> Optional[str]:
+    """Decrypted Customer.io App API key for the email channel."""
+    import logging
+    from app.core import secretbox
+    enc = await _fetchval(
+        "SELECT email_api_key_enc FROM products WHERE id = $1", product_id)
+    if not enc:
+        return None
+    try:
+        return secretbox.decrypt(enc)
+    except secretbox.SecretBoxError:
+        logging.getLogger(__name__).warning(
+            "product_secret_undecryptable product_id=%s kind=email_api",
+            product_id)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Adaptive frequency + Smart Send Time (DOC-4)
+# ---------------------------------------------------------------------------
+async def list_frequency_caps(product_id: int, only_enabled: bool = False
+                              ) -> list[dict[str, Any]]:
+    q = ("SELECT * FROM retention_frequency_caps WHERE product_id = $1 "
+         + ("AND enabled " if only_enabled else "")
+         + "ORDER BY channel, cohort")
+    rows = await _fetch(q, product_id)
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        _iso_fields(d, "updated_at")
+        items.append(d)
+    return items
+
+
+async def upsert_frequency_cap(product_id: int, *, channel: str, cohort: str,
+                               per_day: int, per_week: int,
+                               burst_per_hour: int, enabled: bool,
+                               updated_by: Optional[str]) -> dict[str, Any]:
+    row = await _fetchrow(
+        "INSERT INTO retention_frequency_caps (product_id, channel, cohort, "
+        " per_day, per_week, burst_per_hour, enabled, updated_by) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+        "ON CONFLICT (product_id, channel, cohort) DO UPDATE SET "
+        " per_day = EXCLUDED.per_day, per_week = EXCLUDED.per_week, "
+        " burst_per_hour = EXCLUDED.burst_per_hour, "
+        " enabled = EXCLUDED.enabled, updated_by = EXCLUDED.updated_by, "
+        " updated_at = now() RETURNING *",
+        product_id, channel, cohort, int(per_day), int(per_week),
+        int(burst_per_hour), enabled, updated_by,
+    )
+    d = dict(row)
+    d["id"] = int(d["id"])
+    _iso_fields(d, "updated_at")
+    return d
+
+
+async def list_touch_priorities(product_id: int) -> list[dict[str, Any]]:
+    rows = await _fetch(
+        "SELECT * FROM retention_touch_priority WHERE product_id = $1 "
+        "ORDER BY priority, touch_type", product_id)
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        _iso_fields(d, "updated_at")
+        items.append(d)
+    return items
+
+
+async def upsert_touch_priority(product_id: int, *, touch_type: str,
+                                priority: int, channel_switch_on_cap: bool,
+                                updated_by: Optional[str]) -> dict[str, Any]:
+    row = await _fetchrow(
+        "INSERT INTO retention_touch_priority (product_id, touch_type, "
+        " priority, channel_switch_on_cap, updated_by) "
+        "VALUES ($1, $2, $3, $4, $5) "
+        "ON CONFLICT (product_id, touch_type) DO UPDATE SET "
+        " priority = EXCLUDED.priority, "
+        " channel_switch_on_cap = EXCLUDED.channel_switch_on_cap, "
+        " updated_by = EXCLUDED.updated_by, updated_at = now() RETURNING *",
+        product_id, touch_type, int(priority), channel_switch_on_cap,
+        updated_by,
+    )
+    d = dict(row)
+    d["id"] = int(d["id"])
+    _iso_fields(d, "updated_at")
+    return d
+
+
+async def touch_counts(product_id: int, rid: int, channel: str
+                       ) -> dict[str, int]:
+    """Sent-touch counts (hour / UTC day / 7d) for the frequency gate.
+    Telegram counts ride the ping ledger; other channels count deliveries."""
+    if channel == "telegram":
+        row = await _fetchrow(
+            "SELECT COUNT(*) FILTER (WHERE created_at > now() - interval "
+            "  '1 hour') AS h, "
+            " COUNT(*) FILTER (WHERE created_at >= date_trunc('day', "
+            "  now() at time zone 'utc') at time zone 'utc') AS d, "
+            " COUNT(*) FILTER (WHERE created_at > now() - interval '7 days') "
+            "  AS w "
+            "FROM retention_pings "
+            "WHERE product_id = $1 AND retention_user_id = $2 "
+            "  AND status IN ('sent', 'dry_run')",
+            product_id, rid,
+        )
+    else:
+        row = await _fetchrow(
+            "SELECT COUNT(*) FILTER (WHERE created_at > now() - interval "
+            "  '1 hour') AS h, "
+            " COUNT(*) FILTER (WHERE created_at >= date_trunc('day', "
+            "  now() at time zone 'utc') at time zone 'utc') AS d, "
+            " COUNT(*) FILTER (WHERE created_at > now() - interval '7 days') "
+            "  AS w "
+            "FROM retention_deliveries "
+            "WHERE product_id = $1 AND retention_user_id = $2 "
+            "  AND channel = $3 AND status NOT IN "
+            "  ('failed', 'undeliverable', 'suppressed')",
+            product_id, rid, channel,
+        )
+    return {"hour": int(row["h"] or 0), "day": int(row["d"] or 0),
+            "week": int(row["w"] or 0)}
+
+
+async def get_activity_profile(product_id: int, player_id: str
+                               ) -> Optional[dict[str, Any]]:
+    if not player_id:
+        return None
+    row = await _fetchrow(
+        "SELECT * FROM retention_activity_profile "
+        "WHERE product_id = $1 AND player_id = $2",
+        product_id, player_id,
+    )
+    if row is None:
+        return None
+    d = dict(row)
+    d["peak_hours"] = _json_value(d.get("peak_hours")) or []
+    d["dow_pattern"] = _json_value(d.get("dow_pattern")) or {}
+    d["response_by_hour"] = _json_value(d.get("response_by_hour")) or {}
+    _iso_fields(d, "computed_at")
+    return d
+
+
+async def activity_profile_candidates(product_id: int, limit: int = 200
+                                      ) -> list[dict[str, Any]]:
+    """Players due a profile recompute: linked + least-recently computed."""
+    rows = await _fetch(
+        "SELECT u.player_id, u.tz FROM retention_users u "
+        "LEFT JOIN retention_activity_profile p "
+        "  ON p.product_id = u.product_id AND p.player_id = u.player_id "
+        "WHERE u.product_id = $1 AND u.player_id IS NOT NULL "
+        "  AND u.player_id <> '' "
+        "ORDER BY p.computed_at ASC NULLS FIRST LIMIT $2",
+        product_id, int(limit),
+    )
+    return [{"player_id": str(r["player_id"]), "tz": r["tz"]} for r in rows]
+
+
+async def activity_hour_histogram(product_id: int, player_id: str, *,
+                                  tz_offset_hours: float = 0.0,
+                                  window_days: int = 30) -> dict[str, Any]:
+    """Deterministic activity profile inputs: local-hour histogram of the
+    player's activity events over the window."""
+    rows = await _fetch(
+        "SELECT EXTRACT(hour FROM ts + make_interval(hours => $4))::int AS h, "
+        "       COUNT(*) AS n "
+        "FROM retention_events "
+        "WHERE product_id = $1 AND player_id = $2 "
+        "  AND event_name IN ('session_started', 'session_ended', "
+        "                     'bet_settled', 'deposit_confirmed', "
+        "                     'check_in_done') "
+        "  AND ts > now() - make_interval(days => $3) "
+        "GROUP BY 1 ORDER BY 1",
+        product_id, player_id, int(window_days), float(tz_offset_hours),
+    )
+    hist = {int(r["h"]) % 24: int(r["n"]) for r in rows}
+    sample = sum(hist.values())
+    if not sample:
+        return {"median_active_hour": None, "peak_hours": [],
+                "sample_size": 0}
+    # Median hour by cumulative count; top-3 peak hours by count.
+    ordered: list[int] = []
+    for h in sorted(hist):
+        ordered.extend([h] * hist[h])
+    median = ordered[len(ordered) // 2]
+    peaks = [h for h, _n in sorted(hist.items(),
+                                   key=lambda kv: (-kv[1], kv[0]))[:3]]
+    return {"median_active_hour": int(median), "peak_hours": peaks,
+            "sample_size": sample}
+
+
+async def upsert_activity_profile(product_id: int, player_id: str,
+                                  profile: dict[str, Any]) -> None:
+    await _execute(
+        "INSERT INTO retention_activity_profile (product_id, player_id, "
+        " median_active_hour, peak_hours, sample_size, computed_at) "
+        "VALUES ($1, $2, $3, $4::jsonb, $5, now()) "
+        "ON CONFLICT (product_id, player_id) DO UPDATE SET "
+        " median_active_hour = EXCLUDED.median_active_hour, "
+        " peak_hours = EXCLUDED.peak_hours, "
+        " sample_size = EXCLUDED.sample_size, computed_at = now()",
+        product_id, player_id, profile.get("median_active_hour"),
+        json.dumps(profile.get("peak_hours") or []),
+        int(profile.get("sample_size") or 0),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Player scoring: cohorts / RFM / value tiers (DOC-5)
+# ---------------------------------------------------------------------------
+async def get_scoring_config(product_id: int) -> dict[str, Any]:
+    """All scoring config rows for a product as {config_key: params}."""
+    rows = await _fetch(
+        "SELECT config_key, params FROM retention_scoring_config "
+        "WHERE product_id = $1", product_id)
+    return {str(r["config_key"]): (_json_value(r["params"]) or {})
+            for r in rows}
+
+
+async def upsert_scoring_config(product_id: int, config_key: str,
+                                params: dict[str, Any],
+                                updated_by: Optional[str]) -> None:
+    await _execute(
+        "INSERT INTO retention_scoring_config (product_id, config_key, "
+        " params, updated_by) VALUES ($1, $2, $3::jsonb, $4) "
+        "ON CONFLICT (product_id, config_key) DO UPDATE SET "
+        " params = EXCLUDED.params, updated_by = EXCLUDED.updated_by, "
+        " updated_at = now()",
+        product_id, config_key, json.dumps(params or {}), updated_by,
+    )
+
+
+async def rfm_inputs(product_id: int, player_id: str, *,
+                     window_days: int) -> dict[str, Any]:
+    """Deposit counts/sums for RFM (window) + lifetime (value tier)."""
+    if not player_id:
+        return {"deposits_window": 0, "sum_window": 0.0, "sum_lifetime": 0.0}
+    row = await _fetchrow(
+        "SELECT COUNT(*) FILTER (WHERE ts > now() - make_interval(days => $3))"
+        "         AS dep_window, "
+        f"       COALESCE(SUM({_payload_num('amount')}) FILTER "
+        "         (WHERE ts > now() - make_interval(days => $3)), 0) "
+        "         AS sum_window, "
+        f"       COALESCE(SUM({_payload_num('amount')}), 0) AS sum_lifetime "
+        "FROM retention_events "
+        "WHERE product_id = $1 AND player_id = $2 "
+        "  AND event_name = 'deposit_confirmed'",
+        product_id, player_id, int(window_days),
+    )
+    return {"deposits_window": int(row["dep_window"] or 0),
+            "sum_window": float(row["sum_window"] or 0),
+            "sum_lifetime": float(row["sum_lifetime"] or 0)}
+
+
+async def cache_player_scoring(product_id: int, rid: int,
+                               fields: dict[str, Any], *,
+                               cohort_changed: bool = False) -> None:
+    """Write the scoring cache on retention_users (sweep output)."""
+    sets = ["score_computed_at = now()", "updated_at = now()"]
+    args: list[Any] = [product_id, rid]
+    for f in ("dormancy_cohort", "value_tier", "vip_segment"):
+        if f in fields:
+            args.append(fields[f])
+            sets.append(f"{f} = ${len(args)}")
+    for f in ("rfm_recency", "rfm_frequency", "rfm_score"):
+        if f in fields:
+            args.append(int(fields[f]) if fields[f] is not None else None)
+            sets.append(f"{f} = ${len(args)}")
+    for f in ("rfm_monetary", "total_deposit_lifetime"):
+        if f in fields:
+            args.append(fields[f])
+            sets.append(f"{f} = ${len(args)}")
+    if cohort_changed:
+        sets.append("dormancy_since = now()")
+    await _execute(
+        f"UPDATE retention_users SET {', '.join(sets)} "
+        "WHERE product_id = $1 AND id = $2",
+        *args,
+    )
+
+
+async def log_cohort_transition(product_id: int, player_id: str, *,
+                                from_cohort: str, to_cohort: str,
+                                days_inactive: int) -> bool:
+    """One transition row; deduped to one per (player, cohort, day)."""
+    row = await _fetchrow(
+        "INSERT INTO retention_cohort_transitions (product_id, player_id, "
+        " from_cohort, to_cohort, days_inactive) "
+        "VALUES ($1, $2, $3, $4, $5) "
+        "ON CONFLICT (product_id, player_id, to_cohort, (transitioned_at::date)) "
+        "DO NOTHING RETURNING id",
+        product_id, player_id, from_cohort, to_cohort, int(days_inactive),
+    )
+    return row is not None
+
+
+async def scoring_candidates(product_id: int, limit: int = 200
+                             ) -> list[dict[str, Any]]:
+    """Least-recently-scored players first (never-scored before all)."""
+    rows = await _fetch(
+        f"SELECT {_RU_COLS} FROM retention_users "
+        "WHERE product_id = $1 AND player_id IS NOT NULL AND player_id <> '' "
+        "ORDER BY score_computed_at ASC NULLS FIRST LIMIT $2",
+        product_id, int(limit),
+    )
+    return [_row_to_retention_user(r) for r in rows]
+
+
+async def scoring_distribution(product_id: int) -> dict[str, Any]:
+    cohorts = await _fetch(
+        "SELECT COALESCE(dormancy_cohort, 'unscored') AS k, COUNT(*) AS n "
+        "FROM retention_users WHERE product_id = $1 GROUP BY 1", product_id)
+    tiers = await _fetch(
+        "SELECT COALESCE(value_tier, 'unscored') AS k, COUNT(*) AS n "
+        "FROM retention_users WHERE product_id = $1 GROUP BY 1", product_id)
+    segments = await _fetch(
+        "SELECT COALESCE(vip_segment, 'unscored') AS k, COUNT(*) AS n "
+        "FROM retention_users WHERE product_id = $1 GROUP BY 1", product_id)
+    return {
+        "by_cohort": {str(r["k"]): int(r["n"]) for r in cohorts},
+        "by_value_tier": {str(r["k"]): int(r["n"]) for r in tiers},
+        "by_vip_segment": {str(r["k"]): int(r["n"]) for r in segments},
+    }
+
+
+async def list_cohort_transitions(product_id: int, page: int = 1,
+                                  page_size: int = 50) -> dict[str, Any]:
+    offset = max(page - 1, 0) * page_size
+    total = await _fetchval(
+        "SELECT COUNT(*) FROM retention_cohort_transitions "
+        "WHERE product_id = $1", product_id)
+    rows = await _fetch(
+        "SELECT * FROM retention_cohort_transitions WHERE product_id = $1 "
+        "ORDER BY id DESC LIMIT $2 OFFSET $3",
+        product_id, page_size, offset)
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = int(d["id"])
+        _iso_fields(d, "transitioned_at")
+        items.append(d)
+    return {"items": items, "total": int(total or 0)}
+
+
+# ---------------------------------------------------------------------------
+# Measurement: holdout config + the uplift cuts (DOC-1)
+# ---------------------------------------------------------------------------
+async def set_holdout_group(product_id: int, rid: int, group: str,
+                            salt: str) -> None:
+    """Cache a player's deterministic holdout group (+ the salt it was computed
+    under, so a salt rotation lazily invalidates the cache)."""
+    await _execute(
+        "UPDATE retention_users SET holdout_group = $3, holdout_salt = $4, "
+        "updated_at = now() WHERE product_id = $1 AND id = $2",
+        product_id, rid, group, salt,
+    )
+
+
+async def get_holdout_config(product_id: int) -> Optional[dict[str, Any]]:
+    """The newest active holdout experiment row for a product (audit trail;
+    the hot path reads the mirrored settings keys instead)."""
+    row = await _fetchrow(
+        "SELECT * FROM retention_holdout_config "
+        "WHERE product_id = $1 AND active ORDER BY id DESC LIMIT 1",
+        product_id,
+    )
+    if row is None:
+        return None
+    d = dict(row)
+    d["id"] = int(d["id"])
+    _iso_fields(d, "created_at")
+    return d
+
+
+async def insert_holdout_config(product_id: int, *, holdout_pct: int,
+                                holdout_salt: str, note: Optional[str],
+                                created_by: Optional[str]) -> dict[str, Any]:
+    """Append a new experiment config row (history is kept; the newest active
+    row is the current experiment)."""
+    row = await _fetchrow(
+        "INSERT INTO retention_holdout_config (product_id, holdout_pct, "
+        " holdout_salt, note, created_by) VALUES ($1, $2, $3, $4, $5) "
+        "RETURNING *",
+        product_id, int(holdout_pct), holdout_salt, note, created_by,
+    )
+    d = dict(row)
+    d["id"] = int(d["id"])
+    _iso_fields(d, "created_at")
+    return d
+
+
+async def holdout_status(product_id: int) -> dict[str, int]:
+    """Live population split by the cached holdout group."""
+    rows = await _fetch(
+        "SELECT COALESCE(holdout_group, 'unassigned') AS grp, COUNT(*) AS n "
+        "FROM retention_users WHERE product_id = $1 GROUP BY 1",
+        product_id,
+    )
+    out = {"treatment": 0, "holdout": 0, "unassigned": 0}
+    for r in rows:
+        out[str(r["grp"])] = int(r["n"])
+    return out
+
+
+async def retention_uplift(product_id: int, dt_from: Any, dt_to: Any
+                           ) -> list[dict[str, Any]]:
+    """Uplift per conversion type over the window: distinct players per group
+    (by the group AT touch time), conversion = the player had at least one
+    row with the outcome set. Treatment rows are real touches; holdout rows
+    are the virtual would-have-touched markers (kind='holdout')."""
+    rows = await _fetch(
+        "SELECT holdout_group_at_time AS grp, "
+        "       COUNT(DISTINCT player_id) AS players, "
+        "       COUNT(DISTINCT player_id) FILTER "
+        "         (WHERE returned_at IS NOT NULL) AS returned, "
+        "       COUNT(DISTINCT player_id) FILTER "
+        "         (WHERE deposit_at IS NOT NULL) AS deposited "
+        "FROM retention_outcomes "
+        "WHERE product_id = $1 AND holdout_group_at_time IS NOT NULL "
+        "  AND player_id IS NOT NULL AND player_id <> '' "
+        "  AND sent_at >= $2 AND sent_at < $3 "
+        "GROUP BY 1",
+        product_id, _as_ts(dt_from), _as_ts(dt_to),
+    )
+    by_grp = {str(r["grp"]): r for r in rows}
+    out: list[dict[str, Any]] = []
+    for conv, field in (("reactivation", "returned"), ("deposit", "deposited")):
+        t = by_grp.get("treatment")
+        h = by_grp.get("holdout")
+        tp = int(t["players"]) if t else 0
+        hp = int(h["players"]) if h else 0
+        tc = int(t[field]) if t else 0
+        hc = int(h[field]) if h else 0
+        t_rate = round(tc / tp, 4) if tp else None
+        h_rate = round(hc / hp, 4) if hp else None
+        uplift = (round((t_rate - h_rate) * 100, 1)
+                  if t_rate is not None and h_rate is not None else None)
+        out.append({
+            "conversion_type": conv,
+            "treatment_players": tp, "holdout_players": hp,
+            "treatment_conversions": tc, "holdout_conversions": hc,
+            "treatment_rate": t_rate, "holdout_rate": h_rate,
+            "uplift_pp": uplift,
+            "low_confidence": hp < 30,
+            **({"reason": "holdout_disabled"} if hp == 0 else {}),
+        })
+    return out
+
+
+async def write_uplift_snapshot(product_id: int, window_from: Any,
+                                window_to: Any, row: dict[str, Any]) -> None:
+    await _execute(
+        "INSERT INTO retention_uplift_snapshots (product_id, window_from, "
+        " window_to, conversion_type, treatment_players, holdout_players, "
+        " treatment_conversions, holdout_conversions, treatment_rate, "
+        " holdout_rate, uplift_pp) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        product_id, _as_ts(window_from), _as_ts(window_to),
+        row["conversion_type"], row["treatment_players"],
+        row["holdout_players"], row["treatment_conversions"],
+        row["holdout_conversions"], row["treatment_rate"], row["holdout_rate"],
+        row["uplift_pp"],
+    )
 
 
 # The aggregate every effectiveness cut shares: sends, replies, conversions and

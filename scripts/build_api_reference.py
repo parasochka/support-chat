@@ -322,6 +322,88 @@ for key, desc in [
           "2026-07-28T10:15:00Z", desc=desc))
 R(row(AREA_PARTNER, _PU, T_RESP, OUT, C_US, "ok / updated", "bool / bool", YES,
       '{"ok":true,"updated":true}', desc="Признак приёма и факта изменения."))
+# Orchestrator extension of player-update (all optional, additive).
+R(row(AREA_PARTNER, _PU, T_REQ, IN, C_CRM, "rg_status", "enum", NO,
+      "self_exclude",
+      desc="RG-статус игрока: ok | cool_off | rg_hold | self_exclude. "
+           "Источник истины по самоисключению — платформа казино; "
+           "self_exclude/rg_hold полностью блокируют проактив и бонусы. "
+           "Слать при каждой смене + первичный бэкфилл."))
+R(row(AREA_PARTNER, _PU, T_REQ, IN, C_CRM, "rg_status_until",
+      "string (ISO-8601)", NO, "2026-10-01T00:00:00Z",
+      desc="Срок cool_off (истёкший снимается автоматически)."))
+R(row(AREA_PARTNER, _PU, T_REQ, IN, C_CRM, "marketing_consent", "bool", NO,
+      "true", desc="Маркетинговое согласие (гейт для Tier-1 рынков)."))
+R(row(AREA_PARTNER, _PU, T_REQ, IN, C_CRM, "rg_flags", "object", NO,
+      '{"escalating_bets":true}',
+      desc="Готовые поведенческие RG-флаги risk-движка казино."))
+R(row(AREA_PARTNER, _PU, T_REQ, IN, C_CRM, "timezone", "string", NO,
+      "Europe/Istanbul",
+      desc="Локальная таймзона игрока (IANA или '+03:00'; geo-IP на стороне "
+           "казино) — точность smart-send-time."))
+R(row(AREA_PARTNER, _PU, T_REQ, IN, C_CRM,
+      "email_opt_in / email_verified / push_opt_in / push_available / "
+      "in_app_available / sms_opt_in", "bool", NO, "true",
+      desc="Согласия и доступность каналов. Строгий opt-in: канал без "
+           "согласия никогда не используется, даже как fallback."))
+
+# ---------------------------------------------------------------------------
+# Partner API — POST /partner/{product_id}/delivery-status (callback)
+# ---------------------------------------------------------------------------
+_DS = "POST /partner/{product_id}/delivery-status"
+R(row(AREA_PARTNER, _DS, T_EP, IN, C_CRM, auth=AUTH_PARTNER,
+      limits="Идемпотентно; статус не движется назад · лимит partner:{ip}",
+      errors="401 unauthorized · 422 invalid_status · 429 rate_limited",
+      desc="Коллбек прогресса доставки заказа push/in-app, размещённого "
+           "оркестратором (см. Исходящие: delivery-endpoint)."))
+R(row(AREA_PARTNER, _DS, T_REQ, IN, C_CRM, "delivery_id", "string", YES,
+      "dl_a1b2c3d4e5f6", desc="Наш ключ идемпотентности заказа доставки."))
+R(row(AREA_PARTNER, _DS, T_REQ, IN, C_CRM, "status", "enum", YES,
+      "delivered", desc="sent | delivered | opened | clicked | bounced."))
+
+# ---------------------------------------------------------------------------
+# Outbound — the offer-grant endpoint the CASINO implements
+# ---------------------------------------------------------------------------
+_OG = "POST <offer_grant_url> (реализует казино)"
+R(row(AREA_OUT, _OG, T_EP, OUT, C_US,
+      auth="Bearer <partner outbound key продукта>",
+      limits="Идемпотентно по offer_grant_id (повтор возвращает тот же "
+             "результат, второй бонус не создаётся) · таймаут "
+             "retention.offer_grant_timeout_sec",
+      errors="401 · 400 unsupported_offer_type · 422 player_not_found",
+      desc="Выдача бонуса по его ID из бонус-CMS казино (offer engine). "
+           "URL задаётся per product в админке."))
+R(row(AREA_OUT, _OG, T_REQ, OUT, C_US, "offer_grant_id", "string", YES,
+      "og_a1b2c3d4e5f6", desc="Наш детерминированный ключ идемпотентности."))
+R(row(AREA_OUT, _OG, T_REQ, OUT, C_US, "player_id / bonus_id / offer_type / "
+      "params", "string / string / string / object", YES,
+      '{"bonus_id":"BONUS-42"}',
+      desc="Кому и какой бонус начислить (bonus_id — ID в бонус-CMS)."))
+R(row(AREA_OUT, _OG, T_RESP, IN, C_CRM, "status", "enum", YES, "granted",
+      desc="granted | fraud_hold | duplicate | failed (+ partner_ref, "
+           "credited_usd). Персона упоминает бонус ТОЛЬКО после granted."))
+
+# ---------------------------------------------------------------------------
+# Outbound — the delegated delivery endpoint the CASINO implements
+# ---------------------------------------------------------------------------
+_DL = "POST <delivery_endpoint_url> (реализует казино)"
+R(row(AREA_OUT, _DL, T_EP, OUT, C_US,
+      auth="Bearer <partner outbound key продукта>",
+      limits="Идемпотентно по delivery_id · таймаут "
+             "retention.push_delivery_timeout_sec · транзиентные ошибки "
+             "ретраятся (1m/5m/30m), permanent — нет",
+      errors="permanent:true в ответе = ретраев не будет",
+      desc="Заказ делегированной доставки push/in-app: казино доставляет на "
+           "устройство своей инфраструктурой и шлёт прогресс коллбеком "
+           "delivery-status."))
+R(row(AREA_OUT, _DL, T_REQ, OUT, C_US, "delivery_id / player_id / channel / "
+      "title / body / cta_url / ttl_sec",
+      "string / string / enum / string / string / string / int", YES,
+      '{"channel":"push","ttl_sec":86400}',
+      desc="Заказ доставки; channel: push | in_app."))
+R(row(AREA_OUT, _DL, T_RESP, IN, C_CRM, "status", "enum", YES, "sent",
+      desc="sent | queued | delivered | failed (+ reason, permanent, "
+           "provider_ref)."))
 
 _EV = "POST /partner/{product_id}/event"
 R(row(AREA_PARTNER, _EV, T_EP, IN, C_CRM, auth=AUTH_PARTNER,

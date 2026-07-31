@@ -201,6 +201,26 @@ class PlayerUpdateReq(BaseModel):
     last_login_at: Optional[str] = None
     last_played_at: Optional[str] = None
     last_deposit_at: Optional[str] = None
+    # Responsible gaming (the platform is the source of truth; the bot only
+    # respects the status): ok / cool_off / rg_hold / self_exclude, an
+    # optional expiry for cool_off, the marketing consent, and pre-computed
+    # behavioral flags from the casino's own risk engine.
+    rg_status: Optional[str] = None
+    rg_status_until: Optional[str] = None
+    marketing_consent: Optional[bool] = None
+    rg_flags: Optional[dict[str, Any]] = None
+    # Player timezone (IANA name or '+03:00'), typically geo-IP-derived on the
+    # casino side; feeds Smart Send Time. Falls back to the product offset.
+    timezone: Optional[str] = None
+    # Per-channel consent/availability (strict opt-in; the channel router
+    # never falls back to a non-consented channel).
+    email_opt_in: Optional[bool] = None
+    email_verified: Optional[bool] = None
+    push_opt_in: Optional[bool] = None
+    push_available: Optional[bool] = None
+    in_app_available: Optional[bool] = None
+    sms_opt_in: Optional[bool] = None
+    channel_prefs: Optional[dict[str, Any]] = None
 
 
 async def _partner_auth(product_id: int,
@@ -255,10 +275,35 @@ async def player_update(product_id: int, body: PlayerUpdateReq, req: Request,
     _product, err = await _partner_auth(product_id, authorization)
     if err is not None:
         return err
-    profile = {k: v for k, v in body.model_dump().items()
-               if k != "player_id" and v is not None}
+    data = {k: v for k, v in body.model_dump().items()
+            if k != "player_id" and v is not None}
+    # Split the payload: the classic profile/activity snapshot fields ride the
+    # existing seam; the RG / timezone / channel-consent extension has its own
+    # writer (update_rg_profile) so a partial push still never nulls anything.
+    rg_fields = {k: data.pop(k) for k in (
+        "rg_status", "rg_status_until", "marketing_consent", "rg_flags",
+        "timezone", "email_opt_in", "email_verified", "push_opt_in",
+        "push_available", "in_app_available", "sms_opt_in", "channel_prefs")
+        if k in data}
+    if rg_fields.get("rg_status") is not None:
+        from app.retention import rg_guard
+        if rg_fields["rg_status"] not in rg_guard.RG_STATUSES:
+            return _err(422, "invalid_rg_status",
+                        "rg_status must be one of: "
+                        + ", ".join(rg_guard.RG_STATUSES))
     updated = await player_sync.apply_profile_push(product_id, body.player_id,
-                                                   profile)
+                                                   data)
+    if rg_fields:
+        rg_updated = await db.update_rg_profile(product_id, body.player_id,
+                                                rg_fields,
+                                                source="casino_push")
+        updated = max(updated, rg_updated)
+        if "rg_status" in rg_fields:
+            await db.log_admin_event(
+                None, "rg_status_changed",
+                {"player_id": body.player_id,
+                 "rg_status": rg_fields["rg_status"], "source": "casino_push"},
+                product_id=product_id)
     return JSONResponse(content={"ok": True, "updated": updated})
 
 
@@ -320,6 +365,39 @@ async def player_event(product_id: int, body: PlayerEventsReq, req: Request,
     except player_sync.EventError as exc:
         return _err(422, "invalid_event", str(exc))
     return JSONResponse(content={"ok": True, **result})
+
+
+# ===========================================================================
+# Partner delivery-status callback (delegated push/in_app + email providers)
+# ===========================================================================
+class DeliveryStatusReq(BaseModel):
+    delivery_id: str
+    status: str  # sent | delivered | opened | clicked | bounced
+
+
+@public_router.post("/partner/{product_id}/delivery-status")
+async def delivery_status(product_id: int, body: DeliveryStatusReq,
+                          req: Request,
+                          authorization: Optional[str] = Header(default=None)
+                          ) -> JSONResponse:
+    """The casino/provider reports a delivery's lifecycle progress for an
+    order we placed (push/in_app via the delegated deliver call). Idempotent;
+    a status can never move backwards. Same partner-secret auth + rate
+    budget as the other /partner/* webhooks."""
+    try:
+        antispam.check_rate_limit(f"partner:{client_ip(req)}")
+    except antispam.AntiSpamError as exc:
+        return _err(exc.status, exc.code, exc.detail)
+    _product, err = await _partner_auth(product_id, authorization)
+    if err is not None:
+        return err
+    from app.retention import channels
+    ok = await channels.apply_delivery_status(product_id, body.delivery_id,
+                                              body.status.strip().lower())
+    if not ok:
+        return _err(422, "invalid_status",
+                    "Unknown delivery_id or unsupported status.")
+    return JSONResponse(content={"ok": True})
 
 
 # ===========================================================================
@@ -1178,6 +1256,10 @@ class RuleWrite(BaseModel):
     name: Optional[str] = None
     enabled: Optional[bool] = None
     trigger_kind: Optional[str] = None
+    # A rule may watch SEVERAL inactivity dimensions at once (chat / casino /
+    # deposit); by default a new rule watches all three. trigger_kinds wins
+    # over the legacy single trigger_kind when both are sent.
+    trigger_kinds: Optional[list[str]] = None
     inactivity_days: Optional[int] = Field(default=None, ge=1, le=365)
     action: Optional[str] = None
     intent: Optional[str] = None
@@ -1191,6 +1273,17 @@ class RuleWrite(BaseModel):
             raise HTTPException(status_code=400,
                                 detail=f"trigger_kind must be one of "
                                        f"{', '.join(_RULE_TRIGGERS)}.")
+        if "trigger_kinds" in fields:
+            kinds = [str(k).strip() for k in fields["trigger_kinds"]
+                     if str(k).strip()]
+            bad = [k for k in kinds if k not in _RULE_TRIGGERS]
+            if bad or not kinds:
+                raise HTTPException(
+                    status_code=400,
+                    detail="trigger_kinds must be a non-empty subset of "
+                           f"{', '.join(_RULE_TRIGGERS)}.")
+            # De-dup preserving order.
+            fields["trigger_kinds"] = list(dict.fromkeys(kinds))
         if "action" in fields and fields["action"] not in _RULE_ACTIONS:
             raise HTTPException(status_code=400,
                                 detail=f"action must be one of "

@@ -170,6 +170,15 @@ async def ingest_event(product_id: int, evt: dict[str, Any],
         if profile:
             await db.update_retention_profile(product_id, v["player_id"],
                                               profile, profile_source="event")
+        # Cashier-abandonment timer (DOC-6b): deposit_initiated arms it,
+        # deposit_confirmed clears it (completed = not abandoned). The event
+        # stays plain state food otherwise.
+        if v["event_name"] == "deposit_initiated":
+            await db.arm_deposit_initiated(product_id, v["player_id"],
+                                           v["ts"])
+        elif v["event_name"] == "deposit_confirmed":
+            await db.clear_deposit_initiated_by_player(product_id,
+                                                       v["player_id"])
     except Exception:  # noqa: BLE001
         log.exception("player_sync_bridge_failed product=%s event=%s",
                       product_id, v["event_name"])

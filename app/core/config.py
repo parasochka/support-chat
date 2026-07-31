@@ -637,6 +637,83 @@ RETENTION_MEDIA_VIDEO_CRF: int = _env_int(
 RETENTION_MEDIA_VIDEO_PRESET: str = _env(
     "RETENTION_MEDIA_VIDEO_PRESET", "medium")
 
+# --- RETENTION ORCHESTRATOR (measurement / RG / frequency / scoring /
+# offers / journeys / scenario library / channels) -------------------------
+# Every knob below is the ENV-DEFAULT layer of a hot `retention`-group setting
+# (precedence product -> global -> env -> default), except where noted.
+#
+# MEASUREMENT (holdout + uplift). The holdout percentage ships at 15 BY
+# BUSINESS DECISION (the owner wants a live control group everywhere from day
+# one to measure real retention effect); 0 disables it. The salt names the
+# experiment — rotating it re-buckets every player (a NEW experiment).
+RETENTION_HOLDOUT_PCT: int = _env_int("RETENTION_HOLDOUT_PCT", 15)
+RETENTION_HOLDOUT_SALT: str = _env("RETENTION_HOLDOUT_SALT", "default")
+# RG GUARD (responsible gaming). ON by default — it is protection, not a
+# feature. MVP policy (owner decision): only casino-reported self-exclusion is
+# a hard permanent block; the consent gate ships OFF (no licensed-market
+# requirements at MVP) and unknown status passes with an audit mark ('warn').
+RETENTION_RG_ENABLED: bool = _env_bool("RETENTION_RG_ENABLED", True)
+RETENTION_RG_REQUIRE_CONSENT: bool = _env_bool(
+    "RETENTION_RG_REQUIRE_CONSENT", False)
+RETENTION_RG_UNKNOWN_STATUS_POLICY: str = _env(
+    "RETENTION_RG_UNKNOWN_STATUS_POLICY", "warn")  # 'warn' | 'block'
+RETENTION_RG_DIALOGUE_SUPPRESSION: bool = _env_bool(
+    "RETENTION_RG_DIALOGUE_SUPPRESSION", True)
+# ADAPTIVE FREQUENCY + SMART SEND TIME. Both OFF by default: when off the
+# legacy static guards (ping_daily_cap / ping_min_gap_hours) and the plain
+# humanizing delay apply bit-for-bit.
+RETENTION_ADAPTIVE_FREQUENCY_ENABLED: bool = _env_bool(
+    "RETENTION_ADAPTIVE_FREQUENCY_ENABLED", False)
+RETENTION_SMART_SEND_TIME_ENABLED: bool = _env_bool(
+    "RETENTION_SMART_SEND_TIME_ENABLED", False)
+RETENTION_SST_MAX_SHIFT_HOURS: int = _env_int("RETENTION_SST_MAX_SHIFT_HOURS", 2)
+RETENTION_SST_MIN_SAMPLE: int = _env_int("RETENTION_SST_MIN_SAMPLE", 20)
+RETENTION_ACTIVITY_PROFILE_SWEEP_INTERVAL_SEC: int = _env_int(
+    "RETENTION_ACTIVITY_PROFILE_SWEEP_INTERVAL_SEC", 3600)
+# PLAYER SCORING (dormancy cohorts / RFM / value tiers). OFF -> the state
+# snapshot keeps exactly its pre-orchestrator fields.
+RETENTION_SCORING_ENABLED: bool = _env_bool("RETENTION_SCORING_ENABLED", False)
+RETENTION_SCORING_SWEEP_INTERVAL_SEC: int = _env_int(
+    "RETENTION_SCORING_SWEEP_INTERVAL_SEC", 3600)
+RETENTION_RFM_WINDOW_DAYS: int = _env_int("RETENTION_RFM_WINDOW_DAYS", 30)
+# OFFER ENGINE. Triple-guarded against accidental real-money grants: master
+# switch OFF + dry-run ON + a zero budget (0 = granting blocked).
+RETENTION_OFFERS_ENABLED: bool = _env_bool("RETENTION_OFFERS_ENABLED", False)
+RETENTION_OFFER_DRY_RUN: bool = _env_bool("RETENTION_OFFER_DRY_RUN", True)
+RETENTION_OFFER_DAILY_BUDGET_USD: float = _env_float(
+    "RETENTION_OFFER_DAILY_BUDGET_USD", 0.0)
+RETENTION_OFFER_COOLDOWN_HOURS: int = _env_int(
+    "RETENTION_OFFER_COOLDOWN_HOURS", 72)
+RETENTION_OFFER_LIFETIME_CAP: int = _env_int("RETENTION_OFFER_LIFETIME_CAP", 0)
+RETENTION_OFFER_GRANT_TIMEOUT_SEC: int = _env_int(
+    "RETENTION_OFFER_GRANT_TIMEOUT_SEC", 10)
+# JOURNEY ENGINE. OFF -> only the idle ladder + single reactions run.
+RETENTION_JOURNEYS_ENABLED: bool = _env_bool("RETENTION_JOURNEYS_ENABLED", False)
+RETENTION_JOURNEYS_DRY_RUN_DEFAULT: bool = _env_bool(
+    "RETENTION_JOURNEYS_DRY_RUN_DEFAULT", True)
+RETENTION_JOURNEY_STEP_SWEEP_INTERVAL_SEC: int = _env_int(
+    "RETENTION_JOURNEY_STEP_SWEEP_INTERVAL_SEC", 300)
+RETENTION_JOURNEY_MAX_ACTIVE_PER_PLAYER: int = _env_int(
+    "RETENTION_JOURNEY_MAX_ACTIVE_PER_PLAYER", 3)
+# SCENARIO / TEMPLATE LIBRARY.
+RETENTION_SCENARIO_AUTOSEED: bool = _env_bool("RETENTION_SCENARIO_AUTOSEED",
+                                              False)
+RETENTION_ABANDONMENT_DELAY_HOURS: int = _env_int(
+    "RETENTION_ABANDONMENT_DELAY_HOURS", 2)
+# CHANNEL ABSTRACTION. OFF -> the router always answers 'telegram' and no
+# non-Telegram adapter is active (behaviour bit-for-bit as before).
+RETENTION_MULTICHANNEL_ENABLED: bool = _env_bool(
+    "RETENTION_MULTICHANNEL_ENABLED", False)
+RETENTION_CHANNEL_AUTO_PRIORITY: str = _env(
+    "RETENTION_CHANNEL_AUTO_PRIORITY", "push,in_app,email")
+RETENTION_DELIVERY_RETRY_ENABLED: bool = _env_bool(
+    "RETENTION_DELIVERY_RETRY_ENABLED", True)
+RETENTION_PUSH_DELIVERY_TIMEOUT_SEC: int = _env_int(
+    "RETENTION_PUSH_DELIVERY_TIMEOUT_SEC", 10)
+# Attribution windows for uplift conversion types (deploy constants — changing
+# them retroactively makes stored uplift slices incomparable).
+RETENTION_UPLIFT_WINDOW_DAYS: int = _env_int("RETENTION_UPLIFT_WINDOW_DAYS", 28)
+
 # Serve /docs, /redoc and /openapi.json (they describe the WHOLE API surface,
 # /admin included) — off by default; enable only on dev/stage deployments.
 EXPOSE_API_DOCS: bool = _env_bool("EXPOSE_API_DOCS", False)

@@ -45,10 +45,20 @@ const TRIGGER_LABELS = {
 
 const STATUS_COLORS = { sent: 'success', failed: 'error', skipped: 'default' };
 
+const triggerKindsLabel = (r) => {
+  const kinds =
+    r.trigger_kinds && r.trigger_kinds.length
+      ? r.trigger_kinds
+      : [r.trigger_kind];
+  return kinds.map((k) => t(TRIGGER_LABELS[k]) || k).join(' + ');
+};
+
 const EMPTY_RULE = {
   name: '',
   enabled: true,
-  trigger_kind: 'bot_inactivity',
+  // A rule may watch several inactivity dimensions at once; the default is
+  // all three (chat / casino / deposit) — the owner's chosen baseline.
+  trigger_kinds: ['bot_inactivity', 'casino_inactivity', 'no_deposit'],
   inactivity_days: 7,
   action: 'message',
   intent: '',
@@ -119,7 +129,14 @@ const IdlePingsTab = ({ productId }) => {
   const openEditor = (rule) =>
     setEditing(
       rule
-        ? { ...rule, vip_tiers: (rule.vip_tiers || []).join(', ') }
+        ? {
+            ...rule,
+            trigger_kinds:
+              rule.trigger_kinds && rule.trigger_kinds.length
+                ? rule.trigger_kinds
+                : [rule.trigger_kind || 'bot_inactivity'],
+            vip_tiers: (rule.vip_tiers || []).join(', '),
+          }
         : { ...EMPTY_RULE }
     );
 
@@ -127,7 +144,7 @@ const IdlePingsTab = ({ productId }) => {
     const body = {
       name: editing.name,
       enabled: Boolean(editing.enabled),
-      trigger_kind: editing.trigger_kind,
+      trigger_kinds: editing.trigger_kinds,
       inactivity_days: Number(editing.inactivity_days) || 1,
       action: editing.action,
       intent: editing.intent,
@@ -273,7 +290,7 @@ const IdlePingsTab = ({ productId }) => {
                   />
                 </Box>
                 <Typography variant="body2" color="text.secondary">
-                  {t(TRIGGER_LABELS[r.trigger_kind]) || r.trigger_kind} · {r.inactivity_days}
+                  {triggerKindsLabel(r)} · {r.inactivity_days}
                   {t('d')} · {r.action}
                 </Typography>
                 <Typography variant="caption" color="text.secondary" component="div">
@@ -332,7 +349,7 @@ const IdlePingsTab = ({ productId }) => {
                   />
                 </TableCell>
                 <TableCell>{r.name}</TableCell>
-                <TableCell>{t(TRIGGER_LABELS[r.trigger_kind]) || r.trigger_kind}</TableCell>
+                <TableCell>{triggerKindsLabel(r)}</TableCell>
                 <TableCell align="right">{r.inactivity_days}</TableCell>
                 <TableCell>{r.action}</TableCell>
                 <TableCell>
@@ -507,13 +524,18 @@ const IdlePingsTab = ({ productId }) => {
               <TextField
                 select
                 size="small"
-                label={t('Trigger')}
-                value={editing.trigger_kind}
-                onChange={(e) => setEditing({ ...editing, trigger_kind: e.target.value })}
+                label={t('Triggers (any that crosses the threshold fires)')}
+                value={editing.trigger_kinds || []}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  const next = typeof v === 'string' ? v.split(',') : v;
+                  if (next.length) setEditing({ ...editing, trigger_kinds: next });
+                }}
                 helperText={t(
-                  "Casino triggers need the partner's Player API / event feed to see logins and deposits."
+                  "A rule may watch chat, casino and deposit inactivity at once (the default). Casino triggers need the partner's Player API / event feed to see logins and deposits."
                 )}
                 fullWidth
+                slotProps={{ select: { multiple: true } }}
               >
                 {Object.entries(TRIGGER_LABELS).map(([value, label]) => (
                   <MenuItem key={value} value={value}>

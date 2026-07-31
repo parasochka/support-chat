@@ -2096,6 +2096,7 @@ def build_retention_dynamic_prompt(
     tz_offset_hours: Optional[float] = None,
     progression: Optional[dict[str, Any]] = None,
     nudge_links: Optional[list[str]] = None,
+    rg_suppress: bool = False,
 ) -> str:
     """Assemble the retention Layer-3 user message.
 
@@ -2138,7 +2139,15 @@ def build_retention_dynamic_prompt(
         parts += [register_block, ""]
     if intro_photo:
         parts += [_INTRO_PHOTO_DIRECTIVE, ""]
-    if play_nudge:
+    # RG dialogue suppression: a player under a responsible-gaming restriction
+    # who writes to the bot himself keeps getting warm reactive answers, but
+    # every game CTA (play/deposit/bonus talk, game links, the play nudge) is
+    # stripped for the turn. Mutually exclusive with the play nudge.
+    if rg_suppress:
+        from app.retention import rg_guard  # late: avoid a module cycle
+        parts += ["=== RG PROTECTION ===",
+                  rg_guard.DIALOGUE_SUPPRESSION_NOTE, ""]
+    elif play_nudge:
         parts += [_PLAY_NUDGE_DIRECTIVE]
         proven = _proven_links_line(nudge_links)
         if proven:
@@ -2201,6 +2210,7 @@ def build_retention_messages(
     tz_offset_hours: Optional[float] = None,
     progression: Optional[dict[str, Any]] = None,
     nudge_links: Optional[list[str]] = None,
+    rg_suppress: bool = False,
 ) -> list[dict[str, str]]:
     """The OpenAI `messages` array for a retention (Telegram) turn.
 
@@ -2234,6 +2244,7 @@ def build_retention_messages(
             tz_offset_hours=tz_offset_hours,
             progression=progression,
             nudge_links=nudge_links,
+            rg_suppress=rg_suppress,
         ),
     })
     return messages

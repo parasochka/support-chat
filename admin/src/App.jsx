@@ -132,6 +132,8 @@ const RetentionSettings = lazyPage(() => import('./pages/RetentionSettings'));
 const EscalationKeywords = lazyPage(() => import('./pages/EscalationKeywords'));
 const TestProfile = lazyPage(() => import('./pages/TestProfile'));
 const RetentionAgent = lazyPage(() => import('./pages/RetentionAgent'));
+const Orchestrator = lazyPage(() => import('./pages/Orchestrator'));
+const IntegrationChecklist = lazyPage(() => import('./pages/IntegrationChecklist'));
 const Settings = lazyPage(() => import('./pages/Settings'));
 const Quality = lazyPage(() => import('./pages/Quality'));
 const SiteMap = lazyPage(() => import('./pages/SiteMap'));
@@ -450,6 +452,15 @@ const AppMenu = () => {
             location.pathname === '/retention-v2'
           }
         />
+        {/* The orchestrator layer over the agent: measurement (holdout /
+            uplift), RG guard, segmentation, frequency, offers, journeys,
+            templates, channels. */}
+        <SubItem
+          to="/orchestrator"
+          label={t('Orchestrator')}
+          icon={<InsightsIcon fontSize="small" />}
+          active={(location) => location.pathname === '/orchestrator'}
+        />
         <RetentionSubItem tab="chats" label={t('Conversations')} icon={<ForumIcon fontSize="small" />} />
         <SubItem
           to="/retention-settings"
@@ -476,6 +487,16 @@ const AppMenu = () => {
             server-side (it mints a deploy-wide credential), like Logs. */}
         {permissions === 'admin' && (
           <Menu.Item to="/mcp" primaryText={t('MCP')} leftIcon={<HubIcon />} />
+        )}
+        {/* The living list of external integration dependencies (what the
+            casino platform / email / BI teams still owe us). Writes are
+            global-admin server-side; readable by every admin. */}
+        {permissions === 'admin' && (
+          <Menu.Item
+            to="/integration-checklist"
+            primaryText={t('Integration checklist')}
+            leftIcon={<FactCheckIcon />}
+          />
         )}
       </CollapsibleSection>
     </Menu>
@@ -598,6 +619,8 @@ const App = () => (
       <Route path="/retention" element={<Retention />} />
       <Route path="/retention-settings" element={<RetentionSettings />} />
       <Route path="/retention-agent" element={<RetentionAgent />} />
+      <Route path="/orchestrator" element={<Orchestrator />} />
+      <Route path="/integration-checklist" element={<IntegrationChecklist />} />
       {/* Legacy bookmark: the old Retention v2 path lands on the agent page. */}
       <Route path="/retention-v2" element={<RetentionAgent />} />
       <Route path="/api-keys" element={<ApiKeys />} />
