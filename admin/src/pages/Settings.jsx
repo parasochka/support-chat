@@ -740,7 +740,9 @@ export const SettingsModule = ({ module }) => {
 
       {/* The platform-wide AI-spend histogram lives under the AI-model group:
           the model knobs set what a call costs, this shows what the calls DID
-          cost, split by call type across both bots + the background passes. */}
+          cost, split by call type across both bots + the background passes.
+          It renders ABOVE the knobs — the chart is what operators come for. */}
+      {module === 'core' && tab === 'model' && <AiCostsPanel />}
       {groups.map((g) =>
         g !== tab ? null : g === 'language' ? (
           <LanguageEditor
@@ -767,7 +769,6 @@ export const SettingsModule = ({ module }) => {
           />
         )
       )}
-      {module === 'core' && tab === 'model' && <AiCostsPanel />}
     </Box>
   );
 };

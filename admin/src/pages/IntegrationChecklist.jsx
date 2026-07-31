@@ -72,19 +72,19 @@ const IntegrationChecklist = () => {
               alignItems={{ md: 'center' }}>
               <Box sx={{ flex: 1 }}>
                 <Stack direction="row" spacing={1} alignItems="center">
-                  <Typography variant="subtitle1">{it.title}</Typography>
-                  <Chip size="small" label={it.status}
+                  <Typography variant="subtitle1">{t(it.title)}</Typography>
+                  <Chip size="small" label={t(it.status)}
                     color={STATUS_COLOR[it.status] || 'default'} />
                   {it.owner && (
-                    <Chip size="small" variant="outlined" label={it.owner} />
+                    <Chip size="small" variant="outlined" label={t(it.owner)} />
                   )}
                 </Stack>
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                  {it.description}
+                  {t(it.description)}
                 </Typography>
                 {it.blocking && (
                   <Typography variant="caption" color="warning.main">
-                    {t('Blocks')}: {it.blocking}
+                    {t('Blocks on our side')}: {t(it.blocking)}
                   </Typography>
                 )}
               </Box>
@@ -93,7 +93,7 @@ const IntegrationChecklist = () => {
                   value={it.status} disabled={readOnly}
                   onChange={(e) => update(it.item_key, { status: e.target.value })}>
                   {statuses.map((s) => (
-                    <MenuItem key={s} value={s}>{s}</MenuItem>
+                    <MenuItem key={s} value={s}>{t(s)}</MenuItem>
                   ))}
                 </TextField>
                 <NotesField item={it} readOnly={readOnly} onSave={update} />
@@ -113,7 +113,7 @@ const IntegrationChecklist = () => {
                 onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
               <TextField size="small" label={t('Owner')} value={draft.owner}
                 onChange={(e) => setDraft({ ...draft, owner: e.target.value })} />
-              <TextField size="small" label={t('Blocks')} value={draft.blocking}
+              <TextField size="small" label={t('Blocks on our side')} value={draft.blocking}
                 onChange={(e) => setDraft({ ...draft, blocking: e.target.value })} />
               <Button variant="outlined" onClick={async () => {
                 try {

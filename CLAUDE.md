@@ -549,7 +549,10 @@ per-language **topic titles** (stored on `kb_topics.title` via the existing topi
 widget keeps a baked-in copy of the `widget`-scope strings (`widget.js` `I18N`) for an instant
 first paint, then fetches the session-free, cacheable `GET /api/chat/i18n` and merges the
 server-resolved strings over it (`fetchI18n`), so admin copy edits reach the chrome without a
-widget redeploy. The admin panel itself stays English.
+widget redeploy. The admin SPA's own chrome is bilingual (EN/RU via `admin/src/i18n.js` —
+English source strings are the keys, components wrap them in `t()`; a new admin-visible
+string needs an RU entry there). Admin CONTENT that feeds the model (prompts, KB,
+variable values) stays English-only — `settings.ensure_english` enforces it.
 
 ### Atomic turn write (invariant)
 `db.persist_turn` writes the user message, the assistant message, the `ai_interaction_logs`

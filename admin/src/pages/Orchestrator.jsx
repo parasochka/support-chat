@@ -18,6 +18,9 @@ import TableCell from '@mui/material/TableCell';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
+import Tooltip from '@mui/material/Tooltip';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import Link from '@mui/material/Link';
 import Typography from '@mui/material/Typography';
 import { API_URL, httpClient } from '../httpClient';
 import { withProduct } from '../productScope';
@@ -68,10 +71,23 @@ const put = async (notify, path, body, okMsg, method = 'PUT') => {
   }
 };
 
-const Section = ({ title, children, sub }) => (
+/** A small (i) icon with an explanation on hover — the page's one tooltip idiom. */
+const InfoTip = ({ text }) => (
+  <Tooltip title={text} arrow placement="top" enterTouchDelay={0}>
+    <InfoOutlinedIcon
+      fontSize="inherit"
+      sx={{ ml: 0.5, verticalAlign: 'middle', color: 'text.disabled', cursor: 'help' }}
+    />
+  </Tooltip>
+);
+
+const Section = ({ title, children, sub, tip }) => (
   <Card sx={{ mb: 2 }}>
     <CardContent>
-      <Typography variant="h6" sx={{ mb: sub ? 0.5 : 1.5 }}>{title}</Typography>
+      <Typography variant="h6" sx={{ mb: sub ? 0.5 : 1.5 }}>
+        {title}
+        {tip && <InfoTip text={tip} />}
+      </Typography>
       {sub && (
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           {sub}
@@ -194,11 +210,13 @@ const MeasurementTab = () => {
           </TableBody>
         </Table>
         {!readOnly && (
-          <Button sx={{ mt: 2 }} onClick={async () => {
-            const res = await put(notify, '/attribution/run', {},
-              t('Attribution sweep done'), 'POST');
-            if (res) reloadUplift();
-          }}>{t('Run attribution now')}</Button>
+          <Tooltip arrow title={t('Settles open outcome rows immediately (normally a background sweep does this every few minutes) and refreshes the uplift table.')}>
+            <Button sx={{ mt: 2 }} onClick={async () => {
+              const res = await put(notify, '/attribution/run', {},
+                t('Attribution sweep done'), 'POST');
+              if (res) reloadUplift();
+            }}>{t('Run attribution now')}</Button>
+          </Tooltip>
         )}
       </Section>
     </>
@@ -327,6 +345,19 @@ const RgTab = () => {
 // ---------------------------------------------------------------------------
 // Segmentation
 // ---------------------------------------------------------------------------
+const COHORT_LABEL = {
+  by_cohort: 'Dormancy cohort',
+  by_value_tier: 'Value tier',
+  by_vip_segment: 'VIP segment',
+};
+
+const DORMANCY_ROWS = [
+  ['d7', 'dormant_d7'], ['d10', 'dormant_d10'], ['d14', 'dormant_d14'],
+  ['d21', 'dormant_d21'], ['d30', 'dormant_d30'],
+];
+
+const VIP_SEGMENTS = ['mass', 'vip', 'vip_plus'];
+
 const SegmentationTab = () => {
   const notify = useNotify();
   const readOnly = useReadOnly();
@@ -336,37 +367,149 @@ const SegmentationTab = () => {
   const [drafts, setDrafts] = useState({});
   const merged = (key) =>
     drafts[key] ?? cfg?.stored?.[key] ?? cfg?.defaults?.[key] ?? {};
+  const setDraft = (key, v) => setDrafts((d) => ({ ...d, [key]: v }));
+  const saveBtn = (key, label) => !readOnly && (
+    <Button size="small" variant="outlined" sx={{ mt: 1 }} onClick={async () => {
+      const ok = await put(notify, '/scoring/config',
+        { config_key: key, params: merged(key) });
+      if (ok) reloadCfg();
+    }}>{label}</Button>
+  );
+
+  const bounds = merged('dormancy_boundaries');
+  const tiers = merged('value_tiers');
+  const mapping = merged('vip_mapping');
+  const [newClass, setNewClass] = useState('');
+
   return (
     <>
-      <Section title={t('Population')}>
+      <Section title={t('Population')}
+        tip={t('A live snapshot of the player base by each scoring dimension. Recomputed by the background scoring sweep (hourly by default) — enable "Scoring" in Retention → Settings → Orchestrator for it to fill.')}>
         {dist && ['by_cohort', 'by_value_tier', 'by_vip_segment'].map((k) => (
-          <Stack key={k} direction="row" spacing={1} sx={{ mb: 1, flexWrap: 'wrap' }}>
-            <Typography variant="body2" sx={{ width: 130 }}>{k.replace('by_', '')}</Typography>
+          <Stack key={k} direction="row" spacing={1} sx={{ mb: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+            <Typography variant="body2" sx={{ width: 160 }}>{t(COHORT_LABEL[k])}</Typography>
             {Object.entries(dist[k] || {}).map(([kk, v]) => (
               <Chip key={kk} size="small" label={`${kk}: ${v}`} />
             ))}
           </Stack>
         ))}
+        {!dist && (
+          <Typography variant="body2" color="text.secondary">{t('Loading…')}</Typography>
+        )}
       </Section>
-      <Section title={t('Thresholds (config-driven)')}
-        sub={t('Dormancy cohort boundaries, value tiers (lifetime deposits, USD) and the casino loyalty-class → VIP-segment mapping. Shared with on-site surfaces so a banner and the bot never disagree about who is dormant.')}>
-        <Stack spacing={2}>
-          {['dormancy_boundaries', 'value_tiers', 'vip_mapping'].map((key) => (
-            <Box key={key}>
-              <JsonField label={key} value={merged(key)} disabled={readOnly}
-                onChange={(v) => setDrafts((d) => ({ ...d, [key]: v }))} />
-              {!readOnly && (
-                <Button size="small" sx={{ mt: 0.5 }} onClick={async () => {
-                  const ok = await put(notify, '/scoring/config',
-                    { config_key: key, params: merged(key) });
-                  if (ok) reloadCfg();
-                }}>{t('Save')} {key}</Button>
-              )}
-            </Box>
+
+      <Section title={t('Dormancy cohorts (days of inactivity)')}
+        sub={t('How many idle days put a player into each dormancy cohort. Each cohort is a from–to range in days; "lost" starts at its threshold and has no upper bound. Journeys and recovery scenarios target these cohorts, so a boundary change re-aims them too.')}>
+        <Table size="small" sx={{ maxWidth: 480 }}>
+          <TableHead>
+            <TableRow>
+              <Cell>{t('Cohort')}</Cell>
+              <Cell align="right">{t('From (days)')}</Cell>
+              <Cell align="right">{t('To (days)')}</Cell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {DORMANCY_ROWS.map(([key, label]) => {
+              const range = Array.isArray(bounds[key]) ? bounds[key] : ['', ''];
+              const setPart = (idx, val) => {
+                const next = [...range];
+                next[idx] = val === '' ? '' : Number(val);
+                setDraft('dormancy_boundaries', { ...bounds, [key]: next });
+              };
+              return (
+                <TableRow key={key}>
+                  <Cell>{label}</Cell>
+                  {[0, 1].map((idx) => (
+                    <Cell key={idx} align="right">
+                      <TextField size="small" type="number" value={range[idx] ?? ''}
+                        disabled={readOnly} sx={{ width: 90 }}
+                        onChange={(e) => setPart(idx, e.target.value)} />
+                    </Cell>
+                  ))}
+                </TableRow>
+              );
+            })}
+            <TableRow>
+              <Cell>
+                lost
+                <InfoTip text={t('Players idle at least this many days count as lost — the deepest cohort, no upper bound.')} />
+              </Cell>
+              <Cell align="right">
+                <TextField size="small" type="number"
+                  value={bounds.lost ?? ''} disabled={readOnly} sx={{ width: 90 }}
+                  onChange={(e) => setDraft('dormancy_boundaries',
+                    { ...bounds, lost: e.target.value === '' ? '' : Number(e.target.value) })} />
+              </Cell>
+              <Cell align="right">—</Cell>
+            </TableRow>
+          </TableBody>
+        </Table>
+        {saveBtn('dormancy_boundaries', t('Save cohorts'))}
+      </Section>
+
+      <Section title={t('Value tiers (lifetime deposits, USD)')}
+        sub={t('The minimum lifetime-deposit sum that puts a player into each tier. Frequency caps and offer eligibility can differ by tier.')}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+          {['low', 'mid', 'high', 'whale'].map((tier) => (
+            <TextField key={tier} size="small" type="number" label={tier}
+              value={tiers[tier] ?? ''} disabled={readOnly} sx={{ width: 120 }}
+              onChange={(e) => setDraft('value_tiers',
+                { ...tiers, [tier]: e.target.value === '' ? '' : Number(e.target.value) })} />
           ))}
         </Stack>
+        {saveBtn('value_tiers', t('Save tiers'))}
       </Section>
-      <Section title={t('Recent cohort transitions')}>
+
+      <Section title={t('VIP mapping (casino loyalty class → segment)')}
+        sub={t('Maps the loyalty class the casino reports (vip_level in the profile) onto the orchestrator segments: mass, vip, vip_plus. VIP segments get relaxed frequency caps, and a high-loss VIP goes to the host queue instead of an auto-bonus. Class names are matched case-insensitively.')}>
+        <Table size="small" sx={{ maxWidth: 480 }}>
+          <TableHead>
+            <TableRow>
+              <Cell>{t('Casino class')}</Cell>
+              <Cell>{t('Segment')}</Cell>
+              <Cell />
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {Object.entries(mapping).map(([cls, seg]) => (
+              <TableRow key={cls}>
+                <Cell sx={{ fontFamily: 'monospace' }}>{cls}</Cell>
+                <Cell>
+                  <TextField select size="small" value={seg} disabled={readOnly}
+                    sx={{ width: 140 }}
+                    onChange={(e) => setDraft('vip_mapping',
+                      { ...mapping, [cls]: e.target.value })}>
+                    {VIP_SEGMENTS.map((s) => (
+                      <MenuItem key={s} value={s}>{s}</MenuItem>))}
+                  </TextField>
+                </Cell>
+                <Cell>
+                  {!readOnly && (
+                    <Button size="small" color="error" onClick={() => {
+                      const next = { ...mapping };
+                      delete next[cls];
+                      setDraft('vip_mapping', next);
+                    }}>{t('Remove')}</Button>
+                  )}
+                </Cell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        {!readOnly && (
+          <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+            <TextField size="small" label={t('Add class')} value={newClass}
+              onChange={(e) => setNewClass(e.target.value)} sx={{ width: 180 }} />
+            <Button size="small" disabled={!newClass.trim()} onClick={() => {
+              setDraft('vip_mapping', { ...mapping, [newClass.trim().toLowerCase()]: 'mass' });
+              setNewClass('');
+            }}>{t('Add')}</Button>
+          </Stack>
+        )}
+        {saveBtn('vip_mapping', t('Save mapping'))}
+      </Section>
+      <Section title={t('Recent cohort transitions')}
+        tip={t('One row whenever a player crosses a dormancy boundary (at most one per player per cohort per day) — the raw material of "who just went quiet".')}>
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -463,7 +606,8 @@ const FrequencyTab = () => {
           </Stack>
         )}
       </Section>
-      <Section title={t('Touch priorities (P1 critical … P5 discovery)')}>
+      <Section title={t('Touch priorities (P1 critical … P5 discovery)')}
+        tip={t('P1 = service-critical (always goes out), P2 = money moments, P3 = event reactions, P4 = recovery, P5 = discovery. When a cap is hit, lower-priority touches are cut first; P1/P2 are never cut.')}>
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -625,7 +769,8 @@ const OffersTab = () => {
           </Stack>
         )}
       </Section>
-      <Section title={t('Grant ledger')}>
+      <Section title={t('Grant ledger')}
+        tip={t('Every offer decision that reached the casino: granted / fraud_hold / failed, the casino\'s reference and the cost. The persona mentions a bonus only after a granted row.')}>
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -707,16 +852,20 @@ const JourneysTab = () => {
         sub={t('Declarative multi-step trajectories. Everything seeds as draft + dry-run; activate one by one after reviewing. Every step passes the full guard chain (RG, holdout, frequency, comfort).')}>
         {!readOnly && (
           <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
-            <Button variant="outlined" onClick={async () => {
-              const res = await put(notify, '/scenarios/seed', {},
-                t('Starter library seeded (draft + dry-run)'), 'POST');
-              if (res) reload();
-            }}>{t('Seed starter library')}</Button>
-            <Button onClick={async () => {
-              const res = await put(notify, '/journeys/run', {},
-                t('Journey sweep executed'), 'POST');
-              if (res) reload();
-            }}>{t('Run due steps now')}</Button>
+            <Tooltip arrow title={t('Creates the starter journey pack (recovery × 5 cohorts, loss scenarios, FTD onboarding, weekly ritual, cashier abandonment) as draft + dry-run. Idempotent: a journey you already edited is never overwritten.')}>
+              <Button variant="outlined" onClick={async () => {
+                const res = await put(notify, '/scenarios/seed', {},
+                  t('Starter library seeded (draft + dry-run)'), 'POST');
+                if (res) reload();
+              }}>{t('Seed starter library')}</Button>
+            </Tooltip>
+            <Tooltip arrow title={t('Runs scheduled matching + the due-step drain immediately instead of waiting for the background sweep.')}>
+              <Button onClick={async () => {
+                const res = await put(notify, '/journeys/run', {},
+                  t('Journey sweep executed'), 'POST');
+                if (res) reload();
+              }}>{t('Run due steps now')}</Button>
+            </Tooltip>
           </Stack>
         )}
         <Table size="small">
@@ -930,7 +1079,8 @@ const ChannelsTab = () => {
           </TableBody>
         </Table>
       </Section>
-      <Section title={t('Delivery monitor')}>
+      <Section title={t('Delivery monitor')}
+        tip={t('The delivery ledger across all channels: status, attempts and the failure reason. Transient failures retry with backoff (1m / 5m / 30m); permanent ones never retry.')}>
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -958,7 +1108,103 @@ const ChannelsTab = () => {
 };
 
 // ---------------------------------------------------------------------------
+// How it works — the plain-language map of the whole orchestrator, tying the
+// mechanics of the other tabs into ONE pipeline and linking each step to the
+// tab (or page) where it is configured. Mirrors the Retention → How it works
+// algorithm map, which covers the underlying bot — this page covers the layer
+// on top of it.
+// ---------------------------------------------------------------------------
+const HOW_STEPS = [
+  {
+    title: '1. Triggers — what can start a touch',
+    text: 'Three sources: a casino event (deposit, loss, level-up — the proactive agent), a rung of the idle-pings ladder (the player went quiet), or a step of a journey (a declarative multi-step scenario). All three produce a CANDIDATE touch — nothing is sent yet.',
+    links: [
+      ['Journeys', '#/orchestrator?tab=journeys'],
+      ['Idle pings', '#/retention-agent?tab=idle'],
+      ['Proactive agent', '#/retention-agent'],
+    ],
+  },
+  {
+    title: '2. Guard chain — may we contact this player at all?',
+    text: 'Every candidate passes the same checks in a FIXED order, and the first failed check stops it: ① RG guard (responsible gaming — self-exclusion beats everything), ② hard denies (/stop, unsubscribed, blocked bot), ③ holdout (the control group never gets proactive touches — that is what makes uplift measurable), ④ frequency (adaptive caps by channel × cohort and priorities P1..P5 — or the legacy static caps when adaptive is off), ⑤ daily AI budget, ⑥ same-event cooldown, ⑦ the post-loss comfort window. Every verdict — pass or block — is written to a ledger with its reason.',
+    links: [
+      ['RG guard', '#/orchestrator?tab=rg'],
+      ['Measurement', '#/orchestrator?tab=measurement'],
+      ['Frequency', '#/orchestrator?tab=frequency'],
+    ],
+  },
+  {
+    title: '3. Who is the player — scoring',
+    text: 'The background sweep keeps per-player dimensions fresh: the dormancy cohort (active … lost), RFM bands, the value tier by lifetime deposits, and the VIP segment mapped from the casino loyalty class. Journeys target cohorts, frequency caps differ by cohort, and offers/host-routing read the VIP segment.',
+    links: [['Segmentation', '#/orchestrator?tab=segmentation']],
+  },
+  {
+    title: '4. Offers — a real bonus, resolved BEFORE the model',
+    text: 'When a trigger maps to an offer, deterministic code resolves it first: trigger enabled → RG → VIP suppression → eligibility → cooldown/lifetime caps → the stimulus budget. Only a fully approved offer is granted at the casino (by its bonus-CMS ID, idempotently) — and ONLY after the casino confirms does the persona mention the gift. A high-loss VIP goes to the host queue instead of an auto-bonus.',
+    links: [['Offers', '#/orchestrator?tab=offers']],
+  },
+  {
+    title: '5. The text — briefs, not canned copy',
+    text: 'A journey step references a template. In persona_brief mode (the default) the template is only the INTENT — the persona writes the final text in the player\'s language with all her usual rules; verbatim mode (exact legal copy) exists behind an explicit flag. Event reactions and idle pings are written the same way the bot always wrote them.',
+    links: [['Templates', '#/orchestrator?tab=templates']],
+  },
+  {
+    title: '6. The channel — strict opt-in routing',
+    text: 'The router picks the delivery channel: telegram (our bot), email (Customer.io), push / in-app (delegated: we send a delivery order to the casino, the casino delivers on-device and reports status back), or vip_host (a human task, never a bot message). A channel without the player\'s consent is NEVER used — not even as a fallback; with multichannel off everything goes to Telegram as before.',
+    links: [['Channels', '#/orchestrator?tab=channels']],
+  },
+  {
+    title: '7. Delivery, retries, and the ledgers',
+    text: 'Deliveries live in their own ledger with backoff retries (1m / 5m / 30m; permanent failures never retry). The casino confirms delegated deliveries via the delivery-status callback (statuses only move forward). Every touch also opens an outcome row.',
+    links: [['Delivery monitor', '#/orchestrator?tab=channels']],
+  },
+  {
+    title: '8. Measurement — did it work?',
+    text: 'The outcome sweep settles each touch: did the player reply, come back, deposit — inside fixed windows. Because the holdout group was never touched, comparing its conversion against touched players gives the uplift in percentage points: the honest answer to "does retention pay for itself". The feedback also loops into the agent\'s next decision and the photo/CTA ordering.',
+    links: [
+      ['Measurement', '#/orchestrator?tab=measurement'],
+      ['Analytics', '#/retention?tab=analytics'],
+    ],
+  },
+];
+
+const HowTab = () => (
+  <>
+    <Section title={t('The orchestrator in one paragraph')}>
+      <Typography variant="body2" color="text.secondary">
+        {t('The orchestrator is the layer BETWEEN "something happened" and "the player got a message". The bot underneath (dialogue, persona, photos) is unchanged — the orchestrator decides WHETHER, WHEN, over WHICH channel and WITH WHAT stimulus a proactive touch goes out, and then MEASURES what it achieved. Each mechanic ships behind its own switch in Retention → Settings → Orchestrator; with every switch off the behaviour is exactly the pre-orchestrator bot. The full bot pipeline (dialogue turns, the event agent, the idle ladder) is drawn on Retention → How it works — this page describes the layer on top of it.')}
+      </Typography>
+      <Stack direction="row" spacing={1} sx={{ mt: 1.5, flexWrap: 'wrap' }} useFlexGap>
+        <Chip size="small" clickable component={Link} underline="none"
+          href="#/retention?tab=algorithm" label={t('Bot algorithm map')} />
+        <Chip size="small" clickable component={Link} underline="none"
+          href="#/retention-settings" label={t('Orchestrator switches (Settings)')} />
+        <Chip size="small" clickable component={Link} underline="none"
+          href="#/integration-checklist" label={t('Integration checklist')} />
+      </Stack>
+    </Section>
+    {HOW_STEPS.map((s) => (
+      <Card key={s.title} sx={{ mb: 1.5 }}>
+        <CardContent sx={{ '&:last-child': { pb: 2 } }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>{t(s.title)}</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+            {t(s.text)}
+          </Typography>
+          <Stack direction="row" spacing={1} sx={{ mt: 1, flexWrap: 'wrap' }} useFlexGap>
+            {s.links.map(([label, href]) => (
+              <Chip key={href + label} size="small" variant="outlined" clickable
+                component={Link} underline="none" href={href} label={t(label)} />
+            ))}
+          </Stack>
+        </CardContent>
+      </Card>
+    ))}
+  </>
+);
+
+// ---------------------------------------------------------------------------
 const TABS = [
+  { key: 'how', label: 'How it works', el: <HowTab /> },
   { key: 'measurement', label: 'Measurement', el: <MeasurementTab /> },
   { key: 'rg', label: 'RG guard', el: <RgTab /> },
   { key: 'segmentation', label: 'Segmentation', el: <SegmentationTab /> },
@@ -969,19 +1215,35 @@ const TABS = [
   { key: 'channels', label: 'Channels', el: <ChannelsTab /> },
 ];
 
+// One-line purpose of each tab, shown right under the tab strip.
+const TAB_INTRO = {
+  how: 'The whole orchestrator as one pipeline — read this first.',
+  measurement: 'The holdout control group and the uplift it makes measurable: does retention actually bring players back?',
+  rg: 'Responsible gaming: who must never be touched, and the audit trail proving it.',
+  segmentation: 'Who the player is: dormancy cohorts, value tiers and VIP segments the other mechanics target.',
+  frequency: 'How often we may write: cap matrix per channel × cohort, touch priorities, smart send time.',
+  offers: 'Real bonuses by their bonus-CMS IDs: catalog, triggers, budget, the grant ledger and the VIP host queue.',
+  journeys: 'Declarative multi-step scenarios: recovery by cohort, FTD onboarding, weekly rituals, cashier abandonment.',
+  templates: 'The scenario library: briefs the persona writes from (or exact copy when required).',
+  channels: 'Where a touch is delivered: Telegram, email, delegated push/in-app, VIP host — strict opt-in.',
+};
+
 const OrchestratorPage = () => {
   const [params, setParams] = useSearchParams();
-  const tab = params.get('tab') || 'measurement';
+  const tab = params.get('tab') || 'how';
   const current = TABS.find((x) => x.key === tab) || TABS[0];
   return (
     <Box sx={{ p: 2 }}>
       <Title title={t('Orchestrator')} />
       <Tabs value={current.key} variant="scrollable" scrollButtons="auto"
-        onChange={(_e, v) => setParams({ tab: v })} sx={{ mb: 2 }}>
+        onChange={(_e, v) => setParams({ tab: v })} sx={{ mb: 0.5 }}>
         {TABS.map((x) => (
           <Tab key={x.key} value={x.key} label={t(x.label)} />
         ))}
       </Tabs>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        {t(TAB_INTRO[current.key])}
+      </Typography>
       {current.el}
     </Box>
   );

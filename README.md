@@ -10,7 +10,9 @@ sportsbook brands. It is API-isolated: other modules talk to it over HTTP/JSON b
 > family of same-style pages: **`/integration`** is the hub (overview,
 > architecture, env vars, docs index), **`/integration-widget`** covers embedding
 > the ready-made widget, **`/integration-data`** covers player data transfer &
-> sync (signed handshake, lazy pull, push webhook, activity timestamps),
+> sync (signed handshake, lazy pull, push webhook, activity timestamps) plus the
+> outbound contracts the casino implements (offer-grant by bonus-CMS ID,
+> delegated push/in-app delivery, the delivery-status callback),
 > **`/integration-chat-api`** documents the public Chat API + the mandatory
 > client logic for a custom UI, **`/integration-telegram`** covers the Telegram
 > retention bot (deeplink contract, the proactive agent, admin setup; its
@@ -47,7 +49,10 @@ panel.
 - **Topic routing** — routes a question to the right topic, **suggests follow-up
   questions**, and offers a **"finish chat"** action once the issue looks resolved.
 - **Escalation** to human support (a contact button) on explicit request, complaints,
-  suspected fraud/legal threats, the per-session message cap, or when the model can't help.
+  suspected fraud/legal threats, or when the model can't help. The per-session message cap
+  is **soft**: on reaching it the turn is still answered, but the response carries a
+  localized `cap_notice` — the widget explains the chat has stalled and offers two buttons,
+  escalate or finish; only the hard ceiling (cap × 2, the cost backstop) force-closes.
   The button's default target is the per-language `contact_url` (a form / support group /
   chat). **When the product runs the Telegram retention bot, the escalation button instead
   routes the player straight into the bot** — a one-time escalation-entry deeplink that
@@ -65,6 +70,19 @@ panel.
   post-loss comfort window, a `/stop` opt-out (`/resume` to re-enable), and blocked-bot
   detection — all live settings (Settings → Retention bot → «Send-frequency guards»).
   Ships enabled in dry-run (decides + logs, sends nothing) until the owner flips it.
+- **Retention orchestrator** — a measurement/safety/targeting layer over the proactive
+  agent, per product, each mechanic behind its own hot `retention`-group switch (all OFF
+  or dry-run by default except the responsible-gaming guard and the 15% holdout):
+  a deterministic **holdout control group** + uplift reporting; a **responsible-gaming
+  guard** (casino-fed `rg_status`, first in the guard order, append-only audit);
+  **adaptive frequency caps** (channel × cohort, priorities P1..P5) and **smart send
+  time**; player **scoring** (dormancy cohorts, RFM, value tiers, VIP mapping);
+  a **bonus-offer engine** keyed to the casino's bonus-CMS IDs (idempotent grant call,
+  separate stimulus budget); declarative **journeys** with a scenario/template library;
+  and a **multichannel router** with strict opt-in (Telegram, email via Customer.io,
+  delegated push/in-app through the casino's delivery endpoint + status callback, and a
+  VIP-host task queue). Contracts live on `/integration-data`; the admin surface is the
+  **Retention → Orchestrator** page.
 - **Anti-spam** before any model call: IP rate limiting, per-message cooldown, an input
   length cap, a low-content/junk guard, and a prompt-injection scan (hard-block by default).
   Inbound Telegram bot messages run the same gauntlet with a higher, chat-paced per-user
@@ -97,7 +115,10 @@ panel.
   widget string (chrome, service replies, topic names) per language, a **Structure** tab
   (partners/products, widget keys + embed snippets, per-product OpenAI/handshake
   secrets), and a **Users** tab with per-scope memberships. Everything is edited
-  per product via the header switcher. **Retention analytics** live in the Retention
+  per product via the header switcher. The **Retention → Orchestrator** page manages the
+  orchestrator mechanics (tabs: Measurement, RG guard, Segmentation, Frequency, Offers,
+  Journeys, Templates, Channels), and **System → Integration checklist** tracks the
+  deploy-level list of what external teams still owe (statuses edited as agreements land). **Retention analytics** live in the Retention
   section (`GET /admin/retention/overview` / `funnel` / `timeseries`): lifetime +
   in-range KPIs (engagement, photos, proactive sends + reply rate, cost, stage
   distribution),
@@ -133,7 +154,10 @@ The data layer is direct `asyncpg` (no ORM, no migration files): the schema *is*
 All backend Python lives in the `app/` package: `app/main.py` (the FastAPI entry point),
 `app/api/` (HTTP routes), `app/core/` (config, settings, data layer, tenancy, auth),
 `app/ai/` (the prompt template, OpenAI client, KB), `app/i18n/` (language + translations),
-`app/chat/` (the support-chat flow) and `app/retention/` (the Telegram retention bot).
+`app/chat/` (the support-chat flow) and `app/retention/` (the Telegram retention bot
+plus the orchestrator modules: `measurement.py`, `rg_guard.py`, `frequency.py`,
+`scoring.py`, `offers.py`, `journeys.py`, `scenario_library.py`, `channels.py`,
+`partner_out.py`; their admin API is `app/api/orchestrator.py`).
 Around it at the repo root: `admin/` (the React Admin SPA), `frontend/` (the no-build
 widget, test page and integration docs), `mcp_server/` (the admin-API MCP facade),
 `scripts/` (preflight + checks) and `tests/`.
@@ -203,6 +227,15 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `OPENAI_API_KEY` | yes | — | Primary OpenAI key. |
 | `SESSION_JWT_SECRET` | yes | — | Signs front-end session tokens (and the root of the fallback chain below). On a real deployment it **must be ≥32 chars** (e.g. `openssl rand -hex 32`) or the app refuses to boot. |
 | `OPENAI_API_KEY_FALLBACK` | no | — | Second key for the two-key failover. Both env keys are the deploy-level fallback for products without their own keys (set per product in Structure). |
+| `OPENAI_MODEL` | no | `gpt-5.6-luna` | Default model (the cheapest GPT-5.6 reasoning tier). Boot default of the hot-reloaded `model` settings group, like every OpenAI knob below — change it live in the admin. |
+| `OPENAI_REQUEST_TIMEOUT_SEC` / `OPENAI_KEY_SWITCH_TIMEOUT_SEC` | no | `30` / `15` | Interactive (chat) request timeout and when to race the fallback key. |
+| `OPENAI_AGENT_REQUEST_TIMEOUT_SEC` / `OPENAI_AGENT_KEY_SWITCH_TIMEOUT_SEC` | no | `90` / `0` | Same pair for the proactive retention agent (background: race off — the fallback engages only on a real error). |
+| `OPENAI_REVIEW_REQUEST_TIMEOUT_SEC` / `OPENAI_REVIEW_KEY_SWITCH_TIMEOUT_SEC` | no | `120` / `0` | Same pair for the quality-review judge. |
+| `OPENAI_MEDIA_REQUEST_TIMEOUT_SEC` / `OPENAI_MEDIA_KEY_SWITCH_TIMEOUT_SEC` | no | `120` / `0` | Same pair for photo/video cataloguing (vision). |
+| `OPENAI_MAX_ATTEMPTS` | no | `3` | Retry attempts per completion (transient errors, exponential backoff). |
+| `OPENAI_REASONING_EFFORT` / `OPENAI_VERBOSITY` | no | `low` / `low` | Reasoning-model params; an empty string omits the param so the model default applies. |
+| `OPENAI_MAX_OUTPUT_TOKENS` | no | `2000` | Sent as `max_completion_tokens`; reasoning tokens count against it, so it ships higher than a non-reasoning model would need. |
+| `OPENAI_MAX_CONCURRENT_PER_KEY` | no | `4` | Per-key concurrency semaphore. |
 | `APP_ENV` | no | `development` | Deployment environment. Secret hygiene is **fail-closed**: on a real deployment — `APP_ENV=production`/`prod` **or a non-local `DATABASE_URL`** — the app **refuses to boot** if `ADMIN_JWT_SECRET`, `SECRETS_MASTER_KEY`, or `TELEGRAM_WEBHOOK_SECRET` is unset and would reuse `SESSION_JWT_SECRET`, or if any secret is shorter than 32 chars. Only a genuinely local run (loopback DB, not production) stays lenient — set `APP_ENV=development` to opt into leniency against a remote DB. |
 | `ADMIN_JWT_SECRET` | no | `SESSION_JWT_SECRET` | Signs admin tokens; set a distinct **≥32-char** value (**required on a real deployment** — see `APP_ENV`). |
 | `ADMIN_TOKEN_TTL_MIN` | no | `10080` | Admin login **inactivity window** (minutes; default 1 week). The session **slides** — an active operator's token is auto-renewed past its half-life, so daily use never logs you out, while an account left untouched for this long expires. Also a live `general` settings knob (admin **Settings** tab). |
@@ -213,6 +246,16 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `TURNSTILE_SITE_KEY` | no | — | Deploy-level fallback Turnstile **site key** (create the Turnstile widget as **Invisible** in the Cloudflare dashboard), served to the chat widget via `GET /api/chat/i18n`. Fallback pair to `TURNSTILE_SECRET`: each product should carry its own per-domain site key + secret (Structure tab); these env values apply only to products without their own. |
 | `CONTACT_FORM_URL` | no | — | Optional deploy-level fallback URL behind the escalation contact button — applies to the **default product only**, never to other products. The URL's real home is the admin Translations tab (`contact_url`, per product/per language); a value stored by old builds in the DB is auto-migrated there on boot. |
 | `DEFAULT_LANGUAGE` / `SUPPORTED_LANGUAGES` | no | `en` / `en,es,ru,tr,pt` | Language defaults. |
+| `SESSION_TTL_HOURS` | no | `24` | Chat-session token lifetime (also a `general` settings knob). |
+| `MAX_MESSAGES_PER_SESSION` | no | `15` | The SOFT per-session message cap (the cap notice; hard close at ×2). Also a `general` settings knob. |
+| `HISTORY_MAX_TURNS` | no | `15` | Recent turns fed to the prompt (the full transcript is always persisted). |
+| `MAX_INPUT_CHARS` | no | `500` | Player-message length cap. |
+| `RATE_LIMIT_WINDOW_SEC` / `RATE_LIMIT_MAX_PER_IP` | no | `600` / `20` | Widget anti-spam window and per-IP message allowance. |
+| `MESSAGE_COOLDOWN_SEC` | no | `2` | Minimum pause between two messages from one session. |
+| `LOW_CONTENT_BLOCK` / `MIN_MEANINGFUL_CHARS` | no | `true` / `2` | Low-content guard: a message must carry at least N distinct letters/digits to reach the model (junk gets a model-free nudge). |
+| `INJECTION_HARD_BLOCK` | no | `true` | Reject known prompt-injection patterns with HTTP 400 before the model call (always audited either way). |
+| `BODY_MAX_BYTES` | no | `65536` | Request-body cap middleware (chunked bodies are rejected with 411). |
+| `ADMIN_LOGIN_RATE_LIMIT` | no | `10` | Per-IP `/admin/login` attempts per window (PBKDF2 brute-force budget). |
 | `CORS_ALLOW_ORIGINS` | no | `*` | Comma-separated allowed origins (restrict in prod). |
 | `TRUSTED_PROXY_COUNT` | no | `1` | Trusted proxy hops to read from the right of `X-Forwarded-For`. |
 | `TRUSTED_PROXY_IPS` | no | private/reserved ranges | Comma-separated immediate proxy IPs/CIDRs whose `X-Forwarded-For` may be trusted. Defaults to the private/reserved ranges (RFC1918 + CGNAT + loopback/ULA), which is correct on Railway and most PaaS — the platform proxy connects from a private peer IP that a public client cannot forge. Tighten to your edge's exact CIDR if you know it. |
@@ -235,7 +278,11 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `RETENTION_CARRY_CONTEXT_TURNS` | no | `10` | Trailing turns of the previous (closed) Telegram chat shown to the model on the first turn of the fresh one, so a returning player is greeted with continuity (0 = off; also a `retention` settings knob). |
 | `RETENTION_STAGE_UP_NOTIFY` | no | `true` | When a player actually unlocks the next photo/closeness stage, the persona follows up with a short celebratory note (persisted with its trigger so she can later explain it); also a `retention` settings knob, `stage_up_notify`. |
 | `RETENTION_MAX_STAGE` | no | `5` | Top explicitness stage a photo can gate on / a player can reach in the Telegram retention bot; photo `stage` and stage progression are clamped to `1..RETENTION_MAX_STAGE` (also a `retention` settings knob, `max_stage`). |
-| `RETENTION_PLAY_REMINDER_EVERY_MSGS` | no | `5` | Every N-th assistant reply in a Telegram retention chat weaves in a light in-context invitation to play, with a one-tap site-map button picked by intent (0 = off; also a `retention` settings knob, `play_reminder_every_msgs`). |
+| `RETENTION_PLAY_REMINDER_EVERY_MSGS` | no | `8` | Every N-th assistant reply in a Telegram retention chat weaves in a light in-context invitation to play, with a one-tap site-map button picked by intent (0 = off; also a `retention` settings knob, `play_reminder_every_msgs`). |
+| `RETENTION_DAILY_PHOTO_CAP` | no | `5` | Photos per player per day in the Telegram bot (also a `retention` settings knob). |
+| `RETENTION_PROACTIVE_COOLDOWN_MSGS` | no | `5` | Player messages between two proactive photo offers inside a dialogue. |
+| `RETENTION_CANDIDATE_LIST_SIZE` | no | `6` | Photo candidates shown to the model when it picks what to send. |
+| `RETENTION_STAGE_ADVANCE_MIN_HOURS` | no | `12` | Minimum hours between two closeness-stage advances. |
 | `RETENTION_INTRO_PHOTO_ENABLED` | no | `true` | Introduction photo: a brand-new player (never received a photo) gets one proactively within his first meaningful messages, with a model-written "this is me — let's get to know each other" caption, so he learns early that chatting comes with photos (also a `retention` settings knob, `intro_photo_enabled`). |
 | `RETENTION_INTRO_PHOTO_WITHIN_MSGS` | no | `3` | How many of the player's first meaningful messages count as the acquaintance window for the introduction photo (also a `retention` settings knob, `intro_photo_within_msgs`). |
 | `RETENTION_MAX_REPLY_PARTS` | no | `3` | Default for `retention.max_reply_parts` — max Telegram messages one model reply may be split into (blank-line burst delivery; extra chunks collapse into the last part, `1` = never split). |
@@ -282,6 +329,18 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `RETENTION_OFFER_DAILY_BUDGET_USD` | no | `0` | Daily stimulus budget; 0 = granting blocked (safe default). |
 | `RETENTION_JOURNEYS_ENABLED` | no | `false` | Journey engine (multi-step trajectories; each journey still seeds draft + dry-run). |
 | `RETENTION_MULTICHANNEL_ENABLED` | no | `false` | Channel router beyond Telegram (email via Customer.io, delegated push/in-app). Strict per-channel opt-in. |
+| `RETENTION_UPLIFT_WINDOW_DAYS` | no | `28` | Measurement: the uplift report window (deploy constant, keeps history comparable). |
+| `RETENTION_SST_MAX_SHIFT_HOURS` / `RETENTION_SST_MIN_SAMPLE` | no | `2` / `20` | Smart send time: max shift from the hinted send moment, and the observations an activity profile needs before it is trusted. |
+| `RETENTION_ACTIVITY_PROFILE_SWEEP_INTERVAL_SEC` | no | `3600` | How often player activity profiles are rebuilt from the event feed. |
+| `RETENTION_SCORING_SWEEP_INTERVAL_SEC` / `RETENTION_RFM_WINDOW_DAYS` | no | `3600` / `30` | Scoring sweep cadence and the RFM window. |
+| `RETENTION_OFFER_COOLDOWN_HOURS` / `RETENTION_OFFER_LIFETIME_CAP` | no | `72` / `0` | Per-player offer cooldown and lifetime cap (0 = unlimited). |
+| `RETENTION_OFFER_GRANT_TIMEOUT_SEC` | no | `10` | Timeout of the outbound offer-grant call to the casino. |
+| `RETENTION_JOURNEYS_DRY_RUN_DEFAULT` | no | `true` | New journeys seed as dry-run. |
+| `RETENTION_JOURNEY_STEP_SWEEP_INTERVAL_SEC` / `RETENTION_JOURNEY_MAX_ACTIVE_PER_PLAYER` | no | `300` / `3` | Due-step drain cadence and the concurrent-journeys cap per player. |
+| `RETENTION_SCENARIO_AUTOSEED` | no | `false` | Auto-seed the starter scenario packs on boot (manual seed button otherwise). |
+| `RETENTION_ABANDONMENT_DELAY_HOURS` | no | `2` | Cashier-abandonment timer (`deposit_initiated` without a confirm). |
+| `RETENTION_CHANNEL_AUTO_PRIORITY` | no | `push,in_app,email` | Router fallback order when the step says `auto`. |
+| `RETENTION_DELIVERY_RETRY_ENABLED` / `RETENTION_PUSH_DELIVERY_TIMEOUT_SEC` | no | `true` / `10` | Delivery-ledger backoff retries (1m/5m/30m) and the delegated push/in-app call timeout. |
 | `QUALITY_REVIEW_ENABLED` | no | `true` | Default for `general.quality_review_enabled` — the LLM-as-judge pass that scores finished conversations (both facades). The verdicts feed the admin Quality page; the judge never changes anything itself. |
 | `QUALITY_REVIEW_DAILY_MAX` | no | `100` | Default for `general.quality_review_daily_max` — cost cap: reviews per product per UTC day (0 = pause). |
 | `QUALITY_REVIEW_MIN_MESSAGES` | no | `4` | Default for `general.quality_review_min_messages` — shorter conversations are skipped (nothing to judge in a one-liner). |

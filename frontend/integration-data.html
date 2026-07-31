@@ -211,20 +211,26 @@ handshake, раздел 2). Апдейт частичный: отсутству�
   "email_opt_in": true, "email_verified": true,
   "push_opt_in": true, "push_available": true,
   "in_app_available": false,
+  "sms_opt_in": false,                    // принимается «на вырост»: sms-канала пока нет
   "channel_prefs": { "quiet_weekends": true }
 }</code></pre>
 <div class="warnbox">Шлите <code>rg_status</code> при КАЖДОЙ смене статуса + первичный бэкфилл по
 всей базе. Самоисключённый игрок (<code>self_exclude</code>/<code>rg_hold</code>) не получает ни
-одного проактивного касания и ни одного бонуса — снять блок может только новый статус от казино.</div>
+одного проактивного касания и ни одного бонуса — снять блок может только новый статус от казино.
+Значение <code>rg_status</code> вне четвёрки выше отклоняется с <code>422 invalid_rg_status</code>.</div>
+<p class="muted">Все вебхуки <code>/partner/*</code> лимитируются по IP <b>до</b> аутентификации
+(возможен 429); любая ошибка аутентификации возвращает единый непрозрачный 401.</p>
 
 <h3 id="delivery-status">5.2. Коллбек статусов доставки (push / in-app)</h3>
 <div class="endpoint"><span class="tag post">POST</span><code>/partner/{product_id}/delivery-status</code></div>
 <pre><code>POST /partner/42/delivery-status
 Authorization: Bearer &lt;handshake-секрет продукта&gt;
-{ "delivery_id": "dl_a1b2c3d4e5f6", "status": "delivered" }  // sent|delivered|opened|clicked|bounced
+{ "delivery_id": "dl_a1b2c3d4e5f6", "status": "delivered" }  // queued|sending|sent|delivered|opened|clicked|bounced
 → 200 { "ok": true }</code></pre>
 <p class="muted">Продвижение статуса заказа доставки, который оркестратор разместил у казино
-(раздел 9). Идемпотентно; статус никогда не движется назад — поздний коллбек просто игнорируется.</p>
+(раздел 9). Идемпотентно; статус никогда не движется назад — поздний коллбек просто игнорируется.
+Тем же коллбеком можно продвигать и email-доставки (раздел 9.3), если казино получает события
+провайдера.</p>
 
 <h2 id="activity">6. Сигналы активности на стороне казино</h2>
 <p>Помимо профильных полей, pull- и push-контракты принимают опциональные ISO-8601-таймстемпы:</p>
@@ -307,7 +313,8 @@ Authorization: Bearer &lt;partner outbound key&gt;
 → 200 { "status": "granted", "partner_ref": "bonus_889912", "credited_usd": 7.00 }
 → 200 { "status": "fraud_hold", "reason": "risk_score_high" }
 → 200 { "status": "duplicate", "partner_ref": "bonus_889912" }   // повтор того же grant_id
-Ошибки: 401, 400 unsupported_offer_type, 422 player_not_found</code></pre>
+Ошибки: любой 4xx (кроме 429) считается постоянной ошибкой и не ретраится;
+        429 и 5xx — транзиентные, вызов повторится</code></pre>
 <p class="muted">Порядок на нашей стороне жёсткий: создать бонус → получить подтверждение → только
 потом персона упоминает его в сообщении. <code>fraud_hold</code> — касание уходит без упоминания
 бонуса; ошибка — молчание. Бонус никогда не «обещается» до подтверждения.</p>
@@ -325,8 +332,19 @@ Authorization: Bearer &lt;partner outbound key&gt;
 → 200 { "status": "sent", "provider_ref": "…" }
 → 200 { "status": "failed", "reason": "no_mobile_token", "permanent": true }</code></pre>
 <p class="muted">Казино доставляет на устройство своей инфраструктурой (токены — у платформы) и
-дальше шлёт продвижение статуса коллбеком из раздела 5.2. <code>permanent: true</code> — ретраев не
-будет; транзиентные ошибки ретраятся с backoff (1m / 5m / 30m).</p>
+дальше шлёт продвижение статуса коллбеком из раздела 5.2. Успехом считается
+<code>sent</code> / <code>queued</code> / <code>delivered</code>. <code>permanent: true</code> —
+ретраев не будет; транзиентные ошибки ретраятся с backoff (1m / 5m / 30m) при включённой
+настройке <code>delivery_retry_enabled</code>.</p>
+
+<h3>9.3. Email-канал — Customer.io (реализуем мы, от казино нужны только доступы)</h3>
+<p>Email отправляет наш сервис через транзакционный API Customer.io:
+<code>POST https://api[-eu].customer.io/v1/send/email</code>. От команды казино/девопса нужны:
+App API key (кладётся как секрет продукта <code>email_api_key</code>), регион воркспейса
+(us/eu), отправляющий домен с SPF/DKIM/DMARC и адрес From/Reply-To — регион, From и
+<code>transactional_message_id</code> задаются в конфигурации канала email (Retention →
+Orchestrator → Channels). Канал строго opt-in: письмо уходит только игроку с
+<code>email_opt_in</code> + <code>email_verified</code> (раздел 5.1).</p>
 
 
 <p class="muted" style="margin-top:40px">Страница обновляется вместе с сервисом. Смежные гайды:
