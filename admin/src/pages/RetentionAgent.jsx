@@ -24,6 +24,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import DeleteIcon from '@mui/icons-material/Delete';
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
+import ReplayIcon from '@mui/icons-material/Replay';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { API_URL, httpClient } from '../httpClient';
 import { getProductId, withProduct } from '../productScope';
@@ -241,6 +242,185 @@ const StatusHeader = ({ status, onRefresh, onRun, canWrite, running }) => {
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
           {t('Switches and knobs live in Retention → Settings («Proactive agent» + «Send-frequency guards»). The worker interval is a live setting too — 5s means near-realtime reactions. Dry-run ships ON: the agent decides and logs to the ledger below without sending — review its decisions, then turn dry-run off. New here? Read the «How it works & testing» tab.')}
         </Typography>
+      </CardContent>
+    </Card>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Queue & workers. A stalled drain looks exactly like a quiet product from the
+// status chips above — same "no decisions today", same silent bot. These are
+// the numbers that tell the two apart: the LAG (how long the oldest untouched
+// event has been waiting) is what the backpressure ladder sheds lanes on and
+// what an alert should watch, the percentiles are the event → touch SLA, the
+// dead letters are reactions a player never got, and the job rows say whether
+// the paced sweeps are running at all.
+// ---------------------------------------------------------------------------
+const JOB_STATUS_COLORS = {
+  ok: 'success',
+  running: 'info',
+  error: 'error',
+  budget_reached: 'warning',
+};
+
+const fmtDuration = (ms) => {
+  if (ms == null) return '—';
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
+};
+
+const QueuePanel = ({ status, canWrite, onDone }) => {
+  const notify = useNotify();
+  const [deadRows, setDeadRows] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const q = status?.queue;
+  const dead = q?.dead || 0;
+
+  // The errors behind the dead letters, pulled only when there ARE some — the
+  // count alone tells the operator nothing about whether requeueing will help.
+  useEffect(() => {
+    if (!dead) {
+      setDeadRows(null);
+      return;
+    }
+    httpClient(withProduct(`${API_URL}/admin/retention/v2/dead-letter?page_size=5`))
+      .then(({ json }) => setDeadRows(json.items || []))
+      .catch(() => {});
+  }, [dead]);
+
+  if (!q) return null;
+
+  const lag = q.oldest_pending_sec || 0;
+  const deg = status.queue_degrade || {};
+  const lat = status.latency || {};
+  const lanes = q.pending_by_priority || {};
+  // Which rung of the backpressure ladder the lag has reached — the reason a
+  // lane stopped moving, which is otherwise invisible from a depth number.
+  let shed = null;
+  if (deg.idle_sec && lag >= deg.idle_sec) {
+    shed = ['error', t('Backpressure: transactional events only and the idle ladder is paused for this product until the lag recovers.')];
+  } else if (deg.p2_sec && lag >= deg.p2_sec) {
+    shed = ['error', t('Backpressure: only transactional (P1–P2) events are being claimed — normal and state-food lanes wait.')];
+  } else if (deg.p3_sec && lag >= deg.p3_sec) {
+    shed = ['warning', t('Backpressure: the state-food lane is no longer claimed, so money and status events keep moving.')];
+  }
+  const lagColor = shed ? `${shed[0]}.main` : 'text.primary';
+
+  const requeue = async () => {
+    setBusy(true);
+    try {
+      const { json } = await httpClient(
+        withProduct(`${API_URL}/admin/retention/v2/dead-letter/requeue`),
+        { method: 'POST', body: JSON.stringify({}) },
+      );
+      notify(`${t('Requeued')}: ${json.requeued ?? 0}`, { type: 'success' });
+      onDone();
+    } catch (e) {
+      notifyError(notify, e, t('Requeue failed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card sx={{ mb: 2 }}>
+      <CardContent>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ alignItems: { sm: 'center' } }}>
+          <Box sx={{ minWidth: 150 }}>
+            <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
+              {t('Queue lag')}
+            </Typography>
+            <Typography variant="h4" sx={{ fontWeight: 600, lineHeight: 1.1, color: lagColor }}>
+              {fmtLatency(lag) || '0s'}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {t('the oldest event nobody has picked up yet')}
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center', flex: 1, ...WRAP_CHIPS_SX }}>
+            <Chip size="small" variant="outlined"
+              label={`${t('in queue')}: ${q.pending} · ${t('in flight')}: ${q.processing}`} />
+            <Tooltip title={t('Priority lanes: transactional (deposits, payouts, KYC) · normal · state food. The ladder sheds them from the bottom as the lag grows.')}>
+              <Chip size="small" variant="outlined"
+                label={`${t('lanes')}: ${lanes.p1_p2 ?? 0} / ${lanes.p3 ?? 0} / ${lanes.p5 ?? 0}`} />
+            </Tooltip>
+            <Tooltip title={`${t('Event → delivered touch, measured end to end (queue wait + humanizing delay + send shaping).')} p50 ${fmtLatency(lat.p50_sec) || '—'} · p99 ${fmtLatency(lat.p99_sec) || '—'} · ${lat.samples || 0} ${t('samples (24h)')}`}>
+              <Chip size="small" variant="outlined"
+                label={`${t('event → touch p95')}: ${fmtLatency(lat.p95_sec) || t('no data')}`} />
+            </Tooltip>
+            {(status.send_worker_enabled || q.deliveries_queued || q.deliveries_failed) ? (
+              <Chip size="small" variant="outlined"
+                color={q.deliveries_failed ? 'warning' : 'default'}
+                label={`${t('send queue')}: ${q.deliveries_queued}${
+                  q.deliveries_failed ? ` · ${t('retrying')} ${q.deliveries_failed}` : ''
+                }`} />
+            ) : null}
+            <Tooltip
+              title={
+                deadRows?.length
+                  ? `${t('Last error')}: ${deadRows[0].last_error || '—'}`
+                  : t('Events the pipeline gave up on after the attempt ceiling — each one is a reaction the player never got.')
+              }
+            >
+              <Chip size="small" variant={dead ? 'filled' : 'outlined'} color={dead ? 'error' : 'default'}
+                label={`${t('dead letters')}: ${dead}`} />
+            </Tooltip>
+            {dead > 0 && (
+              <Tooltip title={t('Put every dead-lettered event back in the queue. Attempts reset, so fix the cause first — otherwise they walk the whole retry ladder again.')}>
+                <span>
+                  <Button size="small" color="warning" startIcon={<ReplayIcon />}
+                    onClick={requeue} disabled={!canWrite || busy}>
+                    {busy ? t('Requeueing…') : t('Requeue')}
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
+          </Stack>
+        </Stack>
+        {shed && (
+          <Alert severity={shed[0]} sx={{ mt: 1.5 }}>
+            {shed[1]}
+          </Alert>
+        )}
+        <Divider sx={{ my: 1.5 }} />
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          {t('Background jobs')}
+        </Typography>
+        {(status.jobs || []).length ? (
+          <Box sx={{ overflowX: 'auto' }}>
+            <Table size="small" sx={{ minWidth: 520 }}>
+              <TableHead>
+                <TableRow>
+                  <TableCell>{t('Job')}</TableCell>
+                  <TableCell>{t('Last run')}</TableCell>
+                  <TableCell>{t('Status')}</TableCell>
+                  <TableCell>{t('Duration')}</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {(status.jobs || []).map((j) => (
+                  <TableRow key={j.job}>
+                    <TableCell>
+                      <code>{j.job}</code>
+                    </TableCell>
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>{fmtDT(j.last_run_at)}</TableCell>
+                    <TableCell>
+                      <Tooltip title={j.last_error || ''}>
+                        <Chip size="small" variant="outlined"
+                          color={JOB_STATUS_COLORS[j.last_status] || 'default'}
+                          label={j.last_status || '—'} />
+                      </Tooltip>
+                    </TableCell>
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>{fmtDuration(j.duration_ms)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Box>
+        ) : (
+          <Typography variant="body2" color="text.secondary">
+            {t('No paced sweep has run for this product yet — with the worker on, the first tick creates these rows.')}
+          </Typography>
+        )}
       </CardContent>
     </Card>
   );
@@ -1069,6 +1249,7 @@ const RetentionAgentInner = () => {
         canWrite={canWrite}
         running={running}
       />
+      <QueuePanel status={status} canWrite={canWrite} onDone={load} />
       {(tab === 'events' || tab === 'decisions') && (
         <Simulator status={status} onDone={load} canWrite={canWrite} />
       )}

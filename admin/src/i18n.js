@@ -864,6 +864,44 @@ const RU = {
   'Switches and knobs live in Retention → Settings («Proactive agent» + «Send-frequency guards»). The worker interval is a live setting too — 5s means near-realtime reactions. Dry-run ships ON: the agent decides and logs to the ledger below without sending — review its decisions, then turn dry-run off. New here? Read the «How it works & testing» tab.':
     'Переключатели и настройки живут в Ретеншен → Настройки («Проактивный агент» + «Ограничители частоты»). Интервал воркера — тоже «горячая» настройка: 5с — реакции почти в реальном времени. Dry-run включён по умолчанию: агент принимает решения и пишет их в журнал ниже, но ничего не отправляет — проверьте решения и выключите dry-run. Впервые здесь? Прочитайте вкладку «Как это работает и тестирование».',
 
+  // ----- proactive agent page: queue & workers panel -----
+  'Queue lag': 'Задержка очереди',
+  'the oldest event nobody has picked up yet': 'возраст самого старого события, которое никто не взял в работу',
+  'in queue': 'в очереди',
+  'in flight': 'в обработке',
+  'lanes': 'полосы',
+  'Priority lanes: transactional (deposits, payouts, KYC) · normal · state food. The ladder sheds them from the bottom as the lag grows.':
+    'Полосы приоритета: транзакционные (депозиты, выплаты, KYC) · обычные · данные о состоянии. При росте задержки лестница отключает их снизу вверх.',
+  'event → touch p95': 'событие → касание, p95',
+  'Event → delivered touch, measured end to end (queue wait + humanizing delay + send shaping).':
+    'От события до доставленного касания, сквозным замером (ожидание в очереди + «человеческая» задержка + шейпинг отправки).',
+  'samples (24h)': 'замеров (24ч)',
+  'no data': 'нет данных',
+  'send queue': 'очередь отправки',
+  'retrying': 'повторяются',
+  'dead letters': 'мёртвые события',
+  'Events the pipeline gave up on after the attempt ceiling — each one is a reaction the player never got.':
+    'События, на которых пайплайн сдался, исчерпав попытки, — каждое такое событие это реакция, которую игрок так и не получил.',
+  'Last error': 'Последняя ошибка',
+  'Put every dead-lettered event back in the queue. Attempts reset, so fix the cause first — otherwise they walk the whole retry ladder again.':
+    'Вернуть все мёртвые события в очередь. Счётчик попыток обнуляется, поэтому сначала устраните причину — иначе они снова пройдут всю лестницу ретраев.',
+  'Requeue': 'Вернуть в очередь',
+  'Requeueing…': 'Возвращаем…',
+  'Requeued': 'Возвращено в очередь',
+  'Requeue failed': 'Не удалось вернуть в очередь',
+  'Backpressure: the state-food lane is no longer claimed, so money and status events keep moving.':
+    'Backpressure: полоса данных о состоянии больше не берётся в работу, чтобы события про деньги и статусы шли без задержки.',
+  'Backpressure: only transactional (P1–P2) events are being claimed — normal and state-food lanes wait.':
+    'Backpressure: в работу берутся только транзакционные события (P1–P2) — обычная полоса и данные о состоянии ждут.',
+  'Backpressure: transactional events only and the idle ladder is paused for this product until the lag recovers.':
+    'Backpressure: только транзакционные события, а лестница пингов неактивности приостановлена для этого продукта, пока задержка не спадёт.',
+  'Background jobs': 'Фоновые задания',
+  'Job': 'Задание',
+  'Last run': 'Последний запуск',
+  'Duration': 'Длительность',
+  'No paced sweep has run for this product yet — with the worker on, the first tick creates these rows.':
+    'Для этого продукта ещё не отработал ни один фоновый проход — при включённом воркере строки появятся на первом тике.',
+
   // ----- proactive agent page: simulator -----
   'Event simulator — inject a canonical event as if the casino sent it':
     'Симулятор событий — отправьте каноническое событие, как будто его прислало казино',
@@ -2148,6 +2186,70 @@ const RU = {
     "Мультиканальная доставка",
   "Enable the channel router beyond Telegram (email via Customer.io, delegated push/in-app via the casino). Strict opt-in per channel. OFF = Telegram only, as before.":
     "Включает роутер каналов за пределами Telegram (email через Customer.io, делегированные push/in-app через казино). Строгий opt-in по каждому каналу. ВЫКЛ = только Telegram, как раньше.",
+  // ----- settings: event pipeline section (queue · workers · send stage) -----
+  'Event pipeline (queue · workers · send stage)':
+    'Пайплайн событий (очередь · воркеры · стадия отправки)',
+  'Event lease (sec)': 'Аренда события (сек)',
+  'How long a claimed event may stay in flight before another worker assumes the first one died and takes it over. It must outlast the slowest step of a decision (the agent model call, 90s) with margin — too short and the same deposit is reacted to twice.':
+    'Сколько взятое в работу событие может оставаться в обработке, прежде чем другой воркер решит, что первый умер, и заберёт его себе. Должно с запасом перекрывать самый долгий шаг решения (вызов модели агентом, 90с) — при слишком малом значении на один депозит отреагируют дважды.',
+  'Max attempts per event': 'Макс. попыток на событие',
+  'After this many failed passes an event is dead-lettered instead of retried forever. Too low and a brief provider outage buries an hour of reactions in the dead-letter list; too high and one poison event keeps cycling through the queue.':
+    'После стольких неудачных проходов событие уходит в мёртвые вместо бесконечных ретраев. Слишком мало — короткий сбой провайдера похоронит час реакций в списке мёртвых; слишком много — одно «ядовитое» событие будет вечно крутиться в очереди.',
+  'Retry backoff base (sec)': 'База backoff для ретраев (сек)',
+  'Delay before the first retry of a failed event; it doubles with every further attempt. Small values hammer whatever is already failing, large ones push the retry past the moment the reaction was still worth sending.':
+    'Задержка перед первым ретраем упавшего события; с каждой следующей попыткой удваивается. Малые значения долбят и без того падающую зависимость, большие — уводят ретрай за момент, когда реакцию ещё имело смысл отправлять.',
+  'Products drained in parallel': 'Продуктов обрабатывается параллельно',
+  'How many products one worker drains at the same time. At 1 the tick takes the SUM over every product, so one busy casino delays reactions for all the others.':
+    'Сколько продуктов один воркер разгребает одновременно. При 1 тик занимает СУММУ по всем продуктам, и одно нагруженное казино задерживает реакции всем остальным.',
+  'Players drained in parallel': 'Игроков обрабатывается параллельно',
+  'How many DIFFERENT players inside one product are handled at once. One player’s own events always stay strictly serial — two decisions in parallel for the same player race the send guards and he gets two messages.':
+    'Сколько РАЗНЫХ игроков внутри одного продукта обрабатывается одновременно. События одного игрока всегда идут строго последовательно — два параллельных решения по нему обгоняют ограничители частоты, и он получит два сообщения.',
+  'Max concurrent agent model calls': 'Макс. параллельных вызовов модели агентом',
+  'Fleet-wide ceiling on background model calls. Without it an event burst opens hundreds of completions at once, and live chat turns queue behind the agent’s thinking.':
+    'Общий на весь флот потолок фоновых вызовов модели. Без него всплеск событий откроет сотни запросов разом, и живые ответы в чате встанут в очередь за «размышлениями» агента.',
+  'Keep state food out of the queue': 'Не пускать данные о состоянии в очередь',
+  'High-volume events (spins, session pings) are stored complete and never enter the drain. Off = queue depth and lag track raw casino traffic instead of decision work, so the backpressure ladder starts shedding lanes for no reason.':
+    'Высокочастотные события (спины, пинги сессий) сохраняются сразу как обработанные и не попадают в разбор. Выкл = глубина и задержка очереди отражают сырой трафик казино, а не работу по решениям, и лестница backpressure начинает отключать полосы без причины.',
+  'Activity timestamp debounce (sec)': 'Дебаунс отметки активности (сек)',
+  '“Player was just active” is the busiest write in the system and re-stamping it seconds later buys nothing. 0 = write on every event, which is what makes that row the hottest lock in the database.':
+    '«Игрок только что был активен» — самая частая запись в системе, и переставлять отметку через несколько секунд бессмысленно. 0 = запись на каждое событие, из-за чего эта строка становится самой горячей блокировкой в базе.',
+  'Backpressure: shed normal lane after (sec)': 'Backpressure: отключить обычную полосу после (сек)',
+  'First rung of the ladder: once the queue lag passes this, ordinary (P3) events stop being claimed so deposits and payouts keep moving. Set too high, a backlog delays exactly the reactions players notice.':
+    'Первая ступень лестницы: как только задержка очереди превысит это значение, обычные события (P3) перестают браться в работу, чтобы депозиты и выплаты шли без задержки. Слишком большое значение — и завал задержит именно те реакции, которые игрок замечает.',
+  'Backpressure: transactional only after (sec)': 'Backpressure: только транзакционные после (сек)',
+  'Second rung: past this lag only money/status (P1–P2) events are claimed. It must be ≥ the rung above — the save is rejected otherwise, because an out-of-order ladder sheds everything in one step.':
+    'Вторая ступень: после этой задержки в работу берутся только события про деньги и статусы (P1–P2). Должно быть ≥ предыдущей ступени — иначе сохранение отклоняется, потому что нарушенный порядок отключает всё за один шаг.',
+  'Backpressure: pause idle ladder after (sec)': 'Backpressure: остановить пинги неактивности после (сек)',
+  'Last rung: with the lag this far gone the idle re-engagement sweep pauses for this product. Re-engagement competes with live reactions for the same worker, and a quiet player can wait an hour — a deposit cannot.':
+    'Последняя ступень: при такой задержке проход пингов неактивности останавливается для этого продукта. Возвратные пинги конкурируют за того же воркера с живыми реакциями, а молчащий игрок может подождать час — депозит не может.',
+  'Separate send worker': 'Отдельный воркер отправки',
+  'ON: a decision only enqueues a delivery and a separate worker sends it under the rate limits below, so a large broadcast drains instead of collecting Telegram 429s. OFF (default): decisions send inline on the decision loop, exactly as before.':
+    'ВКЛ: решение только ставит доставку в очередь, а отдельный воркер отправляет её под лимитами ниже, поэтому крупная рассылка расходится, а не собирает 429 от Telegram. ВЫКЛ (по умолчанию): решения отправляют сразу в том же цикле, как раньше.',
+  'Deliveries in flight': 'Доставок одновременно',
+  'How many queued deliveries the send worker pushes at once. The token buckets below still shape the real rate; this only bounds how many sends may sit waiting on Telegram at the same time.':
+    'Сколько доставок из очереди воркер отправляет одновременно. Реальный темп всё равно задают лимиты ниже; это ограничивает лишь количество отправок, одновременно ждущих ответа Telegram.',
+  'Deliveries claimed per pass': 'Доставок за один проход',
+  'How many delivery rows one send pass leases. A big batch holds its lease longer, so a worker killed mid-batch leaves that many messages waiting for the lease to expire before anyone retries them.':
+    'Сколько строк доставки арендует один проход отправки. Большая пачка держит аренду дольше, поэтому убитый посреди пачки воркер оставит столько же сообщений ждать истечения аренды, прежде чем их кто-то повторит.',
+  'Telegram: messages / sec (bot)': 'Telegram: сообщений / сек (бот)',
+  'Sustained send rate for the whole bot. Telegram answers 429 above roughly 30/s, and a broadcast that trips it turns into a retry storm that delivers slower than the limit would have.':
+    'Постоянный темп отправки для всего бота. Выше примерно 30/с Telegram отвечает 429, и рассылка, налетевшая на лимит, превращается в шторм ретраев, который доставляет медленнее самого лимита.',
+  'Telegram: burst (messages)': 'Telegram: всплеск (сообщений)',
+  'How many messages may leave back-to-back before the sustained rate applies. A burst wider than Telegram tolerates is precisely what produces the 429s the bucket exists to prevent.':
+    'Сколько сообщений может уйти подряд, прежде чем начнёт действовать постоянный темп. Всплеск шире того, что терпит Telegram, как раз и порождает те 429, ради которых существует этот лимит.',
+  'Telegram: messages / sec (one chat)': 'Telegram: сообщений / сек (один чат)',
+  'Per-player ceiling (~1/s at Telegram). Exceeded, that one player’s messages are rejected even though the bot-wide budget is fine — this is the limit a multi-part reply burst runs into.':
+    'Потолок на одного игрока (~1/с у Telegram). При превышении сообщения именно этому игроку отклоняются, хотя общий бюджет бота в порядке — в этот лимит упирается ответ, разбитый на несколько сообщений.',
+  'Email: sends / sec': 'Email: отправок / сек',
+  'Per-product ceiling for the email channel (only used with multi-channel delivery on). Set above what Customer.io allows and the provider throttles the whole account, not just this campaign.':
+    'Потолок email-канала для продукта (используется только при включённой мультиканальной доставке). Выставьте выше, чем разрешает Customer.io, и провайдер придушит весь аккаунт, а не только эту рассылку.',
+  'Keep events (days)': 'Хранить события (дней)',
+  'Age at which decision-worthy events are pruned. The log is append-only and grows by millions of rows a month; with no reaper the table and every query over it degrade until the drain itself slows down.':
+    'Возраст, в котором удаляются события, значимые для решений. Журнал только пополняется и растёт на миллионы строк в месяц; без чистки таблица и все запросы по ней деградируют, пока не замедлится сам разбор очереди.',
+  'Keep state-food events (days)': 'Хранить события о состоянии (дней)',
+  'Shorter retention for the high-volume lane (spins, session pings): 90%+ of the rows, and worthless once the state resolver’s loss and activity windows have passed.':
+    'Более короткое хранение для высокочастотной полосы (спины, пинги сессий): это 90%+ строк, и они бесполезны, как только прошли окна проигрыша и активности у резолвера состояния.',
+
   "d":
     "д",
   "Triggers (any that crosses the threshold fires)":

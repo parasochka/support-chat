@@ -219,6 +219,38 @@ plus a read-only `admin_get` escape hatch bounded to `/admin/*`.
 Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the CMD reads
 `$PORT`. Health check is `/healthz`.
 
+### Two-service topology
+
+The service has two halves — the HTTP API and the retention background pipeline — and they
+want opposite things from a deploy: the web process must come up fast and never hold a
+connection for minutes, the worker holds event **leases**, runs long model calls and is
+sized for concurrency. `SERVICE_ROLE` picks which half a process is; both run from the
+**same image**, so they can never drift apart.
+
+| | Web service | Worker service |
+|---|---|---|
+| Start command | the Dockerfile CMD (`uvicorn app.main:app`) | `python -m app.worker` |
+| `SERVICE_ROLE` | `web` | `worker` |
+| `RETENTION_SCHEDULER_ENABLED` | `0` | `1` |
+| Runs | HTTP, admin SPA, widget, Telegram webhook, the media normalizer | event drain, maintenance sweeps, send stage, quality judge |
+| Health check | `/healthz` | `/healthz` on `$PORT` — per-loop heartbeats, 503 when a loop stops ticking |
+| Volume | the retention media Volume mounts **here** | none |
+
+Everything else — `DATABASE_URL`, the OpenAI keys, every secret — is identical on both.
+Create the worker in the Railway dashboard from the same repo/Dockerfile with the start
+command and env above.
+
+**Leaving `SERVICE_ROLE` unset keeps the single-process behaviour** (`all`: HTTP plus every
+background loop), so an existing deployment upgrades in place and only splits when you
+create the worker service. Note that the media normalizer follows the **volume**, not the
+pipeline: it owns the uploaded files, so it runs on the web process even with
+`RETENTION_SCHEDULER_ENABLED=0`.
+
+Shutdown is a drain, not a kill: `SIGTERM` raises the worker's stop flag, each loop wakes
+out of its sleep, finishes the batch in flight and closes its leases within
+`WORKER_DRAIN_TIMEOUT_SEC`. Zero-downtime deploys are not needed — an event whose lease is
+never closed is simply reclaimed and retried.
+
 ## Environment variables
 
 | Variable | Required | Default | Purpose |
@@ -263,6 +295,9 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `DB_CONNECT_TIMEOUT_SEC` | no | `10` | Cap (seconds) on establishing a new Postgres connection, so a down DB fails fast instead of hanging on connect. |
 | `DB_ACQUIRE_TIMEOUT_SEC` | no | `10` | Cap (seconds) on waiting for a free pooled connection on the hot request paths — pool exhaustion surfaces as a retryable error, not an unbounded hang. |
 | `DB_HEALTHCHECK_TIMEOUT_SEC` | no | `5` | Cap (seconds) on the `/healthz` DB probe. `/healthz` is a liveness probe (200 while the process is up, even if the DB is momentarily down) so a DB blip can't drive a restart loop; add `?deep=1` for a strict readiness check that 503s when the DB is down. |
+| `SERVICE_ROLE` | no | `all` | Which half this process is: `web` (HTTP only — the background pipeline belongs to the worker service), `worker` (`python -m app.worker`: the background loops only), or `all` (single process, the pre-split behaviour). See § "Two-service topology". |
+| `WORKER_DRAIN_TIMEOUT_SEC` | no | `25` | Seconds a shutting-down worker may spend finishing the batch in flight and closing its event leases. Railway `SIGKILL`s 30s after `SIGTERM`, so stay under that. |
+| `DB_POOL_MIN` / `DB_POOL_MAX` | no | `1` / `25` on the worker, `10` elsewhere | Postgres pool bounds. The worker runs many player shards concurrently; the web process serves requests. |
 | `OPENAI_BREAKER_FAIL_THRESHOLD` | no | `5` | Consecutive fully-failed completions before the OpenAI circuit breaker opens and further calls fail fast (returning the localized nudge in ms) instead of each paying the full failover cost during an outage. `0` disables the breaker. Keyed per key source, so one product's bad key can't trip it for everyone. |
 | `OPENAI_BREAKER_COOLDOWN_SEC` | no | `30` | How long the breaker stays open before allowing one half-open trial request to probe recovery. |
 | `PUBLIC_BASE_URL` | no | — | Retention bot: public base URL of this service (e.g. `https://chat.example.com`), used to build the webhook URL when registering it with Telegram. Required to auto-register the webhook from the admin. |
@@ -341,6 +376,20 @@ Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the C
 | `RETENTION_ABANDONMENT_DELAY_HOURS` | no | `2` | Cashier-abandonment timer (`deposit_initiated` without a confirm). |
 | `RETENTION_CHANNEL_AUTO_PRIORITY` | no | `push,in_app,email` | Router fallback order when the step says `auto`. |
 | `RETENTION_DELIVERY_RETRY_ENABLED` / `RETENTION_PUSH_DELIVERY_TIMEOUT_SEC` | no | `true` / `10` | Delivery-ledger backoff retries (1m/5m/30m) and the delegated push/in-app call timeout. |
+| `RETENTION_EVENT_LEASE_SEC` | no | `300` | Event pipeline: how long a claimed event may stay in flight before the reclaimer assumes the worker died and returns it to the queue. Must exceed the agent model timeout (90s) with margin — a lease expiring mid-decision means the event is processed twice. |
+| `RETENTION_EVENT_MAX_ATTEMPTS` / `RETENTION_EVENT_BACKOFF_BASE_SEC` | no | `5` / `30` | Retries before an event is dead-lettered (visible + requeueable in the admin) and the base of the exponential backoff between them. |
+| `RETENTION_WORKER_PRODUCT_CONCURRENCY` / `RETENTION_WORKER_PLAYER_CONCURRENCY` | no | `4` / `8` | How many products drain in parallel, and how many players in parallel inside one product. One player's events are always strictly serial (two concurrent decisions race the guard counters and produce two messages). |
+| `RETENTION_AGENT_MODEL_CONCURRENCY` | no | `8` | Fleet-wide ceiling on concurrent background model calls, so an event burst cannot open hundreds of completions at once. |
+| `RETENTION_QUEUE_DEGRADE_P3_SEC` / `_P2_SEC` / `_IDLE_SEC` | no | `300` / `900` / `3600` | Backpressure ladder keyed on queue lag (age of the oldest pending event): shed the low priority lanes, then everything but the transactional ones, then pause the idle ladder for that product until the lag recovers. |
+| `RETENTION_QUEUE_BYPASS_STATE_EVENTS` | no | `true` | Store high-volume "state food" (spins, session pings) COMPLETE without queueing it, so queue depth tracks decision work rather than casino traffic. |
+| `RETENTION_ACTIVITY_DEBOUNCE_SEC` | no | `60` | Debounce for the activity-timestamp bridge — the busiest write in the system, and re-stamping "active" seconds later buys nothing. |
+| `RETENTION_SEND_WORKER_ENABLED` | no | `false` | Default for `retention.send_worker_enabled` — the send stage as its own worker (a decision enqueues, the send worker delivers under a token bucket). Off = decisions send inline exactly as before. |
+| `RETENTION_SEND_CONCURRENCY` / `RETENTION_SEND_LEASE_SEC` / `RETENTION_SEND_BATCH_SIZE` | no | `8` / `120` / `50` | Send-stage parallelism, lease length and how many queued touches one pass claims. |
+| `RETENTION_TELEGRAM_RATE_PER_SEC` / `RETENTION_TELEGRAM_BURST` / `RETENTION_TELEGRAM_CHAT_RATE_PER_SEC` | no | `25` / `25` / `1` | Token bucket held in Postgres (so the limit holds however many workers run): per bot and per chat, sized under Telegram's own limits so a broadcast drains instead of collecting 429s. |
+| `RETENTION_EMAIL_RATE_PER_SEC` | no | `50` | Same bucket for the email channel. |
+| `RETENTION_MAINTENANCE_INTERVAL_SEC` | no | `30` | How often the maintenance loop looks for work (lease reclaim first, then the paced sweeps below). Each sweep is paced per product through `retention_worker_jobs`, so its interval survives a deploy and holds across workers. |
+| `RETENTION_ATTRIBUTION_INTERVAL_SEC` / `RETENTION_SCORING_INTERVAL_SEC` / `RETENTION_PROFILE_INTERVAL_SEC` / `RETENTION_JOURNEY_INTERVAL_SEC` | no | `300` / `900` / `3600` / `120` | Per-product pacing of the attribution, scoring, activity-profile and journey sweeps. |
+| `RETENTION_EVENT_KEEP_DAYS` / `RETENTION_EVENT_KEEP_DAYS_STATE` | no | `90` / `14` | Split retention for the event log: state food is 90%+ of the rows and worth nothing once the resolver's windows have passed. |
 | `QUALITY_REVIEW_ENABLED` | no | `true` | Default for `general.quality_review_enabled` — the LLM-as-judge pass that scores finished conversations (both facades). The verdicts feed the admin Quality page; the judge never changes anything itself. |
 | `QUALITY_REVIEW_DAILY_MAX` | no | `100` | Default for `general.quality_review_daily_max` — cost cap: reviews per product per UTC day (0 = pause). |
 | `QUALITY_REVIEW_MIN_MESSAGES` | no | `4` | Default for `general.quality_review_min_messages` — shorter conversations are skipped (nothing to judge in a one-liner). |

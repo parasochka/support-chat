@@ -1,4 +1,26 @@
 # Railway deploy config — build from the Dockerfile, use its CMD as start command.
+#
+# This file configures the WEB service. The deployment is two services built
+# from the SAME image and told apart by SERVICE_ROLE; Railway has no multi-
+# service schema here, so the worker is created in the dashboard (same repo,
+# same Dockerfile) with these overrides:
+#
+#   Start command                python -m app.worker
+#   SERVICE_ROLE                 worker
+#   RETENTION_SCHEDULER_ENABLED  1        # the background half's kill switch
+#   Healthcheck path             /healthz # the worker serves it on $PORT too
+#   DATABASE_URL + every secret  identical to the web service
+#
+# And on THIS (web) service:
+#
+#   SERVICE_ROLE                 web
+#   RETENTION_SCHEDULER_ENABLED  0        # the pipeline belongs to the worker
+#
+# Leaving SERVICE_ROLE unset keeps the pre-split single-process behaviour
+# ('all': HTTP plus every background loop), so an existing deployment upgrades
+# without a worker service. The retention media Volume stays mounted HERE: the
+# media normalizer owns those files and runs on the web process regardless of
+# the pipeline switch. Details: README § "Two-service topology".
 [build]
 builder = "dockerfile"
 dockerfilePath = "Dockerfile"

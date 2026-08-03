@@ -199,6 +199,33 @@ async def _take_tokens(pid: int, channel: str, chat_id: Optional[int],
                                     rate_per_sec=chat_rate, burst=1.0)
 
 
+async def _suppressed_now(pid: int, ru: dict[str, Any],
+                          payload: dict[str, Any],
+                          cfg: dict[str, Any]) -> Optional[str]:
+    """Why this queued touch must NOT go out after all, or None.
+
+    Deliberately only the checks whose answer can CHANGE between deciding and
+    sending, and whose change makes the send wrong rather than merely
+    late: consent (the player muted or blocked the bot) and responsible
+    gaming (the casino flagged them). Frequency caps are not re-checked — the
+    decision already consumed the budget, and re-running the whole guard here
+    would just decide the same thing twice.
+    """
+    from app.retention import channels
+    if not channels.opted_in(ru, "telegram"):
+        return "opted_out_before_send"
+    try:
+        from app.retention import rg_guard
+        verdict = await rg_guard.gate(pid, ru, str(payload.get("event_name")
+                                                   or "proactive"), cfg)
+    except Exception:  # noqa: BLE001 - never let the guard's own failure send
+        log.exception("retention_send_rg_gate_failed product=%s", pid)
+        return None
+    if verdict is not None and verdict.get("deny"):
+        return f"rg:{verdict.get('reason') or 'blocked'}"
+    return None
+
+
 async def _deliver_row(product: dict[str, Any], row: dict[str, Any],
                        cfg: dict[str, Any]) -> str:
     """Deliver one claimed row. Returns 'sent' | 'failed' | 'deferred'."""
@@ -209,6 +236,20 @@ async def _deliver_row(product: dict[str, Any], row: dict[str, Any],
     if ru is None:
         await db.mark_delivery_failed(int(row["id"]), "player link missing",
                                       permanent=True)
+        return "failed"
+
+    # RE-CHECK CONSENT AT SEND TIME. The guards ran when the touch was
+    # DECIDED, which is now minutes ago — long enough for the player to have
+    # hit /stop, blocked the bot, or been flagged by the casino's responsible-
+    # gaming feed. Sending anyway because "it was allowed when we wrote it"
+    # is exactly the failure a queue introduces, and for the RG case it is a
+    # compliance failure, not a nuisance.
+    suppressed = await _suppressed_now(pid, ru, payload, cfg)
+    if suppressed:
+        await db.mark_delivery_failed(int(row["id"]), suppressed,
+                                      permanent=True)
+        log.info("retention_send_suppressed product=%s player=%s reason=%s",
+                 pid, ru.get("player_id"), suppressed)
         return "failed"
 
     if not await _take_tokens(pid, str(row.get("channel") or "telegram"),

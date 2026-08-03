@@ -38,5 +38,11 @@ COPY --from=admin-build /build/dist ./admin/dist
 ENV PORT=8080
 EXPOSE 8080
 
+# ONE image, two services (see railway.toml): this CMD is the WEB half. The
+# background half is the same image started with `python -m app.worker` and
+# SERVICE_ROLE=worker — a start-command override on its own Railway service, so
+# the two always ship the same code and the image needs no second entrypoint.
+# The worker binds $PORT too (a minimal health endpoint over the loops'
+# heartbeats), so the platform healthcheck works on both services.
 # Use shell form so $PORT is expanded at runtime.
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]

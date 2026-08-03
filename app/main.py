@@ -45,6 +45,8 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _FRONTEND_DIR = os.path.join(_REPO_ROOT, "frontend")
 _TEST_PAGE = os.path.join(_FRONTEND_DIR, "test.html")
 
+_KNOWN_ROLES = ("web", "worker", "all")
+
 
 def _warn_insecure_config() -> None:
     """Flag deployment foot-guns at startup (logged, never fatal).
@@ -79,6 +81,35 @@ def _warn_insecure_config() -> None:
             "PUBLIC_BASE_URL is not set; the retention bot webhook cannot be "
             "auto-registered from the admin panel until it is."
         )
+    if config.SERVICE_ROLE not in _KNOWN_ROLES:
+        log.warning(
+            "SERVICE_ROLE=%r is not one of %s; treating this process as 'all' "
+            "(HTTP + the background pipeline).",
+            config.SERVICE_ROLE, "/".join(_KNOWN_ROLES),
+        )
+
+
+def _background_plan(role: str, scheduler_enabled: bool) -> tuple[bool, bool]:
+    """Which background halves this process owns: (pipeline, media normalizer).
+
+    On the 'web' role the pipeline belongs to the separate worker service
+    (`python -m app.worker`, same image), whatever RETENTION_SCHEDULER_ENABLED
+    says — that switch is the worker's master kill switch now, and the web
+    service sets it to 0 precisely to hand the pipeline over. 'all' is the
+    single-process mode and still runs everything here, gated by the switch as
+    before. 'worker' means this uvicorn is misconfigured: the loops are the
+    other entrypoint's, and starting them here would run every sweep twice.
+
+    The media normalizer is NOT pipeline work: it owns the FILES on the local
+    media dir — on Railway a Volume mounted to the service that serves the admin
+    uploads — so it follows the volume and stays on the web process.
+
+    A typo must not silently double every sweep against a real worker either, so
+    an unknown role falls back to the pre-split behaviour (warned about above).
+    """
+    resolved = role if role in _KNOWN_ROLES else "all"
+    runs_pipeline = resolved == "all" and scheduler_enabled
+    return runs_pipeline, runs_pipeline or resolved == "web"
 
 
 _SETTINGS_REFRESH_SEC = 60
@@ -152,29 +183,42 @@ async def lifespan(app: FastAPI):
         os.makedirs(config.RETENTION_MEDIA_DIR, exist_ok=True)
     except OSError as exc:
         log.warning("could not create RETENTION_MEDIA_DIR: %s", exc)
-    # The retention-agent worker (event-driven proactive loop). Deploy-level
-    # switch; each product still opts in via the hot `retention.v2_enabled`
-    # setting, the cadence is the hot `retention.worker_interval_sec` setting,
-    # and event pickup is an atomic claim (plus a Postgres advisory lock per
-    # sweep), so multiple instances never double-send.
+    runs_pipeline, runs_media = _background_plan(
+        config.SERVICE_ROLE, config.RETENTION_SCHEDULER_ENABLED)
+    log.info("service role=%s pipeline=%s media=%s",
+             config.SERVICE_ROLE, runs_pipeline, runs_media)
     agent_task = None
+    maintenance_task = None
+    send_task = None
     media_task = None
     review_task = None
-    if config.RETENTION_SCHEDULER_ENABLED:
+    if runs_pipeline:
         from app.ai import reviewer
-        from app.retention import media_normalizer
         from app.retention import retention_v2
+        from app.retention import send_worker
+        # The retention-agent worker (event-driven proactive loop). Each product
+        # still opts in via the hot `retention.v2_enabled` setting, the cadence
+        # is the hot `retention.worker_interval_sec` setting, and event pickup is
+        # an atomic lease claim, so multiple instances never double-send.
         agent_task = asyncio.create_task(retention_v2.scheduler_loop())
+        # Everything that is NOT event processing (lease reclaim, attribution,
+        # scoring, activity profiles, journeys, the idle ladder) on its own
+        # clock, so a slow sweep never sits on the critical path of reacting to
+        # a deposit.
+        maintenance_task = asyncio.create_task(retention_v2.maintenance_loop())
+        # The send stage — a no-op until `retention.send_worker_enabled` is on.
+        send_task = asyncio.create_task(send_worker.send_loop())
+        # Quality review: the LLM-as-judge pass over finished conversations
+        # (both facades), with the per-product on/off + daily cap in the
+        # `general` settings group.
+        review_task = asyncio.create_task(reviewer.scheduler_loop())
+    if runs_media:
         # Media normalizer: the hourly sweep re-encoding uploaded retention
         # photos to WebP at Telegram-appropriate dimensions (heavy originals
-        # deleted). Same deploy switch as the agent worker; normalization is
-        # always-on and fully code-owned (no admin knob, no per-product switch).
+        # deleted). Normalization is always-on and fully code-owned (no admin
+        # knob, no per-product switch).
+        from app.retention import media_normalizer
         media_task = asyncio.create_task(media_normalizer.scheduler_loop())
-        # Quality review: the LLM-as-judge pass over finished conversations
-        # (both facades). Same deploy switch — it governs every background
-        # worker — with the per-product on/off + daily cap in the `general`
-        # settings group.
-        review_task = asyncio.create_task(reviewer.scheduler_loop())
     # Periodic settings-cache refresh: the in-process cache is reloaded on a
     # local admin write, but a write made by ANOTHER instance (or directly in
     # the DB) was invisible until restart — the "I changed a setting and
@@ -187,8 +231,8 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        for task in (agent_task, media_task, review_task, refresh_task,
-                     log_task):
+        for task in (agent_task, maintenance_task, send_task, media_task,
+                     review_task, refresh_task, log_task):
             if task is None:
                 continue
             task.cancel()

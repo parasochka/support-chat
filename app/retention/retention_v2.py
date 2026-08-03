@@ -34,6 +34,7 @@ import datetime as _dt
 import json
 import logging
 import re
+import time as _time
 from typing import Any, Optional
 
 from app.chat import chat_service
@@ -367,6 +368,7 @@ async def maintenance_loop(stop: Optional[asyncio.Event] = None) -> None:
             return
         try:
             await _reclaim_leases()
+            await _prune_rate_budget_occasionally()
             await run_maintenance_pass(stop=stop)
         except asyncio.CancelledError:
             raise
@@ -383,6 +385,28 @@ async def _reclaim_leases() -> None:
     if events or deliveries:
         log.warning("retention_leases_reclaimed events=%s deliveries=%s",
                     events, deliveries)
+
+
+# The token bucket keeps a row per SCOPE, and the per-chat scopes are one row
+# per player who was ever written to — unbounded without a reaper. A bucket
+# nobody has touched for a day is full by definition, so dropping it changes
+# nothing except the row count.
+_RATE_BUDGET_PRUNE_EVERY_SEC = 3600
+_last_rate_prune = 0.0
+
+
+async def _prune_rate_budget_occasionally() -> None:
+    global _last_rate_prune
+    now = _time.monotonic()
+    if now - _last_rate_prune < _RATE_BUDGET_PRUNE_EVERY_SEC:
+        return
+    _last_rate_prune = now
+    try:
+        dropped = await db.prune_rate_budget()
+        if dropped:
+            log.info("retention_rate_budget_pruned rows=%s", dropped)
+    except Exception:  # noqa: BLE001 - housekeeping must not wedge the loop
+        log.exception("retention_rate_budget_prune_failed")
 
 
 # (job name, settings key for the interval, config default). The interval is
@@ -1415,6 +1439,7 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
         "header": header_line,
         "ping_context": ping_context,
         "action": decision["action"],
+        "tone": decision.get("tone"),
         "event_name": event_name,
         "comfort": bool(comfort),
         "session_id": session["id"],
@@ -1446,6 +1471,12 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
             # Same event, same touch, already queued or sent — the send-side
             # half of at-least-once safety.
             return False, gen_cost, "already_queued", facts
+        # The min-gap guard reads last_ping_at, which the ledger only stamps on
+        # an actual send. Queued, that send is minutes away — long enough for
+        # the next event of the same player to pass the gap check and decide a
+        # second touch. Stamp it at enqueue; the daily counter still waits for
+        # the real send.
+        await db.touch_last_ping(rid)
         return False, gen_cost, "queued", facts
 
     delivered, detail, facts2 = await deliver_payload(product, ru, payload, cfg)

@@ -4596,6 +4596,22 @@ async def record_retention_ping(product_id: int, rid: int,
                 )
 
 
+async def touch_last_ping(rid: int) -> None:
+    """Stamp `last_ping_at` alone — no ledger row, no daily counter.
+
+    For the QUEUED send path: the min-gap guard reads `last_ping_at`, and with
+    the send worker on it would otherwise not move until the touch actually
+    left, minutes later. In that window the next event for the same player
+    passes the gap check and a second touch is decided. Stamping at enqueue
+    closes it. The daily counter still only counts real sends, so it is
+    deliberately not touched here, and no `retention_pings` row is written —
+    the ledger records what happened, and nothing has happened yet.
+    """
+    await _execute(
+        "UPDATE retention_users SET last_ping_at = now(), updated_at = now() "
+        "WHERE id = $1", int(rid))
+
+
 # ---------------------------------------------------------------------------
 # Retention agent: canonical event log + the decision ledger
 # ---------------------------------------------------------------------------
@@ -5034,8 +5050,8 @@ async def prune_retention_events(keep_days: int = 90, *,
     events is what makes the table grow without bound. None = one retention for
     everything (the previous behaviour)."""
     cutoff = ("COALESCE(processed_at, created_at) "
-              "< now() - make_interval(days => CASE WHEN priority >= $3 "
-              "                                THEN $4 ELSE $1 END)")
+              "< now() - make_interval(days => CASE WHEN priority >= $3::int "
+              "                                THEN $4::int ELSE $1::int END)")
     state_days = (int(keep_days) if state_keep_days is None
                   else min(int(state_keep_days), int(keep_days)))
     removed = 0
@@ -6110,10 +6126,13 @@ async def claim_worker_job(product_id: int, job: str, interval_sec: int, *,
         "INSERT INTO retention_worker_jobs (product_id, job, last_run_at, "
         " next_run_at, last_status) "
         "VALUES ($1, $2, now(), "
-        "        now() + make_interval(secs => GREATEST($3, $4)), 'running') "
+        "        now() + make_interval(secs => GREATEST($3::float8, "
+        "                                               $4::float8)), "
+        "        'running') "
         "ON CONFLICT (product_id, job) DO UPDATE "
         "  SET last_run_at = now(), "
-        "      next_run_at = now() + make_interval(secs => GREATEST($3, $4)), "
+        "      next_run_at = now() + make_interval(secs => "
+        "        GREATEST($3::float8, $4::float8)), "
         "      last_status = 'running' "
         "  WHERE retention_worker_jobs.next_run_at IS NULL "
         "     OR retention_worker_jobs.next_run_at <= now() "
@@ -6184,18 +6203,21 @@ async def take_rate_token(scope: str, *, rate_per_sec: float, burst: float,
     cap = max(float(burst), float(n))
     if rate <= 0:
         return True  # unlimited scope: no bucket, no accounting
+    # Every numeric parameter is cast explicitly: inside an expression
+    # (`$2 - $4`) asyncpg has no function signature to infer from, prepares
+    # both as `unknown`, and Postgres refuses the ambiguous operator.
     row = await _fetchrow(
         "INSERT INTO retention_rate_budget (scope, tokens, rate_per_sec, burst) "
-        "VALUES ($1, $2 - $4, $3, $2) "
+        "VALUES ($1, $2::float8 - $4::float8, $3::float8, $2::float8) "
         "ON CONFLICT (scope) DO UPDATE SET "
         "  tokens = LEAST(EXCLUDED.burst, retention_rate_budget.tokens "
         "    + EXTRACT(EPOCH FROM now() - retention_rate_budget.updated_at) "
-        "      * EXCLUDED.rate_per_sec) - $4, "
+        "      * EXCLUDED.rate_per_sec) - $4::float8, "
         "  rate_per_sec = EXCLUDED.rate_per_sec, burst = EXCLUDED.burst, "
         "  updated_at = now() "
         "WHERE retention_rate_budget.tokens "
         "  + EXTRACT(EPOCH FROM now() - retention_rate_budget.updated_at) "
-        "    * EXCLUDED.rate_per_sec >= $4 "
+        "    * EXCLUDED.rate_per_sec >= $4::float8 "
         "RETURNING tokens",
         scope, cap, rate, float(n),
     )

@@ -1406,12 +1406,21 @@ async def v2_status(product_id: int,
     DB-derived liveness snapshot (last event / last processed / last decision
     + today's decision mix), the event taxonomy split (decision-worthy /
     photo-eligible / state-food) and the EFFECTIVE guard knob values — so the
-    tab's How-it-works guide always matches the code and the current tuning."""
+    tab's How-it-works guide always matches the code and the current tuning.
+
+    It also carries the QUEUE picture: the lag (age of the oldest event nobody
+    has claimed) is the number the backpressure ladder keys on and the only
+    early warning that the drain is losing the race; the event -> delivered
+    touch percentiles are the SLA; the background-job rows say whether the
+    paced sweeps are still running at all. Without them a stalled worker looks
+    exactly like a quiet product."""
     from app.retention import retention_v2
     await admin_auth.require_product_read(admin, product_id)
     tenancy.set_current_product(product_id)
     cfg = settings_mod.retention()
-    queued = await db.count_unprocessed_retention_events(product_id)
+    queue = await db.retention_queue_stats(product_id)
+    latency = await db.retention_latency_percentiles(product_id)
+    jobs = await db.list_worker_jobs([product_id])
     cost_today = await db.retention_v2_cost_today(product_id)
     activity = await db.retention_v2_activity(product_id)
     return JSONResponse(content={
@@ -1419,7 +1428,20 @@ async def v2_status(product_id: int,
         "v2_dry_run": bool(cfg.get("v2_dry_run")),
         "daily_budget_usd": float(cfg.get("v2_daily_budget_usd") or 0),
         "cost_today_usd": cost_today,
-        "queued_events": queued,
+        # Depth of the drain (pending + in flight) — the same number the older
+        # header chip showed, read off the breakdown instead of a second query.
+        "queued_events": queue["pending"] + queue["processing"],
+        "queue": queue,
+        "latency": latency,
+        "jobs": jobs,
+        # The lag thresholds the ladder sheds lanes at, so the panel can say
+        # WHY a lane stopped moving instead of just showing a big number.
+        "queue_degrade": {
+            "p3_sec": int(cfg.get("queue_degrade_p3_sec") or 0),
+            "p2_sec": int(cfg.get("queue_degrade_p2_sec") or 0),
+            "idle_sec": int(cfg.get("queue_degrade_idle_sec") or 0),
+        },
+        "send_worker_enabled": bool(cfg.get("send_worker_enabled")),
         # Worker wiring: the deploy-level scheduler switch + the hot cadence
         # setting (retention.worker_interval_sec — Settings → Retention bot).
         "scheduler_enabled": bool(config.RETENTION_SCHEDULER_ENABLED),
@@ -1461,6 +1483,42 @@ async def v2_events(product_id: int, page: int = 1, page_size: int = 50,
     await admin_auth.require_product_read(admin, product_id)
     return JSONResponse(content=await db.list_retention_events(
         product_id, page=max(page, 1), page_size=max(1, min(page_size, 200))))
+
+
+@admin_router.get("/v2/dead-letter")
+async def v2_dead_letter(product_id: int, page: int = 1, page_size: int = 50,
+                         admin=Depends(require_admin)) -> JSONResponse:
+    """Events the pipeline gave up on (attempt ceiling reached), newest first.
+
+    Each row keeps its `attempts` and `last_error`, so the operator can see
+    WHAT failed before deciding to requeue — a dead letter is a reaction the
+    player never got, not a row to be cleaned away."""
+    await admin_auth.require_product_read(admin, product_id)
+    return JSONResponse(content=await db.list_dead_retention_events(
+        product_id, page=max(page, 1), page_size=max(1, min(page_size, 200))))
+
+
+class RequeueEventsReq(BaseModel):
+    # Omitted / null = requeue every dead row of the product; a list requeues
+    # exactly those, so a single poison event can be left behind.
+    event_pks: Optional[list[int]] = None
+
+
+@admin_router.post("/v2/dead-letter/requeue")
+async def v2_requeue_dead_letter(product_id: int, body: RequeueEventsReq,
+                                 admin=Depends(require_admin_write)
+                                 ) -> JSONResponse:
+    """Put dead-lettered events back in the queue. Attempts reset to zero —
+    the operator is asserting the cause is fixed, so an event that still fails
+    walks the whole backoff ladder again rather than dying on the next tick."""
+    await admin_auth.require_product_write(admin, product_id)
+    requeued = await db.requeue_retention_events(product_id, body.event_pks)
+    await db.log_admin_event(None, "retention_v2_dead_letter_requeued",
+                             {"requeued": requeued,
+                              "event_pks": body.event_pks,
+                              "by": admin.get("email")},
+                             product_id=product_id)
+    return JSONResponse(content={"ok": True, "requeued": requeued})
 
 
 @admin_router.get("/v2/decisions")
