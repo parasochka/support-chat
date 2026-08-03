@@ -183,9 +183,16 @@ async def test_the_debounce_is_enforced_in_sql(monkeypatch):
                                       debounce_sec=60)
 
     sql, args = conn.executed[0]
-    assert "$4 <= 0" in sql                       # 0 = never debounce
-    assert "make_interval(secs => $4)" in sql
-    assert "GREATEST(COALESCE(last_played_at, $3), $3)" in sql  # forward-only
+    assert "$4::float8 <= 0" in sql               # 0 = never debounce
+    assert "make_interval(secs => $4::float8)" in sql
+    # Forward-only, and EVERY parameter in an expression carries an explicit
+    # cast. Uncast, `$3 - make_interval(...)` resolves $3 to the other operand's
+    # type (interval) and Postgres rejects the statement at PREPARE time — on
+    # every call, debouncing or not. asyncpg is stubbed here, so only the shape
+    # is checkable; scripts/check_queue_sql.py runs it against a real server.
+    assert ("GREATEST(COALESCE(last_played_at, $3::timestamptz), "
+            "$3::timestamptz)") in sql
+    assert "$3::timestamptz" in sql.split("make_interval")[0].split("WHERE")[1]
     assert args[3] == 60.0
 
 

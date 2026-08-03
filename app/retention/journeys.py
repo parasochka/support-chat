@@ -47,6 +47,12 @@ TERMINAL_GUARD_REASONS = frozenset({
 # retry; min-gap class blocks clear on their own timescale).
 _FREQUENCY_RETRY = _dt.timedelta(hours=2)
 
+# How much of a step's template brief reaches the writer. The cap is applied to
+# the BRIEF alone, before the offer/RG suffixes are appended, so an operator's
+# long `persona_brief` can never truncate away a correction that exists to
+# override it.
+_BRIEF_MAX = 700
+
 _DELAY_RE = re.compile(r"^\s*(\d+)\s*([smhd])\s*$", re.IGNORECASE)
 
 
@@ -147,17 +153,65 @@ async def _schedule_step(product_id: int, ru: dict[str, Any],
 # ---------------------------------------------------------------------------
 # Enrollment
 # ---------------------------------------------------------------------------
+def _reentry_cooldown_days(journey: dict[str, Any]) -> int:
+    """How long before this journey may take the same player again.
+
+    A SCHEDULED journey re-derives its candidates from live state — a dormancy
+    cohort the player sits in for days, a weekday — so the moment an enrollment
+    completes the player matches again and the next sweep (every couple of
+    minutes) re-enrolls him. The partial unique index does not stop it: it only
+    covers `status = 'active'`. Left alone, one recovery journey re-sends the
+    same message until the daily ping cap, every day of the cohort window.
+
+    The default comes from the trigger's own granularity, and a journey may
+    state its own (`metadata.reentry_cooldown_days`; 0 = no cooldown, the
+    pre-fix behaviour).
+    """
+    # `metadata` / `trigger` are operator-authored JSONB — anything can be in
+    # there. A raise here would kill the whole product's journey sweep, so bad
+    # shapes fall back to the safe default rather than propagating.
+    meta = journey.get("metadata")
+    meta = meta if isinstance(meta, dict) else {}
+    explicit = meta.get("reentry_cooldown_days")
+    if explicit is not None:
+        try:
+            return max(int(explicit), 0)
+        except (TypeError, ValueError):
+            log.warning("journey_bad_reentry_cooldown journey=%s value=%r",
+                        journey.get("journey_key"), explicit)
+    trigger = journey.get("trigger")
+    trigger = trigger if isinstance(trigger, dict) else {}
+    if str(trigger.get("type") or "") != "scheduled":
+        # Event journeys are already gated by a real event arriving.
+        return 0
+    match = trigger.get("match")
+    match = match if isinstance(match, dict) else {}
+    if match.get("day_of_week") is not None:
+        return 7          # weekly by construction: one enrollment per week
+    if match.get("deposit_initiated_older_than_h") is not None:
+        return 1          # the timer is cleared on enroll; this guards the gap
+    return int(config.RETENTION_JOURNEY_REENTRY_COOLDOWN_DAYS)
+
+
 async def _enroll(product: dict[str, Any], ru: dict[str, Any],
                   journey: dict[str, Any], cfg: dict[str, Any]) -> bool:
     pid = int(product["id"])
     max_active = int(cfg.get("journey_max_active_per_player")
                      or config.RETENTION_JOURNEY_MAX_ACTIVE_PER_PLAYER)
-    active = await db.count_active_enrollments(pid,
-                                               str(ru.get("player_id") or ""))
+    player_id = str(ru.get("player_id") or "")
+    active = await db.count_active_enrollments(pid, player_id)
     if active >= max_active:
         return False
+    cooldown = _reentry_cooldown_days(journey)
+    if cooldown > 0:
+        from app.retention import retention_v2  # late: it imports this module
+        last = await db.last_enrollment_at(pid, player_id,
+                                           str(journey["journey_key"]))
+        since = retention_v2.days_since(last) if last else None
+        if since is not None and since < cooldown:
+            return False
     enrollment_id = await db.create_enrollment(
-        pid, player_id=str(ru.get("player_id") or ""),
+        pid, player_id=player_id,
         retention_user_id=int(ru["id"]) if ru.get("id") else None,
         journey_key=str(journey["journey_key"]),
         journey_version=int(journey.get("version") or 1))
@@ -231,19 +285,25 @@ async def match_scheduled_journeys(product: dict[str, Any],
 # ---------------------------------------------------------------------------
 # Step execution
 # ---------------------------------------------------------------------------
-async def _resolve_step_channel(product_id: int, step: dict[str, Any],
+async def _resolve_step_channel(product_id: int, ru: dict[str, Any],
+                                step: dict[str, Any],
                                 cfg: dict[str, Any]) -> Optional[str]:
-    """The executable channel for a step. Before multichannel: telegram or
-    the fallback; a non-executable channel returns None (logged, no crash)."""
+    """The deliverable channel for a step, or None (logged, no crash).
+
+    Goes through `channels.route_channel` — the ONE router — rather than
+    asking `executable_channels` directly. `executable_channels` answers a
+    PRODUCT question ("is this channel switched on here?") and knows nothing
+    about the player, so resolving a step with it alone sent marketing email
+    and push to players who never consented — or who had explicitly set
+    `email_opt_in=false` through the partner player-update webhook. The router
+    enforces the module's stated hard rule: strict opt-in, never a
+    non-consented channel, not even as the fallback.
+    """
     from app.retention import channels
-    wanted = str(step.get("channel") or "telegram")
-    executable = await channels.executable_channels(product_id, cfg)
-    if wanted in executable:
-        return wanted
-    fallback = str(step.get("channel_fallback") or "")
-    if fallback and fallback in executable:
-        return fallback
-    return None
+    return await channels.route_channel(
+        product_id, ru, cfg,
+        wanted=str(step.get("channel") or "telegram"),
+        fallback=str(step.get("channel_fallback") or "") or None)
 
 
 async def _execute_step(product: dict[str, Any], ru: dict[str, Any],
@@ -259,7 +319,7 @@ async def _execute_step(product: dict[str, Any], ru: dict[str, Any],
     if step_type == "wait":
         return "waited", None
 
-    channel = await _resolve_step_channel(pid, step, cfg)
+    channel = await _resolve_step_channel(pid, ru, step, cfg)
     if channel is None:
         return "channel_unavailable", str(step.get("channel"))
 
@@ -291,6 +351,7 @@ async def _execute_step(product: dict[str, Any], ru: dict[str, Any],
             grant = None  # send without any bonus mention
         elif status != "granted":
             return "blocked_guard", f"offer:{status}"
+    fraud_hold = (step_type == "grant_offer" and grant is None)
 
     if dry:
         return "dry_run", None
@@ -298,7 +359,13 @@ async def _execute_step(product: dict[str, Any], ru: dict[str, Any],
     # The persona writes the touch (template brief or the step's inline
     # intent); delivery via the channel abstraction.
     from app.retention import scenario_library
-    intent = await scenario_library.step_intent(pid, step)
+    # THE BASE BRIEF IS WHAT GETS TRUNCATED, never the safety suffixes below.
+    # `persona_brief` is a free-text column an operator edits, so capping the
+    # ASSEMBLED string would let a long brief cut off the very corrections that
+    # exist to override it — leaving only the bonus promise, or the marketing
+    # copy an RG constraint was supposed to strip.
+    intent = (await scenario_library.step_intent(pid, step))[:_BRIEF_MAX]
+    suffixes: list[str] = []
     if grant is not None:
         desc = None
         try:
@@ -307,15 +374,37 @@ async def _execute_step(product: dict[str, Any], ru: dict[str, Any],
             desc = (offer_row or {}).get("description")
         except Exception:  # noqa: BLE001
             pass
-        intent = (f"{intent} | A real gift was JUST credited to the player's "
-                  f"account: {desc or step.get('offer_key')}. Mention it "
-                  "warmly; never invent terms.")
+        suffixes.append(
+            "A real gift was JUST credited to the player's account: "
+            f"{str(desc or step.get('offer_key'))[:200]}. Mention it warmly; "
+            "never invent terms.")
+    elif fraud_hold:
+        # The step's TEMPLATE brief is what promises the bonus ("mention the
+        # free spins credited to their account"), and it is unchanged by the
+        # grant falling through — so shipping it verbatim tells the player
+        # about a gift that does not exist. Nothing else in the stack knows.
+        suffixes.append(
+            "IMPORTANT CORRECTION: no bonus, gift, free spins or promotion "
+            "was credited. Do NOT mention or hint at any bonus, gift or "
+            "promotion in this message. Write a warm note that stands on "
+            "its own.")
+    # The guard's CONSTRAINTS are part of its verdict, not commentary: a
+    # conditional RG pass allows the touch only WITHOUT play/bonus talk, and
+    # the loss-comfort window allows it only in an empathetic register. Reading
+    # `allow` and discarding these sent an RG-restricted player the step's
+    # unmodified marketing brief.
+    constraints = [str(c) for c in (guard.get("constraints") or []) if c]
+    if constraints:
+        suffixes.append("MANDATORY CONSTRAINTS: " + "; ".join(constraints))
+    for part in suffixes:
+        intent = f"{intent} | {part}"
     from app.retention import channels
     sent, detail, decision_id = await channels.send_journey_touch(
         product, ru, cfg, channel=channel, intent=intent,
         journey_key=str(journey["journey_key"]),
         step_id=int(step.get("step_id") or 0),
-        priority=int(step.get("priority") or 3))
+        priority=int(step.get("priority") or 3),
+        comfort=bool(guard.get("comfort")))
     if grant is not None and decision_id is not None:
         try:
             await db.link_offer_grant_decision(pid, grant["offer_grant_id"],

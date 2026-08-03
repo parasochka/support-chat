@@ -243,7 +243,7 @@ async def test_the_idle_sweep_closes_its_own_job_row(monkeypatch):
 
     finished: list[tuple] = []
 
-    async def _lag(pid):
+    async def _lag(pid, **_kw):
         return 0
 
     async def _idle(product, cfg, **kw):

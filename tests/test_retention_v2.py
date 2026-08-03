@@ -600,7 +600,8 @@ async def test_process_event_live_sends_and_ledgers(monkeypatch):
         return ({"action": "message", "tone": "warm", "intent": "hi",
                  "reason": "r"}, 0.001)
 
-    async def _send(product, ru, evt, decision, *, comfort, cfg):
+    async def _send(product, ru, evt, decision, *, comfort, cfg,
+                    decision_id=None):
         sent["comfort"] = comfort
         return True, 0.003, None, {"session_id": "s-1"}
 
@@ -615,6 +616,63 @@ async def test_process_event_live_sends_and_ledgers(monkeypatch):
     assert sent == {"comfort": False}
     assert rows[0]["delivered"] is True
     assert rows[0]["cost_usd"] == pytest.approx(0.004)  # decision + generation
+
+
+async def test_a_held_grant_strips_the_bonus_from_the_event_brief(monkeypatch):
+    """The decision model wrote its intent UNDER the offer constraint ("the
+    bonus is credited before your message goes out, so you may mention it
+    warmly"). On `fraud_hold` nothing was credited — shipping that intent
+    verbatim promises a gift that does not exist, and nothing else in the stack
+    knows the grant fell through."""
+    from app.retention import offers
+    _capture_ledger(monkeypatch)
+    _patch_guard_env(monkeypatch)
+    sent = {}
+
+    async def _ru_get(product_id, player_id):
+        return _ru()
+
+    async def _loss(product_id, player_id):
+        return 0.0
+
+    async def _decide(product_id, ru, evt, state, guard):
+        return ({"action": "grant_offer", "tone": "warm",
+                 "intent": "tell them about the free spins just credited",
+                 "reason": "r"}, 0.001)
+
+    async def _send(product, ru, evt, decision, *, comfort, cfg,
+                    decision_id=None):
+        sent["intent"] = decision["intent"]
+        return True, 0.003, None, {"session_id": "s-1"}
+
+    async def _resolve(pid, ru, trigger_key, cfg, state):
+        return {"offer_key": "fs50", "description": "50 free spins"}, None
+
+    async def _grant(product, ru, offer, ref, cfg):
+        return {"status": "fraud_hold", "offer_grant_id": "og_x"}
+
+    async def _noop(*a, **kw):
+        return None
+
+    monkeypatch.setattr(db, "get_retention_user_by_player", _ru_get)
+    monkeypatch.setattr(db, "player_net_loss_24h", _loss)
+    monkeypatch.setattr(db, "link_offer_grant_decision", _noop)
+    monkeypatch.setattr(retention_v2, "_decide", _decide)
+    monkeypatch.setattr(retention_v2, "_send_touch", _send)
+    monkeypatch.setattr(offers, "classify_offer_trigger",
+                        lambda evt, state, cfg: "reactivation")
+    monkeypatch.setattr(offers, "offers_enabled", lambda cfg: True)
+    monkeypatch.setattr(offers, "offer_constraint_line", lambda o: "gift line")
+    monkeypatch.setattr(offers, "resolve_offer", _resolve)
+    monkeypatch.setattr(offers, "do_offer_grant", _grant)
+
+    await retention_v2._process_event({"id": 1}, _evt(),
+                                      _cfg(v2_dry_run=False,
+                                           offers_enabled=True))
+
+    intent = sent["intent"].lower()
+    assert "no bonus, gift, free spins or promotion was credited" in intent
+    assert "do not mention" in intent
 
 
 def test_occasion_for_safe_details_only():
@@ -798,7 +856,7 @@ async def test_idle_sweep_runs_even_with_agent_disabled(monkeypatch):
         called["ran"] = True
         return {"sent": 2, "failed": 1}
 
-    async def _lag(pid):
+    async def _lag(pid, **_kw):
         return 0
 
     async def _skip(*a, **kw):
@@ -834,7 +892,7 @@ async def test_maintenance_pauses_idle_when_the_queue_is_far_behind(monkeypatch)
     async def _idle_boom(*a, **kw):
         raise AssertionError("the ladder must stand down behind a backlog")
 
-    async def _lag(pid):
+    async def _lag(pid, **_kw):
         return 900
 
     async def _skip(*a, **kw):
@@ -865,11 +923,11 @@ async def test_sweep_defers_during_quiet_hours(monkeypatch):
     async def _cost(pid):
         return 0.0
 
-    async def _lag(pid):
-        return 0
+    async def _lag(pid, **_kw):
+        return {2: 0, 3: 0, 5: 0}
     monkeypatch.setattr(db, "claim_retention_events", _claim_boom)
     monkeypatch.setattr(db, "retention_v2_cost_today", _cost)
-    monkeypatch.setattr(db, "retention_queue_lag", _lag)
+    monkeypatch.setattr(db, "retention_queue_lag_by_lane", _lag)
     stats = await retention_v2.run_product_events({"id": 1})
     assert stats == {"agent": "quiet_hours_deferred"}
 
@@ -898,15 +956,15 @@ async def test_sweep_claims_events_atomically(monkeypatch):
     async def _cost(pid):
         return 0.0
 
-    async def _lag(pid):
-        return 0
+    async def _lag(pid, **_kw):
+        return {2: 0, 3: 0, 5: 0}
     monkeypatch.setattr(settings, "retention", lambda: _cfg(v2_enabled=True))
     # Neutralize the wall clock: _cfg's 22–9 window would make this test
     # night-flaky now that the sweep defers during quiet hours.
     monkeypatch.setattr(retention_v2, "_in_quiet_hours", lambda cfg: False)
     monkeypatch.setattr(db, "claim_retention_events", _claim)
     monkeypatch.setattr(db, "retention_v2_cost_today", _cost)
-    monkeypatch.setattr(db, "retention_queue_lag", _lag)
+    monkeypatch.setattr(db, "retention_queue_lag_by_lane", _lag)
     stats = await retention_v2.run_product_events({"id": 1})
     assert stats == {"events": 0, "lag_sec": 0}
     pid, kw = claimed[0]
@@ -946,11 +1004,62 @@ async def test_backlog_sheds_the_low_lanes(monkeypatch):
         return None
     monkeypatch.setattr(db, "log_admin_event_sampled", _noop)
 
+    # A uniform lag = every lane equally behind, which is the classic ladder.
     for lag, expected in ((0, 5), (400, 3), (1200, 2)):
-        async def _lag(pid, _l=lag):
-            return _l
-        monkeypatch.setattr(db, "retention_queue_lag", _lag)
+        async def _lag(pid, _l=lag, **_kw):
+            return {2: _l, 3: _l, 5: _l}
+        monkeypatch.setattr(db, "retention_queue_lag_by_lane", _lag)
         await retention_v2.run_product_events({"id": 1})
+    assert claimed == [5, 3, 2]
+
+
+async def test_a_shed_lane_cannot_argue_for_its_own_shedding(monkeypatch):
+    """The rung that sheds a lane must NOT read that lane's own lag.
+
+    Keyed on the whole queue, shedding was a one-way door: the lanes the drain
+    stopped claiming stayed pending, so they stayed the oldest rows and held
+    the ladder down until the pruner deleted them — the loss-comfort path and
+    every lane-3 event silently dead, forever.
+    """
+    claimed = []
+
+    async def _claim(pid, **kw):
+        claimed.append(kw["max_priority"])
+        return []
+
+    async def _cost(pid):
+        return 0.0
+
+    async def _noop(*a, **kw):
+        return None
+
+    monkeypatch.setattr(settings, "retention",
+                        lambda: _cfg(v2_enabled=True,
+                                     queue_degrade_p3_sec=300,
+                                     queue_degrade_p2_sec=900))
+    monkeypatch.setattr(retention_v2, "_in_quiet_hours", lambda cfg: False)
+    monkeypatch.setattr(db, "claim_retention_events", _claim)
+    monkeypatch.setattr(db, "retention_v2_cost_today", _cost)
+    monkeypatch.setattr(db, "log_admin_event_sampled", _noop)
+
+    # A mountain of state food, everything else current: keep serving it.
+    async def _food(pid, **_kw):
+        return {2: 0, 3: 0, 5: 99_999}
+    monkeypatch.setattr(db, "retention_queue_lag_by_lane", _food)
+    await retention_v2.run_product_events({"id": 1})
+
+    # Lane 3 behind (lanes 1-2 current): shed lane 5, keep lane 3.
+    async def _lane3(pid, **_kw):
+        return {2: 0, 3: 400, 5: 99_999}
+    monkeypatch.setattr(db, "retention_queue_lag_by_lane", _lane3)
+    await retention_v2.run_product_events({"id": 1})
+
+    # The transactional lanes themselves behind: shed everything below them.
+    async def _lane2(pid, **_kw):
+        return {2: 1_200, 3: 1_200, 5: 99_999}
+    monkeypatch.setattr(db, "retention_queue_lag_by_lane", _lane2)
+    await retention_v2.run_product_events({"id": 1})
+
     assert claimed == [5, 3, 2]
 
 

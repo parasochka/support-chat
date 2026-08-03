@@ -37,6 +37,41 @@ async def test_delete_telegram_session_purges_player(monkeypatch):
     assert "DELETE FROM chat_sessions WHERE id" in joined
 
 
+async def test_every_reference_to_the_player_is_cleared_before_the_delete(
+        monkeypatch):
+    """`retention_users` is referenced by FIVE tables. Two of them —
+    `retention_deliveries` and `retention_journey_enrollments` — were missed:
+    both are nullable FKs with NO `ON DELETE` clause, so the final DELETE hit a
+    foreign-key violation, rolled the whole transaction back and the admin
+    endpoint 500'd having deleted NOTHING. That becomes the normal case the
+    moment the send worker or the journey engine is on for a product.
+    """
+    conn = FakeConn(row={"consumer": "telegram", "product_id": 7,
+                         "tg_user_id": 555},
+                    rows=[{"id": 3}, {"id": 9}])
+    monkeypatch.setattr(db, "_pool", FakePool(conn))
+
+    assert await db.delete_session(
+        "00000000-0000-0000-0000-000000000000") is True
+
+    sqls = [s for s, _ in conn.executed]
+    final = next(i for i, s in enumerate(sqls)
+                 if "DELETE FROM retention_users WHERE id" in s)
+    before = " ".join(sqls[:final])
+    for table in ("retention_photo_views", "retention_pings",
+                  "retention_outcomes", "retention_v2_decisions",
+                  "retention_deliveries", "retention_journey_enrollments"):
+        assert table in before, f"{table} still references the deleted player"
+
+    # An in-flight delivery is CLOSED, not just detached — an orphan row left
+    # claimable would be picked up by the send worker for a player that is gone.
+    assert any("retention_deliveries" in s and "permanent_fail = TRUE" in s
+               for s in sqls)
+    # An active enrollment stops rather than staying due forever.
+    assert any("retention_journey_enrollments" in s and "exited_terminal" in s
+               for s in sqls)
+
+
 async def test_delete_web_session_keeps_retention_tables(monkeypatch):
     conn = FakeConn(row={"consumer": "web", "product_id": 7,
                          "tg_user_id": None},

@@ -188,6 +188,33 @@ async def _observability(pid: int) -> None:
     check("the SLA percentile query runs on an empty ledger",
           (await db.retention_latency_percentiles(pid))["samples"] == 0)
 
+    # THE LAG MUST MEAN "OVERDUE", NOT "QUEUED". The claim will not take a row
+    # until its humanizing send delay has elapsed, so counting rows inside that
+    # window made every busy product read 300..900s of lag — already past both
+    # degrade rungs — and the shedding then latched, because the lanes it
+    # stopped claiming stayed pending and stayed the oldest rows.
+    check("a row still inside its send delay is not lag",
+          await db.retention_queue_lag(pid, delay_min_sec=600,
+                                       delay_max_sec=900) == 0)
+    lanes = await db.retention_queue_lag_by_lane(pid)
+    check("lag is reported per lane ceiling",
+          set(lanes) == {2, 3, 5} and lanes[2] >= 300 and lanes[5] >= 300,
+          lanes)
+    async with db._acquire() as c:
+        await c.execute(
+            "INSERT INTO retention_events (product_id, event_id, event_name, "
+            " player_id, ts, created_at, priority) "
+            "VALUES ($1, 'lagfood', 'bet_settled', 'pFood', now(), "
+            "        now() - interval '9 hours', 5)", pid)
+        await c.execute(
+            "DELETE FROM retention_events WHERE event_id = 'lagcheck'")
+    lanes = await db.retention_queue_lag_by_lane(pid)
+    check("a mountain of state food cannot argue for shedding state food",
+          lanes[5] >= 9 * 3600 and lanes[2] == 0 and lanes[3] == 0, lanes)
+    async with db._acquire() as c:
+        await c.execute(
+            "DELETE FROM retention_events WHERE event_id = 'lagfood'")
+
 
 async def _replay_guard(pid: int) -> None:
     print("\nreplay guard")
@@ -263,6 +290,106 @@ async def _send_queue(pid: int) -> None:
           await db.claim_deliveries(pid, limit=5, lease_sec=60,
                                     worker_id="w1") == [])
 
+    # OWNERSHIP BY CHANNEL. The send worker can only speak the Telegram seam,
+    # and a claim is destructive — whoever takes a row closes it. An email row
+    # it claimed was killed as 'opted_out_before_send' by the telegram consent
+    # check and never seen again by the channel-aware retry sweep.
+    async with db._acquire() as c:
+        await c.execute("DELETE FROM retention_deliveries")
+    await db.enqueue_delivery(pid, "dl_tg", player_id="pA",
+                              retention_user_id=None, channel="telegram",
+                              payload={"text": "hi"})
+    await db.enqueue_delivery(pid, "dl_mail", player_id="pA",
+                              retention_user_id=None, channel="email",
+                              payload={"text": "hi"})
+    tg = await db.claim_deliveries(pid, limit=9, lease_sec=60, worker_id="w1",
+                                   channels=("telegram",))
+    check("the claim can be scoped to one transport",
+          [r["channel"] for r in tg] == ["telegram"],
+          [r["channel"] for r in tg])
+    check("the retry sweep sees only the channels it can send",
+          [r["delivery_id"] for r in await db.due_delivery_retries(
+              pid, channels=("email", "push"))] == [])
+
+    # THE DEAD-LETTER CEILING. Without one a row whose channel is broken is
+    # re-claimed on the saturated backoff rung forever, re-billing the same
+    # generation into ai_interaction_logs on every attempt.
+    await db.mark_delivery_failed(tg[0]["id"], "boom", backoff_sec=1)
+    await asyncio.sleep(1.1)
+    check("a row at the ceiling is not claimed again",
+          await db.claim_deliveries(pid, limit=9, lease_sec=60,
+                                    worker_id="w1", max_attempts=1,
+                                    channels=("telegram",)) == [])
+    check("…and it is closed out so it stops looking pending",
+          await db.dead_letter_stale_deliveries(pid, 1) == 1)
+    check("a second dead-letter pass is a no-op",
+          await db.dead_letter_stale_deliveries(pid, 1) == 0)
+    check("under the ceiling it is still claimable",
+          len(await db.claim_deliveries(pid, limit=9, lease_sec=60,
+                                        worker_id="w1", max_attempts=9,
+                                        channels=("email",))) == 1)
+
+
+async def _journey_reentry(pid: int) -> None:
+    """The scheduled matcher re-derives candidates from live state, so a
+    finished enrollment matched again on the very next sweep (the partial
+    unique index only covers status='active')."""
+    print("\njourney re-entry")
+    async with db._acquire() as c:
+        await c.execute("DELETE FROM retention_journey_enrollments "
+                        "WHERE player_id = 'pJ'")
+    check("no prior enrollment reads as None",
+          await db.last_enrollment_at(pid, "pJ", "recovery_d7_soft") is None)
+    eid = await db.create_enrollment(pid, player_id="pJ",
+                                     retention_user_id=None,
+                                     journey_key="recovery_d7_soft",
+                                     journey_version=1)
+    check("the first enrollment is created", eid is not None)
+    await db.finish_enrollment(pid, eid, "completed", reason=None)
+    check("a COMPLETED enrollment is still visible to the cooldown",
+          await db.last_enrollment_at(pid, "pJ",
+                                      "recovery_d7_soft") is not None)
+    check("another journey is unaffected",
+          await db.last_enrollment_at(pid, "pJ", "weekly_x") is None)
+
+
+async def _activity_bridge(pid: int) -> None:
+    """The casino-activity bridge — same untyped-`$n`-in-an-expression class.
+
+    `touch_retention_activity` fires on every high-volume event and its
+    debounce clause compares the timestamp parameter against
+    `$n - make_interval(...)`. With the parameter uncast, Postgres resolves it
+    to `interval` (the type of the other operand) and the statement dies at
+    PREPARE time — on EVERY call, debouncing or not. `player_sync._ingest`
+    wraps the bridge in a broad `except`, so the only symptom was activity
+    timestamps that silently never moved.
+    """
+    print("\ncasino-activity bridge")
+    import datetime as _dt
+    async with db._acquire() as c:
+        await c.execute("DELETE FROM retention_users WHERE tg_user_id = 987654")
+        await c.execute(
+            "INSERT INTO retention_users (product_id, tg_user_id, player_id) "
+            "VALUES ($1, 987654, 'pACT')", pid)
+    now = _dt.datetime.now(_dt.timezone.utc)
+    for field in db._RETENTION_ACTIVITY_FIELDS:
+        for debounce in (0, 60):
+            try:
+                await db.touch_retention_activity(pid, "pACT", field, now,
+                                                  debounce_sec=debounce)
+                ok, err = True, ""
+            except Exception as exc:  # noqa: BLE001
+                ok, err = False, f"{exc.__class__.__name__}: {exc}"
+            check(f"{field} bumps with debounce={debounce}", ok, err)
+    check("a forward bump lands",
+          await db.touch_retention_activity(
+              pid, "pACT", "last_login_at",
+              now + _dt.timedelta(hours=1)) == 1)
+    check("an older event never rewinds the timestamp",
+          await db.touch_retention_activity(
+              pid, "pACT", "last_login_at",
+              now - _dt.timedelta(hours=1), debounce_sec=60) == 0)
+
 
 async def _upgrade_path() -> None:
     """The riskiest path: a database that predates the lifecycle."""
@@ -333,6 +460,7 @@ async def _reset() -> None:
     """
     async with db._acquire() as c:
         await c.execute("DELETE FROM retention_outcomes")
+        await c.execute("DELETE FROM retention_journey_enrollments")
         await c.execute("DELETE FROM retention_deliveries")
         await c.execute("DELETE FROM retention_v2_decisions")
         await c.execute("DELETE FROM retention_events")
@@ -361,6 +489,8 @@ async def main() -> int:
     await _replay_guard(pid)
     await _pacing_and_shaping(pid)
     await _send_queue(pid)
+    await _activity_bridge(pid)
+    await _journey_reentry(pid)
     await _upgrade_path()
     await db.close()
     print("\n" + ("ALL QUEUE SQL CHECKS PASSED" if not _FAILED

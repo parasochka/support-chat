@@ -60,14 +60,18 @@ def _patch_send_stage(monkeypatch, *, rows, deliver=None, tokens=True,
     """Fake every seam around the send loop and record what it did."""
     rec: dict[str, list] = {"claimed": [], "sent": [], "failed": [],
                             "rescheduled": [], "released": [], "outcomes": [],
-                            "decisions": [], "scopes": [], "delivered": []}
+                            "decisions": [], "scopes": [], "delivered": [],
+                            "accounted": [], "dead": []}
     cfg = cfg or _cfg()
     the_ru = _ru() if ru is None else ru
 
     async def _claim(product_id, *, limit, lease_sec, worker_id,
+                     max_attempts=0, channels=None,
                      max_priority=5):
         rec["claimed"].append({"product_id": product_id, "limit": limit,
-                               "lease_sec": lease_sec, "worker_id": worker_id})
+                               "lease_sec": lease_sec, "worker_id": worker_id,
+                               "max_attempts": max_attempts,
+                               "channels": channels})
         # A real queue hands rows out ONCE — the pass keeps claiming until it
         # comes back empty (that is what makes the channel's rate limit the
         # send rate instead of the worker's tick), so a fake that returns the
@@ -83,8 +87,10 @@ def _patch_send_stage(monkeypatch, *, rows, deliver=None, tokens=True,
         rec["scopes"].append(scope)
         return tokens(scope) if callable(tokens) else tokens
 
-    async def _deliver(product, ru_arg, payload, cfg_arg):
+    async def _deliver(product, ru_arg, payload, cfg_arg,
+                       *, account_generation=True):
         rec["delivered"].append(payload)
+        rec["accounted"].append(account_generation)
         if deliver is None:
             return True, None, {"session_id": "s-1"}
         return deliver(payload)
@@ -111,6 +117,11 @@ def _patch_send_stage(monkeypatch, *, rows, deliver=None, tokens=True,
     async def _decision(decision_id, **kw):
         rec["decisions"].append((decision_id, kw))
 
+    async def _dead(product_id, max_attempts):
+        rec["dead"].append((product_id, max_attempts))
+        return 0
+
+    monkeypatch.setattr(db, "dead_letter_stale_deliveries", _dead)
     monkeypatch.setattr(settings, "retention", lambda: cfg)
     monkeypatch.setattr(db, "claim_deliveries", _claim)
     monkeypatch.setattr(db, "get_retention_user_by_id", _get_ru)
@@ -288,6 +299,51 @@ async def test_a_transient_failure_backs_off_and_stays_retryable(monkeypatch):
 
     assert rec["failed"][0]["permanent"] is False
     assert rec["failed"][0]["backoff_sec"] == 300  # the 2nd rung of the ladder
+
+
+async def test_the_claim_is_scoped_to_the_channels_this_loop_can_send(
+        monkeypatch):
+    """This loop delivers through `retention_v2.deliver_payload`, which is the
+    Telegram seam and nothing else. A claim is DESTRUCTIVE — whoever takes a
+    row closes it — so claiming an email/push row would not merely fail it: the
+    telegram consent check would kill an email-only player as
+    'opted_out_before_send' and the channel-aware retry sweep would never see
+    it again."""
+    rec = _patch_send_stage(monkeypatch, rows=[])
+
+    await send_worker.run_product_sends({"id": 1})
+
+    assert rec["claimed"][0]["channels"] == ("telegram",)
+
+
+async def test_a_delivery_has_a_dead_letter_ceiling(monkeypatch):
+    """Deliveries need the ceiling the event queue already has. Without one a
+    row whose channel is broken (a rotated bot token) is re-claimed on the
+    saturated 30-minute rung forever — and each attempt used to re-bill the
+    ORIGINAL generation's tokens into ai_interaction_logs, inflating the cost
+    dashboards without bound."""
+    rec = _patch_send_stage(monkeypatch, rows=[],
+                            cfg=_cfg(send_max_attempts=4))
+
+    await send_worker.run_product_sends({"id": 1})
+
+    assert rec["claimed"][0]["max_attempts"] == 4
+
+
+async def test_only_the_first_attempt_bills_the_generation(monkeypatch):
+    """The model call happened ONCE, when the touch was decided. Invariant §4
+    is one log row per OpenAI call, not per delivery attempt."""
+    first = _patch_send_stage(
+        monkeypatch, rows=[_row(attempts=1)],
+        deliver=lambda payload: (False, "500 internal error", {}))
+    await send_worker.run_product_sends({"id": 1})
+    assert first["accounted"] == [True]
+
+    retry = _patch_send_stage(
+        monkeypatch, rows=[_row(attempts=3)],
+        deliver=lambda payload: (False, "500 internal error", {}))
+    await send_worker.run_product_sends({"id": 1})
+    assert retry["accounted"] == [False]
 
 
 def test_the_backoff_ladder_advances_with_the_attempt_count():
@@ -698,7 +754,7 @@ async def test_a_queued_touch_stamps_last_ping_at_immediately(monkeypatch):
         {"id": 77, "event_name": "deposit_confirmed", "priority": 1,
          "payload": {}},
         {"action": "message", "intent": "hi", "tone": "warm"},
-        comfort=False, cfg={})
+        comfort=False, cfg={}, decision_id=4242)
 
     assert detail == "queued" and delivered is False
     assert stamped == [10], "the gap clock must move at ENQUEUE, not at send"
@@ -707,6 +763,12 @@ async def test_a_queued_touch_stamps_last_ping_at_immediately(monkeypatch):
     # loses the ai_interaction_logs row for a call that was already billed.
     assert enqueued[0]["payload"]["ai_meta"]["cost_usd"] == 0.004
     assert enqueued[0]["payload"]["tone"] == "warm"
+    # …and so does the RESERVED ledger row. The send happens in another
+    # process minutes later and is the only thing that knows whether the touch
+    # landed; without the link it can write nothing back, so every queued touch
+    # stays 'queued' in the decision ledger forever and the Agent view reports
+    # zero deliveries for a bot that is sending normally.
+    assert enqueued[0]["decision_id"] == 4242
 
 
 async def test_a_burst_is_paced_by_the_channel_not_by_the_worker_tick(monkeypatch):
@@ -722,6 +784,7 @@ async def test_a_burst_is_paced_by_the_channel_not_by_the_worker_tick(monkeypatc
     handed: list[int] = []
 
     async def _claim(product_id, *, limit, lease_sec, worker_id,
+                     max_attempts=0, channels=None,
                      max_priority=5):
         chunk = queue[:limit]
         del queue[:limit]
@@ -748,6 +811,7 @@ async def test_a_pass_hands_the_slot_back_at_its_budget(monkeypatch):
     the pass stops at `send_pass_max_sec` and the next tick resumes, because
     the queue is durable."""
     async def _claim(product_id, *, limit, lease_sec, worker_id,
+                     max_attempts=0, channels=None,
                      max_priority=5):
         return [_row(id=1)]
 

@@ -14,7 +14,7 @@ import asyncio
 import json
 import uuid
 from collections import deque as _deque
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import asyncpg
 
@@ -3918,8 +3918,42 @@ async def _purge_retention_player(conn, product_id: Optional[int],
     # The agent's decision ledger references the player with a NULLABLE FK —
     # detach (the audit rows themselves stay: they are product-level history,
     # and deleting them would rewrite today's budget / cooldown state).
+    #
+    # The send queue and the journey enrollments carry the SAME nullable FK and
+    # were missed: with no ON DELETE clause on either, the DELETE below aborted
+    # the whole transaction on a foreign-key violation and the admin's delete
+    # returned 500 having removed nothing. Both are operational state about a
+    # player who is going away, so they are detached the same way — an orphan
+    # delivery is closed out rather than left claimable, and an orphan
+    # enrollment can no longer resolve a player to touch.
     await conn.execute(
         "UPDATE retention_v2_decisions SET retention_user_id = NULL "
+        "WHERE retention_user_id = ANY($1::bigint[])",
+        ids,
+    )
+    await conn.execute(
+        "UPDATE retention_deliveries "
+        "SET retention_user_id = NULL, status = 'suppressed', "
+        "    permanent_fail = TRUE, locked_until = NULL, "
+        "    next_attempt_at = NULL, "
+        "    fail_reason = COALESCE(fail_reason, 'player deleted'), "
+        "    updated_at = now() "
+        "WHERE retention_user_id = ANY($1::bigint[]) "
+        "  AND status IN ('queued', 'sending', 'failed')",
+        ids,
+    )
+    await conn.execute(
+        "UPDATE retention_deliveries SET retention_user_id = NULL "
+        "WHERE retention_user_id = ANY($1::bigint[])",
+        ids,
+    )
+    await conn.execute(
+        "UPDATE retention_journey_enrollments "
+        "SET retention_user_id = NULL, next_step_at = NULL, "
+        "    status = CASE WHEN status = 'active' THEN 'exited_terminal' "
+        "                  ELSE status END, "
+        "    exit_reason = COALESCE(exit_reason, 'player deleted'), "
+        "    updated_at = now() "
         "WHERE retention_user_id = ANY($1::bigint[])",
         ids,
     )
@@ -4956,20 +4990,71 @@ async def count_unprocessed_retention_events(product_id: int) -> int:
     return int(val or 0)
 
 
-async def retention_queue_lag(product_id: int) -> int:
-    """Age in seconds of the oldest event nobody has picked up yet.
+# A pending row is only LAG once the claim would actually take it. A row still
+# inside its humanizing send delay, or parked on a retry backoff, is waiting by
+# DESIGN — counting it made the lag read 300..900s (the shipped send-delay
+# window) on every product with traffic, which is already past the p3 rung.
+_QUEUE_DUE = (
+    "product_id = $1 AND status = 'pending' AND processed_at IS NULL "
+    "  AND (next_attempt_at IS NULL OR next_attempt_at <= now()) "
+    # Mirrors claim_retention_events exactly, including the id-keyed jitter —
+    # the parameters sit inside make_interval(), whose signature is what lets
+    # Postgres type them (see touch_retention_activity for the expression case).
+    "  AND created_at <= now() - make_interval(secs => $2 + (id % $3))"
+)
+
+
+def _queue_due_args(delay_min_sec: int, delay_max_sec: int) -> tuple[float, int]:
+    lo = max(int(delay_min_sec), 0)
+    return float(lo), max(int(delay_max_sec) - lo, 0) + 1
+
+
+async def retention_queue_lag(product_id: int, *,
+                              delay_min_sec: int = 0,
+                              delay_max_sec: int = 0) -> int:
+    """Age in seconds of the oldest CLAIMABLE event nobody has picked up yet.
 
     The hot-path half of `retention_queue_stats`: the drain reads this on every
     tick to decide which lanes it may still claim, so it is one indexed
-    MIN() rather than the admin view's full breakdown.
+    MIN() rather than the admin view's full breakdown. Pass the product's send
+    delay so the number means "work that is overdue", not "work that has not
+    come due yet".
     """
+    lo, span = _queue_due_args(delay_min_sec, delay_max_sec)
     val = await _fetchval(
         "SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0) "
-        "FROM retention_events "
-        "WHERE product_id = $1 AND status = 'pending' "
-        "  AND processed_at IS NULL",
-        product_id)
+        f"FROM retention_events WHERE {_QUEUE_DUE}",
+        product_id, lo, span)
     return int(float(val or 0))
+
+
+async def retention_queue_lag_by_lane(product_id: int, *,
+                                      delay_min_sec: int = 0,
+                                      delay_max_sec: int = 0
+                                      ) -> dict[int, int]:
+    """The lag the backpressure ladder reads: one entry per LANE CEILING.
+
+    `{2: …, 3: …, 5: …}` — how far behind the work at or above each lane is.
+    The ladder MUST evaluate each rung against the lanes it does not shed:
+    keyed on the whole queue instead, shedding was self-latching — the lanes it
+    stopped claiming stayed pending, stayed the oldest rows, and held the
+    ladder down until the pruner deleted them. Lane 5 backing up can no longer
+    argue for shedding lane 5.
+    """
+    lo, span = _queue_due_args(delay_min_sec, delay_max_sec)
+    row = await _fetchrow(
+        "SELECT "
+        "  COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at) "
+        "    FILTER (WHERE priority <= 2)), 0) AS lag2, "
+        "  COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at) "
+        "    FILTER (WHERE priority <= 3)), 0) AS lag3, "
+        "  COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0) AS lag5 "
+        f"FROM retention_events WHERE {_QUEUE_DUE}",
+        product_id, lo, span)
+    row = row or {}
+    return {2: int(float(row.get("lag2") or 0)),
+            3: int(float(row.get("lag3") or 0)),
+            5: int(float(row.get("lag5") or 0))}
 
 
 async def retention_queue_stats(product_id: int) -> dict[str, Any]:
@@ -5225,12 +5310,21 @@ async def touch_retention_activity(product_id: int, player_id: str,
     parsed = _as_ts(ts)
     if parsed is None:
         return 0
+    # EXPLICIT CASTS, not decoration: `$3 - make_interval(...)` gives Postgres
+    # two operands where one is unknown, so it resolves $3 to the OTHER one's
+    # type — `interval` — and the whole statement then fails at PREPARE time
+    # with "operator does not exist: timestamptz < interval". A bare $n is only
+    # inferable inside a function call (which has a signature); inside an
+    # expression it has nothing to infer from. conftest stubs asyncpg, so no
+    # test can catch this — scripts/check_queue_sql.py covers it instead.
     result = await _execute(
         f"UPDATE retention_users SET {field} = "
-        f"GREATEST(COALESCE({field}, $3), $3), updated_at = now() "
+        f"GREATEST(COALESCE({field}, $3::timestamptz), $3::timestamptz), "
+        "updated_at = now() "
         "WHERE product_id = $1 AND player_id = $2 "
-        f"  AND ({field} IS NULL OR $4 <= 0 "
-        f"       OR {field} < $3 - make_interval(secs => $4))",
+        f"  AND ({field} IS NULL OR $4::float8 <= 0 "
+        f"       OR {field} < $3::timestamptz "
+        "            - make_interval(secs => $4::float8))",
         product_id, player_id, parsed, float(max(int(debounce_sec), 0)),
     )
     return _affected(result)
@@ -6000,14 +6094,24 @@ async def update_delivery(product_id: int, delivery_id: str, *,
     )
 
 
-async def due_delivery_retries(product_id: int, limit: int = 20
+async def due_delivery_retries(product_id: int, limit: int = 20, *,
+                               channels: Optional[Sequence[str]] = None
                                ) -> list[dict[str, Any]]:
-    rows = await _fetch(
-        "SELECT * FROM retention_deliveries "
-        "WHERE product_id = $1 AND status = 'failed' AND NOT permanent_fail "
-        "  AND next_attempt_at IS NOT NULL AND next_attempt_at <= now() "
-        "ORDER BY next_attempt_at LIMIT $2",
-        product_id, int(limit))
+    """Failed rows due for another attempt, optionally only on some channels.
+
+    The channel filter is what keeps the two retry owners disjoint: the send
+    worker claims the channels it can actually put on the wire, this sweep
+    takes the rest. A retrier that picks up a row it cannot deliver does not
+    merely fail — it destroys the row on the wrong transport.
+    """
+    sql = ("SELECT * FROM retention_deliveries "
+           "WHERE product_id = $1 AND status = 'failed' AND NOT permanent_fail "
+           "  AND next_attempt_at IS NOT NULL AND next_attempt_at <= now()")
+    args: list[Any] = [product_id, int(limit)]
+    if channels is not None:
+        args.append([str(c) for c in channels])
+        sql += f" AND channel = ANY(${len(args)}::text[])"
+    rows = await _fetch(sql + " ORDER BY next_attempt_at LIMIT $2", *args)
     return [_row_to_delivery(r) for r in rows]
 
 
@@ -6048,14 +6152,36 @@ async def enqueue_delivery(product_id: int, delivery_id: str, *,
 async def claim_deliveries(product_id: int, *, limit: int = 50,
                            lease_sec: int = 120,
                            worker_id: Optional[str] = None,
-                           max_priority: int = 5
+                           max_priority: int = 5,
+                           max_attempts: int = 0,
+                           channels: Optional[Sequence[str]] = None
                            ) -> list[dict[str, Any]]:
     """Lease a batch of due touches, best lane first, oldest schedule first.
 
     Same discipline as the event queue: 'sending' + locked_until, closed by
     mark_delivery_sent / mark_delivery_failed / reschedule_delivery, and
     anything abandoned comes back via reclaim_expired_delivery_leases.
+
+    `channels` restricts the claim to the transports the caller can actually
+    deliver on — a claim is destructive (the row is closed on the transport
+    that took it), so claiming a channel you cannot send is worse than leaving
+    it queued.
+
+    `max_attempts` (0 = unbounded) is the delivery queue's dead-letter ceiling,
+    the counterpart of `event_max_attempts`. Without it a row that keeps
+    failing transiently — a rotated bot token, a partner endpoint that is down
+    — is re-claimed every backoff step forever, and every attempt re-bills the
+    original generation into ai_interaction_logs.
     """
+    args: list[Any] = [product_id, int(limit), float(max(lease_sec, 1)),
+                       worker_id, int(max_priority)]
+    extra = ""
+    if channels is not None:
+        args.append([str(c) for c in channels])
+        extra += f" AND channel = ANY(${len(args)}::text[])"
+    if int(max_attempts) > 0:
+        args.append(int(max_attempts))
+        extra += f" AND attempts < ${len(args)}"
     rows = await _fetch(
         "UPDATE retention_deliveries SET status = 'sending', "
         "  attempts = attempts + 1, worker_id = $4, updated_at = now(), "
@@ -6068,15 +6194,36 @@ async def claim_deliveries(product_id: int, *, limit: int = 50,
         "               AND scheduled_at <= now() "
         "               AND (next_attempt_at IS NULL "
         "                    OR next_attempt_at <= now()) "
+        + extra +
         "             ORDER BY priority ASC, scheduled_at ASC "
         "             LIMIT $2 FOR UPDATE SKIP LOCKED) "
         "RETURNING *",
-        product_id, int(limit), float(max(lease_sec, 1)), worker_id,
-        int(max_priority),
+        *args,
     )
     out = [_row_to_delivery(r) for r in rows]
     out.sort(key=lambda d: (d.get("priority") or 3, d["id"]))
     return out
+
+
+async def dead_letter_stale_deliveries(product_id: int, max_attempts: int
+                                       ) -> int:
+    """Close out rows that exhausted the attempt ceiling.
+
+    The ceiling in `claim_deliveries` stops the retry loop, but a row left at
+    `status='failed', permanent_fail=false` is indistinguishable from one still
+    waiting its turn. Flipping it makes the dead ones visible (and countable)
+    on the deliveries view instead of silently invisible.
+    """
+    if int(max_attempts) <= 0:
+        return 0
+    result = await _execute(
+        "UPDATE retention_deliveries SET permanent_fail = TRUE, "
+        "  next_attempt_at = NULL, updated_at = now(), "
+        "  fail_reason = COALESCE(fail_reason, '') || ' (max attempts)' "
+        "WHERE product_id = $1 AND status = 'failed' "
+        "  AND NOT permanent_fail AND attempts >= $2",
+        product_id, int(max_attempts))
+    return _affected(result)
 
 
 async def mark_delivery_sent(delivery_pk: int, *,
@@ -6444,6 +6591,23 @@ async def count_active_enrollments(product_id: int, player_id: str) -> int:
         "WHERE product_id = $1 AND player_id = $2 AND status = 'active'",
         product_id, player_id)
     return int(val or 0)
+
+
+async def last_enrollment_at(product_id: int, player_id: str,
+                             journey_key: str) -> Optional[str]:
+    """When this player was last enrolled in this journey, whatever came of it.
+
+    The one-active-enrollment index is PARTIAL (`WHERE status = 'active'`), so
+    it says nothing about a journey the player already finished — and the
+    scheduled matcher re-derives its candidates from live state (a dormancy
+    cohort, a weekday) that is still true the moment the enrollment completes.
+    Without this the sweep re-enrolled the same player every tick.
+    """
+    val = await _fetchval(
+        "SELECT MAX(enrolled_at) FROM retention_journey_enrollments "
+        "WHERE product_id = $1 AND player_id = $2 AND journey_key = $3",
+        product_id, player_id, journey_key)
+    return _iso(val) if val else None
 
 
 async def due_enrollments(product_id: int, limit: int = 50

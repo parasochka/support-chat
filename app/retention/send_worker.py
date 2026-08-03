@@ -47,6 +47,15 @@ log = logging.getLogger(__name__)
 # channels already use, so a retry cadence is one concept in this codebase.
 _RETRY_STEPS = (60, 300, 1800)
 
+# The transports THIS loop can actually put on the wire. `_deliver_row` goes
+# through `retention_v2.deliver_payload`, which is the Telegram seam and only
+# that, so claiming an email/push row here would not merely fail it — the claim
+# is destructive (the row is closed by whoever took it), and the Telegram
+# consent check would kill an email-only player as 'opted_out_before_send'.
+# The channel-aware sweep in `channels.drain_delivery_retries` owns the rest;
+# the two sets are disjoint by this filter, so both can run at once.
+_SEND_WORKER_CHANNELS = ("telegram",)
+
 # How long a row waits for a token before being parked. The bucket refills
 # continuously (30/s = a token every ~33ms), so a short wait is what turns the
 # channel's rate limit into the actual send rate; giving up instantly instead
@@ -153,6 +162,8 @@ async def run_product_sends(product: dict[str, Any], *,
             "send_lease_sec", config.RETENTION_SEND_LEASE_SEC, 10, 3600)
         pass_budget = settings.global_retention_int(
             "send_pass_max_sec", config.RETENTION_SEND_PASS_MAX_SEC, 1, 600)
+        max_attempts = settings.global_retention_int(
+            "send_max_attempts", config.RETENTION_SEND_MAX_ATTEMPTS, 1, 50)
         width = int(cfg.get("send_concurrency")
                     or config.RETENTION_SEND_CONCURRENCY)
         sem = asyncio.Semaphore(max(width, 1))
@@ -164,8 +175,29 @@ async def run_product_sends(product: dict[str, Any], *,
                 break
             rows = await db.claim_deliveries(
                 pid, limit=batch, lease_sec=lease,
-                worker_id=retention_v2.worker_id())
+                worker_id=retention_v2.worker_id(),
+                max_attempts=max_attempts,
+                channels=_SEND_WORKER_CHANNELS)
             if not rows:
+                # Nothing claimable. Close out anything that ran out of
+                # attempts, so it stops looking like a row still waiting its
+                # turn — the claim's ceiling stops the retrying, this makes the
+                # outcome visible. Only worth a query when this pass actually
+                # moved rows: attempts change only through a claim, so an idle
+                # product can have produced no new exhausted row.
+                if counters["batches"]:
+                    try:
+                        dead = await db.dead_letter_stale_deliveries(
+                            pid, max_attempts)
+                    except Exception:  # noqa: BLE001 - never break the send
+                        log.exception("retention_send_deadletter_failed "
+                                      "product=%s", pid)
+                        dead = 0
+                    if dead:
+                        counters["dead"] = counters.get("dead", 0) + dead
+                        log.warning("retention_send_dead_lettered product=%s "
+                                    "rows=%s attempts=%s", pid, dead,
+                                    max_attempts)
                 break
             counters["batches"] += 1
             owed = {int(r["id"]) for r in rows}
@@ -387,8 +419,12 @@ async def _deliver_row(product: dict[str, Any], row: dict[str, Any],
                                      delay_sec=_BUCKET_RETRY_SEC)
         return "deferred"
 
+    # The claim already stamped this attempt, so attempts == 1 IS the first
+    # one. Only it may write the generation's cost: the model call happened
+    # once, however many times the queue retries putting it on the wire.
     delivered, detail, facts = await retention_v2.deliver_payload(
-        product, ru, payload, cfg)
+        product, ru, payload, cfg,
+        account_generation=int(row.get("attempts") or 1) <= 1)
     if delivered:
         outcome_id = await outcomes.record(
             pid, ru, kind="proactive", session_id=facts.get("session_id"),

@@ -41,6 +41,11 @@ CHANNELS = ("telegram", "email", "push", "in_app", "vip_host")
 _RETRY_STEPS = (_dt.timedelta(minutes=1), _dt.timedelta(minutes=5),
                 _dt.timedelta(minutes=30))
 
+# The channels THIS module retries. `telegram` is deliberately absent: those
+# rows belong to send_worker's leased claim (see its _SEND_WORKER_CHANNELS),
+# and a delivery must have exactly one owner or the two close each other's rows.
+_RETRY_CHANNELS = ("email", "push", "in_app", "sms")
+
 # In-process TTL cache of per-product channel config rows.
 _cfg_cache: dict[int, tuple[float, list[dict[str, Any]]]] = {}
 _CFG_TTL = 60.0
@@ -117,9 +122,11 @@ async def route_channel(product_id: int, ru: dict[str, Any],
     """The deterministic router. Explicit channel -> it (or its fallback) if
     consented+available; 'auto' -> the priority order over consented
     channels. None = undeliverable (NEVER a non-consented channel)."""
-    if not multichannel_enabled(cfg):
-        ch = "telegram"
-        return ch if opted_in(ru, ch) else None
+    # `executable_channels` already answers {"telegram"} when multichannel is
+    # off (and costs no query there), so one code path covers both modes. It
+    # used to short-circuit to telegram BEFORE looking at `wanted`, which meant
+    # an explicit `email` step resolved to telegram instead of being reported
+    # undeliverable — the router silently rewrote the operator's choice.
     executable = await executable_channels(product_id, cfg)
     exclude = exclude or set()
 
@@ -237,10 +244,15 @@ async def _send_delegated(product: dict[str, Any], ru: dict[str, Any], *,
 async def send_journey_touch(product: dict[str, Any], ru: dict[str, Any],
                              cfg: dict[str, Any], *, channel: str,
                              intent: str, journey_key: str, step_id: int,
-                             priority: int = 3
+                             priority: int = 3, comfort: bool = False
                              ) -> tuple[bool, Optional[str], Optional[int]]:
     """Generate + deliver one journey-step touch on a channel.
-    Returns (sent, detail, decision_ledger_id)."""
+    Returns (sent, detail, decision_ledger_id).
+
+    `comfort` carries the guard's loss-comfort verdict into the writer, the
+    same way the event path does — the player just lost money, so the touch
+    must be empathetic and carry no photo or play CTA.
+    """
     from app.chat import chat_service
     from app.retention import delivery as delivery_seam
     from app.retention import outcomes
@@ -277,7 +289,7 @@ async def send_journey_touch(product: dict[str, Any], ru: dict[str, Any],
     session["user_context"] = retention._user_context_from_ru(ru)
     draft = await chat_service.generate_retention_ping(
         session, idle_days=0, reason="", intent=intent,
-        photo_candidates=[],
+        photo_candidates=[], comfort=comfort,
         touch_history=await retention_v2._touch_history(
             pid, ru.get("player_id") or ""))
     if draft is None:
@@ -293,7 +305,11 @@ async def send_journey_touch(product: dict[str, Any], ru: dict[str, Any],
         header = retention._rtn_text("rtn_ping_header", draft.lang).strip()
         delivered, detail, link_attached = await delivery_seam.deliver_draft(
             tg, ru, draft, header=header or None, session_id=session["id"],
-            photo_fallback_caption="")
+            photo_fallback_caption="",
+            # A comfort touch carries no play CTA, same rule as the event path
+            # (retention_v2.deliver_payload) — the model may still have drafted
+            # one, so the suppression happens here, at the wire.
+            allow_photo=not comfort, allow_link=not comfort)
         if delivered:
             await db.persist_ping_turn(
                 session["id"], draft.text or "[photo]", ai_meta=draft.ai_meta,
@@ -326,17 +342,20 @@ async def send_journey_touch(product: dict[str, Any], ru: dict[str, Any],
         return True, "already_delivered", None
     title = str((product.get("name") or "")).strip()
     body = draft.text or ""
+    # Same comfort rule as the telegram branch and the event path: a player who
+    # just lost money gets no play CTA, whatever the model drafted.
+    cta_url = None if comfort else draft.link_url
     await db.upsert_delivery(
         pid, delivery_id, player_id=str(ru.get("player_id") or ""),
         retention_user_id=rid, channel=channel, intended_channel=channel,
-        status="sending", title=title, body=body, cta_url=draft.link_url)
+        status="sending", title=title, body=body, cta_url=cta_url)
     if channel == "email":
         sent, fail, permanent, ref = await _send_email_customerio(
             product, ru, subject=title or "A note from us", body=body)
     else:
         sent, fail, permanent, ref = await _send_delegated(
             product, ru, channel=channel, delivery_id=delivery_id,
-            title=title, body=body, cta_url=draft.link_url, cfg=cfg)
+            title=title, body=body, cta_url=cta_url, cfg=cfg)
     if sent:
         await db.update_delivery(pid, delivery_id, status="sent",
                                  provider_ref=ref)
@@ -350,7 +369,7 @@ async def send_journey_touch(product: dict[str, Any], ru: dict[str, Any],
         await outcomes.record(
             pid, ru, kind="proactive", session_id=session["id"],
             decision_id=decision_id, event_name=event_name, action="message",
-            link_url=draft.link_url, cost_usd=cost)
+            link_url=cta_url, cost_usd=cost)
         return True, None, decision_id
     next_attempt = (None if permanent
                     else _dt.datetime.now(_dt.timezone.utc) + _RETRY_STEPS[0])
@@ -367,7 +386,13 @@ async def send_journey_touch(product: dict[str, Any], ru: dict[str, Any],
 async def drain_delivery_retries(product: dict[str, Any],
                                  cfg: dict[str, Any], *,
                                  limit: int = 20) -> int:
-    """Retry transiently-failed non-telegram deliveries with backoff."""
+    """Retry transiently-failed non-telegram deliveries with backoff.
+
+    Scoped to `_RETRY_CHANNELS` on purpose: the send worker's claim owns the
+    telegram rows and closes them on the Telegram seam. A retrier that picked
+    up a row for a transport it cannot speak would destroy it, so the two
+    owners are kept disjoint by channel rather than by a mode flag.
+    """
     v = cfg.get("delivery_retry_enabled")
     if not (config.RETENTION_DELIVERY_RETRY_ENABLED if v is None else v):
         return 0
@@ -375,10 +400,12 @@ async def drain_delivery_retries(product: dict[str, Any],
         return 0
     pid = int(product["id"])
     retried = 0
-    for d in await db.due_delivery_retries(pid, limit=limit):
+    for d in await db.due_delivery_retries(pid, limit=limit,
+                                           channels=_RETRY_CHANNELS):
         attempts = int(d.get("attempts") or 0)
         if attempts >= len(_RETRY_STEPS):
             await db.update_delivery(pid, d["delivery_id"], status="failed",
+                                     permanent_fail=True,
                                      next_attempt_at=None)
             continue
         ru = None
@@ -391,6 +418,17 @@ async def drain_delivery_retries(product: dict[str, Any],
                                      next_attempt_at=None)
             continue
         channel = str(d["channel"])
+        # RE-CHECK CONSENT BEFORE EVERY ATTEMPT. The first send was authorized
+        # minutes-to-hours ago; a player who has since revoked email/push
+        # consent must not receive the retry. Strict opt-in is absolute, and a
+        # retry is a send.
+        if not opted_in(ru, channel):
+            await db.update_delivery(pid, d["delivery_id"],
+                                     status="suppressed",
+                                     fail_reason="opted_out_before_retry",
+                                     permanent_fail=True,
+                                     next_attempt_at=None)
+            continue
         if channel == "email":
             sent, fail, permanent, ref = await _send_email_customerio(
                 product, ru, subject=d.get("title") or "",

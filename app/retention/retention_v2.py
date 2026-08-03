@@ -469,7 +469,14 @@ async def run_product_maintenance(product: dict[str, Any]) -> dict[str, Any]:
         try:
             idle_pause_at = int(cfg.get("queue_degrade_idle_sec")
                                 or config.RETENTION_QUEUE_DEGRADE_IDLE_SEC)
-            if await db.retention_queue_lag(pid) >= idle_pause_at:
+            # Same "overdue, not merely queued" reading as the drain's ladder
+            # (see run_product_events): the send delay is not a backlog.
+            idle_delay_min = int(cfg.get("v2_send_delay_min_sec") or 0)
+            idle_delay_max = int(cfg.get("v2_send_delay_max_sec") or 0)
+            if await db.retention_queue_lag(
+                    pid, delay_min_sec=idle_delay_min,
+                    delay_max_sec=max(idle_delay_max, idle_delay_min)
+            ) >= idle_pause_at:
                 stats["idle_paused"] = 1
             else:
                 from app.retention import retention_idle
@@ -504,17 +511,20 @@ async def run_product_maintenance(product: dict[str, Any]) -> dict[str, Any]:
                 log.exception("retention_%s_sweep_failed product=%s", job, pid)
                 await db.finish_worker_job(pid, job, status="error",
                                            error="see logs")
-        # Delivery retries: only meaningful while the send worker is off (with
-        # it on, the send loop's own claim picks failed rows back up).
-        if not settings.global_retention_bool(
-                "send_worker_enabled", config.RETENTION_SEND_WORKER_ENABLED):
-            try:
-                from app.retention import channels
-                retried = await channels.drain_delivery_retries(product, cfg)
-                if retried:
-                    stats["delivery_retries"] = retried
-            except Exception:  # noqa: BLE001
-                log.exception("delivery_retry_sweep_failed product=%s", pid)
+        # Delivery retries for the NON-telegram channels. This used to be
+        # skipped whenever the send worker was on, on the assumption that the
+        # send loop's claim picks every failed row back up — but that loop only
+        # knows the Telegram seam, so an email/push row it claimed was closed
+        # on the wrong transport. The two now own disjoint channel sets
+        # (send_worker._SEND_WORKER_CHANNELS vs the sweep below), so this runs
+        # unconditionally and each row is retried by something that can send it.
+        try:
+            from app.retention import channels
+            retried = await channels.drain_delivery_retries(product, cfg)
+            if retried:
+                stats["delivery_retries"] = retried
+        except Exception:  # noqa: BLE001
+            log.exception("delivery_retry_sweep_failed product=%s", pid)
     return stats
 
 
@@ -543,7 +553,7 @@ async def _run_maintenance_job(job: str, product: dict[str, Any], pid: int,
     return res or {}
 
 
-def _max_priority_for_lag(lag_sec: int, cfg: dict[str, Any]) -> int:
+def _max_priority_for_lag(lag_sec: Any, cfg: dict[str, Any]) -> int:
     """The backpressure ladder: which lanes may still be claimed at this lag.
 
     A backlog is not an excuse to fall behind on the events a player is
@@ -551,14 +561,26 @@ def _max_priority_for_lag(lag_sec: int, cfg: dict[str, Any]) -> int:
     drain sheds work from the bottom: first the state-food lane, then the
     default lane, so deposits and KYC outcomes keep moving at full speed while
     the cheap stuff waits for the queue to recover.
+
+    `lag_sec` is the per-lane-ceiling map from `db.retention_queue_lag_by_lane`
+    ({2: …, 3: …, 5: …}); a plain int means "every lane is that far behind".
+    EACH RUNG IS EVALUATED AGAINST THE LANES IT DOES NOT SHED — the rung that
+    stops claiming lane 5 reads the lag of lanes 1-3, the rung that stops
+    claiming lane 3 reads lanes 1-2. Reading the whole queue instead made the
+    shedding a one-way door: the shed lanes stayed pending, so they stayed the
+    oldest rows and held the ladder down forever. A lane can no longer argue
+    for its own shedding, so the drain climbs back out as soon as the lanes it
+    is still serving catch up.
     """
+    lags = (lag_sec if isinstance(lag_sec, dict)
+            else {2: int(lag_sec), 3: int(lag_sec), 5: int(lag_sec)})
     p3_at = int(cfg.get("queue_degrade_p3_sec")
                 or config.RETENTION_QUEUE_DEGRADE_P3_SEC)
     p2_at = int(cfg.get("queue_degrade_p2_sec")
                 or config.RETENTION_QUEUE_DEGRADE_P2_SEC)
-    if lag_sec >= max(p2_at, p3_at):
+    if int(lags.get(2) or 0) >= max(p2_at, p3_at):
         return 2
-    if lag_sec >= p3_at:
+    if int(lags.get(3) or 0) >= p3_at:
         return 3
     return 5
 
@@ -629,21 +651,30 @@ async def run_product_events(product: dict[str, Any], *,
             await db.finish_worker_job(pid, "events", status="budget_reached")
             return {"agent": "daily_budget_reached"}
 
-        lag = await db.retention_queue_lag(pid)
-        max_priority = _max_priority_for_lag(lag, cfg)
-        if max_priority < 5:
-            log.warning("retention_queue_degraded product=%s lag_sec=%s "
-                        "max_priority=%s", pid, lag, max_priority)
-            await db.log_admin_event_sampled(
-                None, "retention_queue_degraded",
-                {"lag_sec": lag, "max_priority": max_priority},
-                product_id=pid)
-
         batch = int(limit or cfg["ping_batch_size"])
         delay_min = (0 if ignore_send_delay
                      else int(cfg.get("v2_send_delay_min_sec") or 0))
         delay_max = (0 if ignore_send_delay
                      else int(cfg.get("v2_send_delay_max_sec") or 0))
+        # The lag must be measured over the SAME rows the claim below would
+        # take: a row still inside its send delay is not a backlog, and the
+        # shipped delay window (300..900s) is already past both degrade rungs.
+        lags = await db.retention_queue_lag_by_lane(
+            pid, delay_min_sec=delay_min,
+            delay_max_sec=max(delay_max, delay_min))
+        lag = lags[5]
+        max_priority = _max_priority_for_lag(lags, cfg)
+        if max_priority < 5:
+            log.warning("retention_queue_degraded product=%s lag_sec=%s "
+                        "lags=%s max_priority=%s", pid, lag, lags,
+                        max_priority)
+            await db.log_admin_event_sampled(
+                None, "retention_queue_degraded",
+                {"lag_sec": lag, "lag_by_lane": {str(k): v
+                                                 for k, v in lags.items()},
+                 "max_priority": max_priority},
+                product_id=pid)
+
         lease_sec = settings.global_retention_int(
             "event_lease_sec", config.RETENTION_EVENT_LEASE_SEC, 60, 3600)
         events = await db.claim_retention_events(
@@ -1248,7 +1279,7 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
             if not dry_run:
                 delivered, send_cost, sdetail, facts = await _send_touch(
                     product, ru, evt, decision, comfort=guard["comfort"],
-                    cfg=cfg)
+                    cfg=cfg, decision_id=decision_id)
                 total_cost += send_cost
                 if sdetail:
                     detail = f"offer:granted; {sdetail}"
@@ -1256,10 +1287,21 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
             pass  # shadow grant: ledger only, nothing sent
         elif status == "fraud_hold":
             # The touch may still go out — without any mention of a bonus.
+            # The intent the decision model wrote was produced UNDER the offer
+            # constraint line ("the bonus is credited before your message goes
+            # out, so you may then mention it warmly"), so shipping it verbatim
+            # promises a gift that was never credited. Say so explicitly:
+            # nothing else in the stack tells the writer the offer fell through.
+            decision["intent"] = (
+                f"{decision['intent']} | IMPORTANT CORRECTION: no bonus, gift, "
+                "free spins or promotion was credited. Do NOT mention or hint "
+                "at any bonus, gift or promotion in this message. Write a warm "
+                "note that stands on its own."
+            )[:900]
             if not dry_run:
                 delivered, send_cost, sdetail, facts = await _send_touch(
                     product, ru, evt, decision, comfort=guard["comfort"],
-                    cfg=cfg)
+                    cfg=cfg, decision_id=decision_id)
                 total_cost += send_cost
         else:  # failed — never promise what was not credited
             action = "silence"
@@ -1267,7 +1309,8 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
                 " (offer grant failed -> silence)"
     elif action in ("message", "photo") and not dry_run:
         delivered, send_cost, detail, facts = await _send_touch(
-            product, ru, evt, decision, comfort=guard["comfort"], cfg=cfg)
+            product, ru, evt, decision, comfort=guard["comfort"], cfg=cfg,
+            decision_id=decision_id)
         total_cost += send_cost
     # Write back what the reserved row actually turned into (the action can
     # still change: a failed offer grant demotes the touch to silence).
@@ -1403,13 +1446,21 @@ def _proactive_header(lang: str, evt: dict[str, Any], *,
 
 async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
                       evt: dict[str, Any], decision: dict[str, Any], *,
-                      comfort: bool, cfg: dict[str, Any]
+                      comfort: bool, cfg: dict[str, Any],
+                      decision_id: Optional[int] = None
                       ) -> tuple[bool, float, Optional[str], dict[str, Any]]:
     """Generate + deliver the agent-decided touch. Returns
     (delivered, generation_cost_usd, detail, facts).
 
     `facts` is what the touch actually carried (session, media, CTA link) — the
     caller opens the attribution row with it once the decision row exists.
+
+    `decision_id` is the ledger row the caller already RESERVED. It has to
+    travel with the queued delivery: with the send worker on, the send happens
+    in another process minutes later, and that process is the only one that
+    knows whether the touch actually landed. Without the link it can write
+    nothing back — the ledger keeps every queued touch at 'queued' forever and
+    the attribution rows lose their decision.
     """
     pid = int(product["id"])
     rid = int(ru["id"])
@@ -1486,6 +1537,7 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
         enqueued = await db.enqueue_delivery(
             pid, delivery_id, player_id=ru.get("player_id"),
             retention_user_id=rid, channel="telegram",
+            decision_id=decision_id,
             priority=int(evt.get("priority") or 3),
             payload=payload, body=draft.text,
             cta_url=draft.link_url)
@@ -1507,7 +1559,8 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
 
 
 async def deliver_payload(product: dict[str, Any], ru: dict[str, Any],
-                          payload: dict[str, Any], cfg: dict[str, Any]
+                          payload: dict[str, Any], cfg: dict[str, Any],
+                          *, account_generation: bool = True
                           ) -> tuple[bool, Optional[str], dict[str, Any]]:
     """Actually put a generated touch on the wire, with all its bookkeeping.
 
@@ -1519,6 +1572,12 @@ async def deliver_payload(product: dict[str, Any], ru: dict[str, Any],
     Returns (delivered, detail, facts); `facts` is what the touch actually
     carried (media, CTA link), which is what the attribution row is opened
     with.
+
+    `account_generation=False` suppresses the undelivered-generation write on a
+    RETRY. The model call happened exactly once, when the touch was decided;
+    the queue may attempt the send many times, and billing the same tokens on
+    every attempt inflates the cost dashboards without bound (invariant §4 is
+    one log row per OpenAI CALL, not per delivery attempt).
     """
     pid = int(product["id"])
     rid = int(payload.get("retention_user_id") or ru["id"])
@@ -1577,10 +1636,13 @@ async def deliver_payload(product: dict[str, Any], ru: dict[str, Any],
             facts["link_url"] = draft.link_url
         return True, None, facts
 
-    # Generated but undelivered: the cost still lands in ai_interaction_logs.
-    await delivery.account_undelivered_generation(
-        session_id, draft, detail, product_id=pid,
-        label="v2_touch_undelivered")
-    await db.record_retention_ping(pid, rid, None, action, "failed",
-                                   detail=f"v2:{detail}", cost_usd=gen_cost)
+    # Generated but undelivered: the cost still lands in ai_interaction_logs —
+    # once, on the first attempt (see `account_generation`).
+    if account_generation:
+        await delivery.account_undelivered_generation(
+            session_id, draft, detail, product_id=pid,
+            label="v2_touch_undelivered")
+        await db.record_retention_ping(pid, rid, None, action, "failed",
+                                       detail=f"v2:{detail}",
+                                       cost_usd=gen_cost)
     return False, detail, facts

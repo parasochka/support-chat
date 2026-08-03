@@ -1086,12 +1086,27 @@ queue depth is a function of casino traffic instead of decision work, and the ev
 deserve a reaction queue up behind spins. Two escapes: anything the product listed in
 `v2_decision_events` (a deliberate operator promotion) and `bet_settled` while a loss threshold
 is configured (it is the input to the 24h loss window). The **backpressure ladder**
-(`_max_priority_for_lag`) reads `db.retention_queue_lag` (age of the oldest pending row) and
-lowers the claim's `max_priority` as it grows: past `queue_degrade_p3_sec` state food stops
+(`_max_priority_for_lag`) reads `db.retention_queue_lag_by_lane` and lowers the claim's
+`max_priority` as it grows: past `queue_degrade_p3_sec` state food stops
 being claimed, past `queue_degrade_p2_sec` only the transactional lanes move, and past
 `queue_degrade_idle_sec` the idle ladder pauses for that product — re-engaging quiet players
 must never compete with reacting to live ones. A degraded pass logs and writes a sampled
-`retention_queue_degraded` admin event. The activity-timestamp bridge, the busiest write in the
+`retention_queue_degraded` admin event.
+
+**Two rules make that ladder measure the right thing** (it shipped violating both, which pinned
+every busy product at `max_priority=2` permanently). **Lag is what is OVERDUE, not what is
+queued**: the claim will not take a row until its humanizing send delay has elapsed (300..900s
+by default) and past any retry backoff, so the lag query applies the SAME due predicate the
+claim does (`db._QUEUE_DUE`) — counted naively, a healthy product reads a full delay window of
+"lag" the instant it takes traffic, which is already past both rungs. And **each rung reads the
+lanes it does NOT shed** — the rung that stops claiming lane 5 reads lanes 1-3, the rung that
+stops claiming lane 3 reads lanes 1-2. Keyed on the whole queue, shedding was a one-way door:
+the shed lanes stayed pending, so they stayed the oldest rows and held the ladder down until
+the pruner deleted them. `retention_queue_lag_by_lane` returns `{2, 3, 5} -> seconds` in one
+query for exactly this; `retention_queue_lag` is the scalar (also due-filtered) the idle pause
+reads. `_max_priority_for_lag` still accepts a plain int, meaning "every lane that far behind".
+
+The activity-timestamp bridge, the busiest write in the
 system, is debounced (`activity_debounce_sec`); re-stamping "active" seconds later buys nothing.
 
 **Parallelism — and why per-player grouping is CORRECTNESS, not speed.** The one global
@@ -1194,7 +1209,15 @@ Worker-side readers use `settings.global_retention_int/_bool/_raw` — the int v
 a stored `0` into the default, which is why a knob whose point is being switchable OFF must go
 through the raw/bool pair. Queue health is `db.retention_queue_stats` / `retention_queue_lag` /
 `retention_latency_percentiles`, surfaced with the paced jobs on the Retention → Agent header.
-Tests: `tests/test_retention_v2.py`, `tests/test_service_roles.py`.
+Tests: `tests/test_retention_v2.py`, `tests/test_service_roles.py`,
+`tests/test_send_worker.py`, `tests/test_queue_backpressure.py`.
+
+**The queued touch carries its DECISION.** `_send_touch` passes the reserved `decision_id`
+into `db.enqueue_delivery`, because with the send worker on the send happens in another
+process minutes later and that process is the only one that knows whether the touch landed.
+Without the link `send_worker._deliver_row` can write nothing back: every delivered touch
+stays `queued` in `retention_v2_decisions` forever and the Agent ledger reports zero
+deliveries for a bot that is sending normally.
 
 ### OUTCOME ATTRIBUTION — the measured feedback loop (`app/retention/outcomes.py`)
 The stack could always say what it SPENT and what it SENT; this is what says
@@ -1329,7 +1352,22 @@ on/off knobs in Retention → Settings (schema section `orchestrator`).
   `metadata.exit_on_return`), completion. `eval_conditions` returns **None on
   an unresolvable field** — fail-safe: no enrollment / `blocked_unresolvable`
   exit, never a silent pass. One active enrollment per (player, journey)
-  (partial unique index), capped by `journey_max_active_per_player`.
+  (partial unique index), capped by `journey_max_active_per_player`. That index
+  is PARTIAL (`WHERE status='active'`), so it says nothing about a journey the
+  player already FINISHED — and a scheduled trigger re-derives its candidates
+  from live state that is still true the moment the enrollment completes. The
+  re-entry cooldown (`_reentry_cooldown_days` + `db.last_enrollment_at`) is what
+  stops the sweep re-enrolling — and re-sending — every couple of minutes: it
+  defaults from the trigger's own granularity (weekly `day_of_week` → 7d,
+  cashier abandonment → 1d, everything scheduled →
+  `RETENTION_JOURNEY_REENTRY_COOLDOWN_DAYS`; an event journey is already gated
+  by a real event, so 0) and a journey may state its own via
+  `metadata.reentry_cooldown_days`.
+  A step's channel is resolved through `channels.route_channel` (never
+  `executable_channels` alone — that is a product-level answer and would send to
+  a player who refused the channel), and the guard's `constraints` + `comfort`
+  travel into the brief; on a `fraud_hold` grant the brief is explicitly
+  negated, since the template text is what promises the gift.
 - **Scenario/template library (`scenario_library.py`)** — templates are
   BRIEFS by default (`persona_brief`: ops controls intent, the persona
   writes; `verbatim` = exact copy behind an explicit flag); journey steps
@@ -1341,8 +1379,12 @@ on/off knobs in Retention → Settings (schema section `orchestrator`).
   rungs on the same quiet days should be disabled by the operator.
 - **Channels (`channels.py` + `partner_out.py`)** — the router is
   deterministic code with **STRICT opt-in** (never a non-consented channel,
-  not even as fallback; nothing consented = `undeliverable`).
-  `multichannel_enabled` OFF = router always answers telegram. Adapters:
+  not even as fallback; nothing consented = `undeliverable`). It is the ONE
+  entry point — `journeys._resolve_step_channel` goes through it, and a RETRY
+  re-checks `opted_in` before every attempt, because a retry is a send and the
+  first one was authorized hours ago. `multichannel_enabled` OFF narrows the
+  executable set to telegram, so an explicit non-telegram step reports
+  `channel_unavailable` rather than being silently rewritten. Adapters:
   telegram (the existing `delivery.py` seam), email (Customer.io App API
   transactional send, `POST https://api[-eu].customer.io/v1/send/email`,
   App API key = encrypted product secret `email_api_key`, region/from in the
@@ -1351,7 +1393,9 @@ on/off knobs in Retention → Settings (schema section `orchestrator`).
   reports back via `POST /partner/{id}/delivery-status` — statuses never move
   backwards), vip_host (a task in the queue, never a bot message). Lifecycle
   + backoff retries ([1m, 5m, 30m], permanent failures never retry) in
-  `retention_deliveries`. **Outbound partner calls** (offer-grant + deliver)
+  `retention_deliveries` — but ONLY for `_RETRY_CHANNELS`: telegram rows belong
+  to `send_worker`'s leased claim, and a delivery with two owners is closed by
+  whichever got there first, on whichever transport it happened to speak. **Outbound partner calls** (offer-grant + deliver)
   are orchestrator→casino ("partner" = the operator running a casino on the
   platform): per-product URLs on the product row, Bearer =
   `partner_out_key` (encrypted), SSRF-guarded + DNS-pinned exactly like the
@@ -1483,11 +1527,29 @@ cheap pass and the conversation is picked up next sweep. Tests:
     at-least-once, so the `retention_v2_decisions` insert (unique per `(product_id,
     event_pk)`) comes BEFORE the offer grant and the send, and a `None` return means replay
     — return, do not send. New player-visible side effects go after the reservation.
-12. **Queue lag is the SLA metric** (`db.retention_queue_lag` = age of the oldest pending
-    event, not queue depth): it is what the backpressure ladder keys on and what says the
+12. **Queue lag is the SLA metric** (`db.retention_queue_lag` = age of the oldest OVERDUE
+    event — past its send delay and any retry backoff — not queue depth, and not work that
+    is merely queued): it is what the backpressure ladder keys on and what says the
     pipeline is healthy. Work that must not fall behind belongs in a low-numbered priority
     lane; work that would inflate the lag without deserving a reaction should not enter the
-    queue at all (`player_sync.should_queue`).
+    queue at all (`player_sync.should_queue`). A shedding rung reads only the lanes it does
+    NOT shed (`retention_queue_lag_by_lane`) — otherwise the backlog it creates justifies
+    itself and the degradation never lifts.
+13. **A queued delivery has exactly ONE owner, and it is decided by CHANNEL.** A claim is
+    destructive — whoever takes a row closes it — so `send_worker` claims only the transports
+    it can actually put on the wire (`_SEND_WORKER_CHANNELS`, the Telegram seam) and
+    `channels.drain_delivery_retries` owns the rest (`_RETRY_CHANNELS`). The two run
+    concurrently and must stay disjoint. Deliveries carry the same dead-letter ceiling events
+    do (`send_max_attempts`), and the generation's cost is billed on the FIRST attempt only:
+    the model call happened once, however many times the queue retries the send.
+14. **Consent is re-checked at every send, including retries, and the router is the only way
+    to pick a channel.** `channels.route_channel` is the one entry point (strict opt-in: never
+    a non-consented channel, not even as a fallback, not even for a critical touch);
+    `executable_channels` answers a PRODUCT question and knows nothing about the player, so it
+    is never a substitute. A guard verdict is not just `allow`: its `constraints` (the
+    conditional RG "no play/bonus talk", the loss-comfort register) must reach the writer, and
+    an offer that came back `fraud_hold` must be explicitly negated in the brief — the brief
+    that asked for the bonus is not self-correcting.
 
 ## Admin / management (lazily loaded)
 Admin auth + the roles/memberships model, user management, the settings groups,

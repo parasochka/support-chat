@@ -138,7 +138,8 @@ async def test_delivered_touch_opens_an_outcome_row(monkeypatch):
         return ({"action": "photo", "tone": "celebrate", "intent": "i",
                  "reason": "r"}, 0.001)
 
-    async def _send(product, ru, evt, decision, *, comfort, cfg):
+    async def _send(product, ru, evt, decision, *, comfort, cfg,
+                    decision_id=None):
         return True, 0.002, None, {"session_id": "s-9", "photo_id": 4,
                                    "media_type": "photo",
                                    "link_url": "https://x.test/casino"}

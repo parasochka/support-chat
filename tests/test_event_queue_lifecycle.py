@@ -325,7 +325,36 @@ async def test_queue_lag_measures_only_untouched_events(monkeypatch):
     sql, args = conn.calls[0]
     assert "MIN(created_at)" in sql
     assert "status = 'pending'" in sql and "processed_at IS NULL" in sql
-    assert args == (3,)
+    assert args == (3, 0.0, 1)
+
+
+async def test_queue_lag_ignores_work_that_is_not_due_yet(monkeypatch):
+    """A row inside its humanizing send delay, or parked on a retry backoff, is
+    waiting BY DESIGN — it is not a backlog. Counted, the shipped 300..900s
+    delay window put every busy product past both degrade rungs permanently."""
+    conn = FakeConn(val=0)
+    monkeypatch.setattr(db, "_pool", FakePool(conn))
+
+    await db.retention_queue_lag(3, delay_min_sec=300, delay_max_sec=900)
+
+    sql, args = conn.calls[0]
+    assert "next_attempt_at IS NULL OR next_attempt_at <= now()" in sql
+    assert "make_interval(secs => $2 + (id % $3))" in sql
+    # Same (lo, span) shape claim_retention_events uses for its jitter.
+    assert args == (3, 300.0, 601)
+
+
+async def test_queue_lag_by_lane_reports_each_ceiling(monkeypatch):
+    """The ladder needs the lag of the lanes it does NOT shed. One query, one
+    MIN per ceiling — a second round trip per product per tick is not free."""
+    conn = FakeConn(row={"lag2": 5.9, "lag3": 60.0, "lag5": 9_000.0})
+    monkeypatch.setattr(db, "_pool", FakePool(conn))
+
+    assert await db.retention_queue_lag_by_lane(3) == {2: 5, 3: 60, 5: 9000}
+
+    sql, _args = conn.calls[0]
+    assert "FILTER (WHERE priority <= 2)" in sql
+    assert "FILTER (WHERE priority <= 3)" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +388,8 @@ async def test_a_replayed_event_stops_before_the_send(monkeypatch):
         return ({"action": "message", "tone": "warm", "intent": "hi",
                  "reason": "r"}, 0.001)
 
-    async def _send(product, ru, evt, decision, *, comfort, cfg):
+    async def _send(product, ru, evt, decision, *, comfort, cfg,
+                    decision_id=None):
         sends.append(str(evt.get("event_name")))
         return True, 0.002, None, {"session_id": "s-1"}
 
