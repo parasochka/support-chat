@@ -269,7 +269,9 @@ async def player_update(product_id: int, body: PlayerUpdateReq, req: Request,
     # secretbox decrypt on every call, so an unauthenticated flood would otherwise
     # drive unbounded DB + crypto load (every other public POST is throttled).
     try:
-        antispam.check_rate_limit(f"partner:{client_ip(req)}")
+        antispam.check_rate_limit(
+            f"partner:{client_ip(req)}",
+            max_hits=settings_mod.antispam()["partner_rate_limit_max"])
     except antispam.AntiSpamError as exc:
         return _err(exc.status, exc.code, exc.detail)
     _product, err = await _partner_auth(product_id, authorization)
@@ -346,7 +348,9 @@ async def player_event(product_id: int, body: PlayerEventsReq, req: Request,
     # Per-IP rate limit before the auth DB lookup + secretbox decrypt (see
     # player_update — the partner POSTs are the one public family that lacked it).
     try:
-        antispam.check_rate_limit(f"partner:{client_ip(req)}")
+        antispam.check_rate_limit(
+            f"partner:{client_ip(req)}",
+            max_hits=settings_mod.antispam()["partner_rate_limit_max"])
     except antispam.AntiSpamError as exc:
         return _err(exc.status, exc.code, exc.detail)
     _product, err = await _partner_auth(product_id, authorization)
@@ -385,7 +389,9 @@ async def delivery_status(product_id: int, body: DeliveryStatusReq,
     a status can never move backwards. Same partner-secret auth + rate
     budget as the other /partner/* webhooks."""
     try:
-        antispam.check_rate_limit(f"partner:{client_ip(req)}")
+        antispam.check_rate_limit(
+            f"partner:{client_ip(req)}",
+            max_hits=settings_mod.antispam()["partner_rate_limit_max"])
     except antispam.AntiSpamError as exc:
         return _err(exc.status, exc.code, exc.detail)
     _product, err = await _partner_auth(product_id, authorization)

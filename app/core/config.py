@@ -173,6 +173,12 @@ RATE_LIMIT_MAX_PER_IP: int = _env_int("RATE_LIMIT_MAX_PER_IP", 20)
 # 15-30s are normal), so it gets its own, higher per-user allowance over the
 # same window — the widget's 20/window killed a real conversation mid-flow.
 TG_RATE_LIMIT_MAX_PER_USER: int = _env_int("TG_RATE_LIMIT_MAX_PER_USER", 60)
+# The partner EVENT FEED is a server-to-server firehose, not a browser, and it
+# shared the widget's per-IP allowance (20 requests per window) — which caps a
+# casino at 20 pushes per 10 minutes and would throttle the whole pipeline at
+# its very first hop. Its own allowance, over the same window: 600 requests,
+# and each may carry 500 events.
+PARTNER_RATE_LIMIT_MAX: int = _env_int("PARTNER_RATE_LIMIT_MAX", 600)
 MESSAGE_COOLDOWN_SEC: int = _env_int("MESSAGE_COOLDOWN_SEC", 2)
 
 # --- Database pool / health -------------------------------------------------
@@ -519,7 +525,7 @@ RETENTION_QUIET_HOURS_UTC_OFFSET: int = _env_int(
 # how often the worker wakes up (default for the hot `worker_interval_sec`
 # setting). The scheduler switch is deploy-level (not a setting): it decides
 # whether this instance runs the loop at all.
-RETENTION_PING_BATCH_SIZE: int = _env_int("RETENTION_PING_BATCH_SIZE", 30)
+RETENTION_PING_BATCH_SIZE: int = _env_int("RETENTION_PING_BATCH_SIZE", 100)
 # Deliver PROACTIVE messages silently (Telegram disable_notification — the
 # message lands without a sound/vibration on the player's phone). Dialogue
 # replies are never silent: the player just wrote and expects the buzz.
@@ -542,7 +548,7 @@ RETENTION_V2_DRY_RUN: bool = _env_bool("RETENTION_V2_DRY_RUN", True)
 # Per-product daily AI budget for agent decisions+sends (USD). The worker stops
 # deciding for the day once the ledger's summed cost reaches it. 0 = no budget.
 RETENTION_V2_DAILY_BUDGET_USD: float = _env_float(
-    "RETENTION_V2_DAILY_BUDGET_USD", 5.0)
+    "RETENTION_V2_DAILY_BUDGET_USD", 25.0)
 # After a loss signal (high 24h net loss from bet_settled events) the comfort
 # window applies: no play CTA, no reward photos, empathetic tone only.
 RETENTION_V2_LOSS_COMFORT_HOURS: int = _env_int(
@@ -737,7 +743,7 @@ RETENTION_WORKER_PLAYER_CONCURRENCY: int = _env_int(
 # Fleet-wide ceiling on concurrent background model calls, independent of which
 # API key serves them: a burst must not open hundreds of completions at once.
 RETENTION_AGENT_MODEL_CONCURRENCY: int = _env_int(
-    "RETENTION_AGENT_MODEL_CONCURRENCY", 8)
+    "RETENTION_AGENT_MODEL_CONCURRENCY", 16)
 # Backpressure ladder, keyed on the queue lag (age of the oldest pending
 # event). Past the first threshold the drain stops claiming state food, past
 # the second only transactional lanes move, past the third the idle ladder
@@ -760,18 +766,28 @@ RETENTION_ACTIVITY_DEBOUNCE_SEC: int = _env_int(
 # on = a decision only enqueues and the send worker delivers it.
 RETENTION_SEND_WORKER_ENABLED: bool = _env_bool(
     "RETENTION_SEND_WORKER_ENABLED", False)
-RETENTION_SEND_CONCURRENCY: int = _env_int("RETENTION_SEND_CONCURRENCY", 8)
+RETENTION_SEND_CONCURRENCY: int = _env_int("RETENTION_SEND_CONCURRENCY", 16)
 RETENTION_SEND_LEASE_SEC: int = _env_int("RETENTION_SEND_LEASE_SEC", 120)
-RETENTION_SEND_BATCH_SIZE: int = _env_int("RETENTION_SEND_BATCH_SIZE", 50)
+RETENTION_SEND_BATCH_SIZE: int = _env_int("RETENTION_SEND_BATCH_SIZE", 200)
 # Token bucket per channel. Telegram allows ~30 msg/s per bot and ~1/s per
 # chat; we sit under both so a broadcast drains instead of collecting 429s.
 RETENTION_TELEGRAM_RATE_PER_SEC: float = _env_float(
-    "RETENTION_TELEGRAM_RATE_PER_SEC", 25.0)
-RETENTION_TELEGRAM_BURST: float = _env_float("RETENTION_TELEGRAM_BURST", 25.0)
+    "RETENTION_TELEGRAM_RATE_PER_SEC", 30.0)
+RETENTION_TELEGRAM_BURST: float = _env_float("RETENTION_TELEGRAM_BURST", 30.0)
 RETENTION_TELEGRAM_CHAT_RATE_PER_SEC: float = _env_float(
     "RETENTION_TELEGRAM_CHAT_RATE_PER_SEC", 1.0)
 RETENTION_EMAIL_RATE_PER_SEC: float = _env_float(
     "RETENTION_EMAIL_RATE_PER_SEC", 50.0)
+# Delegated push / in_app are POSTs at the CASINO's delivery endpoint. Unshaped,
+# a broadcast is a denial of service against our own partner, who then throttles
+# or drops us — so the delegated channels get a bucket too. Deliberately modest
+# until the partner states what their endpoint accepts.
+RETENTION_PARTNER_RATE_PER_SEC: float = _env_float(
+    "RETENTION_PARTNER_RATE_PER_SEC", 20.0)
+# How long one product may hold a send pass before handing the worker slot back.
+# The queue is durable, so the next tick resumes where this one stopped; the
+# bound only stops one product's burst from starving the others.
+RETENTION_SEND_PASS_MAX_SEC: int = _env_int("RETENTION_SEND_PASS_MAX_SEC", 30)
 # Maintenance-loop cadences (each sweep is paced per product through
 # retention_worker_jobs, so these are how often a worker even looks).
 RETENTION_MAINTENANCE_INTERVAL_SEC: int = _env_int(
@@ -802,7 +818,7 @@ WORKER_DRAIN_TIMEOUT_SEC: int = _env_int("WORKER_DRAIN_TIMEOUT_SEC", 25)
 # Connection-pool bounds, per role: the worker runs many concurrent player
 # shards, the web process serves requests.
 DB_POOL_MIN: int = _env_int("DB_POOL_MIN", 1)
-DB_POOL_MAX: int = _env_int("DB_POOL_MAX", 25 if SERVICE_ROLE == "worker" else 10)
+DB_POOL_MAX: int = _env_int("DB_POOL_MAX", 30 if SERVICE_ROLE == "worker" else 10)
 
 # Serve /docs, /redoc and /openapi.json (they describe the WHOLE API surface,
 # /admin included) — off by default; enable only on dev/stage deployments.
