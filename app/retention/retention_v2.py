@@ -473,12 +473,26 @@ async def run_product_maintenance(product: dict[str, Any]) -> dict[str, Any]:
                 stats["idle_paused"] = 1
             else:
                 from app.retention import retention_idle
+                started = _dt.datetime.now(_dt.timezone.utc)
                 idle = await retention_idle.run_product_idle_pings(product, cfg)
                 for k in ("sent", "failed"):
                     if idle.get(k):
                         stats[f"idle_{k}"] = idle[k]
+                # The ladder claims its own job slot inside
+                # run_product_idle_pings, so it must close it here — the four
+                # sweeps below go through _run_maintenance_job, which does that
+                # for them. Without this the row sits at 'running' forever, and
+                # "stuck in running" is exactly the signal the background-jobs
+                # panel exists to give an operator about a wedged sweep.
+                if not idle.get("skipped"):
+                    took = int((_dt.datetime.now(_dt.timezone.utc) - started)
+                               .total_seconds() * 1000)
+                    await db.finish_worker_job(pid, "idle", status="ok",
+                                               duration_ms=took)
         except Exception:  # noqa: BLE001
             log.exception("retention_idle_sweep_failed product=%s", pid)
+            await db.finish_worker_job(pid, "idle", status="error",
+                                       error="see logs")
 
         for job, _key, _default in _MAINTENANCE_JOBS:
             try:
