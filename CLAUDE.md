@@ -1094,17 +1094,22 @@ must never compete with reacting to live ones. A degraded pass logs and writes a
 `retention_queue_degraded` admin event.
 
 **Two rules make that ladder measure the right thing** (it shipped violating both, which pinned
-every busy product at `max_priority=2` permanently). **Lag is what is OVERDUE, not what is
-queued**: the claim will not take a row until its humanizing send delay has elapsed (300..900s
-by default) and past any retry backoff, so the lag query applies the SAME due predicate the
-claim does (`db._QUEUE_DUE`) — counted naively, a healthy product reads a full delay window of
-"lag" the instant it takes traffic, which is already past both rungs. And **each rung reads the
-lanes it does NOT shed** — the rung that stops claiming lane 5 reads lanes 1-3, the rung that
+every busy product at `max_priority=2` permanently). **Lag is HOW LATE work is, not how old it
+is**: the claim will not take a row until its humanizing send delay has elapsed (300..900s by
+default) and past any retry backoff, so the lag query both applies the claim's due predicate
+(`db._QUEUE_DUE`) and measures `now() - (created_at + delay)` (`db._QUEUE_OVERDUE`), clamped at
+0. Filtering alone is not enough — every row that survives the filter has by construction waited
+at least `delay_min`, which IS the p3 rung, so reporting age would leave the ladder pinned even
+with the filter in place. A row that has just become claimable is 0 seconds late. And **each rung
+reads the lanes it does NOT shed** — the rung that stops claiming lane 5 reads lanes 1-3, the rung that
 stops claiming lane 3 reads lanes 1-2. Keyed on the whole queue, shedding was a one-way door:
 the shed lanes stayed pending, so they stayed the oldest rows and held the ladder down until
 the pruner deleted them. `retention_queue_lag_by_lane` returns `{2, 3, 5} -> seconds` in one
-query for exactly this; `retention_queue_lag` is the scalar (also due-filtered) the idle pause
-reads. `_max_priority_for_lag` still accepts a plain int, meaning "every lane that far behind".
+query for exactly this; `retention_queue_lag` is the scalar the admin view and
+`retention_queue_stats.lag_sec` report. `_max_priority_for_lag` still accepts a plain int,
+meaning "every lane that far behind". The **idle-ladder pause follows the same rule** — it reads
+`lag_by_lane[3]`, the lanes the drain is still serving, so a state-food backlog the ladder has
+deliberately shed cannot pause re-engagement forever.
 
 The activity-timestamp bridge, the busiest write in the
 system, is debounced (`activity_debounce_sec`); re-stamping "active" seconds later buys nothing.
@@ -1362,11 +1367,21 @@ on/off knobs in Retention → Settings (schema section `orchestrator`).
   cashier abandonment → 1d, everything scheduled →
   `RETENTION_JOURNEY_REENTRY_COOLDOWN_DAYS`; an event journey is already gated
   by a real event, so 0) and a journey may state its own via
-  `metadata.reentry_cooldown_days`.
-  A step's channel is resolved through `channels.route_channel` (never
-  `executable_channels` alone — that is a product-level answer and would send to
-  a player who refused the channel), and the guard's `constraints` + `comfort`
-  travel into the brief; on a `fraud_hold` grant the brief is explicitly
+  `metadata.reentry_cooldown_days`. The cooldown counts only runs that actually
+  TOUCHED the player and did not end in `exited_return` — a journey must not be
+  punished for working, and a run that exited on its first step (a transient RG
+  cool-off, a muted bot) must not exclude the player for a month.
+  `_REENTRY_FLOOR_DAYS` (`db.last_enrollment_started_at`) is the hard floor
+  under those exclusions, so "excluded from the cooldown" never means
+  "re-enrollable on the next sweep".
+  `guard_check` runs BEFORE the channel is resolved: the router refuses on the
+  same telegram consents the guard classifies as TERMINAL, so resolving first
+  reported them as `channel_unavailable` — which `drain_due_steps` counts as
+  executed and advances past, marching a muted player's whole journey to
+  'completed' without one touch. A step's channel is then resolved through
+  `channels.route_channel` (never `executable_channels` alone — that is a
+  product-level answer and would send to a player who refused the channel), and
+  the guard's `constraints` + `comfort` travel into the brief; on a `fraud_hold` grant the brief is explicitly
   negated, since the template text is what promises the gift.
 - **Scenario/template library (`scenario_library.py`)** — templates are
   BRIEFS by default (`persona_brief`: ops controls intent, the persona

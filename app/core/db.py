@@ -890,6 +890,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_journey_enrollment_active
 CREATE INDEX IF NOT EXISTS idx_journey_enrollments_due
   ON retention_journey_enrollments(product_id, next_step_at)
   WHERE status = 'active';
+-- The re-entry cooldown asks "when did this player last run this journey?"
+-- once per CANDIDATE per journey on every scheduled sweep, against a table
+-- nothing prunes. The two indexes above are both partial on status='active',
+-- so neither serves a lookup whose whole point is the FINISHED rows.
+CREATE INDEX IF NOT EXISTS idx_journey_enrollment_history
+  ON retention_journey_enrollments(product_id, player_id, journey_key,
+                                   enrolled_at DESC);
 
 -- Step execution audit.
 CREATE TABLE IF NOT EXISTS retention_journey_steps_log (
@@ -5009,23 +5016,35 @@ def _queue_due_args(delay_min_sec: int, delay_max_sec: int) -> tuple[float, int]
     return float(lo), max(int(delay_max_sec) - lo, 0) + 1
 
 
+# HOW LATE a row is, not how old it is. Filtering the not-yet-due rows out is
+# only half of it: every row that survives `_QUEUE_DUE` has by construction
+# been waiting at least `delay_min` (300s shipped) — which is already the p3
+# rung — so reporting `now() - created_at` pinned the ladder below lane 5 on
+# every tick of every product with traffic, exactly as before the filter. A row
+# that has just become claimable is 0 seconds late.
+_QUEUE_OVERDUE = (
+    "EXTRACT(EPOCH FROM now() - (created_at "
+    "  + make_interval(secs => $2 + (id % $3))))"
+)
+
+
 async def retention_queue_lag(product_id: int, *,
                               delay_min_sec: int = 0,
                               delay_max_sec: int = 0) -> int:
-    """Age in seconds of the oldest CLAIMABLE event nobody has picked up yet.
+    """Seconds the most OVERDUE claimable event has been waiting past its due
+    time — 0 when nothing is late.
 
     The hot-path half of `retention_queue_stats`: the drain reads this on every
     tick to decide which lanes it may still claim, so it is one indexed
-    MIN() rather than the admin view's full breakdown. Pass the product's send
-    delay so the number means "work that is overdue", not "work that has not
-    come due yet".
+    aggregate rather than the admin view's full breakdown. Pass the product's
+    send delay, or the number degrades to raw queue age.
     """
     lo, span = _queue_due_args(delay_min_sec, delay_max_sec)
     val = await _fetchval(
-        "SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0) "
+        f"SELECT COALESCE(MAX({_QUEUE_OVERDUE}), 0) "
         f"FROM retention_events WHERE {_QUEUE_DUE}",
         product_id, lo, span)
-    return int(float(val or 0))
+    return max(int(float(val or 0)), 0)
 
 
 async def retention_queue_lag_by_lane(product_id: int, *,
@@ -5044,27 +5063,34 @@ async def retention_queue_lag_by_lane(product_id: int, *,
     lo, span = _queue_due_args(delay_min_sec, delay_max_sec)
     row = await _fetchrow(
         "SELECT "
-        "  COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at) "
-        "    FILTER (WHERE priority <= 2)), 0) AS lag2, "
-        "  COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at) "
-        "    FILTER (WHERE priority <= 3)), 0) AS lag3, "
-        "  COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0) AS lag5 "
+        f"  COALESCE(MAX({_QUEUE_OVERDUE}) FILTER (WHERE priority <= 2), 0) "
+        "    AS lag2, "
+        f"  COALESCE(MAX({_QUEUE_OVERDUE}) FILTER (WHERE priority <= 3), 0) "
+        "    AS lag3, "
+        f"  COALESCE(MAX({_QUEUE_OVERDUE}), 0) AS lag5 "
         f"FROM retention_events WHERE {_QUEUE_DUE}",
         product_id, lo, span)
     row = row or {}
-    return {2: int(float(row.get("lag2") or 0)),
-            3: int(float(row.get("lag3") or 0)),
-            5: int(float(row.get("lag5") or 0))}
+    return {lane: max(int(float(row.get(f"lag{lane}") or 0)), 0)
+            for lane in (2, 3, 5)}
 
 
-async def retention_queue_stats(product_id: int) -> dict[str, Any]:
+async def retention_queue_stats(product_id: int, *,
+                                delay_min_sec: int = 0,
+                                delay_max_sec: int = 0) -> dict[str, Any]:
     """Everything the SLA is read from, in two queries.
 
-    `oldest_pending_sec` is the QUEUE LAG — the age of the oldest event nobody
-    has picked up yet. It is the number the degradation ladder keys on and the
-    one an alert should watch; a rising lag is the only early warning that the
-    drain is losing the race.
+    `lag_sec` is the QUEUE LAG as invariant §12 defines it and as the
+    degradation ladder keys on it: how far past due the most OVERDUE claimable
+    event is (0 when nothing is late). Pass the product's send delay — without
+    it the number degrades to raw queue age.
+
+    `oldest_pending_sec` is kept alongside as the raw age of the oldest pending
+    row, which is a different question: it includes work that is waiting by
+    design (the humanizing send delay, a retry backoff). An alert belongs on
+    `lag_sec`; `oldest_pending_sec` is for reading the shape of the backlog.
     """
+    lo, span = _queue_due_args(delay_min_sec, delay_max_sec)
     row = await _fetchrow(
         "SELECT "
         "  COUNT(*) FILTER (WHERE status = 'pending') AS pending, "
@@ -5072,6 +5098,11 @@ async def retention_queue_stats(product_id: int) -> dict[str, Any]:
         "  COUNT(*) FILTER (WHERE status = 'dead') AS dead, "
         "  COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at) "
         "    FILTER (WHERE status = 'pending')), 0) AS oldest_pending_sec, "
+        f"  COALESCE(MAX({_QUEUE_OVERDUE}) FILTER (WHERE status = 'pending' "
+        "     AND processed_at IS NULL "
+        "     AND (next_attempt_at IS NULL OR next_attempt_at <= now()) "
+        "     AND created_at <= now() "
+        "         - make_interval(secs => $2 + (id % $3))), 0) AS lag_sec, "
         "  COUNT(*) FILTER (WHERE status = 'pending' AND priority <= 2) "
         "    AS pending_p1_p2, "
         "  COUNT(*) FILTER (WHERE status = 'pending' AND priority = 3) "
@@ -5079,7 +5110,7 @@ async def retention_queue_stats(product_id: int) -> dict[str, Any]:
         "  COUNT(*) FILTER (WHERE status = 'pending' AND priority >= 4) "
         "    AS pending_p5 "
         "FROM retention_events WHERE product_id = $1",
-        product_id)
+        product_id, lo, span)
     dl = await _fetchrow(
         "SELECT "
         "  COUNT(*) FILTER (WHERE status IN ('queued', 'sending')) AS queued, "
@@ -5096,6 +5127,7 @@ async def retention_queue_stats(product_id: int) -> dict[str, Any]:
         "dead": int((row or {}).get("dead") or 0),
         "oldest_pending_sec": int(float((row or {}).get("oldest_pending_sec")
                                         or 0)),
+        "lag_sec": max(int(float((row or {}).get("lag_sec") or 0)), 0),
         "pending_by_priority": {
             "p1_p2": int((row or {}).get("pending_p1_p2") or 0),
             "p3": int((row or {}).get("pending_p3") or 0),
@@ -6205,7 +6237,8 @@ async def claim_deliveries(product_id: int, *, limit: int = 50,
     return out
 
 
-async def dead_letter_stale_deliveries(product_id: int, max_attempts: int
+async def dead_letter_stale_deliveries(product_id: int, max_attempts: int, *,
+                                       channels: Optional[Sequence[str]] = None
                                        ) -> int:
     """Close out rows that exhausted the attempt ceiling.
 
@@ -6213,16 +6246,33 @@ async def dead_letter_stale_deliveries(product_id: int, max_attempts: int
     `status='failed', permanent_fail=false` is indistinguishable from one still
     waiting its turn. Flipping it makes the dead ones visible (and countable)
     on the deliveries view instead of silently invisible.
+
+    `queued` counts too, not only `failed`: `reclaim_expired_delivery_leases`
+    hands an abandoned row back as `queued` WITHOUT decrementing `attempts`
+    (deliberately — the killed worker may well have put the message on the
+    wire, so the attempt did happen). A row reclaimed on its last permitted
+    attempt is therefore queued-but-unclaimable, and without this it would sit
+    there forever looking like ordinary pending work.
+
+    `channels` keeps each owner to its own rows: the send worker must not
+    permanently fail an email/push delivery that belongs to
+    `channels.drain_delivery_retries`.
     """
     if int(max_attempts) <= 0:
         return 0
+    args: list[Any] = [product_id, int(max_attempts)]
+    extra = ""
+    if channels is not None:
+        args.append([str(c) for c in channels])
+        extra = f" AND channel = ANY(${len(args)}::text[])"
     result = await _execute(
         "UPDATE retention_deliveries SET permanent_fail = TRUE, "
-        "  next_attempt_at = NULL, updated_at = now(), "
+        "  status = 'failed', next_attempt_at = NULL, locked_until = NULL, "
+        "  updated_at = now(), "
         "  fail_reason = COALESCE(fail_reason, '') || ' (max attempts)' "
-        "WHERE product_id = $1 AND status = 'failed' "
-        "  AND NOT permanent_fail AND attempts >= $2",
-        product_id, int(max_attempts))
+        "WHERE product_id = $1 AND status IN ('queued', 'failed') "
+        "  AND NOT permanent_fail AND attempts >= $2" + extra,
+        *args)
     return _affected(result)
 
 
@@ -6595,13 +6645,44 @@ async def count_active_enrollments(product_id: int, player_id: str) -> int:
 
 async def last_enrollment_at(product_id: int, player_id: str,
                              journey_key: str) -> Optional[str]:
-    """When this player was last enrolled in this journey, whatever came of it.
+    """When this player last ran this journey — the anchor of the re-entry gap.
 
     The one-active-enrollment index is PARTIAL (`WHERE status = 'active'`), so
     it says nothing about a journey the player already finished — and the
     scheduled matcher re-derives its candidates from live state (a dormancy
     cohort, a weekday) that is still true the moment the enrollment completes.
     Without this the sweep re-enrolled the same player every tick.
+
+    Two exclusions keep the gap from punishing the journey for WORKING or for
+    a transient block:
+
+    * `exited_return` means the player came back — the journey did its job. A
+      later relapse deserves a fresh run, not a month in the cold.
+    * `current_step = 0` means no step ever executed (a terminal guard block on
+      the very first step: an RG cool-off, a muted bot). Excluding those is
+      what stops a temporary condition from excluding the player for the whole
+      cooldown; the enrollment itself is still gated by `_REENTRY_FLOOR`.
+
+    Anchored on `updated_at` (when the run ENDED) rather than `enrolled_at`, so
+    a multi-day journey's gap starts counting from its last touch.
+    """
+    val = await _fetchval(
+        "SELECT MAX(GREATEST(updated_at, enrolled_at)) "
+        "FROM retention_journey_enrollments "
+        "WHERE product_id = $1 AND player_id = $2 AND journey_key = $3 "
+        "  AND current_step > 0 AND status <> 'exited_return'",
+        product_id, player_id, journey_key)
+    return _iso(val) if val else None
+
+
+async def last_enrollment_started_at(product_id: int, player_id: str,
+                                     journey_key: str) -> Optional[str]:
+    """When this player was last enrolled at all, whatever came of it.
+
+    The floor under `last_enrollment_at`'s exclusions: an enrollment that
+    exits on its first step writes rows and an admin event, and the scheduled
+    sweep runs every couple of minutes, so "excluded from the cooldown" must
+    not mean "re-enrollable immediately".
     """
     val = await _fetchval(
         "SELECT MAX(enrolled_at) FROM retention_journey_enrollments "

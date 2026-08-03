@@ -857,7 +857,7 @@ async def test_idle_sweep_runs_even_with_agent_disabled(monkeypatch):
         return {"sent": 2, "failed": 1}
 
     async def _lag(pid, **_kw):
-        return 0
+        return {2: 0, 3: 0, 5: 0}
 
     async def _skip(*a, **kw):
         return {"skipped": "paced"}
@@ -866,7 +866,7 @@ async def test_idle_sweep_runs_even_with_agent_disabled(monkeypatch):
         return None
 
     monkeypatch.setattr(retention_idle, "run_product_idle_pings", _idle)
-    monkeypatch.setattr(db, "retention_queue_lag", _lag)
+    monkeypatch.setattr(db, "retention_queue_lag_by_lane", _lag)
     # The ladder now closes its own retention_worker_jobs row (it claims the
     # slot itself, so nothing else can).
     monkeypatch.setattr(db, "finish_worker_job", _finish)
@@ -893,13 +893,16 @@ async def test_maintenance_pauses_idle_when_the_queue_is_far_behind(monkeypatch)
         raise AssertionError("the ladder must stand down behind a backlog")
 
     async def _lag(pid, **_kw):
-        return 900
+        # Lane 3 is what the idle pause reads: the lanes the drain still
+        # serves. A lane-5 backlog the ladder has deliberately shed must not
+        # pause re-engagement (that is the same latching bug, one level up).
+        return {2: 900, 3: 900, 5: 9_000}
 
     async def _skip(*a, **kw):
         return {"skipped": "paced"}
 
     monkeypatch.setattr(retention_idle, "run_product_idle_pings", _idle_boom)
-    monkeypatch.setattr(db, "retention_queue_lag", _lag)
+    monkeypatch.setattr(db, "retention_queue_lag_by_lane", _lag)
     monkeypatch.setattr(retention_v2, "_run_maintenance_job", _skip)
     # send_worker_enabled=True: the legacy inline delivery-retry drain is the
     # send worker's job then, so this pass does not reach for channels.

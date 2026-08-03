@@ -1424,7 +1424,14 @@ async def v2_status(product_id: int,
     await admin_auth.require_product_read(admin, product_id)
     tenancy.set_current_product(product_id)
     cfg = settings_mod.retention()
-    queue = await db.retention_queue_stats(product_id)
+    # The product's send delay travels in so `lag_sec` means what invariant §12
+    # says it means — how far past DUE the queue is — and matches the number
+    # the drain's backpressure ladder actually keys on.
+    _delay_min = int(cfg.get("v2_send_delay_min_sec") or 0)
+    queue = await db.retention_queue_stats(
+        product_id, delay_min_sec=_delay_min,
+        delay_max_sec=max(int(cfg.get("v2_send_delay_max_sec") or 0),
+                          _delay_min))
     latency = await db.retention_latency_percentiles(product_id)
     jobs = await db.list_worker_jobs([product_id])
     cost_today = await db.retention_v2_cost_today(product_id)

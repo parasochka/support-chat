@@ -469,14 +469,18 @@ async def run_product_maintenance(product: dict[str, Any]) -> dict[str, Any]:
         try:
             idle_pause_at = int(cfg.get("queue_degrade_idle_sec")
                                 or config.RETENTION_QUEUE_DEGRADE_IDLE_SEC)
-            # Same "overdue, not merely queued" reading as the drain's ladder
-            # (see run_product_events): the send delay is not a backlog.
+            # Same reading as the drain's ladder (see run_product_events): how
+            # far past due the work is, over the lanes the drain is still
+            # SERVING. The lane-blind number would latch here for the same
+            # reason it did there — once the ladder sheds lane 5 those rows
+            # grow overdue without bound, and re-engagement would stay paused
+            # forever on a backlog the drain is deliberately ignoring.
             idle_delay_min = int(cfg.get("v2_send_delay_min_sec") or 0)
-            idle_delay_max = int(cfg.get("v2_send_delay_max_sec") or 0)
-            if await db.retention_queue_lag(
-                    pid, delay_min_sec=idle_delay_min,
-                    delay_max_sec=max(idle_delay_max, idle_delay_min)
-            ) >= idle_pause_at:
+            idle_lags = await db.retention_queue_lag_by_lane(
+                pid, delay_min_sec=idle_delay_min,
+                delay_max_sec=max(int(cfg.get("v2_send_delay_max_sec") or 0),
+                                  idle_delay_min))
+            if int(idle_lags.get(3) or 0) >= idle_pause_at:
                 stats["idle_paused"] = 1
             else:
                 from app.retention import retention_idle

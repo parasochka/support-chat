@@ -179,25 +179,6 @@ async def run_product_sends(product: dict[str, Any], *,
                 max_attempts=max_attempts,
                 channels=_SEND_WORKER_CHANNELS)
             if not rows:
-                # Nothing claimable. Close out anything that ran out of
-                # attempts, so it stops looking like a row still waiting its
-                # turn — the claim's ceiling stops the retrying, this makes the
-                # outcome visible. Only worth a query when this pass actually
-                # moved rows: attempts change only through a claim, so an idle
-                # product can have produced no new exhausted row.
-                if counters["batches"]:
-                    try:
-                        dead = await db.dead_letter_stale_deliveries(
-                            pid, max_attempts)
-                    except Exception:  # noqa: BLE001 - never break the send
-                        log.exception("retention_send_deadletter_failed "
-                                      "product=%s", pid)
-                        dead = 0
-                    if dead:
-                        counters["dead"] = counters.get("dead", 0) + dead
-                        log.warning("retention_send_dead_lettered product=%s "
-                                    "rows=%s attempts=%s", pid, dead,
-                                    max_attempts)
                 break
             counters["batches"] += 1
             owed = {int(r["id"]) for r in rows}
@@ -245,9 +226,39 @@ async def run_product_sends(product: dict[str, Any], *,
                 if await retention_v2._sleep_or_stop(_DRY_BUCKET_PAUSE_SEC,
                                                      stop):
                     break
+        # Close out anything that ran out of attempts, so it stops looking
+        # like a row still waiting its turn — the claim's ceiling stops the
+        # retrying, this makes the outcome visible. Once per PASS, after the
+        # loop: putting it on the empty-claim branch missed every pass that
+        # ended on the deadline or on a dry bucket, which is exactly when a
+        # failing channel is producing exhausted rows. Only worth a query when
+        # this pass moved rows — attempts change only through a claim, so an
+        # idle product cannot have produced a new exhausted row.
+        if counters["batches"]:
+            try:
+                dead = await db.dead_letter_stale_deliveries(
+                    pid, max_attempts, channels=_SEND_WORKER_CHANNELS)
+            except Exception:  # noqa: BLE001 - bookkeeping, never the send
+                log.exception("retention_send_deadletter_failed product=%s",
+                              pid)
+                dead = 0
+            if dead:
+                counters["dead"] = dead
+                log.warning("retention_send_dead_lettered product=%s rows=%s "
+                            "attempts=%s", pid, dead, max_attempts)
         # Nothing was even claimed: say so plainly rather than reporting a row
         # of zeros the aggregate log would have to filter out.
         return counters if counters["batches"] else {}
+
+
+def _first_attempt(row: dict[str, Any]) -> bool:
+    """Whether this claim is the row's FIRST real send attempt.
+
+    Gates the generation accounting: the model call happened once, when the
+    touch was decided, however many times the queue retries putting it on the
+    wire. The claim stamps the attempt, so `attempts == 1` is the first one.
+    """
+    return int(row.get("attempts") or 1) <= 1
 
 
 def _backoff_for(row: dict[str, Any]) -> int:
@@ -403,8 +414,12 @@ async def _deliver_row(product: dict[str, Any], row: dict[str, Any],
         # made — the model call happened, so invariant §4 says it must land in
         # ai_interaction_logs whether or not the text ever reached the player.
         # Every other terminal branch writes it through deliver_payload; this
-        # one returns before that, so it accounts for itself.
-        await _account_unsent(pid, payload, suppressed)
+        # one returns before that, so it accounts for itself — on the FIRST
+        # attempt only, exactly like the deliver branch below. A touch that
+        # failed transiently and is suppressed on the retry has already been
+        # accounted for by the failed attempt.
+        if _first_attempt(row):
+            await _account_unsent(pid, payload, suppressed)
         if decision_id:
             await db.update_retention_v2_decision(
                 int(decision_id), delivered=False,
@@ -419,12 +434,8 @@ async def _deliver_row(product: dict[str, Any], row: dict[str, Any],
                                      delay_sec=_BUCKET_RETRY_SEC)
         return "deferred"
 
-    # The claim already stamped this attempt, so attempts == 1 IS the first
-    # one. Only it may write the generation's cost: the model call happened
-    # once, however many times the queue retries putting it on the wire.
     delivered, detail, facts = await retention_v2.deliver_payload(
-        product, ru, payload, cfg,
-        account_generation=int(row.get("attempts") or 1) <= 1)
+        product, ru, payload, cfg, account_generation=_first_attempt(row))
     if delivered:
         outcome_id = await outcomes.record(
             pid, ru, kind="proactive", session_id=facts.get("session_id"),

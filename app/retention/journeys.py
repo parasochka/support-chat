@@ -53,6 +53,12 @@ _FREQUENCY_RETRY = _dt.timedelta(hours=2)
 # override it.
 _BRIEF_MAX = 700
 
+# The hard floor between two enrollments of one player in one journey, applied
+# even to the runs `db.last_enrollment_at` excludes from the cooldown. The
+# scheduled sweep runs every couple of minutes off live state, so anything
+# shorter is churn.
+_REENTRY_FLOOR_DAYS = 1.0
+
 _DELAY_RE = re.compile(r"^\s*(\d+)\s*([smhd])\s*$", re.IGNORECASE)
 
 
@@ -202,14 +208,22 @@ async def _enroll(product: dict[str, Any], ru: dict[str, Any],
     active = await db.count_active_enrollments(pid, player_id)
     if active >= max_active:
         return False
+    from app.retention import retention_v2  # late: it imports this module
+    journey_key = str(journey["journey_key"])
     cooldown = _reentry_cooldown_days(journey)
     if cooldown > 0:
-        from app.retention import retention_v2  # late: it imports this module
-        last = await db.last_enrollment_at(pid, player_id,
-                                           str(journey["journey_key"]))
+        last = await db.last_enrollment_at(pid, player_id, journey_key)
         since = retention_v2.days_since(last) if last else None
         if since is not None and since < cooldown:
             return False
+    # The floor applies even to the runs the cooldown deliberately ignores (a
+    # journey that worked, or one that exited on its first step). Without it
+    # "excluded from the cooldown" would mean "re-enrollable on the next sweep"
+    # — the same 2-minute churn the cooldown exists to stop, just quieter.
+    started = await db.last_enrollment_started_at(pid, player_id, journey_key)
+    since_start = retention_v2.days_since(started) if started else None
+    if since_start is not None and since_start < _REENTRY_FLOOR_DAYS:
+        return False
     enrollment_id = await db.create_enrollment(
         pid, player_id=player_id,
         retention_user_id=int(ru["id"]) if ru.get("id") else None,
@@ -274,11 +288,17 @@ async def match_scheduled_journeys(product: dict[str, Any],
             state = await retention_v2.resolve_player_state(pid, ru, cfg)
             if eval_conditions(j.get("entry_conditions"), state) is not True:
                 continue
-            if await _enroll(product, ru, j, cfg):
+            took = await _enroll(product, ru, j, cfg)
+            if took:
                 enrolled += 1
-                # Abandonment: one comeback per initiated-deposit attempt.
-                if match.get("deposit_initiated_older_than_h") is not None:
-                    await db.clear_deposit_initiated(pid, int(ru["id"]))
+            # Abandonment: one comeback per initiated-deposit attempt. The
+            # timer is disarmed whether or not the enrollment happened — this
+            # abandonment has now been CONSIDERED. Clearing it only on success
+            # left a refused candidate (re-entry cooldown, active-journey cap)
+            # armed, so the journey later fired on an abandonment that was days
+            # stale and read as a comeback nudge for a deposit long forgotten.
+            if match.get("deposit_initiated_older_than_h") is not None:
+                await db.clear_deposit_initiated(pid, int(ru["id"]))
     return enrolled
 
 
@@ -319,10 +339,13 @@ async def _execute_step(product: dict[str, Any], ru: dict[str, Any],
     if step_type == "wait":
         return "waited", None
 
-    channel = await _resolve_step_channel(pid, ru, step, cfg)
-    if channel is None:
-        return "channel_unavailable", str(step.get("channel"))
-
+    # THE GUARD RUNS FIRST. It is what classifies a refusal — a terminal one
+    # (unsubscribed, opted out, bot blocked, RG) EXITS the journey, a frequency
+    # one DEFERS the step. The channel router also refuses on player consent
+    # (`opted_in`), and those are the very same three telegram conditions, so
+    # resolving the channel first reported them as `channel_unavailable` —
+    # which `drain_due_steps` counts as executed and ADVANCES past, marching a
+    # muted player's whole journey to 'completed' without a single touch.
     synthetic_evt = {"id": None,
                      "event_name": f"journey:{journey['journey_key']}"}
     guard = await retention_v2.guard_check(pid, ru, synthetic_evt, state, cfg)
@@ -332,6 +355,15 @@ async def _execute_step(product: dict[str, Any], ru: dict[str, Any],
                 str(r).startswith("rg_") for r in reasons):
             return "blocked_terminal", "; ".join(sorted(reasons))
         return "deferred_frequency", "; ".join(sorted(reasons))
+
+    channel = await _resolve_step_channel(pid, ru, step, cfg)
+    if channel is None:
+        # Past the guard, a None route means the step's own channel is not
+        # deliverable for this player — the product has it switched off, or the
+        # player never consented to THAT channel (telegram consent is already
+        # covered above). Not terminal for the journey: a later step on another
+        # channel may still be fine.
+        return "channel_unavailable", str(step.get("channel"))
 
     dry = bool(journey.get("dry_run")) or bool(cfg.get("v2_dry_run"))
 

@@ -18,6 +18,12 @@ def _cfg(**over):
         "smart_send_time_enabled": False,
         "holdout_pct": 0, "rg_enabled": False,
         "quiet_hours_utc_offset": 0,
+        # guard_check runs BEFORE the channel is resolved (a terminal consent
+        # denial has to exit the journey, not read as channel_unavailable), so
+        # a step test needs its knobs. Zeros keep it off the database.
+        "ping_min_gap_hours": 0, "ping_daily_cap": 99,
+        "v2_daily_budget_usd": 0, "v2_same_event_cooldown_hours": 0,
+        "v2_loss_comfort_hours": 0, "v2_loss_high_usd": 0,
     }
     base.update(over)
     return base
@@ -117,6 +123,7 @@ async def test_enroll_idempotent_and_capped(monkeypatch):
     monkeypatch.setattr(db, "set_enrollment_next_step", _next)
     monkeypatch.setattr(db, "log_admin_event", _log)
     monkeypatch.setattr(db, "last_enrollment_at", _last)
+    monkeypatch.setattr(db, "last_enrollment_started_at", _last)
     assert await journeys._enroll(PRODUCT, _ru(), _journey(), _cfg()) is True
     assert await journeys._enroll(PRODUCT, _ru(), _journey(), _cfg()) is False
 
@@ -177,6 +184,7 @@ async def test_a_finished_enrollment_is_not_recreated_next_sweep(monkeypatch):
         return _iso_ago(0.05)
 
     monkeypatch.setattr(db, "last_enrollment_at", _just_now)
+    monkeypatch.setattr(db, "last_enrollment_started_at", _just_now)
     assert await journeys._enroll(PRODUCT, _ru(), _journey(), _cfg()) is False
     assert created == []
 
@@ -185,8 +193,24 @@ async def test_a_finished_enrollment_is_not_recreated_next_sweep(monkeypatch):
         return _iso_ago(24 * 365)
 
     monkeypatch.setattr(db, "last_enrollment_at", _long_ago)
+    monkeypatch.setattr(db, "last_enrollment_started_at", _long_ago)
     assert await journeys._enroll(PRODUCT, _ru(), _journey(), _cfg()) is True
     assert len(created) == 1
+
+    # A run the cooldown EXCLUDES (it worked, or it never executed a step)
+    # still cannot re-enroll on the next 2-minute sweep: the floor holds.
+    async def _none(pid, player, journey_key):
+        return None
+
+    monkeypatch.setattr(db, "last_enrollment_at", _none)
+    monkeypatch.setattr(db, "last_enrollment_started_at", _just_now)
+    assert await journeys._enroll(PRODUCT, _ru(), _journey(), _cfg()) is False
+    assert len(created) == 1
+    # …and a day later it is eligible again, without waiting out the full
+    # cooldown a successful or aborted run must not impose.
+    monkeypatch.setattr(db, "last_enrollment_started_at", _long_ago)
+    assert await journeys._enroll(PRODUCT, _ru(), _journey(), _cfg()) is True
+    assert len(created) == 2
 
 
 async def test_event_matching_enrolls_on_conditions(monkeypatch):

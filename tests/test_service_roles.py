@@ -244,7 +244,7 @@ async def test_the_idle_sweep_closes_its_own_job_row(monkeypatch):
     finished: list[tuple] = []
 
     async def _lag(pid, **_kw):
-        return 0
+        return {2: 0, 3: 0, 5: 0}
 
     async def _idle(product, cfg, **kw):
         return {"sent": 1}
@@ -258,7 +258,7 @@ async def test_the_idle_sweep_closes_its_own_job_row(monkeypatch):
 
     monkeypatch.setattr(settings_mod, "retention",
                         lambda: {"idle_pings_enabled": True})
-    monkeypatch.setattr(db_mod, "retention_queue_lag", _lag)
+    monkeypatch.setattr(db_mod, "retention_queue_lag_by_lane", _lag)
     monkeypatch.setattr(db_mod, "finish_worker_job", _finish)
     monkeypatch.setattr(retention_idle, "run_product_idle_pings", _idle)
     monkeypatch.setattr(retention_v2, "_run_maintenance_job", _skip)
