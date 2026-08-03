@@ -226,3 +226,51 @@ async def test_dead_letter_routes_authorize_against_the_product(monkeypatch):
     resp = await retention_api.v2_requeue_dead_letter(7, body, admin=admin)
     assert calls == [("write", 7)], calls
     assert b'"requeued":2' in resp.body.replace(b" ", b"")
+
+
+async def test_the_idle_sweep_closes_its_own_job_row(monkeypatch):
+    """The ladder claims its job slot inside run_product_idle_pings, so the
+    maintenance pass must CLOSE it — the four sweeps that go through
+    _run_maintenance_job get that for free, this one does not.
+
+    Observed in production after the first deploy: the `idle` row sat at
+    last_status='running' with no duration forever, which is precisely the
+    signal the background-jobs panel exists to give about a wedged sweep.
+    """
+    from app.core import db as db_mod
+    from app.core import settings as settings_mod
+    from app.retention import retention_idle, retention_v2
+
+    finished: list[tuple] = []
+
+    async def _lag(pid):
+        return 0
+
+    async def _idle(product, cfg, **kw):
+        return {"sent": 1}
+
+    async def _finish(pid, job, *, status, duration_ms=None, error=None,
+                      interval_sec=None):
+        finished.append((job, status, duration_ms is not None))
+
+    async def _skip(*a, **kw):
+        return {"skipped": "paced"}
+
+    monkeypatch.setattr(settings_mod, "retention",
+                        lambda: {"idle_pings_enabled": True})
+    monkeypatch.setattr(db_mod, "retention_queue_lag", _lag)
+    monkeypatch.setattr(db_mod, "finish_worker_job", _finish)
+    monkeypatch.setattr(retention_idle, "run_product_idle_pings", _idle)
+    monkeypatch.setattr(retention_v2, "_run_maintenance_job", _skip)
+    monkeypatch.setattr(retention_v2.settings, "global_retention_bool",
+                        lambda key, default: True)
+
+    await retention_v2.run_product_maintenance({"id": 1})
+    assert ("idle", "ok", True) in finished, finished
+
+    # A sweep that only got paced out has not run, so it must not overwrite the
+    # row of whoever is actually running it.
+    finished.clear()
+    monkeypatch.setattr(retention_idle, "run_product_idle_pings", _skip)
+    await retention_v2.run_product_maintenance({"id": 1})
+    assert not [f for f in finished if f[0] == "idle"], finished
