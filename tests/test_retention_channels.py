@@ -130,13 +130,13 @@ async def test_status_callback_never_moves_backwards(monkeypatch):
 async def test_retry_respects_permanent_and_backoff(monkeypatch):
     updates = []
 
-    async def _due(pid, limit=20):
+    async def _due(pid, limit=20, *, channels=None):
         return [{"delivery_id": "dl_a", "channel": "push", "attempts": 0,
                  "retention_user_id": 10, "title": "t", "body": "b",
                  "cta_url": None}]
 
     async def _get_ru(pid, rid):
-        return _ru()
+        return _ru(push_opt_in=True, push_available=True)
 
     async def _update(pid, did, **kw):
         updates.append(kw)
@@ -152,6 +152,53 @@ async def test_retry_respects_permanent_and_backoff(monkeypatch):
     assert n == 1
     assert updates[-1]["permanent_fail"] is True
     assert updates[-1]["next_attempt_at"] is None  # never retried again
+
+
+async def test_the_retry_sweep_owns_only_the_channels_it_can_send(monkeypatch):
+    """Telegram rows belong to the send worker's leased claim. A delivery must
+    have exactly ONE owner: two retriers would close each other's rows, and
+    this sweep can only speak email/push/in_app/sms."""
+    asked = {}
+
+    async def _due(pid, limit=20, *, channels=None):
+        asked["channels"] = channels
+        return []
+
+    monkeypatch.setattr(db, "due_delivery_retries", _due)
+    await channels.drain_delivery_retries({"id": 1}, _cfg())
+    assert asked["channels"] is not None
+    assert "telegram" not in asked["channels"]
+
+
+async def test_a_retry_rechecks_consent_before_resending(monkeypatch):
+    """Strict opt-in is absolute, and a RETRY is a send. The first attempt was
+    authorized hours ago; a player who revoked push/email consent since must
+    not receive the retry."""
+    updates = []
+
+    async def _due(pid, limit=20, *, channels=None):
+        return [{"delivery_id": "dl_a", "channel": "push", "attempts": 0,
+                 "retention_user_id": 10, "title": "t", "body": "b",
+                 "cta_url": None}]
+
+    async def _get_ru(pid, rid):
+        return _ru(push_opt_in=False)     # revoked since the first attempt
+
+    async def _update(pid, did, **kw):
+        updates.append(kw)
+
+    async def _boom(*a, **kw):
+        raise AssertionError("must not send to a player who opted out")
+
+    monkeypatch.setattr(db, "due_delivery_retries", _due)
+    monkeypatch.setattr(db, "get_retention_user_by_id", _get_ru)
+    monkeypatch.setattr(db, "update_delivery", _update)
+    monkeypatch.setattr(channels, "_send_delegated", _boom)
+    monkeypatch.setattr(channels, "_send_email_customerio", _boom)
+
+    assert await channels.drain_delivery_retries({"id": 1}, _cfg()) == 0
+    assert updates[-1]["status"] == "suppressed"
+    assert updates[-1]["permanent_fail"] is True
 
 
 async def test_retry_disabled_or_singlechannel_noop(monkeypatch):

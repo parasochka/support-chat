@@ -701,6 +701,14 @@ RETENTION_JOURNEY_STEP_SWEEP_INTERVAL_SEC: int = _env_int(
     "RETENTION_JOURNEY_STEP_SWEEP_INTERVAL_SEC", 300)
 RETENTION_JOURNEY_MAX_ACTIVE_PER_PLAYER: int = _env_int(
     "RETENTION_JOURNEY_MAX_ACTIVE_PER_PLAYER", 3)
+# Default gap before a SCHEDULED journey may take the same player again. Its
+# candidates come from live state (a dormancy cohort lasts days), so without a
+# gap a finished enrollment is re-created on the very next sweep. A journey may
+# override it with `metadata.reentry_cooldown_days`; the weekly and
+# cashier-abandonment trigger shapes derive their own (see
+# journeys._reentry_cooldown_days).
+RETENTION_JOURNEY_REENTRY_COOLDOWN_DAYS: int = _env_int(
+    "RETENTION_JOURNEY_REENTRY_COOLDOWN_DAYS", 30)
 # SCENARIO / TEMPLATE LIBRARY.
 RETENTION_SCENARIO_AUTOSEED: bool = _env_bool("RETENTION_SCENARIO_AUTOSEED",
                                               False)
@@ -768,6 +776,12 @@ RETENTION_SEND_WORKER_ENABLED: bool = _env_bool(
     "RETENTION_SEND_WORKER_ENABLED", False)
 RETENTION_SEND_CONCURRENCY: int = _env_int("RETENTION_SEND_CONCURRENCY", 16)
 RETENTION_SEND_LEASE_SEC: int = _env_int("RETENTION_SEND_LEASE_SEC", 120)
+# Dead-letter ceiling for a delivery, the counterpart of
+# RETENTION_EVENT_MAX_ATTEMPTS. Without one a transiently-failing row (a
+# rotated bot token, a partner endpoint that is down) is re-claimed on the
+# saturated 30-minute backoff step forever, and every attempt re-bills the
+# original generation's tokens into ai_interaction_logs.
+RETENTION_SEND_MAX_ATTEMPTS: int = _env_int("RETENTION_SEND_MAX_ATTEMPTS", 6)
 RETENTION_SEND_BATCH_SIZE: int = _env_int("RETENTION_SEND_BATCH_SIZE", 200)
 # Token bucket per channel. Telegram allows ~30 msg/s per bot and ~1/s per
 # chat; we sit under both so a broadcast drains instead of collecting 429s.

@@ -63,7 +63,7 @@ GLOBAL_ONLY_FIELDS: dict[str, frozenset[str]] = {
         "event_lease_sec", "event_max_attempts", "event_backoff_base_sec",
         "worker_product_concurrency", "worker_player_concurrency",
         "agent_model_concurrency", "send_worker_enabled", "send_lease_sec",
-        "send_pass_max_sec",
+        "send_max_attempts", "send_pass_max_sec",
         "maintenance_interval_sec", "attribution_interval_sec",
         "scoring_interval_sec", "profile_interval_sec",
         "journey_interval_sec", "event_keep_days", "event_keep_days_state",
@@ -684,6 +684,8 @@ def retention() -> dict[str, Any]:
                                      config.RETENTION_SEND_CONCURRENCY),
         "send_lease_sec": db_v.get("send_lease_sec",
                                    config.RETENTION_SEND_LEASE_SEC),
+        "send_max_attempts": db_v.get("send_max_attempts",
+                                      config.RETENTION_SEND_MAX_ATTEMPTS),
         "send_batch_size": db_v.get("send_batch_size",
                                     config.RETENTION_SEND_BATCH_SIZE),
         "telegram_rate_per_sec": db_v.get(
@@ -943,6 +945,7 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_bool(value, "send_worker_enabled")
         _require_int(value, "send_concurrency", 1, 64)
         _require_int(value, "send_lease_sec", 10, 3_600)
+        _require_int(value, "send_max_attempts", 1, 50)
         _require_int(value, "send_batch_size", 1, 1_000)
         _require_float(value, "telegram_rate_per_sec", 0.1, 30.0)
         _require_float(value, "telegram_burst", 1.0, 100.0)
