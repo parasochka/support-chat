@@ -69,10 +69,6 @@ _caps_cache: dict[int, tuple[float, list[dict[str, Any]]]] = {}
 _prio_cache: dict[int, tuple[float, dict[str, dict[str, Any]]]] = {}
 _CACHE_TTL = 60.0
 
-# Per-product pacing for the activity-profile sweep.
-_last_profile_sweep: dict[int, float] = {}
-
-
 def reset_caches() -> None:
     _caps_cache.clear()
     _prio_cache.clear()
@@ -299,13 +295,12 @@ async def run_product_activity_profiles(product_id: int, cfg: dict[str, Any],
     """Paced recompute of the per-player activity profiles (SST input)."""
     if not sst_enabled(cfg):
         return {"skipped": "sst_disabled"}
-    now = time.monotonic()
     interval = int(cfg.get("activity_profile_sweep_interval_sec")
                    or config.RETENTION_ACTIVITY_PROFILE_SWEEP_INTERVAL_SEC)
-    last = _last_profile_sweep.get(product_id)
-    if not force and last is not None and now - last < interval:
+    # Paced in Postgres (retention_worker_jobs) — see scoring.
+    if not force and not await db.claim_worker_job(product_id, "profiles",
+                                                   interval):
         return {"skipped": "paced"}
-    _last_profile_sweep[product_id] = now
     updated = 0
     try:
         players = await db.activity_profile_candidates(product_id, limit=limit)

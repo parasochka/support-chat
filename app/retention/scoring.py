@@ -27,16 +27,12 @@ from __future__ import annotations
 
 import datetime as _dt
 import logging
-import time
 from typing import Any, Optional
 
 from app.core import config
 from app.core import db
 
 log = logging.getLogger(__name__)
-
-# Per-product pacing for the scoring sweep (rides the worker tick).
-_last_sweep: dict[int, float] = {}
 
 COHORTS = ("active", "dormant_d7", "dormant_d10", "dormant_d14",
            "dormant_d21", "dormant_d30", "lost")
@@ -267,13 +263,13 @@ async def run_product_scoring(product_id: int, cfg: dict[str, Any], *,
     (rides the worker tick like the attribution sweep)."""
     if not scoring_enabled(cfg):
         return {"skipped": "scoring_disabled"}
-    now = time.monotonic()
     interval = int(cfg.get("scoring_sweep_interval_sec")
                    or config.RETENTION_SCORING_SWEEP_INTERVAL_SEC)
-    last = _last_sweep.get(product_id)
-    if not force and last is not None and now - last < interval:
+    # Paced in Postgres (retention_worker_jobs), not in process memory: the
+    # dict reset on every deploy and gave each worker instance its own clock.
+    if not force and not await db.claim_worker_job(product_id, "scoring",
+                                                   interval):
         return {"skipped": "paced"}
-    _last_sweep[product_id] = now
     scored = 0
     try:
         for ru in await db.scoring_candidates(product_id, limit=limit):

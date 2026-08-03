@@ -26,18 +26,12 @@ that already went out, so every helper swallows its exceptions and logs.
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any, Optional
 
 from app.core import config
 from app.core import db
 
 log = logging.getLogger(__name__)
-
-# Per-product pacing for the attribution sweep (the worker ticks every few
-# seconds; attribution is a minutes-scale job).
-_last_sweep: dict[int, float] = {}
-
 
 async def record(product_id: int, ru: Optional[dict[str, Any]], *, kind: str,
                  session_id: Optional[str] = None,
@@ -96,18 +90,15 @@ async def run_product_attribution(product_id: int, *, force: bool = False
                                   ) -> dict[str, Any]:
     """Settle this product's open attribution rows (paced; `force` skips it).
 
-    A product this process has never swept is always due. NB the `None` check
-    rather than a `0.0` default: `time.monotonic()` counts from an arbitrary
-    epoch (boot on Linux), so on a freshly started machine `now - 0.0` is
-    itself smaller than the interval — a plain default would skip every
-    product's FIRST sweep for the first few minutes after a deploy.
+    Paced through `retention_worker_jobs` rather than an in-process clock: the
+    old dict reset on every deploy (so a frequently-deployed service swept far
+    more often than the interval says) and, once a second worker exists, both
+    instances would sweep the same product at once.
     """
-    now = time.monotonic()
     interval = config.RETENTION_OUTCOME_SWEEP_INTERVAL_SEC
-    last = _last_sweep.get(product_id)
-    if not force and last is not None and now - last < interval:
+    if not force and not await db.claim_worker_job(product_id, "attribution",
+                                                   interval):
         return {"skipped": "paced"}
-    _last_sweep[product_id] = now
     try:
         updated = await db.attribute_retention_outcomes(
             product_id,

@@ -714,6 +714,96 @@ RETENTION_PUSH_DELIVERY_TIMEOUT_SEC: int = _env_int(
 # them retroactively makes stored uplift slices incomparable).
 RETENTION_UPLIFT_WINDOW_DAYS: int = _env_int("RETENTION_UPLIFT_WINDOW_DAYS", 28)
 
+# --- EVENT PIPELINE: queue durability, parallelism, send shaping -------------
+# Env defaults for the `retention` group's pipeline knobs. The queue is a
+# LEASED Postgres queue (see the retention_events comment in db._SCHEMA): a
+# claim is a lease, not a completion, so nothing is lost when a worker dies.
+# How long a claimed event may stay in flight before the reclaimer assumes the
+# worker is gone. Must exceed the agent model timeout (90s) with real margin —
+# a lease that expires mid-decision means the event is processed twice.
+RETENTION_EVENT_LEASE_SEC: int = _env_int("RETENTION_EVENT_LEASE_SEC", 300)
+RETENTION_EVENT_MAX_ATTEMPTS: int = _env_int("RETENTION_EVENT_MAX_ATTEMPTS", 5)
+RETENTION_EVENT_BACKOFF_BASE_SEC: int = _env_int(
+    "RETENTION_EVENT_BACKOFF_BASE_SEC", 30)
+# Parallelism. Products are drained concurrently (each under its own advisory
+# lock) and, inside a product, events are grouped BY PLAYER: one player's
+# events are strictly serial (two concurrent decisions for the same player race
+# on the guard counters and produce two messages), different players run in
+# parallel.
+RETENTION_WORKER_PRODUCT_CONCURRENCY: int = _env_int(
+    "RETENTION_WORKER_PRODUCT_CONCURRENCY", 4)
+RETENTION_WORKER_PLAYER_CONCURRENCY: int = _env_int(
+    "RETENTION_WORKER_PLAYER_CONCURRENCY", 8)
+# Fleet-wide ceiling on concurrent background model calls, independent of which
+# API key serves them: a burst must not open hundreds of completions at once.
+RETENTION_AGENT_MODEL_CONCURRENCY: int = _env_int(
+    "RETENTION_AGENT_MODEL_CONCURRENCY", 8)
+# Backpressure ladder, keyed on the queue lag (age of the oldest pending
+# event). Past the first threshold the drain stops claiming state food, past
+# the second only transactional lanes move, past the third the idle ladder
+# pauses for that product until the lag recovers.
+RETENTION_QUEUE_DEGRADE_P3_SEC: int = _env_int(
+    "RETENTION_QUEUE_DEGRADE_P3_SEC", 300)
+RETENTION_QUEUE_DEGRADE_P2_SEC: int = _env_int(
+    "RETENTION_QUEUE_DEGRADE_P2_SEC", 900)
+RETENTION_QUEUE_DEGRADE_IDLE_SEC: int = _env_int(
+    "RETENTION_QUEUE_DEGRADE_IDLE_SEC", 3600)
+# High-volume events (spins, session pings) are stored COMPLETE and never enter
+# the drain — they only move counters and feed the state resolver.
+RETENTION_QUEUE_BYPASS_STATE_EVENTS: bool = _env_bool(
+    "RETENTION_QUEUE_BYPASS_STATE_EVENTS", True)
+# Debounce for the activity-timestamp bridge: the busiest write in the system,
+# and re-stamping "active" seconds later buys nothing.
+RETENTION_ACTIVITY_DEBOUNCE_SEC: int = _env_int(
+    "RETENTION_ACTIVITY_DEBOUNCE_SEC", 60)
+# SEND STAGE. Off = decisions send inline exactly as before (the rollout flag);
+# on = a decision only enqueues and the send worker delivers it.
+RETENTION_SEND_WORKER_ENABLED: bool = _env_bool(
+    "RETENTION_SEND_WORKER_ENABLED", False)
+RETENTION_SEND_CONCURRENCY: int = _env_int("RETENTION_SEND_CONCURRENCY", 8)
+RETENTION_SEND_LEASE_SEC: int = _env_int("RETENTION_SEND_LEASE_SEC", 120)
+RETENTION_SEND_BATCH_SIZE: int = _env_int("RETENTION_SEND_BATCH_SIZE", 50)
+# Token bucket per channel. Telegram allows ~30 msg/s per bot and ~1/s per
+# chat; we sit under both so a broadcast drains instead of collecting 429s.
+RETENTION_TELEGRAM_RATE_PER_SEC: float = _env_float(
+    "RETENTION_TELEGRAM_RATE_PER_SEC", 25.0)
+RETENTION_TELEGRAM_BURST: float = _env_float("RETENTION_TELEGRAM_BURST", 25.0)
+RETENTION_TELEGRAM_CHAT_RATE_PER_SEC: float = _env_float(
+    "RETENTION_TELEGRAM_CHAT_RATE_PER_SEC", 1.0)
+RETENTION_EMAIL_RATE_PER_SEC: float = _env_float(
+    "RETENTION_EMAIL_RATE_PER_SEC", 50.0)
+# Maintenance-loop cadences (each sweep is paced per product through
+# retention_worker_jobs, so these are how often a worker even looks).
+RETENTION_MAINTENANCE_INTERVAL_SEC: int = _env_int(
+    "RETENTION_MAINTENANCE_INTERVAL_SEC", 30)
+RETENTION_ATTRIBUTION_INTERVAL_SEC: int = _env_int(
+    "RETENTION_ATTRIBUTION_INTERVAL_SEC", 300)
+RETENTION_SCORING_INTERVAL_SEC: int = _env_int(
+    "RETENTION_SCORING_INTERVAL_SEC", 900)
+RETENTION_PROFILE_INTERVAL_SEC: int = _env_int(
+    "RETENTION_PROFILE_INTERVAL_SEC", 3600)
+RETENTION_JOURNEY_INTERVAL_SEC: int = _env_int(
+    "RETENTION_JOURNEY_INTERVAL_SEC", 120)
+# Split retention for the event log: state food is 90%+ of the rows and worth
+# nothing once the resolver's windows have passed.
+RETENTION_EVENT_KEEP_DAYS: int = _env_int("RETENTION_EVENT_KEEP_DAYS", 90)
+RETENTION_EVENT_KEEP_DAYS_STATE: int = _env_int(
+    "RETENTION_EVENT_KEEP_DAYS_STATE", 14)
+
+# --- PROCESS ROLE ------------------------------------------------------------
+# Which half of the service this process is. 'web' serves HTTP only; 'worker'
+# runs the background loops only (its own Railway service from the same image);
+# 'all' is the single-process mode (local dev, and the pre-split default so an
+# existing deployment keeps working until its worker service exists).
+SERVICE_ROLE: str = _env("SERVICE_ROLE", "all").strip().lower()
+# Seconds a shutting-down worker may spend finishing the batch in flight.
+# Railway sends SIGKILL 30s after SIGTERM, so stay under that.
+WORKER_DRAIN_TIMEOUT_SEC: int = _env_int("WORKER_DRAIN_TIMEOUT_SEC", 25)
+# Connection-pool bounds, per role: the worker runs many concurrent player
+# shards, the web process serves requests.
+DB_POOL_MIN: int = _env_int("DB_POOL_MIN", 1)
+DB_POOL_MAX: int = _env_int("DB_POOL_MAX", 25 if SERVICE_ROLE == "worker" else 10)
+
 # Serve /docs, /redoc and /openapi.json (they describe the WHOLE API surface,
 # /admin included) — off by default; enable only on dev/stage deployments.
 EXPOSE_API_DOCS: bool = _env_bool("EXPOSE_API_DOCS", False)

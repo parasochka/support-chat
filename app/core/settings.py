@@ -54,7 +54,19 @@ SETTING_KEYS = ("escalation", "language", "antispam", "model", "general",
 # otherwise the Settings editor happily stores a value the runtime never reads
 # (the "I changed the worker interval and nothing happened" trap).
 GLOBAL_ONLY_FIELDS: dict[str, frozenset[str]] = {
-    "retention": frozenset({"worker_interval_sec"}),
+    "retention": frozenset({
+        "worker_interval_sec",
+        # The event-pipeline knobs read by the worker's own machinery, outside
+        # any product scope: lease/retry discipline, the fan-out widths, the
+        # fleet-wide model ceiling and the maintenance cadences. A product-layer
+        # value for these would be stored and never read.
+        "event_lease_sec", "event_max_attempts", "event_backoff_base_sec",
+        "worker_product_concurrency", "worker_player_concurrency",
+        "agent_model_concurrency", "send_worker_enabled", "send_lease_sec",
+        "maintenance_interval_sec", "attribution_interval_sec",
+        "scoring_interval_sec", "profile_interval_sec",
+        "journey_interval_sec", "event_keep_days", "event_keep_days_state",
+    }),
     "general": frozenset({"admin_token_ttl_min", "body_max_bytes"}),
 }
 
@@ -628,6 +640,71 @@ def retention() -> dict[str, Any]:
         "push_delivery_timeout_sec": db_v.get(
             "push_delivery_timeout_sec",
             config.RETENTION_PUSH_DELIVERY_TIMEOUT_SEC),
+        # --- Event pipeline: queue durability (GLOBAL layer) ---------------
+        "event_lease_sec": db_v.get("event_lease_sec",
+                                    config.RETENTION_EVENT_LEASE_SEC),
+        "event_max_attempts": db_v.get("event_max_attempts",
+                                       config.RETENTION_EVENT_MAX_ATTEMPTS),
+        "event_backoff_base_sec": db_v.get(
+            "event_backoff_base_sec", config.RETENTION_EVENT_BACKOFF_BASE_SEC),
+        "event_keep_days": db_v.get("event_keep_days",
+                                    config.RETENTION_EVENT_KEEP_DAYS),
+        "event_keep_days_state": db_v.get(
+            "event_keep_days_state", config.RETENTION_EVENT_KEEP_DAYS_STATE),
+        # --- Event pipeline: parallelism (GLOBAL layer) --------------------
+        "worker_product_concurrency": db_v.get(
+            "worker_product_concurrency",
+            config.RETENTION_WORKER_PRODUCT_CONCURRENCY),
+        "worker_player_concurrency": db_v.get(
+            "worker_player_concurrency",
+            config.RETENTION_WORKER_PLAYER_CONCURRENCY),
+        "agent_model_concurrency": db_v.get(
+            "agent_model_concurrency",
+            config.RETENTION_AGENT_MODEL_CONCURRENCY),
+        # --- Event pipeline: ingest shaping (per product) ------------------
+        "queue_bypass_state_events": db_v.get(
+            "queue_bypass_state_events",
+            config.RETENTION_QUEUE_BYPASS_STATE_EVENTS),
+        "activity_debounce_sec": db_v.get(
+            "activity_debounce_sec", config.RETENTION_ACTIVITY_DEBOUNCE_SEC),
+        # --- Event pipeline: backpressure ladder (per product) -------------
+        "queue_degrade_p3_sec": db_v.get(
+            "queue_degrade_p3_sec", config.RETENTION_QUEUE_DEGRADE_P3_SEC),
+        "queue_degrade_p2_sec": db_v.get(
+            "queue_degrade_p2_sec", config.RETENTION_QUEUE_DEGRADE_P2_SEC),
+        "queue_degrade_idle_sec": db_v.get(
+            "queue_degrade_idle_sec", config.RETENTION_QUEUE_DEGRADE_IDLE_SEC),
+        # --- Send stage ----------------------------------------------------
+        "send_worker_enabled": db_v.get(
+            "send_worker_enabled", config.RETENTION_SEND_WORKER_ENABLED),
+        "send_concurrency": db_v.get("send_concurrency",
+                                     config.RETENTION_SEND_CONCURRENCY),
+        "send_lease_sec": db_v.get("send_lease_sec",
+                                   config.RETENTION_SEND_LEASE_SEC),
+        "send_batch_size": db_v.get("send_batch_size",
+                                    config.RETENTION_SEND_BATCH_SIZE),
+        "telegram_rate_per_sec": db_v.get(
+            "telegram_rate_per_sec", config.RETENTION_TELEGRAM_RATE_PER_SEC),
+        "telegram_burst": db_v.get("telegram_burst",
+                                   config.RETENTION_TELEGRAM_BURST),
+        "telegram_chat_rate_per_sec": db_v.get(
+            "telegram_chat_rate_per_sec",
+            config.RETENTION_TELEGRAM_CHAT_RATE_PER_SEC),
+        "email_rate_per_sec": db_v.get("email_rate_per_sec",
+                                       config.RETENTION_EMAIL_RATE_PER_SEC),
+        # --- Maintenance cadences (GLOBAL layer) ---------------------------
+        "maintenance_interval_sec": db_v.get(
+            "maintenance_interval_sec",
+            config.RETENTION_MAINTENANCE_INTERVAL_SEC),
+        "attribution_interval_sec": db_v.get(
+            "attribution_interval_sec",
+            config.RETENTION_ATTRIBUTION_INTERVAL_SEC),
+        "scoring_interval_sec": db_v.get(
+            "scoring_interval_sec", config.RETENTION_SCORING_INTERVAL_SEC),
+        "profile_interval_sec": db_v.get(
+            "profile_interval_sec", config.RETENTION_PROFILE_INTERVAL_SEC),
+        "journey_interval_sec": db_v.get(
+            "journey_interval_sec", config.RETENTION_JOURNEY_INTERVAL_SEC),
     }
 
 
@@ -826,6 +903,49 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_nonempty_str(value, "channel_auto_priority")
         _require_bool(value, "delivery_retry_enabled")
         _require_int(value, "push_delivery_timeout_sec", 5, 30)
+        # Event pipeline: queue durability. The lease MUST outlast the slowest
+        # thing that can happen while an event is in flight (the agent model
+        # call, 90s by default) — a lease that expires mid-decision hands the
+        # event to a second worker and pays for the same decision twice.
+        _require_int(value, "event_lease_sec", 60, 3_600)
+        _require_int(value, "event_max_attempts", 1, 50)
+        _require_int(value, "event_backoff_base_sec", 1, 3_600)
+        _require_int(value, "event_keep_days", 1, 3_650)
+        _require_int(value, "event_keep_days_state", 1, 3_650)
+        # Event pipeline: parallelism.
+        _require_int(value, "worker_product_concurrency", 1, 32)
+        _require_int(value, "worker_player_concurrency", 1, 64)
+        _require_int(value, "agent_model_concurrency", 1, 256)
+        # Event pipeline: ingest shaping + backpressure ladder. The ladder must
+        # stay ordered (state food is dropped from the drain BEFORE the P3
+        # lane, and the idle ladder pauses last), or a lower rung would never
+        # be reached. Both keys are checked for presence — the panel PUTs a
+        # diff, not the whole group.
+        _require_bool(value, "queue_bypass_state_events")
+        _require_int(value, "activity_debounce_sec", 0, 86_400)
+        _require_int(value, "queue_degrade_p3_sec", 30, 86_400)
+        _require_int(value, "queue_degrade_p2_sec", 30, 86_400)
+        _require_int(value, "queue_degrade_idle_sec", 60, 604_800)
+        if ("queue_degrade_p3_sec" in value and "queue_degrade_p2_sec" in value
+                and value["queue_degrade_p2_sec"]
+                < value["queue_degrade_p3_sec"]):
+            raise ValueError("queue_degrade_p2_sec must be >= "
+                             "queue_degrade_p3_sec")
+        # Send stage + outbound shaping.
+        _require_bool(value, "send_worker_enabled")
+        _require_int(value, "send_concurrency", 1, 64)
+        _require_int(value, "send_lease_sec", 10, 3_600)
+        _require_int(value, "send_batch_size", 1, 1_000)
+        _require_float(value, "telegram_rate_per_sec", 0.1, 30.0)
+        _require_float(value, "telegram_burst", 1.0, 100.0)
+        _require_float(value, "telegram_chat_rate_per_sec", 0.05, 30.0)
+        _require_float(value, "email_rate_per_sec", 0.1, 1_000.0)
+        # Maintenance cadences.
+        _require_int(value, "maintenance_interval_sec", 5, 3_600)
+        _require_int(value, "attribution_interval_sec", 30, 86_400)
+        _require_int(value, "scoring_interval_sec", 60, 86_400)
+        _require_int(value, "profile_interval_sec", 60, 604_800)
+        _require_int(value, "journey_interval_sec", 30, 86_400)
         if value.get("v2_decision_events") is not None:
             from app.retention import player_sync  # lazy: avoid an import cycle at module load
             v = value["v2_decision_events"]
@@ -958,6 +1078,29 @@ def global_retention_int(key: str, default: int, lo: int, hi: int) -> int:
     finally:
         tenancy.reset_current_product(token)
     return min(max(v or default, lo), hi)
+
+
+def global_retention_raw(key: str) -> Any:
+    """The raw GLOBAL-layer value of a `retention` key (None if unset/broken).
+
+    The typed sibling above collapses a stored 0/False into its default (`v or
+    default`), which is wrong for a knob whose whole point is being switchable
+    off. This returns the value untouched and lets the caller decide.
+    """
+    from app.core import tenancy  # lazy: see global_retention_int
+
+    token = tenancy.set_current_product(None)
+    try:
+        return retention().get(key)
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        tenancy.reset_current_product(token)
+
+
+def global_retention_bool(key: str, default: bool) -> bool:
+    v = global_retention_raw(key)
+    return default if v is None else bool(v)
 
 
 def _validate_var_map(value: Any, known: set, label: str,

@@ -97,8 +97,8 @@ async def test_ingest_event_bridges_activity_and_profile(monkeypatch):
         stored.update(kw, product_id=product_id)
         return 42
 
-    async def _touch(product_id, player_id, field, ts):
-        touches.append((player_id, field))
+    async def _touch(product_id, player_id, field, ts, debounce_sec=0):
+        touches.append((player_id, field, debounce_sec))
         return 1
 
     async def _profile(product_id, player_id, profile, profile_source=""):
@@ -112,10 +112,12 @@ async def test_ingest_event_bridges_activity_and_profile(monkeypatch):
     res = await player_sync.ingest_event(1, {
         "event_id": "e1", "event_name": "deposit_confirmed",
         "player_id": "p1", "payload": {"amount": 5, "vip_level": "Gold"}})
-    assert res == {"stored": True, "duplicate": False, "id": 42}
+    assert res == {"stored": True, "duplicate": False, "id": 42,
+                   "queued": True}
     # deposit_confirmed bumps last_deposit_at; the vip_level payload field
-    # rides into the profile snapshot with source 'event'.
-    assert touches == [("p1", "last_deposit_at")]
+    # rides into the profile snapshot with source 'event'. The deposit mark is
+    # NEVER debounced — the loss/recency maths keys on it directly.
+    assert touches == [("p1", "last_deposit_at", 0)]
     assert profiles == [("p1", {"vip_level": "Gold"}, "event")]
 
 
@@ -346,16 +348,29 @@ def test_parse_decision_valid_and_clamped():
 # The event pipeline
 # ---------------------------------------------------------------------------
 def _capture_ledger(monkeypatch):
+    """Capture the decision ledger as ONE row per decision.
+
+    The row is written in two steps now: reserved before anything the player
+    can see (so the unique (product_id, event_pk) index can reject a replayed
+    event in FRONT of the send) and completed afterwards with what actually
+    happened. The fake folds the update back onto the reserved row, so a test
+    still asserts on one final dict.
+    """
     rows: list[dict] = []
 
     async def _insert(product_id, **kw):
         rows.append(dict(kw, product_id=product_id))
         return len(rows)
 
+    async def _update(decision_id, **kw):
+        row = rows[int(decision_id) - 1]
+        row.update({k: v for k, v in kw.items() if v is not None})
+
     async def _admin_event(*a, **kw):
         return None
 
     monkeypatch.setattr(db, "insert_retention_v2_decision", _insert)
+    monkeypatch.setattr(db, "update_retention_v2_decision", _update)
     monkeypatch.setattr(db, "log_admin_event", _admin_event)
     return rows
 
@@ -762,14 +777,17 @@ async def test_sweep_skips_disabled_products(monkeypatch):
         raise AssertionError("a disabled agent must not claim events")
     monkeypatch.setattr(db, "claim_retention_events", _claim_boom)
     stats = await retention_v2.run_product_events({"id": 1})
-    assert stats["agent"] == "disabled"
-    assert stats["events"] == 0 and stats["sent"] == 0
+    assert stats == {"agent": "disabled"}
 
 
 async def test_idle_sweep_runs_even_with_agent_disabled(monkeypatch):
     """`idle_pings_enabled` is its OWN switch: turning the event agent off
     (v2_enabled=False) must not silently kill the idle ladder — the admin
-    sees two independent toggles."""
+    sees two independent toggles.
+
+    The ladder moved OFF the event path (it is a maintenance sweep now, so a
+    slow re-engagement pass cannot delay a deposit reaction), which is why this
+    exercises run_product_maintenance rather than run_product_events."""
     from app.retention import retention_idle
     called = {}
     monkeypatch.setattr(settings, "retention",
@@ -779,11 +797,52 @@ async def test_idle_sweep_runs_even_with_agent_disabled(monkeypatch):
     async def _idle(product, cfg, **kw):
         called["ran"] = True
         return {"sent": 2, "failed": 1}
+
+    async def _lag(pid):
+        return 0
+
+    async def _skip(*a, **kw):
+        return {"skipped": "paced"}
+
     monkeypatch.setattr(retention_idle, "run_product_idle_pings", _idle)
-    stats = await retention_v2.run_product_events({"id": 1})
+    monkeypatch.setattr(db, "retention_queue_lag", _lag)
+    monkeypatch.setattr(retention_v2, "_run_maintenance_job", _skip)
+    # send_worker_enabled=True: the legacy inline delivery-retry drain is the
+    # send worker's job then, so this pass does not reach for channels.
+    monkeypatch.setattr(retention_v2.settings, "global_retention_bool",
+                        lambda key, default: True)
+    stats = await retention_v2.run_product_maintenance({"id": 1})
     assert called == {"ran": True}
-    assert stats["agent"] == "disabled"
     assert stats["idle_sent"] == 2 and stats["idle_failed"] == 1
+
+
+async def test_maintenance_pauses_idle_when_the_queue_is_far_behind(monkeypatch):
+    """A backlog means live players are waiting; re-engaging quiet ones can
+    wait its turn. Past `queue_degrade_idle_sec` the ladder stands down."""
+    from app.retention import retention_idle
+    monkeypatch.setattr(settings, "retention",
+                        lambda: _cfg(idle_pings_enabled=True,
+                                     queue_degrade_idle_sec=600))
+    monkeypatch.setattr(tenancy, "set_current_product", lambda pid: None)
+
+    async def _idle_boom(*a, **kw):
+        raise AssertionError("the ladder must stand down behind a backlog")
+
+    async def _lag(pid):
+        return 900
+
+    async def _skip(*a, **kw):
+        return {"skipped": "paced"}
+
+    monkeypatch.setattr(retention_idle, "run_product_idle_pings", _idle_boom)
+    monkeypatch.setattr(db, "retention_queue_lag", _lag)
+    monkeypatch.setattr(retention_v2, "_run_maintenance_job", _skip)
+    # send_worker_enabled=True: the legacy inline delivery-retry drain is the
+    # send worker's job then, so this pass does not reach for channels.
+    monkeypatch.setattr(retention_v2.settings, "global_retention_bool",
+                        lambda key, default: True)
+    stats = await retention_v2.run_product_maintenance({"id": 1})
+    assert stats["idle_paused"] == 1
 
 
 async def test_sweep_defers_during_quiet_hours(monkeypatch):
@@ -792,49 +851,123 @@ async def test_sweep_defers_during_quiet_hours(monkeypatch):
     the event forever — and in a casino the night is peak deposit time). The
     admin «Process queue now» button claims regardless."""
     monkeypatch.setattr(settings, "retention", lambda: _cfg(v2_enabled=True))
-    monkeypatch.setattr(tenancy, "set_current_product", lambda pid: None)
     monkeypatch.setattr(retention_v2, "_in_quiet_hours", lambda cfg: True)
 
     async def _claim_boom(*a, **kw):
         raise AssertionError("must not claim during quiet hours")
+
+    async def _cost(pid):
+        return 0.0
+
+    async def _lag(pid):
+        return 0
     monkeypatch.setattr(db, "claim_retention_events", _claim_boom)
+    monkeypatch.setattr(db, "retention_v2_cost_today", _cost)
+    monkeypatch.setattr(db, "retention_queue_lag", _lag)
     stats = await retention_v2.run_product_events({"id": 1})
-    assert stats["agent"] == "quiet_hours_deferred" and stats["events"] == 0
+    assert stats == {"agent": "quiet_hours_deferred"}
 
     claimed = []
 
-    async def _claim(pid, limit, delay_min_sec=0, delay_max_sec=0):
-        claimed.append(pid)
+    async def _claim(pid, **kw):
+        claimed.append((pid, kw))
         return []
     monkeypatch.setattr(db, "claim_retention_events", _claim)
     await retention_v2.run_product_events({"id": 1}, ignore_send_delay=True)
-    assert claimed == [1]
+    assert [c[0] for c in claimed] == [1]
 
 
 async def test_sweep_claims_events_atomically(monkeypatch):
-    """The drain must use db.claim_retention_events (atomic pick-up) — a plain
-    SELECT let the worker sweep and the admin «Process queue now» button pick
-    up the SAME event concurrently and each send a message (the duplicate
-    deposit thank-you bug)."""
+    """The drain must use db.claim_retention_events (an atomic LEASE) — a
+    plain SELECT let the worker sweep and the admin «Process queue now» button
+    pick up the SAME event concurrently and each send a message (the duplicate
+    deposit thank-you bug). The lease also carries the worker id and the lane
+    ceiling the backpressure ladder computed."""
     claimed = []
 
-    async def _claim(pid, limit, delay_min_sec=0, delay_max_sec=0):
-        claimed.append((pid, limit, delay_min_sec, delay_max_sec))
+    async def _claim(pid, **kw):
+        claimed.append((pid, kw))
         return []
+
+    async def _cost(pid):
+        return 0.0
+
+    async def _lag(pid):
+        return 0
     monkeypatch.setattr(settings, "retention", lambda: _cfg(v2_enabled=True))
-    monkeypatch.setattr(tenancy, "set_current_product", lambda pid: None)
     # Neutralize the wall clock: _cfg's 22–9 window would make this test
     # night-flaky now that the sweep defers during quiet hours.
     monkeypatch.setattr(retention_v2, "_in_quiet_hours", lambda cfg: False)
     monkeypatch.setattr(db, "claim_retention_events", _claim)
+    monkeypatch.setattr(db, "retention_v2_cost_today", _cost)
+    monkeypatch.setattr(db, "retention_queue_lag", _lag)
     stats = await retention_v2.run_product_events({"id": 1})
-    assert stats == {"events": 0, "decided": 0, "sent": 0}
+    assert stats == {"events": 0, "lag_sec": 0}
+    pid, kw = claimed[0]
     # ping_batch_size + the humanizing send delay from _cfg (5–15 min).
-    assert claimed == [(1, 30, 300, 900)]
+    assert pid == 1 and kw["limit"] == 30
+    assert (kw["delay_min_sec"], kw["delay_max_sec"]) == (300, 900)
+    # No backlog -> every lane is claimable.
+    assert kw["max_priority"] == 5 and kw["worker_id"]
     # The admin «Process queue now» path bypasses the delay.
     claimed.clear()
     await retention_v2.run_product_events({"id": 1}, ignore_send_delay=True)
-    assert claimed == [(1, 30, 0, 0)]
+    assert (claimed[0][1]["delay_min_sec"],
+            claimed[0][1]["delay_max_sec"]) == (0, 0)
+
+
+async def test_backlog_sheds_the_low_lanes(monkeypatch):
+    """Backpressure: as the queue lag grows the drain stops claiming state
+    food, then the default lane, so transactional events keep moving."""
+    claimed = []
+
+    async def _claim(pid, **kw):
+        claimed.append(kw["max_priority"])
+        return []
+
+    async def _cost(pid):
+        return 0.0
+
+    monkeypatch.setattr(settings, "retention",
+                        lambda: _cfg(v2_enabled=True,
+                                     queue_degrade_p3_sec=300,
+                                     queue_degrade_p2_sec=900))
+    monkeypatch.setattr(retention_v2, "_in_quiet_hours", lambda cfg: False)
+    monkeypatch.setattr(db, "claim_retention_events", _claim)
+    monkeypatch.setattr(db, "retention_v2_cost_today", _cost)
+
+    async def _noop(*a, **kw):
+        return None
+    monkeypatch.setattr(db, "log_admin_event_sampled", _noop)
+
+    for lag, expected in ((0, 5), (400, 3), (1200, 2)):
+        async def _lag(pid, _l=lag):
+            return _l
+        monkeypatch.setattr(db, "retention_queue_lag", _lag)
+        await retention_v2.run_product_events({"id": 1})
+    assert claimed == [5, 3, 2]
+
+
+async def test_daily_budget_stops_the_event_path(monkeypatch):
+    """The budget used to gate only the idle ladder, so an event storm could
+    spend past the cap all day."""
+    monkeypatch.setattr(settings, "retention",
+                        lambda: _cfg(v2_enabled=True, v2_daily_budget_usd=1.0))
+    monkeypatch.setattr(retention_v2, "_in_quiet_hours", lambda cfg: False)
+
+    async def _claim_boom(*a, **kw):
+        raise AssertionError("must not claim past the daily budget")
+
+    async def _cost(pid):
+        return 1.5
+
+    async def _finish(*a, **kw):
+        return None
+    monkeypatch.setattr(db, "claim_retention_events", _claim_boom)
+    monkeypatch.setattr(db, "retention_v2_cost_today", _cost)
+    monkeypatch.setattr(db, "finish_worker_job", _finish)
+    stats = await retention_v2.run_product_events({"id": 1})
+    assert stats == {"agent": "daily_budget_reached"}
 
 
 def test_worker_interval_is_hot_and_clamped(monkeypatch):

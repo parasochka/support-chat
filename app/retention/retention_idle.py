@@ -24,10 +24,8 @@ chrome line — same voice, same language stickiness, same photo machinery.
 """
 from __future__ import annotations
 
-import asyncio
 import datetime as _dt
 import logging
-import time
 from typing import Any, Optional
 
 from app.chat import chat_service
@@ -39,13 +37,6 @@ from app.retention import retention
 from app.retention import retention_v2
 
 log = logging.getLogger(__name__)
-
-# The idle ladder moves on a scale of DAYS, so sweeping it on the worker's
-# seconds-scale cadence is pure waste. In-process pacing: one idle sweep per
-# product at most every `retention.idle_sweep_interval_sec` (hot per-product
-# knob; the event pipeline still runs every tick). The config default is the
-# fallback when the knob is missing from an older stored override.
-_last_sweep: dict[int, float] = {}
 
 _TRIGGER_REASONS = {
     "bot_inactivity": "they have not written to you here",
@@ -163,37 +154,20 @@ async def run_product_idle_pings_locked(product: dict[str, Any],
                                         force: bool = False,
                                         limit: Optional[int] = None
                                         ) -> dict[str, Any]:
-    """run_product_idle_pings under the SAME advisory lock the worker holds.
+    """The admin «Run now» path for the idle ladder.
 
-    Required: without the lock a button-run and the worker's sweep can both
-    read a player's guard counters before either writes — double send (the
-    same guard-race class run_product_events_locked guards). Blocking lock (not try-lock): the button
-    should run right after the worker finishes, not silently no-op.
+    This used to grab the event worker's single global advisory lock on a
+    dedicated connection, because back then a button press and the sweep could
+    both read a player's guard counters before either wrote. Two things
+    replaced that: the sweep is paced through `retention_worker_jobs`
+    (db.claim_worker_job leases the (product, job) slot, so only one runner
+    holds it at a time, across instances), and the ladder stamps `last_ping_at`
+    per player as it goes. The button therefore just runs — no global lock, no
+    dedicated connection, no 409 merely because the worker is busy elsewhere.
 
-    Dedicated connection, same reason as run_product_events_locked: the sweep
-    holds this lock for minutes, and the pool's command_timeout=30 would kill
-    the blocking pg_advisory_lock wait rather than let the button queue behind
-    the worker. Same wait ceiling too — past it the run raises WorkerBusy
-    (409 at the API) instead of hanging the button's request forever.
+    The signature and WorkerBusy import stay for the API layer's sake.
     """
-    conn = await db.dedicated_connection()
-    try:
-        try:
-            await asyncio.wait_for(
-                conn.execute("SELECT pg_advisory_lock($1)",
-                             retention_v2._ADVISORY_LOCK_KEY),
-                timeout=retention_v2._MANUAL_LOCK_WAIT_SEC)
-        except asyncio.TimeoutError:
-            raise retention_v2.WorkerBusy(
-                "the retention worker is mid-sweep; try again shortly")
-        try:
-            return await run_product_idle_pings(product, cfg, force=force,
-                                                limit=limit)
-        finally:
-            await conn.execute("SELECT pg_advisory_unlock($1)",
-                               retention_v2._ADVISORY_LOCK_KEY)
-    finally:
-        await conn.close()
+    return await run_product_idle_pings(product, cfg, force=force, limit=limit)
 
 
 async def run_product_idle_pings(product: dict[str, Any],
@@ -203,19 +177,21 @@ async def run_product_idle_pings(product: dict[str, Any],
                                  ) -> dict[str, Any]:
     """Evaluate this product's idle rules and write to the matched players.
 
-    Called from the worker sweep (same advisory lock as the event pipeline);
-    `force` (the admin "run now" path) skips the in-process pacing and the
-    quiet-hours skip so a test run answers immediately.
+    Called from the maintenance loop, which paces it per product through
+    `retention_worker_jobs`; `force` (the admin "run now" path) skips both the
+    pacing and the quiet-hours skip so a test run answers immediately.
+
+    The pacing used to be an in-process dict, which reset on every deploy and,
+    with a second worker, let both instances sweep the same product at the same
+    moment. It is a table now, so the interval is real.
     """
     pid = int(product["id"])
     if not cfg.get("idle_pings_enabled"):
         return {"skipped": "idle_pings_disabled"}
-    now = time.monotonic()
     interval = int(cfg.get("idle_sweep_interval_sec")
                    or config.RETENTION_IDLE_SWEEP_INTERVAL_SEC)
-    if not force and now - _last_sweep.get(pid, 0.0) < interval:
+    if not force and not await db.claim_worker_job(pid, "idle", interval):
         return {"skipped": "paced"}
-    _last_sweep[pid] = now
     token = await db.get_product_telegram_token(pid)
     if not token:
         return {"skipped": "no_bot_token"}

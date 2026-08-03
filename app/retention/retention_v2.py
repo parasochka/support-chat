@@ -185,15 +185,56 @@ def worker_interval_sec() -> int:
         "worker_interval_sec", config.RETENTION_WORKER_INTERVAL_SEC, 5, 3600)
 
 
-async def scheduler_loop() -> None:
+_model_sem: Optional[asyncio.Semaphore] = None
+_model_sem_width = 0
+
+
+def _model_slot() -> Any:
+    """The fleet-wide ceiling on concurrent BACKGROUND model calls.
+
+    Rebuilt when the knob changes (a Semaphore's size is fixed at
+    construction), and deliberately per-process: it bounds this worker, and the
+    number of workers is a deploy decision.
+    """
+    global _model_sem, _model_sem_width
+    width = settings.global_retention_int(
+        "agent_model_concurrency", config.RETENTION_AGENT_MODEL_CONCURRENCY,
+        1, 256)
+    if _model_sem is None or width != _model_sem_width:
+        _model_sem = asyncio.Semaphore(width)
+        _model_sem_width = width
+    return _model_sem
+
+
+async def _sleep_or_stop(seconds: float,
+                         stop: Optional[asyncio.Event]) -> bool:
+    """Sleep, waking early when the stop flag is raised. True = time to exit.
+
+    A plain `asyncio.sleep` in a worker loop means a deploy waits out the full
+    interval (or gets killed mid-batch). Every loop in this module sleeps
+    through here so SIGTERM is honoured within milliseconds.
+    """
+    if stop is None:
+        await asyncio.sleep(seconds)
+        return False
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=seconds)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
+async def scheduler_loop(stop: Optional[asyncio.Event] = None) -> None:
     """Drain the event queues on the hot-reloaded worker cadence."""
     log.info("retention_agent_scheduler_started interval_sec=%s",
              worker_interval_sec())
     while True:
-        await asyncio.sleep(worker_interval_sec())
+        if await _sleep_or_stop(worker_interval_sec(), stop):
+            log.info("retention_agent_scheduler_stopping")
+            return
         try:
-            stats = await run_due_events()
-            if stats.get("decided") or stats.get("sent"):
+            stats = await run_due_events(stop=stop)
+            if stats.get("decided") or stats.get("sent") or stats.get("failed"):
                 log.info("retention_v2_sweep_done stats=%s", stats)
         except asyncio.CancelledError:
             raise
@@ -201,123 +242,321 @@ async def scheduler_loop() -> None:
             log.exception("retention_v2_sweep_failed")
 
 
-# The sweep's long-lived lock connection. run_due_events fires every
-# worker_interval_sec (default 5s); opening a fresh dedicated connection per
-# tick meant ~17k TLS+auth handshakes a day per instance even with an empty
-# queue. The connection carries ONLY the advisory lock/unlock queries (all
-# real work rides short bounded pool acquires), so one reusable session is
-# safe; any error on it drops the cache and the next tick reconnects —
-# closing the session releases the advisory lock server-side, so a dropped
-# connection can never wedge the lock for other instances.
-_worker_lock_conn: Optional[Any] = None
+def worker_id() -> str:
+    """Stable-per-process id stamped on every lease (who holds this row).
+
+    Makes "which replica wedged the queue" answerable from the rows themselves,
+    which is the only way to tell once more than one worker exists.
+    """
+    global _WORKER_ID
+    if _WORKER_ID is None:
+        import os
+        import socket
+        replica = (os.environ.get("RAILWAY_REPLICA_ID")
+                   or os.environ.get("HOSTNAME") or socket.gethostname())
+        _WORKER_ID = f"{replica}-{os.getpid()}"[:64]
+    return _WORKER_ID
 
 
-async def _get_worker_lock_conn() -> Any:
-    global _worker_lock_conn
-    conn = _worker_lock_conn
-    if conn is None or conn.is_closed():
-        conn = await db.dedicated_connection()
-        _worker_lock_conn = conn
-    return conn
+_WORKER_ID: Optional[str] = None
 
 
-async def _drop_worker_lock_conn() -> None:
-    global _worker_lock_conn
-    conn, _worker_lock_conn = _worker_lock_conn, None
-    if conn is not None:
-        try:
-            await conn.close()
-        except Exception:  # noqa: BLE001 - already dropping it
-            pass
+async def run_due_events(*, stop: Optional[asyncio.Event] = None
+                         ) -> dict[str, Any]:
+    """One drain pass across all agent-enabled products, IN PARALLEL.
 
+    There used to be ONE global advisory lock around this whole function, with
+    the products walked in a `for` loop inside it. That made the tick duration
+    the SUM over every product — and, since the lock was global, a second
+    service instance did no background work at all. It also meant one product's
+    90-second model call stalled every other casino's queue.
 
-async def run_due_events() -> dict[str, Any]:
-    """One sweep across all v2-enabled products (advisory-locked)."""
-    # A DEDICATED connection, not a pool slot (the same reasoning as
-    # media_normalizer._run_product_locked): the sweep holds this lock for the
-    # whole pass — minutes, with the agent's 90s model calls inside — so parking
-    # it on one of the pool's 10 slots starves the request paths for the
-    # duration, and the pool's command_timeout=30 would kill a blocking
-    # pg_advisory_lock wait outright. Reused across ticks (see above).
-    conn = await _get_worker_lock_conn()
-    try:
-        got = await conn.fetchval("SELECT pg_try_advisory_lock($1)",
-                                  _ADVISORY_LOCK_KEY)
-    except Exception:
-        await _drop_worker_lock_conn()
-        raise
-    if not got:
-        return {"skipped": "another instance holds the lock"}
-    try:
-        totals: dict[str, Any] = {"products": 0, "events": 0,
-                                  "decided": 0, "sent": 0}
-        for product in await db.list_retention_products():
-            stats = await run_product_events(product)
-            totals["products"] += 1
-            for k in ("events", "decided", "sent", "idle_sent",
-                      "idle_failed"):
-                if stats.get(k):
-                    totals[k] = totals.get(k, 0) + stats[k]
-        return totals
-    finally:
-        try:
-            await conn.execute("SELECT pg_advisory_unlock($1)",
-                               _ADVISORY_LOCK_KEY)
-        except Exception:  # noqa: BLE001 - closing releases the lock instead
-            log.warning("retention_v2_unlock_failed, dropping worker conn",
-                        exc_info=True)
-            await _drop_worker_lock_conn()
+    Now each product drains on its own, concurrently, bounded by
+    `worker_product_concurrency`. Nothing needs a product-level lock any more:
+    the claim itself is what prevents double work (an atomic lease + a
+    per-player exclusion, see `run_product_events`), so several workers may
+    drain the same product at the same time and still never react twice to one
+    event.
+    """
+    products = await db.list_retention_products()
+    if not products:
+        return {"products": 0}
+    width = settings.global_retention_int(
+        "worker_product_concurrency",
+        config.RETENTION_WORKER_PRODUCT_CONCURRENCY, 1, 32)
+    sem = asyncio.Semaphore(width)
+
+    async def _one(product: dict[str, Any]) -> dict[str, Any]:
+        async with sem:
+            if stop is not None and stop.is_set():
+                return {}
+            return await run_product_events(product, stop=stop)
+
+    results = await asyncio.gather(*(_one(p) for p in products),
+                                   return_exceptions=True)
+    totals: dict[str, Any] = {"products": 0, "events": 0, "decided": 0,
+                              "sent": 0}
+    for product, res in zip(products, results):
+        if isinstance(res, BaseException):
+            log.exception("retention_v2_product_failed product=%s",
+                          product.get("id"), exc_info=res)
+            totals["errors"] = totals.get("errors", 0) + 1
+            continue
+        totals["products"] += 1
+        for k, v in (res or {}).items():
+            if isinstance(v, int) and v:
+                totals[k] = totals.get(k, 0) + v
+    return totals
 
 
 async def run_product_events_locked(product: dict[str, Any], *,
                                     limit: Optional[int] = None
                                     ) -> dict[str, Any]:
-    """run_product_events under the SAME advisory lock the worker sweep holds.
+    """The admin «Process queue now» path: drain one product, right now.
 
-    Required: without the lock a button-run and the worker can both read the
-    per-player guard counters before either writes — double send. Blocking
-    lock (not try-lock): the button should run right after the worker
-    finishes, not silently no-op. The manual run also bypasses the humanizing
-    send delay — the operator pressing the button wants answers now.
-
-    The wait rides a DEDICATED connection: the sweep can hold the lock for
-    minutes, and on a pool connection the pool's command_timeout=30 kills the
-    BLOCKING pg_advisory_lock itself — so «Process queue now» failed with a
-    query timeout instead of waiting its turn, exactly when the worker was busy.
-    The wait is CEILINGED at _MANUAL_LOCK_WAIT_SEC though: a dedicated
-    connection has no command_timeout at all, so a wedged sweep would
-    otherwise hang the button's HTTP request forever — past the ceiling the
-    run raises WorkerBusy and the API answers 409 instead.
+    Historically this took the worker's global advisory lock so a button press
+    could not race the sweep into a double send. That lock is gone — the claim
+    is the mutual exclusion now (an atomic lease plus a per-player in-flight
+    exclusion), so the button simply drains whatever the worker has not taken.
+    It keeps its own name and the WorkerBusy escape hatch so the API contract
+    is unchanged; the only behavioural difference is that it can no longer 409
+    just because the worker happens to be mid-sweep.
     """
-    conn = await db.dedicated_connection()
+    return await run_product_events(product, limit=limit,
+                                    ignore_send_delay=True)
+
+
+async def maintenance_loop(stop: Optional[asyncio.Event] = None) -> None:
+    """Everything that is NOT event processing, on its own clock.
+
+    These six sweeps used to run in the tail of `run_product_events`, once per
+    product per tick, in sequence — which put attribution, scoring, activity
+    profiles, journeys and the idle ladder squarely on the critical path of
+    reacting to a deposit. Here they are independent: each is paced per product
+    through `retention_worker_jobs` (so the interval survives a deploy and
+    holds across worker instances), each swallows its own errors, and a slow
+    one cannot delay a fast one.
+
+    The queue's own housekeeping — reclaiming expired leases — rides the same
+    loop and runs FIRST, because it is what turns a killed worker's in-flight
+    batch back into work instead of a silent loss.
+    """
+    log.info("retention_maintenance_loop_started")
+    # A crash-restart may leave rows leased by this worker's previous life;
+    # picking them up immediately (rather than after their lease) is the whole
+    # point of a fast restart.
     try:
+        await _reclaim_leases()
+    except Exception:  # noqa: BLE001
+        log.exception("retention_lease_reclaim_failed")
+    # One-time (converging) migration of pre-lifecycle rows. Batched and run
+    # here rather than at boot: it can cover millions of rows and must never be
+    # able to time out the init transaction.
+    try:
+        moved = await db.backfill_event_lifecycle()
+        if moved:
+            log.info("retention_event_lifecycle_backfilled rows=%s", moved)
+    except Exception:  # noqa: BLE001 - the claim does not depend on it
+        log.exception("retention_event_lifecycle_backfill_failed")
+    while True:
+        interval = settings.global_retention_int(
+            "maintenance_interval_sec",
+            config.RETENTION_MAINTENANCE_INTERVAL_SEC, 5, 3600)
+        if await _sleep_or_stop(interval, stop):
+            log.info("retention_maintenance_loop_stopping")
+            return
         try:
-            await asyncio.wait_for(
-                conn.execute("SELECT pg_advisory_lock($1)",
-                             _ADVISORY_LOCK_KEY),
-                timeout=_MANUAL_LOCK_WAIT_SEC)
-        except asyncio.TimeoutError:
-            raise WorkerBusy(
-                "the retention worker is mid-sweep; try again shortly")
+            await _reclaim_leases()
+            await run_maintenance_pass(stop=stop)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the loop must survive any sweep error
+            log.exception("retention_maintenance_pass_failed")
+
+
+async def _reclaim_leases() -> None:
+    """Return abandoned event/delivery leases to their queues."""
+    max_attempts = settings.global_retention_int(
+        "event_max_attempts", config.RETENTION_EVENT_MAX_ATTEMPTS, 1, 50)
+    events = await db.reclaim_expired_event_leases(max_attempts=max_attempts)
+    deliveries = await db.reclaim_expired_delivery_leases()
+    if events or deliveries:
+        log.warning("retention_leases_reclaimed events=%s deliveries=%s",
+                    events, deliveries)
+
+
+# (job name, settings key for the interval, config default). The interval is
+# read per product so a busy tenant can be swept harder than a quiet one.
+_MAINTENANCE_JOBS: tuple[tuple[str, str, str], ...] = (
+    ("attribution", "attribution_interval_sec",
+     "RETENTION_ATTRIBUTION_INTERVAL_SEC"),
+    ("scoring", "scoring_interval_sec", "RETENTION_SCORING_INTERVAL_SEC"),
+    ("profiles", "profile_interval_sec", "RETENTION_PROFILE_INTERVAL_SEC"),
+    ("journeys", "journey_interval_sec", "RETENTION_JOURNEY_INTERVAL_SEC"),
+)
+
+
+async def run_maintenance_pass(*, stop: Optional[asyncio.Event] = None
+                               ) -> dict[str, Any]:
+    """One maintenance pass over every product, products in parallel."""
+    products = await db.list_retention_products()
+    if not products:
+        return {"products": 0}
+    width = settings.global_retention_int(
+        "worker_product_concurrency",
+        config.RETENTION_WORKER_PRODUCT_CONCURRENCY, 1, 32)
+    sem = asyncio.Semaphore(width)
+
+    async def _one(product: dict[str, Any]) -> dict[str, Any]:
+        async with sem:
+            if stop is not None and stop.is_set():
+                return {}
+            return await run_product_maintenance(product)
+
+    results = await asyncio.gather(*(_one(p) for p in products),
+                                   return_exceptions=True)
+    totals: dict[str, Any] = {"products": 0}
+    for res in results:
+        if isinstance(res, BaseException):
+            log.exception("retention_maintenance_product_failed", exc_info=res)
+            continue
+        totals["products"] += 1
+        for k, v in (res or {}).items():
+            if isinstance(v, int) and v:
+                totals[k] = totals.get(k, 0) + v
+    return totals
+
+
+async def run_product_maintenance(product: dict[str, Any]) -> dict[str, Any]:
+    """The per-product half of the maintenance pass.
+
+    Each sweep is individually paced and individually error-guarded: the whole
+    point of taking them off the event path is that one of them being slow or
+    broken stops mattering to everything else.
+    """
+    pid = int(product["id"])
+    stats: dict[str, Any] = {}
+    with tenancy.scoped_product(pid):
+        cfg = settings.retention()
+        # The idle ladder paces itself (idle_sweep_interval_sec) inside
+        # run_product_idle_pings, so it is called unconditionally — but not
+        # while the event queue is so far behind that re-engaging quiet
+        # players would be competing with reacting to live ones.
         try:
-            return await run_product_events(product, limit=limit,
-                                            ignore_send_delay=True)
-        finally:
-            await conn.execute("SELECT pg_advisory_unlock($1)",
-                               _ADVISORY_LOCK_KEY)
-    finally:
-        await conn.close()
+            idle_pause_at = int(cfg.get("queue_degrade_idle_sec")
+                                or config.RETENTION_QUEUE_DEGRADE_IDLE_SEC)
+            if await db.retention_queue_lag(pid) >= idle_pause_at:
+                stats["idle_paused"] = 1
+            else:
+                from app.retention import retention_idle
+                idle = await retention_idle.run_product_idle_pings(product, cfg)
+                for k in ("sent", "failed"):
+                    if idle.get(k):
+                        stats[f"idle_{k}"] = idle[k]
+        except Exception:  # noqa: BLE001
+            log.exception("retention_idle_sweep_failed product=%s", pid)
+
+        for job, _key, _default in _MAINTENANCE_JOBS:
+            try:
+                res = await _run_maintenance_job(job, product, pid, cfg)
+                for k, v in (res or {}).items():
+                    if isinstance(v, int) and v:
+                        stats[f"{job}_{k}" if k != job else k] = v
+            except Exception:  # noqa: BLE001 - one sweep must not stop the rest
+                log.exception("retention_%s_sweep_failed product=%s", job, pid)
+                await db.finish_worker_job(pid, job, status="error",
+                                           error="see logs")
+        # Delivery retries: only meaningful while the send worker is off (with
+        # it on, the send loop's own claim picks failed rows back up).
+        if not settings.global_retention_bool(
+                "send_worker_enabled", config.RETENTION_SEND_WORKER_ENABLED):
+            try:
+                from app.retention import channels
+                retried = await channels.drain_delivery_retries(product, cfg)
+                if retried:
+                    stats["delivery_retries"] = retried
+            except Exception:  # noqa: BLE001
+                log.exception("delivery_retry_sweep_failed product=%s", pid)
+    return stats
+
+
+async def _run_maintenance_job(job: str, product: dict[str, Any], pid: int,
+                               cfg: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch one paced sweep and record how it went."""
+    started = _dt.datetime.now(_dt.timezone.utc)
+    if job == "attribution":
+        res = await outcomes.run_product_attribution(pid)
+    elif job == "scoring":
+        from app.retention import scoring
+        res = await scoring.run_product_scoring(pid, cfg)
+    elif job == "profiles":
+        from app.retention import frequency
+        res = await frequency.run_product_activity_profiles(pid, cfg)
+    elif job == "journeys":
+        from app.retention import journeys
+        res = await journeys.run_product_journeys(product, cfg)
+    else:  # pragma: no cover - the table above is the whole set
+        return {}
+    if (res or {}).get("skipped"):
+        return {}
+    took = int((_dt.datetime.now(_dt.timezone.utc) - started).total_seconds()
+               * 1000)
+    await db.finish_worker_job(pid, job, status="ok", duration_ms=took)
+    return res or {}
+
+
+def _max_priority_for_lag(lag_sec: int, cfg: dict[str, Any]) -> int:
+    """The backpressure ladder: which lanes may still be claimed at this lag.
+
+    A backlog is not an excuse to fall behind on the events a player is
+    actually waiting for. As the age of the oldest untouched event grows, the
+    drain sheds work from the bottom: first the state-food lane, then the
+    default lane, so deposits and KYC outcomes keep moving at full speed while
+    the cheap stuff waits for the queue to recover.
+    """
+    p3_at = int(cfg.get("queue_degrade_p3_sec")
+                or config.RETENTION_QUEUE_DEGRADE_P3_SEC)
+    p2_at = int(cfg.get("queue_degrade_p2_sec")
+                or config.RETENTION_QUEUE_DEGRADE_P2_SEC)
+    if lag_sec >= max(p2_at, p3_at):
+        return 2
+    if lag_sec >= p3_at:
+        return 3
+    return 5
+
+
+def _group_by_player(events: list[dict[str, Any]]
+                     ) -> list[list[dict[str, Any]]]:
+    """Split a claimed batch into per-player chains, oldest event first.
+
+    Processing is parallel ACROSS players and strictly serial WITHIN a player:
+    two decisions for the same player at the same time read the same guard
+    counters before either writes, which is how one player collects two
+    "messages" for two events that should have produced one.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for evt in events:
+        groups.setdefault(str(evt.get("player_id") or ""), []).append(evt)
+    return [sorted(g, key=lambda e: e["id"]) for g in groups.values()]
 
 
 async def run_product_events(product: dict[str, Any], *,
                              limit: Optional[int] = None,
-                             ignore_send_delay: bool = False) -> dict[str, Any]:
-    """Drain one product's unprocessed events through the decision pipeline.
+                             ignore_send_delay: bool = False,
+                             stop: Optional[asyncio.Event] = None
+                             ) -> dict[str, Any]:
+    """Drain one product's queued events through the decision pipeline.
 
-    Events are CLAIMED atomically (db.claim_retention_events): the worker
-    sweep, the admin «Process queue now» button and any second service
-    instance can all run concurrently — each event still reaches the pipeline
-    exactly once, so one deposit can never produce two thank-you messages.
+    Events are CLAIMED as a LEASE (db.claim_retention_events): the worker
+    sweep, the admin «Process queue now» button and any other service instance
+    can all run concurrently — each event still reaches the pipeline exactly
+    once, and an event whose processing dies is retried instead of vanishing.
+    Every claimed row MUST be closed here (complete / fail / release), which is
+    why the batch is bracketed in a try/finally.
+
+    The batch is then grouped BY PLAYER and the groups run concurrently
+    (`worker_player_concurrency`), each group serially. Under a growing backlog
+    the claim sheds low lanes (`_max_priority_for_lag`).
 
     The worker honours the humanizing SEND DELAY (an event becomes claimable a
     per-event random `v2_send_delay_min_sec`..`v2_send_delay_max_sec` after it
@@ -328,98 +567,119 @@ async def run_product_events(product: dict[str, Any], *,
     simply does not CLAIM during the window, so a night-time deposit gets its
     warm note in the morning (in a casino the night IS peak deposit time; the
     freshness cap in `_is_decision_worthy` bounds how stale a reaction may
-    get). The admin «Process queue now» button (`ignore_send_delay`) claims
-    regardless: the operator explicitly asked for answers now.
+    get). The admin «Process queue now» button claims regardless.
 
-    The idle sweep at the tail runs on its OWN switch (`idle_pings_enabled`),
-    independent of `v2_enabled` — turning the event agent off must not
-    silently kill the idle ladder the admin sees as a separate toggle.
+    The maintenance sweeps (idle ladder, attribution, scoring, activity
+    profiles, journeys, delivery retries) used to run in this function's tail,
+    which put every one of them on the critical path of event processing. They
+    are their own loops now — see `maintenance_loop`.
     """
     pid = int(product["id"])
     with tenancy.scoped_product(pid):
         cfg = settings.retention()
         stats: dict[str, Any] = {"events": 0, "decided": 0, "sent": 0}
         if not cfg.get("v2_enabled"):
-            stats["agent"] = "disabled"
-        elif not ignore_send_delay and _in_quiet_hours(cfg):
-            stats["agent"] = "quiet_hours_deferred"
-        else:
-            batch = int(limit or cfg["ping_batch_size"])
-            delay_min = (0 if ignore_send_delay
-                         else int(cfg.get("v2_send_delay_min_sec") or 0))
-            delay_max = (0 if ignore_send_delay
-                         else int(cfg.get("v2_send_delay_max_sec") or 0))
-            events = await db.claim_retention_events(
-                pid, limit=batch, delay_min_sec=delay_min,
-                delay_max_sec=max(delay_max, delay_min))
-            decided = sent = 0
-            for evt in events:
+            return {"agent": "disabled"}
+        if not ignore_send_delay and _in_quiet_hours(cfg):
+            return {"agent": "quiet_hours_deferred"}
+        # Budget brake: the idle ladder always honoured the daily AI budget,
+        # the event path never did — so a runaway event storm could spend past
+        # the cap all day. Checked before claiming, so a capped product costs
+        # one cheap SELECT per tick.
+        budget = float(cfg.get("v2_daily_budget_usd") or 0)
+        if budget > 0 and await db.retention_v2_cost_today(pid) >= budget:
+            await db.finish_worker_job(pid, "events", status="budget_reached")
+            return {"agent": "daily_budget_reached"}
+
+        lag = await db.retention_queue_lag(pid)
+        max_priority = _max_priority_for_lag(lag, cfg)
+        if max_priority < 5:
+            log.warning("retention_queue_degraded product=%s lag_sec=%s "
+                        "max_priority=%s", pid, lag, max_priority)
+            await db.log_admin_event_sampled(
+                None, "retention_queue_degraded",
+                {"lag_sec": lag, "max_priority": max_priority},
+                product_id=pid)
+
+        batch = int(limit or cfg["ping_batch_size"])
+        delay_min = (0 if ignore_send_delay
+                     else int(cfg.get("v2_send_delay_min_sec") or 0))
+        delay_max = (0 if ignore_send_delay
+                     else int(cfg.get("v2_send_delay_max_sec") or 0))
+        events = await db.claim_retention_events(
+            pid, limit=batch, delay_min_sec=delay_min,
+            delay_max_sec=max(delay_max, delay_min),
+            lease_sec=settings.global_retention_int(
+                "event_lease_sec", config.RETENTION_EVENT_LEASE_SEC, 60, 3600),
+            worker_id=worker_id(), max_priority=max_priority)
+        if not events:
+            return {"events": 0, "lag_sec": lag}
+
+        # Every claimed id starts OWED: whatever happens below, the row is
+        # either closed or handed back. Losing this bookkeeping is what made
+        # the old pipeline drop events on the floor.
+        owed: set[int] = {int(e["id"]) for e in events}
+        counters = {"decided": 0, "sent": 0, "failed": 0, "dead": 0}
+        max_attempts = settings.global_retention_int(
+            "event_max_attempts", config.RETENTION_EVENT_MAX_ATTEMPTS, 1, 50)
+        backoff = settings.global_retention_int(
+            "event_backoff_base_sec",
+            config.RETENTION_EVENT_BACKOFF_BASE_SEC, 1, 3600)
+        width = settings.global_retention_int(
+            "worker_player_concurrency",
+            config.RETENTION_WORKER_PLAYER_CONCURRENCY, 1, 64)
+        sem = asyncio.Semaphore(width)
+
+        async def _run_group(group: list[dict[str, Any]]) -> None:
+            async with sem:
+                for evt in group:
+                    pk = int(evt["id"])
+                    if stop is not None and stop.is_set():
+                        return  # the finally below hands the rest back
+                    try:
+                        outcome = await _process_event(product, evt, cfg)
+                        await db.complete_retention_event(pk)
+                        owed.discard(pk)
+                        if outcome:
+                            counters["decided"] += 1
+                            if outcome == "sent":
+                                counters["sent"] += 1
+                    except Exception as exc:  # noqa: BLE001 - one bad event must not wedge the queue
+                        status = await db.fail_retention_event(
+                            pk, repr(exc), max_attempts=max_attempts,
+                            backoff_base_sec=backoff)
+                        owed.discard(pk)
+                        counters["failed"] += 1
+                        if status == "dead":
+                            counters["dead"] += 1
+                        log.exception(
+                            "retention_v2_event_failed product=%s event=%s "
+                            "status=%s", pid, pk, status)
+                        # A player's later events are not independent of the
+                        # one that just failed (the reaction they'd produce
+                        # assumes it landed), so the rest of the chain waits
+                        # for the retry rather than running out of order.
+                        return
+
+        try:
+            await asyncio.gather(
+                *(_run_group(g) for g in _group_by_player(events)),
+                return_exceptions=True)
+        finally:
+            # Anything still owed (a stop signal, a cancelled task, an error
+            # outside the per-event guard) goes straight back to 'pending'
+            # rather than waiting out its lease.
+            if owed:
                 try:
-                    outcome = await _process_event(product, evt, cfg)
-                    if outcome:
-                        decided += 1
-                        if outcome == "sent":
-                            sent += 1
-                except Exception:  # noqa: BLE001 - one bad event must not wedge the queue
-                    log.exception("retention_v2_event_failed product=%s event=%s",
-                                  pid, evt.get("id"))
-            stats.update(events=len(events), decided=decided, sent=sent)
-        # The agent's INACTIVITY trigger: a quiet player produces no events, so the
-        # idle rules ladder (retention_idle) runs from the same sweep — same lock,
-        # same guards, same dry-run — gated by its OWN `idle_pings_enabled` switch.
-        # Self-paced (once per ~10 min per product), so a seconds-scale worker
-        # interval doesn't hammer it.
-        try:
-            from app.retention import retention_idle  # late: retention_idle imports this module
-            idle = await retention_idle.run_product_idle_pings(product, cfg)
-            if idle.get("sent") or idle.get("failed"):
-                stats["idle_sent"] = idle.get("sent", 0)
-                stats["idle_failed"] = idle.get("failed", 0)
-        except Exception:  # noqa: BLE001 - the idle sweep must not wedge the events
-            log.exception("retention_idle_sweep_failed product=%s", pid)
-        # Attribution: settle the outcome rows whose windows have elapsed. Runs on
-        # NO switch of its own — measuring what already went out is never something
-        # a product opts out of — and is self-paced (minutes, not worker ticks).
-        # Its helper swallows its own errors, so a broken sweep can't wedge here.
-        attributed = await outcomes.run_product_attribution(pid)
-        if attributed.get("attributed"):
-            stats["attributed"] = attributed["attributed"]
-        # Scoring (dormancy cohorts / RFM / value tiers): self-paced recompute
-        # of the per-player cache the guards, offers and journeys read.
-        try:
-            from app.retention import scoring
-            scored = await scoring.run_product_scoring(pid, cfg)
-            if scored.get("scored"):
-                stats["scored"] = scored["scored"]
-        except Exception:  # noqa: BLE001
-            log.exception("retention_scoring_sweep_failed product=%s", pid)
-        # Activity profiles (Smart Send Time input): self-paced, only when SST
-        # is on for the product.
-        try:
-            from app.retention import frequency
-            prof = await frequency.run_product_activity_profiles(pid, cfg)
-            if prof.get("updated"):
-                stats["profiles"] = prof["updated"]
-        except Exception:  # noqa: BLE001
-            log.exception("retention_profile_sweep_failed product=%s", pid)
-        # Journeys (DOC-6a): scheduled matching + due-step drain, self-paced,
-        # gated by `journeys_enabled` per product.
-        try:
-            from app.retention import journeys
-            jstats = await journeys.run_product_journeys(product, cfg)
-            for k in ("enrolled", "executed", "exited"):
-                if jstats.get(k):
-                    stats[f"journey_{k}"] = jstats[k]
-        except Exception:  # noqa: BLE001
-            log.exception("journey_sweep_failed product=%s", pid)
-        # Delivery retries (DOC-7): transient non-telegram failures, backoff.
-        try:
-            from app.retention import channels
-            retried = await channels.drain_delivery_retries(product, cfg)
-            if retried:
-                stats["delivery_retries"] = retried
-        except Exception:  # noqa: BLE001
-            log.exception("delivery_retry_sweep_failed product=%s", pid)
+                    await db.release_retention_events(sorted(owed))
+                except Exception:  # noqa: BLE001 - the lease reclaimer is the backstop
+                    log.exception("retention_v2_release_failed product=%s", pid)
+
+        stats.update(events=len(events), lag_sec=lag, **counters)
+        if counters["dead"]:
+            await db.log_admin_event(
+                None, "retention_events_dead_lettered",
+                {"count": counters["dead"]}, product_id=pid)
         return stats
 
 
@@ -705,7 +965,13 @@ async def _decide(product_id: int, ru: dict[str, Any], evt: dict[str, Any],
     try:
         # `agent`: a proactive decision nobody is waiting on — its own timeout
         # profile, no fallback-key race (see openai_client.CALL_PURPOSES).
-        result = await client.complete(messages, purpose="agent")
+        # Held under the FLEET-wide background ceiling: the per-key semaphore
+        # inside the client bounds one product's key, but with products drained
+        # in parallel and players sharded inside each, a burst could otherwise
+        # open hundreds of completions at once and turn a queue spike straight
+        # into a bill.
+        async with _model_slot():
+            result = await client.complete(messages, purpose="agent")
     except Exception as exc:  # noqa: BLE001 - a model failure skips this event
         await db.log_ai_interaction(
             None, settings.model()["model"], "none", 0, 0, 0, 0.0, 0, False,
@@ -896,6 +1162,25 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
     facts: dict[str, Any] = {}
     total_cost = decision_cost
     grant: Optional[dict[str, Any]] = None
+    # RESERVE the ledger row BEFORE anything the player can see happens.
+    # Delivery of an event is at-least-once (an expired lease, a reclaim after
+    # a crash), and the unique partial index on (product_id, event_pk) is what
+    # stops that from becoming at-least-twice delivery of the MESSAGE: a
+    # replay gets None here and returns, in front of the bonus grant and the
+    # send. What actually happened is written back at the end. The insert used
+    # to sit AFTER the send, which left nothing between a retry and a second
+    # message to the player.
+    decision_id = await db.insert_retention_v2_decision(
+        pid, retention_user_id=int(ru["id"]), player_id=player_id,
+        trigger_kind="event", event_pk=evt["id"],
+        event_name=evt.get("event_name"), state=state, guard=guard,
+        action=action, intent=decision["intent"], tone=decision["tone"],
+        reason=decision["reason"], dry_run=dry_run, delivered=False,
+        cost_usd=decision_cost)
+    if decision_id is None:
+        log.info("retention_v2_replay_skipped product=%s event=%s player=%s",
+                 pid, evt.get("id"), player_id)
+        return "duplicate"
     if action == "grant_offer" and offer is not None:
         # Order of operations (invariant): create the pending bonus -> the
         # partner confirms -> ONLY THEN the persona writes a message that
@@ -938,13 +1223,12 @@ async def _process_event(product: dict[str, Any], evt: dict[str, Any],
         delivered, send_cost, detail, facts = await _send_touch(
             product, ru, evt, decision, comfort=guard["comfort"], cfg=cfg)
         total_cost += send_cost
-    decision_id = await db.insert_retention_v2_decision(
-        pid, retention_user_id=int(ru["id"]), player_id=player_id,
-        trigger_kind="event", event_pk=evt["id"],
-        event_name=evt.get("event_name"), state=state, guard=guard,
-        action=action, intent=decision["intent"], tone=decision["tone"],
-        reason=decision["reason"], dry_run=dry_run, delivered=delivered,
-        detail=detail, cost_usd=total_cost)
+    # Write back what the reserved row actually turned into (the action can
+    # still change: a failed offer grant demotes the touch to silence).
+    await db.update_retention_v2_decision(
+        decision_id, action=action, intent=decision["intent"],
+        reason=decision["reason"], delivered=delivered, detail=detail,
+        cost_usd=total_cost)
     if grant is not None:
         # Back-link the grant to its ledger row (the row id exists only now).
         try:
@@ -1119,6 +1403,89 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
     ping_context = f"{event_name}: {occasion}" if event_name else occasion
     header_line = _proactive_header(draft.lang, evt, comfort=comfort)
 
+    payload = {
+        "text": draft.text,
+        "lang": draft.lang,
+        "photo_id": draft.photo_id,
+        "link_url": draft.link_url,
+        "link_label": draft.link_label,
+        # The generation's accounting rides along so invariant §4 survives a
+        # send that happens in another process (or never happens at all).
+        "ai_meta": draft.ai_meta,
+        "header": header_line,
+        "ping_context": ping_context,
+        "action": decision["action"],
+        "event_name": event_name,
+        "comfort": bool(comfort),
+        "session_id": session["id"],
+        "retention_user_id": rid,
+        "fallback_caption": retention.fallback_media_caption(
+            draft.lang, draft.photo_id, candidates),
+        "media_type": _media_type_of(candidates, draft.photo_id),
+        "gen_cost": gen_cost,
+    }
+
+    # SEND STAGE. With the send worker on, a decision does not send — it
+    # ENQUEUES, and a separate loop delivers under a per-channel token bucket.
+    # That is what keeps a 10k broadcast from competing with the decision
+    # pipeline for the same worker, and what makes an unreachable Telegram a
+    # retry instead of a lost touch. Off = the original inline send, so the
+    # rollout is a flag flip either way.
+    if settings.global_retention_bool("send_worker_enabled",
+                                      config.RETENTION_SEND_WORKER_ENABLED):
+        from app.retention import channels  # lazy: channels imports this module
+        delivery_id = channels.delivery_id_for(pid, f"v2:{evt['id']}",
+                                               "telegram")
+        enqueued = await db.enqueue_delivery(
+            pid, delivery_id, player_id=ru.get("player_id"),
+            retention_user_id=rid, channel="telegram",
+            priority=int(evt.get("priority") or 3),
+            payload=payload, body=draft.text,
+            cta_url=draft.link_url)
+        if enqueued is None:
+            # Same event, same touch, already queued or sent — the send-side
+            # half of at-least-once safety.
+            return False, gen_cost, "already_queued", facts
+        return False, gen_cost, "queued", facts
+
+    delivered, detail, facts2 = await deliver_payload(product, ru, payload, cfg)
+    facts.update(facts2)
+    return delivered, gen_cost, detail, facts
+
+
+async def deliver_payload(product: dict[str, Any], ru: dict[str, Any],
+                          payload: dict[str, Any], cfg: dict[str, Any]
+                          ) -> tuple[bool, Optional[str], dict[str, Any]]:
+    """Actually put a generated touch on the wire, with all its bookkeeping.
+
+    The ONE place a proactive agent touch leaves the service — called inline by
+    `_send_touch` when the send worker is off, and by the send worker when it
+    is on, so the persistence, the anti-annoyance counters and the undelivered
+    accounting cannot drift between the two paths.
+
+    Returns (delivered, detail, facts); `facts` is what the touch actually
+    carried (media, CTA link), which is what the attribution row is opened
+    with.
+    """
+    pid = int(product["id"])
+    rid = int(payload.get("retention_user_id") or ru["id"])
+    session_id = payload.get("session_id")
+    facts: dict[str, Any] = {"session_id": session_id}
+    comfort = bool(payload.get("comfort"))
+    action = str(payload.get("action") or "message")
+    gen_cost = float(payload.get("gen_cost") or 0)
+
+    token = await db.get_product_telegram_token(pid)
+    if not token:
+        return False, "no_bot_token", facts
+    draft = chat_service.PingDraft(
+        text=payload.get("text") or "",
+        lang=payload.get("lang") or "en",
+        photo_id=payload.get("photo_id"),
+        ai_meta=payload.get("ai_meta") or {},
+        link_url=payload.get("link_url"),
+        link_label=payload.get("link_label"))
+
     # Proactive touches may be delivered silently (no sound on the player's
     # phone) — the hot per-product `retention.silent_notifications` knob. The
     # send mechanics live in the delivery seam (delivery.py) — the one place
@@ -1127,41 +1494,40 @@ async def _send_touch(product: dict[str, Any], ru: dict[str, Any],
         product, token, silent=bool(cfg.get("silent_notifications")))
     # A comfort touch never carries a photo or a play-CTA button.
     delivered, detail, link_attached = await delivery.deliver_draft(
-        channel, ru, draft, header=header_line, session_id=session["id"],
-        photo_fallback_caption=retention.fallback_media_caption(
-            draft.lang, draft.photo_id, candidates),
+        channel, ru, draft, header=payload.get("header") or None,
+        session_id=session_id,
+        photo_fallback_caption=payload.get("fallback_caption") or "",
         allow_photo=not comfort, allow_link=not comfort)
     if not delivered:
         log.warning("retention_v2_send_failed product=%s player=%s detail=%s",
                     pid, ru.get("player_id"), detail)
 
     if delivered:
-        await db.persist_ping_turn(session["id"], draft.text or "[photo]",
+        await db.persist_ping_turn(session_id, draft.text or "[photo]",
                                    ai_meta=draft.ai_meta, product_id=pid,
-                                   ping_context=ping_context,
+                                   ping_context=payload.get("ping_context"),
                                    link_url=draft.link_url if link_attached else None)
         # Shared anti-annoyance state: the same ledger/counters the idle
         # ladder uses, so caps and min-gap hold across regimes.
-        sent_detail = f"v2:{evt.get('event_name')}"
+        sent_detail = f"v2:{payload.get('event_name')}"
         if detail == "photo_fallback_text":
             sent_detail += " (photo fallback: text)"
         await db.record_retention_ping(
-            pid, rid, None, decision["action"], "sent",
+            pid, rid, None, action, "sent",
             detail=sent_detail, cost_usd=gen_cost)
         # A photo that fell back to text was NOT delivered as media, so it must
         # not be attributed as one (it would count as a failed photo).
         if draft.photo_id is not None and detail != "photo_fallback_text":
             facts["photo_id"] = draft.photo_id
-            facts["media_type"] = _media_type_of(candidates, draft.photo_id)
+            facts["media_type"] = payload.get("media_type")
         if link_attached:
             facts["link_url"] = draft.link_url
-        return True, gen_cost, None, facts
+        return True, None, facts
 
     # Generated but undelivered: the cost still lands in ai_interaction_logs.
     await delivery.account_undelivered_generation(
-        session["id"], draft, detail, product_id=pid,
+        session_id, draft, detail, product_id=pid,
         label="v2_touch_undelivered")
-    await db.record_retention_ping(pid, rid, None, decision["action"],
-                                   "failed", detail=f"v2:{detail}",
-                                   cost_usd=gen_cost)
-    return False, gen_cost, detail, facts
+    await db.record_retention_ping(pid, rid, None, action, "failed",
+                                   detail=f"v2:{detail}", cost_usd=gen_cost)
+    return False, detail, facts

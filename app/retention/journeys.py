@@ -31,15 +31,12 @@ from __future__ import annotations
 import datetime as _dt
 import logging
 import re
-import time
 from typing import Any, Optional
 
 from app.core import config
 from app.core import db
 
 log = logging.getLogger(__name__)
-
-_last_sweep: dict[int, float] = {}
 
 TERMINAL_GUARD_REASONS = frozenset({
     "not_subscribed", "player_opted_out", "bot_blocked_by_player",
@@ -476,13 +473,11 @@ async def run_product_journeys(product: dict[str, Any],
     if not journeys_enabled(cfg):
         return {"skipped": "journeys_disabled"}
     pid = int(product["id"])
-    now = time.monotonic()
     interval = int(cfg.get("journey_step_sweep_interval_sec")
                    or config.RETENTION_JOURNEY_STEP_SWEEP_INTERVAL_SEC)
-    last = _last_sweep.get(pid)
-    if not force and last is not None and now - last < interval:
+    # Paced in Postgres (retention_worker_jobs) — see scoring.
+    if not force and not await db.claim_worker_job(pid, "journeys", interval):
         return {"skipped": "paced"}
-    _last_sweep[pid] = now
     try:
         enrolled = await match_scheduled_journeys(product, cfg)
         stats = await drain_due_steps(product, cfg)
