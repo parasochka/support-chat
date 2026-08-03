@@ -68,6 +68,12 @@ def _patch_send_stage(monkeypatch, *, rows, deliver=None, tokens=True,
                      max_priority=5):
         rec["claimed"].append({"product_id": product_id, "limit": limit,
                                "lease_sec": lease_sec, "worker_id": worker_id})
+        # A real queue hands rows out ONCE — the pass keeps claiming until it
+        # comes back empty (that is what makes the channel's rate limit the
+        # send rate instead of the worker's tick), so a fake that returns the
+        # same rows forever would just run the pass out to its deadline.
+        if len(rec["claimed"]) > 1:
+            return []
         return list(rows)
 
     async def _get_ru(product_id, rid):
@@ -135,7 +141,7 @@ async def test_a_delivered_touch_is_marked_sent_and_attributed_once(
 
     stats = await send_worker.run_product_sends({"id": 1})
 
-    assert stats == {"sent": 1, "failed": 0, "deferred": 0}
+    assert stats == {"sent": 1, "failed": 0, "deferred": 0, "batches": 1}
     assert rec["sent"] == [(11, 77)]
     assert len(rec["outcomes"]) == 1
     outcome = rec["outcomes"][0]
@@ -175,11 +181,14 @@ async def test_an_empty_bucket_reschedules_instead_of_failing(monkeypatch):
     message during a broadcast); sleeping on the claim instead would hold a
     lease — a worker slot doing nothing — while 10k touches drain at 25/s.
     """
+    # The real wait is seconds — a row genuinely tries for a token
+    # before giving up. Shorten it so the suite does not pay for it.
+    monkeypatch.setattr(send_worker, "_TOKEN_WAIT_SEC", 0.01)
     rec = _patch_send_stage(monkeypatch, rows=[_row()], tokens=False)
 
     stats = await send_worker.run_product_sends({"id": 1})
 
-    assert stats == {"sent": 0, "failed": 0, "deferred": 1}
+    assert stats == {"sent": 0, "failed": 0, "deferred": 1, "batches": 1}
     assert rec["rescheduled"] == [(11, send_worker._BUCKET_RETRY_SEC)]
     assert rec["failed"] == [] and rec["sent"] == []
     assert rec["delivered"] == []   # nothing reached the transport
@@ -200,15 +209,28 @@ async def test_the_per_chat_bucket_defers_too(monkeypatch):
     assert rec["delivered"] == []
 
 
-async def test_delegated_channels_are_not_paced_by_us(monkeypatch):
-    """Push and in-app are delivered by the casino on-device; taking a token
-    for them would throttle a queue we do not own."""
-    async def _boom(*a, **kw):
-        raise AssertionError("a delegated channel must not take a token")
+async def test_delegated_channels_are_shaped_too(monkeypatch):
+    """Push and in-app are POSTs at the CASINO's delivery endpoint, so they get
+    a bucket like every other channel.
 
-    monkeypatch.setattr(db, "take_rate_token", _boom)
+    Unshaped, a 10k broadcast is a denial of service against our own partner —
+    who then throttles or drops us, and the touches are lost on their side
+    where we cannot even retry them. The per-chat bucket is Telegram-only:
+    there is no chat here, and the partner paces per player themselves."""
+    scopes: list[str] = []
+
+    async def _take(scope, *, rate_per_sec, burst, n=1.0):
+        scopes.append(scope)
+        return True
+
+    monkeypatch.setattr(db, "take_rate_token", _take)
     assert await send_worker._take_tokens(1, "push", None, _cfg()) is True
     assert await send_worker._take_tokens(1, "in_app", 555, _cfg()) is True
+    assert scopes == ["push:1", "in_app:1"]
+    # vip_host is a task in a queue, never a message on a wire.
+    scopes.clear()
+    assert await send_worker._take_tokens(1, "vip_host", None, _cfg()) is True
+    assert scopes == []
 
 
 async def test_email_rides_its_own_bucket(monkeypatch):
@@ -235,7 +257,7 @@ async def test_a_blocked_bot_is_permanent_and_never_retried(monkeypatch):
 
     stats = await send_worker.run_product_sends({"id": 1})
 
-    assert stats == {"sent": 0, "failed": 1, "deferred": 0}
+    assert stats == {"sent": 0, "failed": 1, "deferred": 0, "batches": 1}
     assert rec["failed"][0]["permanent"] is True
     assert rec["sent"] == [] and rec["outcomes"] == []
     # The ledger row learns why, so the admin sees a reason and not a silence.
@@ -360,32 +382,42 @@ async def test_unfinished_claims_are_released_on_shutdown(monkeypatch):
     back to 'queued' rather than waiting out its lease. Without this the touches
     of the batch are invisible for the whole lease window — and the lease
     reclaimer, the backstop, runs on the maintenance cadence."""
-    rec = _patch_send_stage(monkeypatch, rows=[_row(), _row(id=12)])
     stop = asyncio.Event()
-    stop.set()
+
+    def _deliver_then_stop(payload):
+        # The deploy lands while the batch is in flight: the first row goes
+        # out, the flag rises, and the rest must not be left leased.
+        stop.set()
+        return True, None, {"session_id": "s-1"}
+
+    rec = _patch_send_stage(monkeypatch, rows=[_row(), _row(id=12)],
+                            deliver=_deliver_then_stop)
 
     stats = await send_worker.run_product_sends({"id": 1}, stop=stop)
 
-    assert stats == {"sent": 0, "failed": 0, "deferred": 0}
-    assert rec["released"] == [[11, 12]]
-    assert rec["delivered"] == []
+    assert stats["sent"] == 1
+    assert rec["released"] == [[12]], rec["released"]
 
 
 async def test_a_release_failure_never_escapes_the_sweep(monkeypatch):
     """The lease reclaimer is the backstop, so a failing release must not take
     the whole product's pass down with it."""
-    rec = _patch_send_stage(monkeypatch, rows=[_row()])
+    stop = asyncio.Event()
+
+    def _stop_before_sending(payload):
+        stop.set()
+        return True, None, {"session_id": "s-1"}
+
+    _patch_send_stage(monkeypatch, rows=[_row(), _row(id=12)],
+                      deliver=_stop_before_sending)
 
     async def _boom(pks):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(db, "release_deliveries", _boom)
-    stop = asyncio.Event()
-    stop.set()
 
-    assert await send_worker.run_product_sends(
-        {"id": 1}, stop=stop) == {"sent": 0, "failed": 0, "deferred": 0}
-    assert rec["delivered"] == []
+    stats = await send_worker.run_product_sends({"id": 1}, stop=stop)
+    assert stats["sent"] == 1  # the pass returned instead of raising
 
 
 async def test_an_empty_queue_costs_one_claim(monkeypatch):
@@ -675,3 +707,56 @@ async def test_a_queued_touch_stamps_last_ping_at_immediately(monkeypatch):
     # loses the ai_interaction_logs row for a call that was already billed.
     assert enqueued[0]["payload"]["ai_meta"]["cost_usd"] == 0.004
     assert enqueued[0]["payload"]["tone"] == "warm"
+
+
+async def test_a_burst_is_paced_by_the_channel_not_by_the_worker_tick(monkeypatch):
+    """THE regression this stage exists to prevent.
+
+    The pass used to claim one batch per worker tick, which silently made the
+    send rate `send_batch_size / worker_interval_sec` — 50 rows every 30s, or
+    1.7/s, while the token bucket allowed 30/s. A 10k broadcast took an hour
+    and a half instead of six minutes, and no metric said why. The pass must
+    keep claiming while there is work, so the bucket is the only pacer.
+    """
+    queue = [_row(id=i) for i in range(1, 251)]
+    handed: list[int] = []
+
+    async def _claim(product_id, *, limit, lease_sec, worker_id,
+                     max_priority=5):
+        chunk = queue[:limit]
+        del queue[:limit]
+        handed.append(len(chunk))
+        return chunk
+
+    _patch_send_stage(monkeypatch, rows=[])
+    monkeypatch.setattr(db, "claim_deliveries", _claim)
+
+    stats = await send_worker.run_product_sends({"id": 1})
+
+    assert stats["sent"] == 250, stats
+    assert not queue, "the pass must drain the queue, not one batch of it"
+    # 250 rows at the configured batch size of 50 = 5 claims + the empty one
+    # that ends the pass. One claim would mean the tick is still the pacer.
+    # More than one claim in a single pass is the whole point: one claim would
+    # mean the worker tick is still the pacer.
+    assert len(handed) > 1, handed
+    assert stats["batches"] == len([h for h in handed if h]), handed
+
+
+async def test_a_pass_hands_the_slot_back_at_its_budget(monkeypatch):
+    """Draining until empty must not let one product's burst starve the rest:
+    the pass stops at `send_pass_max_sec` and the next tick resumes, because
+    the queue is durable."""
+    async def _claim(product_id, *, limit, lease_sec, worker_id,
+                     max_priority=5):
+        return [_row(id=1)]
+
+    _patch_send_stage(monkeypatch, rows=[])
+    monkeypatch.setattr(db, "claim_deliveries", _claim)
+    monkeypatch.setattr(
+        send_worker.settings, "global_retention_int",
+        lambda key, default, lo, hi: 0 if key == "send_pass_max_sec" else default)
+
+    stats = await send_worker.run_product_sends({"id": 1})
+    # An endless queue: without the budget this never returns.
+    assert stats["batches"] == 1, stats

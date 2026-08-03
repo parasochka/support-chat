@@ -63,6 +63,7 @@ GLOBAL_ONLY_FIELDS: dict[str, frozenset[str]] = {
         "event_lease_sec", "event_max_attempts", "event_backoff_base_sec",
         "worker_product_concurrency", "worker_player_concurrency",
         "agent_model_concurrency", "send_worker_enabled", "send_lease_sec",
+        "send_pass_max_sec",
         "maintenance_interval_sec", "attribution_interval_sec",
         "scoring_interval_sec", "profile_interval_sec",
         "journey_interval_sec", "event_keep_days", "event_keep_days_state",
@@ -162,6 +163,8 @@ def antispam() -> dict[str, Any]:
                                           config.RATE_LIMIT_MAX_PER_IP),
         "tg_rate_limit_max_per_user": db_v.get(
             "tg_rate_limit_max_per_user", config.TG_RATE_LIMIT_MAX_PER_USER),
+        "partner_rate_limit_max": db_v.get(
+            "partner_rate_limit_max", config.PARTNER_RATE_LIMIT_MAX),
         "window_sec": db_v.get("window_sec", config.RATE_LIMIT_WINDOW_SEC),
         "cooldown_sec": db_v.get("cooldown_sec", config.MESSAGE_COOLDOWN_SEC),
         "max_input_chars": db_v.get("max_input_chars", config.MAX_INPUT_CHARS),
@@ -692,6 +695,10 @@ def retention() -> dict[str, Any]:
             config.RETENTION_TELEGRAM_CHAT_RATE_PER_SEC),
         "email_rate_per_sec": db_v.get("email_rate_per_sec",
                                        config.RETENTION_EMAIL_RATE_PER_SEC),
+        "partner_rate_per_sec": db_v.get(
+            "partner_rate_per_sec", config.RETENTION_PARTNER_RATE_PER_SEC),
+        "send_pass_max_sec": db_v.get("send_pass_max_sec",
+                                      config.RETENTION_SEND_PASS_MAX_SEC),
         # --- Maintenance cadences (GLOBAL layer) ---------------------------
         "maintenance_interval_sec": db_v.get(
             "maintenance_interval_sec",
@@ -781,6 +788,7 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
     if key == "antispam":
         _require_int(value, "rate_limit_max_per_ip", 1, 100_000)
         _require_int(value, "tg_rate_limit_max_per_user", 1, 100_000)
+        _require_int(value, "partner_rate_limit_max", 1, 1_000_000)
         _require_int(value, "window_sec", 1, 86_400)
         _require_int(value, "cooldown_sec", 0, 3_600)
         _require_int(value, "max_input_chars", 1, 100_000)
@@ -940,6 +948,8 @@ def validate_setting(key: str, value: Any) -> dict[str, Any]:
         _require_float(value, "telegram_burst", 1.0, 100.0)
         _require_float(value, "telegram_chat_rate_per_sec", 0.05, 30.0)
         _require_float(value, "email_rate_per_sec", 0.1, 1_000.0)
+        _require_float(value, "partner_rate_per_sec", 0.1, 1_000.0)
+        _require_int(value, "send_pass_max_sec", 1, 600)
         # Maintenance cadences.
         _require_int(value, "maintenance_interval_sec", 5, 3_600)
         _require_int(value, "attribution_interval_sec", 30, 86_400)
