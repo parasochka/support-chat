@@ -112,10 +112,18 @@ def request_stop(reason: str) -> None:
 
 # --- health -------------------------------------------------------------------
 def health_snapshot() -> tuple[dict[str, Any], bool]:
-    """Per-loop liveness + the verdict the healthcheck acts on."""
+    """Per-loop liveness + the verdict the healthcheck acts on.
+
+    A worker with NO pipeline is unhealthy, not merely quiet. The infra loops
+    (settings refresh, log flush) run in every process, so counting loops alone
+    reported "ok" for a worker service whose RETENTION_SCHEDULER_ENABLED was
+    left at the web service's 0 — the exact misconfiguration the healthcheck
+    exists to surface, and one that otherwise looks identical to a product with
+    nothing to do.
+    """
     now = time.monotonic()
     loops: dict[str, Any] = {}
-    healthy = bool(_LOOPS)
+    healthy = any(loop.stop is not None for loop in _LOOPS)
     for loop in _LOOPS:
         running = not loop.task.done()
         entry: dict[str, Any] = {"running": running}
@@ -142,6 +150,7 @@ def health_snapshot() -> tuple[dict[str, Any], bool]:
         "role": "worker",
         "worker_id": _WORKER_ID,
         "draining": STOP.is_set(),
+        "pipeline_enabled": config.RETENTION_SCHEDULER_ENABLED,
         "loops": loops,
     }, healthy)
 

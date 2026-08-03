@@ -4763,6 +4763,25 @@ async def claim_retention_events(product_id: int, limit: int = 50,
     return [_row_to_retention_event(r) for r in rows]
 
 
+async def renew_retention_event_lease(event_pk: int, lease_sec: int) -> None:
+    """Push a held lease forward — the chain is alive, just not finished.
+
+    The lease is taken once for the whole claimed batch, but a player's events
+    are processed STRICTLY SERIALLY and each one can spend a 90-second model
+    call. Four bursty events from the same player therefore outlive a
+    300-second lease, the reclaimer hands them back as 'pending', and a second
+    worker starts a concurrent chain for exactly the player the exclusion in
+    the claim exists to protect. Renewing before each event in the chain keeps
+    the lease meaning "this work is still moving" rather than "this batch was
+    small enough".
+    """
+    await _execute(
+        "UPDATE retention_events "
+        "SET locked_until = now() + make_interval(secs => $2::float8) "
+        "WHERE id = $1 AND status = 'processing'",
+        int(event_pk), float(max(int(lease_sec), 1)))
+
+
 async def complete_retention_event(event_pk: int) -> None:
     """Close a leased event: the pipeline is done with it, for good."""
     await _execute(

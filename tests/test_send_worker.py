@@ -607,3 +607,71 @@ async def test_the_bucket_is_never_smaller_than_one_take(monkeypatch):
     await db.take_rate_token("tg:chat:5", rate_per_sec=1.0, burst=0.0)
 
     assert conn.args[0][1] == 1.0
+
+
+async def test_a_queued_touch_stamps_last_ping_at_immediately(monkeypatch):
+    """The min-gap guard reads last_ping_at, and the ping ledger only stamps it
+    on an actual SEND. Queued, that send is minutes away — long enough for the
+    player's next event to pass the gap check and decide a second touch. The
+    enqueue path must move the clock itself; deleting that call restores the
+    double-messaging the queue split introduced.
+    """
+    from app.chat import chat_service
+    from app.retention import retention_v2
+
+    stamped: list[int] = []
+    enqueued: list[dict] = []
+
+    async def _stamp(rid):
+        stamped.append(int(rid))
+
+    async def _enqueue(pid, delivery_id, **kw):
+        enqueued.append({"delivery_id": delivery_id, **kw})
+        return 1
+
+    async def _token(pid):
+        return "tok"
+
+    async def _session(pid, ru, lang):
+        return {"id": "s-1"}
+
+    async def _ping(*a, **kw):
+        return chat_service.PingDraft(text="hi", lang="ru", photo_id=None,
+                                      ai_meta={"cost_usd": 0.004})
+
+    async def _touch_history(*a, **kw):
+        return []
+
+    monkeypatch.setattr(db, "touch_last_ping", _stamp)
+    monkeypatch.setattr(db, "enqueue_delivery", _enqueue)
+    monkeypatch.setattr(db, "get_product_telegram_token", _token)
+    monkeypatch.setattr(retention_v2.retention, "_ensure_session", _session)
+    monkeypatch.setattr(retention_v2.retention, "_user_context_from_ru",
+                        lambda ru: {})
+    monkeypatch.setattr(retention_v2.retention, "fallback_media_caption",
+                        lambda *a, **kw: "")
+    monkeypatch.setattr(retention_v2.retention, "resolve_user_lang",
+                        lambda ru: "ru")
+    monkeypatch.setattr(chat_service, "generate_retention_ping", _ping)
+    monkeypatch.setattr(retention_v2, "_touch_history", _touch_history)
+    monkeypatch.setattr(retention_v2.settings, "global_retention_bool",
+                        lambda key, default: True)   # send worker ON
+
+    async def _boom(*a, **kw):
+        raise AssertionError("a queued touch must not send inline")
+    monkeypatch.setattr(retention_v2, "deliver_payload", _boom)
+
+    delivered, cost, detail, _facts = await retention_v2._send_touch(
+        {"id": 1}, {"id": 10, "player_id": "p1", "tg_user_id": 5},
+        {"id": 77, "event_name": "deposit_confirmed", "priority": 1,
+         "payload": {}},
+        {"action": "message", "intent": "hi", "tone": "warm"},
+        comfort=False, cfg={})
+
+    assert detail == "queued" and delivered is False
+    assert stamped == [10], "the gap clock must move at ENQUEUE, not at send"
+    assert len(enqueued) == 1
+    # The generation's accounting rides along, or a send in another process
+    # loses the ai_interaction_logs row for a call that was already billed.
+    assert enqueued[0]["payload"]["ai_meta"]["cost_usd"] == 0.004
+    assert enqueued[0]["payload"]["tone"] == "warm"

@@ -630,11 +630,11 @@ async def run_product_events(product: dict[str, Any], *,
                      else int(cfg.get("v2_send_delay_min_sec") or 0))
         delay_max = (0 if ignore_send_delay
                      else int(cfg.get("v2_send_delay_max_sec") or 0))
+        lease_sec = settings.global_retention_int(
+            "event_lease_sec", config.RETENTION_EVENT_LEASE_SEC, 60, 3600)
         events = await db.claim_retention_events(
             pid, limit=batch, delay_min_sec=delay_min,
-            delay_max_sec=max(delay_max, delay_min),
-            lease_sec=settings.global_retention_int(
-                "event_lease_sec", config.RETENTION_EVENT_LEASE_SEC, 60, 3600),
+            delay_max_sec=max(delay_max, delay_min), lease_sec=lease_sec,
             worker_id=worker_id(), max_priority=max_priority)
         if not events:
             return {"events": 0, "lag_sec": lag}
@@ -656,10 +656,18 @@ async def run_product_events(product: dict[str, Any], *,
 
         async def _run_group(group: list[dict[str, Any]]) -> None:
             async with sem:
-                for evt in group:
+                for i, evt in enumerate(group):
                     pk = int(evt["id"])
                     if stop is not None and stop.is_set():
                         return  # the finally below hands the rest back
+                    if i:
+                        # The lease was taken once for the whole batch, but a
+                        # chain runs serially with a model call per event — a
+                        # bursty player outlives it, gets reclaimed, and a
+                        # second worker starts a concurrent chain for exactly
+                        # the player the claim's exclusion protects. Renew as
+                        # the chain advances so the lease means "still moving".
+                        await db.renew_retention_event_lease(pk, lease_sec)
                     try:
                         outcome = await _process_event(product, evt, cfg)
                         await db.complete_retention_event(pk)

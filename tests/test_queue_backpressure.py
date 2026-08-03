@@ -88,7 +88,15 @@ def test_an_operator_listed_event_always_reaches_the_drain():
 def test_every_decision_event_reaches_the_drain():
     """The agent can only react to what it is handed. Demoting a decision event
     into the state-food lane would silently stop every reaction to it — no
-    error, no queue depth, just a bot that went quiet."""
+    error, no queue depth, just a bot that went quiet.
+
+    Asserted on the LANE, not on should_queue: with `v2_decision_events` unset
+    should_queue consults DECISION_EVENTS itself, so checking it against the
+    same set is a tautology that survives demoting every one of them."""
+    for name in sorted(retention_v2.DECISION_EVENTS):
+        assert player_sync.event_priority(name) < \
+            player_sync.STATE_FOOD_PRIORITY, name
+    # And with the operator's list unset, the drain really does take them.
     cfg = _bypass_cfg(v2_loss_high_usd=100.0)
     for name in sorted(retention_v2.DECISION_EVENTS):
         assert player_sync.should_queue(name, cfg) is True, name

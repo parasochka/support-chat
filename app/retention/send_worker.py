@@ -199,6 +199,28 @@ async def _take_tokens(pid: int, channel: str, chat_id: Optional[int],
                                     rate_per_sec=chat_rate, burst=1.0)
 
 
+async def _account_unsent(pid: int, payload: dict[str, Any],
+                          detail: str) -> None:
+    """Log a generation that was paid for but never left (invariant §4).
+
+    Best-effort by contract: the touch is already suppressed, and failing to
+    write its accounting must not turn that into an exception the send loop
+    has to handle.
+    """
+    meta = payload.get("ai_meta") or {}
+    if not meta:
+        return
+    try:
+        await db.log_ai_interaction(
+            payload.get("session_id"), meta.get("model"), meta.get("key_used"),
+            meta.get("tokens_in"), meta.get("tokens_out"),
+            meta.get("cached_in"), float(meta.get("cost_usd") or 0),
+            meta.get("latency_ms"), False, f"v2_touch_suppressed {detail}",
+            product_id=pid, consumer="telegram", source="agent")
+    except Exception:  # noqa: BLE001 - accounting must not break the loop
+        log.exception("retention_send_accounting_failed product=%s", pid)
+
+
 async def _suppressed_now(pid: int, ru: dict[str, Any],
                           payload: dict[str, Any],
                           cfg: dict[str, Any]) -> Optional[str]:
@@ -244,10 +266,21 @@ async def _deliver_row(product: dict[str, Any], row: dict[str, Any],
     # gaming feed. Sending anyway because "it was allowed when we wrote it"
     # is exactly the failure a queue introduces, and for the RG case it is a
     # compliance failure, not a nuisance.
+    decision_id = row.get("decision_id")
     suppressed = await _suppressed_now(pid, ru, payload, cfg)
     if suppressed:
         await db.mark_delivery_failed(int(row["id"]), suppressed,
                                       permanent=True)
+        # The message was already GENERATED and billed when the decision was
+        # made — the model call happened, so invariant §4 says it must land in
+        # ai_interaction_logs whether or not the text ever reached the player.
+        # Every other terminal branch writes it through deliver_payload; this
+        # one returns before that, so it accounts for itself.
+        await _account_unsent(pid, payload, suppressed)
+        if decision_id:
+            await db.update_retention_v2_decision(
+                int(decision_id), delivered=False,
+                detail=f"suppressed: {suppressed}")
         log.info("retention_send_suppressed product=%s player=%s reason=%s",
                  pid, ru.get("player_id"), suppressed)
         return "failed"
@@ -260,7 +293,6 @@ async def _deliver_row(product: dict[str, Any], row: dict[str, Any],
 
     delivered, detail, facts = await retention_v2.deliver_payload(
         product, ru, payload, cfg)
-    decision_id = row.get("decision_id")
     if delivered:
         outcome_id = await outcomes.record(
             pid, ru, kind="proactive", session_id=facts.get("session_id"),
