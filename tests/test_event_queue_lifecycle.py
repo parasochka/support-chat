@@ -91,9 +91,9 @@ async def test_claim_serves_the_best_lane_first_and_skips_locked(monkeypatch):
     await db.claim_retention_events(1, max_priority=2)
 
     sql = conn.sql[0]
-    assert "ORDER BY priority ASC, id ASC" in sql
+    assert "ORDER BY e.priority ASC, e.id ASC" in sql
     assert "FOR UPDATE SKIP LOCKED" in sql
-    assert "priority <= $7" in sql
+    assert "e.priority <= $7" in sql
     # A retry that is not due yet stays out of the batch.
     assert "next_attempt_at <= now()" in sql
 
@@ -110,7 +110,7 @@ async def test_claim_delay_window_and_lease_floor(monkeypatch):
                                     lease_sec=0)
 
     sql, args = conn.calls[0]
-    assert "created_at <= now()" in sql and "$3 + (id % $4)" in sql
+    assert "e.created_at <= now()" in sql and "$3 + (e.id % $4)" in sql
     assert args[2] == 0.0 and args[3] == 1  # modulo divisor is never 0
     assert args[4] == 1.0                   # lease floor
 
@@ -440,3 +440,30 @@ async def test_a_replay_never_reaches_the_bonus_grant(monkeypatch):
 
     assert await retention_v2._process_event(
         {"id": 1}, _evt(), _cfg(v2_dry_run=False)) == "duplicate"
+
+
+async def test_claim_excludes_a_player_already_in_flight(monkeypatch):
+    """One player is never decided twice at once — ACROSS worker replicas.
+
+    Grouping a claimed batch by player only serializes ONE worker's events.
+    Two replicas (or the admin's «process queue now» running beside the sweep)
+    claim independently, so without this the same player's two events land in
+    two pipelines, read the same guard counters before either writes, and he
+    gets two messages for what should have been one. Two guards in one
+    statement: skip a player who already has an event in flight anywhere, and
+    take a transaction-scoped advisory lock so two claims at the same instant
+    cannot both pass that check.
+    """
+    conn = FakeConn(rows=[])
+    monkeypatch.setattr(db, "_pool", FakePool(conn))
+
+    await db.claim_retention_events(1)
+
+    sql = conn.sql[0]
+    assert "NOT EXISTS" in sql
+    assert "b.player_id = e.player_id" in sql
+    assert "b.status = 'processing'" in sql
+    assert "pg_try_advisory_xact_lock" in sql
+    # The lock is applied to the LIMITed candidate set, not to every row the
+    # scan touches — otherwise one claim could lock a whole product's backlog.
+    assert sql.index("LIMIT $2") < sql.index("pg_try_advisory_xact_lock")

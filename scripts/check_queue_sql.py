@@ -124,11 +124,61 @@ async def _lifecycle(pid: int) -> None:
           await db.reclaim_expired_event_leases(max_attempts=99) == 1)
 
 
+async def _player_exclusion(pid: int) -> None:
+    """One player is never decided twice at once — ACROSS workers.
+
+    Grouping a claimed batch by player only serializes one worker's own events.
+    Two replicas (or the admin's «process queue now» alongside the sweep) claim
+    independently, so without the exclusion in the SQL they can each take a
+    different event of the same player, read the same guard counters, and send
+    him two messages for what should have been one.
+    """
+    print("\nplayer exclusion")
+    async with db._acquire() as c:
+        await c.execute("DELETE FROM retention_v2_decisions")
+        await c.execute("DELETE FROM retention_events")
+    for i in range(3):
+        await db.ingest_retention_event(
+            pid, event_id=f"px{i}", event_name="deposit_confirmed",
+            player_id="pSame", ts="2026-01-01T00:00:00Z", payload={},
+            priority=1, queue=True)
+    await db.ingest_retention_event(
+        pid, event_id="pother", event_name="deposit_confirmed",
+        player_id="pOther", ts="2026-01-01T00:00:00Z", payload={}, priority=1,
+        queue=True)
+
+    first = await db.claim_retention_events(pid, limit=1, lease_sec=60,
+                                            worker_id="wA")
+    check("a claim takes at least one event", len(first) >= 1)
+    second = await db.claim_retention_events(pid, limit=10, lease_sec=60,
+                                             worker_id="wB")
+    players_left = {e["player_id"] for e in second}
+    check("a second worker cannot touch a player already in flight",
+          "pSame" not in players_left, players_left)
+    check("a different player is still claimable", "pOther" in players_left)
+
+    for e in first + second:
+        await db.complete_retention_event(e["id"])
+    async with db._acquire() as c:
+        await c.execute("UPDATE retention_events SET status='pending', "
+                        "processed_at=NULL, attempts=0")
+    batch = await db.claim_retention_events(pid, limit=10, lease_sec=60,
+                                            worker_id="wA")
+    check("with nothing in flight, all of a player's events come together",
+          len([e for e in batch if e["player_id"] == "pSame"]) == 3,
+          [e["event_id"] for e in batch])
+
+
 async def _observability(pid: int) -> None:
     print("\nobservability")
+    # Its own backlog: sections before this one leave their events LEASED, and
+    # lag only counts what nobody has picked up.
     async with db._acquire() as c:
-        await c.execute("UPDATE retention_events SET created_at = now() - "
-                        "interval '5 minutes' WHERE product_id = $1", pid)
+        await c.execute(
+            "INSERT INTO retention_events (product_id, event_id, event_name, "
+            " player_id, ts, created_at, priority) "
+            "VALUES ($1, 'lagcheck', 'deposit_confirmed', 'pLag', now(), "
+            "        now() - interval '5 minutes', 1)", pid)
     check("queue lag reports the oldest untouched event",
           await db.retention_queue_lag(pid) >= 300)
     stats = await db.retention_queue_stats(pid)
@@ -143,7 +193,9 @@ async def _replay_guard(pid: int) -> None:
     print("\nreplay guard")
     async with db._acquire() as c:
         pk = await c.fetchval(
-            "SELECT id FROM retention_events WHERE product_id=$1 LIMIT 1", pid)
+            "INSERT INTO retention_events (product_id, event_id, event_name, "
+            " player_id, ts) VALUES ($1, 'replaycheck', 'deposit_confirmed', "
+            " 'pReplay', now()) RETURNING id", pid)
     kw = dict(retention_user_id=None, player_id="pA", trigger_kind="event",
               event_pk=pk, event_name="deposit_confirmed", state={}, guard={})
     first = await db.insert_retention_v2_decision(pid, action="message", **kw)
@@ -185,6 +237,11 @@ async def _pacing_and_shaping(pid: int) -> None:
 
 async def _send_queue(pid: int) -> None:
     print("\nsend queue")
+    # Self-clearing: the section asserts on a fixed delivery_id, and the whole
+    # point of that id is that a second insert is refused — so a re-run against
+    # the same scratch database would otherwise measure the leftovers.
+    async with db._acquire() as c:
+        await c.execute("DELETE FROM retention_deliveries")
     did = await db.enqueue_delivery(pid, "dl_x", player_id="pA",
                                     retention_user_id=None, channel="telegram",
                                     priority=1, payload={"text": "hi"})
@@ -265,12 +322,41 @@ async def _upgrade_path() -> None:
     check("init_db stays idempotent on the upgraded database", True)
 
 
+async def _reset() -> None:
+    """Start from a known queue state.
+
+    Every section asserts on exact counts and on fixed ids whose whole purpose
+    is that a second insert is refused, so leftovers from a previous run would
+    be read as failures. Clearing the queue tables (and only those) makes the
+    checker deterministic on any scratch database instead of only a virgin one
+    — a checker that cries wolf on its second run is a checker nobody trusts.
+    """
+    async with db._acquire() as c:
+        await c.execute("DELETE FROM retention_outcomes")
+        await c.execute("DELETE FROM retention_deliveries")
+        await c.execute("DELETE FROM retention_v2_decisions")
+        await c.execute("DELETE FROM retention_events")
+        await c.execute("DELETE FROM retention_worker_jobs")
+        await c.execute("DELETE FROM retention_rate_budget")
+        # The upgrade section deliberately ends with the replay-guard index
+        # ABSENT (that is what it proves: duplicates make boot skip it rather
+        # than refuse to start). Now that the duplicates are gone, put it back —
+        # otherwise a re-run measures a database with no replay guard at all.
+        await c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "idx_retention_v2_decisions_event "
+            "ON retention_v2_decisions (product_id, event_pk) "
+            "WHERE event_pk IS NOT NULL AND action <> 'skipped'")
+
+
 async def main() -> int:
     await db.init_db()
     print("init_db OK (schema + guarded ALTERs + the defensive unique index)")
+    await _reset()
     async with db._acquire() as c:
         pid = await c.fetchval("SELECT id FROM products LIMIT 1")
     await _lifecycle(pid)
+    await _player_exclusion(pid)
     await _observability(pid)
     await _replay_guard(pid)
     await _pacing_and_shaping(pid)

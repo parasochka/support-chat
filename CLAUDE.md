@@ -1104,11 +1104,32 @@ serially within a player** — two decisions for the same player read the same g
 before either writes, which is how one player collects two messages for two events that should
 have produced one. Do not flatten the groups for throughput. A failure inside a chain **stops
 that chain** (the player's later events assume the failed one landed) and leaves the rest to
-the retry. The mutual exclusion is the claim itself, so several workers may drain one product
-safely — and so may the admin «Process queue now» button (`run_product_events_locked` keeps its
-name and its `WorkerBusy` escape hatch but no longer locks, and can no longer 409 just because
-the sweep is mid-pass). Background model calls are additionally bounded per process by
-`_model_slot()` (`agent_model_concurrency`) so a burst cannot open hundreds of completions.
+the retry.
+
+Grouping alone only serializes ONE worker's own batch, so the same rule is enforced **in the
+claim SQL**: a player who already has an event `processing` anywhere is skipped whole, and a
+transaction-scoped `pg_try_advisory_xact_lock` on `(product, player)` — taken AFTER the `LIMIT`,
+so a claim can never lock a whole backlog — closes the instant where two claims both see "none
+in flight". The lock dies with the claim's transaction; from then on the `processing` rows are
+what keep the other worker out, and because the lock is re-entrant every event of the winning
+player still arrives in the same batch, which is what the grouping wants. That pair is what
+makes the mutual exclusion the CLAIM rather than a worker-local convention — so several workers
+may drain one product safely, and so may the admin «Process queue now» button
+(`run_product_events_locked` keeps its name and its `WorkerBusy` escape hatch but no longer
+locks, and can no longer 409 just because the sweep is mid-pass). Background model calls are
+additionally bounded per process by `_model_slot()` (`agent_model_concurrency`) so a burst
+cannot open hundreds of completions.
+
+**The queue SQL cannot be validated by the test suite.** `tests/conftest.py` stubs asyncpg, so
+a test can assert which statement a helper issues but never that Postgres accepts it — and
+three statements in this pipeline shipped broken past a green suite (asyncpg infers a bare `$n`
+inside `make_interval(secs => $n)` from the function signature, but inside an EXPRESSION —
+`GREATEST($3,$4)`, `$2 - $4` — it has nothing to infer from, prepares `unknown`, and Postgres
+rejects the call at prepare time). `scripts/check_queue_sql.py` runs the lifecycle, the lane
+ceiling, the player exclusion, the pacing table, the token bucket, the send queue and the
+upgrade-from-a-legacy-database path against a real server. It is not in `preflight.sh` (no
+asyncpg, no database there) — run it by hand, against a scratch database, whenever you touch
+queue SQL.
 
 **Maintenance runs off the event path, paced in Postgres.** `maintenance_loop` owns lease
 reclaim, the idle ladder, attribution, scoring, activity profiles, journeys and — only while

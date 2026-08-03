@@ -1522,6 +1522,9 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         "WHERE status = 'pending'",
         "CREATE INDEX IF NOT EXISTS idx_retention_events_lease "
         "ON retention_events (locked_until) WHERE status = 'processing'",
+        "CREATE INDEX IF NOT EXISTS idx_retention_events_inflight "
+        "ON retention_events (product_id, player_id) "
+        "WHERE status = 'processing'",
         "CREATE INDEX IF NOT EXISTS idx_retention_events_dead "
         "ON retention_events (product_id, id DESC) WHERE status = 'dead'",
         "CREATE INDEX IF NOT EXISTS idx_retention_deliveries_ready "
@@ -4697,6 +4700,11 @@ async def claim_retention_events(product_id: int, limit: int = 50,
     and anything left behind is picked back up by
     `reclaim_expired_event_leases` once `locked_until` passes.
 
+    The claim also enforces PLAYER EXCLUSION (see the SQL): a player with an
+    event already in flight is skipped entirely, so "one decision per player at
+    a time" holds ACROSS worker replicas and not merely inside one batch.
+    Grouping the batch by player would only serialize one worker's own events.
+
     `max_priority` is the backpressure lane gate: under a growing backlog the
     worker lowers it so transactional events (P1/P2) still move while state
     food waits. `delay_min_sec`/`delay_max_sec` implement the humanizing SEND
@@ -4711,21 +4719,42 @@ async def claim_retention_events(product_id: int, limit: int = 50,
         "UPDATE retention_events SET status = 'processing', "
         "  attempts = attempts + 1, worker_id = $6, "
         "  locked_until = now() + make_interval(secs => $5) "
-        "WHERE id IN (SELECT id FROM retention_events "
-        "             WHERE product_id = $1 AND status = 'pending' "
+        "WHERE id IN ("
+        "  SELECT cand.id FROM ("
+        "    SELECT e.id, e.product_id, e.player_id FROM retention_events e "
+        "     WHERE e.product_id = $1 AND e.status = 'pending' "
         # A row the pipeline already finished with always carries
         # processed_at, and a genuinely pending one never does. Testing both
         # makes the claim correct on a database whose legacy rows have not been
         # backfilled to status='done' yet — otherwise the first boot after the
         # upgrade would re-react to the entire event history.
-        "               AND processed_at IS NULL "
-        "               AND priority <= $7 "
-        "               AND (next_attempt_at IS NULL "
-        "                    OR next_attempt_at <= now()) "
-        "               AND created_at <= now() "
-        "                   - make_interval(secs => $3 + (id % $4)) "
-        "             ORDER BY priority ASC, id ASC "
-        "             LIMIT $2 FOR UPDATE SKIP LOCKED) "
+        "       AND e.processed_at IS NULL "
+        "       AND e.priority <= $7 "
+        "       AND (e.next_attempt_at IS NULL "
+        "            OR e.next_attempt_at <= now()) "
+        "       AND e.created_at <= now() "
+        "           - make_interval(secs => $3 + (e.id % $4)) "
+        # A player who already has an event in flight ANYWHERE is skipped
+        # whole: his next event must wait for the one being decided, or two
+        # workers read the same guard counters and he gets two messages for
+        # what should have been one.
+        "       AND NOT EXISTS (SELECT 1 FROM retention_events b "
+        "                        WHERE b.product_id = e.product_id "
+        "                          AND b.player_id = e.player_id "
+        "                          AND b.status = 'processing') "
+        "     ORDER BY e.priority ASC, e.id ASC "
+        "     LIMIT $2 FOR UPDATE SKIP LOCKED) AS cand "
+        # ...and the advisory lock closes the instant the check above cannot:
+        # two claims running at the same moment both see "no rows in flight"
+        # for a player, and only one may win. Transaction-scoped, so it is
+        # released the moment the claim commits — from then on the 'processing'
+        # rows keep the other worker out. Re-entrant, so every event of the
+        # winning player still comes back in this one batch, which is exactly
+        # what the per-player grouping wants. Applied AFTER the LIMIT so at
+        # most `limit` locks are ever taken.
+        "  WHERE pg_try_advisory_xact_lock("
+        "          hashtext('retention_player'), "
+        "          hashtext(cand.product_id::text || ':' || cand.player_id))) "
         "RETURNING *",
         product_id, int(limit), float(lo), int(span), float(max(lease_sec, 1)),
         worker_id, int(max_priority),

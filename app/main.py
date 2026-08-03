@@ -135,10 +135,14 @@ async def _settings_refresh_loop() -> None:
 _LOG_FLUSH_SEC = 3
 _LOG_KEEP_ROWS = 5000
 _LOG_PRUNE_EVERY = 20  # prune once every N flushes (~1 min)
-# The append-only retention_events log has no size cap; reap processed rows older
-# than this on a coarse cadence (~hourly) from the same loop.
+# The append-only retention_events log has no size cap; reap old rows on a
+# coarse cadence (~hourly) from the same loop. The retention is SPLIT: the
+# high-volume "state food" lane (spins, session pings) is the overwhelming
+# majority of the rows and is worth nothing once the state resolver's windows
+# have passed, so keeping it as long as the decision events is what makes the
+# table grow without bound. Both spans are hot settings — an operator watching
+# the disk fill should not need a redeploy to act.
 _RETENTION_EVENTS_PRUNE_EVERY = 1200  # ~1h at _LOG_FLUSH_SEC
-_RETENTION_EVENTS_KEEP_DAYS = 90
 
 
 async def _log_flush_loop() -> None:
@@ -158,7 +162,13 @@ async def _log_flush_loop() -> None:
             if ticks % _LOG_PRUNE_EVERY == 0:
                 await db.prune_app_logs(_LOG_KEEP_ROWS)
             if ticks % _RETENTION_EVENTS_PRUNE_EVERY == 0:
-                removed = await db.prune_retention_events(_RETENTION_EVENTS_KEEP_DAYS)
+                removed = await db.prune_retention_events(
+                    settings.global_retention_int(
+                        "event_keep_days", config.RETENTION_EVENT_KEEP_DAYS,
+                        1, 3650),
+                    state_keep_days=settings.global_retention_int(
+                        "event_keep_days_state",
+                        config.RETENTION_EVENT_KEEP_DAYS_STATE, 1, 3650))
                 if removed:
                     log.info("retention_events_pruned rows=%s", removed)
         except asyncio.CancelledError:
