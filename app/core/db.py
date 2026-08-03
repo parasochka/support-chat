@@ -29,8 +29,12 @@ async def connect() -> asyncpg.Pool:
     if _pool is None:
         _pool = await asyncpg.create_pool(
             dsn=config.DATABASE_URL,
-            min_size=1,
-            max_size=10,
+            # Sized per process ROLE (config.DB_POOL_MAX): a worker runs many
+            # concurrent player shards and needs more slots than a web process
+            # serving requests. Keep an eye on the server's max_connections
+            # before raising it — every replica opens its own pool.
+            min_size=config.DB_POOL_MIN,
+            max_size=config.DB_POOL_MAX,
             command_timeout=30,
             # Cap establishing a NEW backend connection so a DOWN database fails
             # fast (raises) instead of blocking the acquire indefinitely on
@@ -514,21 +518,38 @@ CREATE TABLE IF NOT EXISTS retention_pings (
 -- RETENTION AGENT (event-driven) --------------------------------------
 -- Canonical casino events (the EPIC-1 taxonomy) pushed by the partner event
 -- webhook or the admin simulator. Append-only; idempotent by
--- (product_id, event_id). The agent worker claims rows with processed_at NULL;
--- the same log also feeds the deterministic state resolver (loss window,
--- activity), so rows stay after processing.
+-- (product_id, event_id). The same log also feeds the deterministic state
+-- resolver (loss window, activity), so rows stay after processing.
+--
+-- QUEUE LIFECYCLE. `status` is the real queue state; `processed_at` records
+-- when the pipeline finished with the row (and is what pruning ages on) — it
+-- is NOT the claim marker any more. A claim LEASES the row
+-- (status='processing' + locked_until) instead of stamping it processed, so a
+-- crash, a deploy or an exception mid-pipeline returns the event to the queue
+-- instead of losing it silently. `attempts` + `next_attempt_at` drive the
+-- retry backoff; `status='dead'` is the dead-letter terminal after
+-- `retention.event_max_attempts`. `priority` is assigned at ingest from
+-- player_sync.EVENT_PRIORITY (1 = transactional … 5 = state food) so the claim
+-- can serve lanes without a join, and so a backlog can be degraded by lane.
 CREATE TABLE IF NOT EXISTS retention_events (
-  id            BIGSERIAL PRIMARY KEY,
-  product_id    INT NOT NULL REFERENCES products(id),
-  event_id      TEXT NOT NULL,               -- partner's idempotency key (ULID)
-  event_name    TEXT NOT NULL,               -- canonical name (deposit_confirmed, ...)
-  event_version TEXT NOT NULL DEFAULT '1.0',
-  player_id     TEXT NOT NULL,
-  ts            TIMESTAMPTZ NOT NULL,        -- when it happened at the casino
-  payload       JSONB NOT NULL DEFAULT '{}',
-  source        TEXT NOT NULL DEFAULT 'webhook',  -- 'webhook' | 'simulator'
-  processed_at  TIMESTAMPTZ,                 -- NULL = still queued for the worker
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  id              BIGSERIAL PRIMARY KEY,
+  product_id      INT NOT NULL REFERENCES products(id),
+  event_id        TEXT NOT NULL,             -- partner's idempotency key (ULID)
+  event_name      TEXT NOT NULL,             -- canonical name (deposit_confirmed, ...)
+  event_version   TEXT NOT NULL DEFAULT '1.0',
+  player_id       TEXT NOT NULL,
+  ts              TIMESTAMPTZ NOT NULL,      -- when it happened at the casino
+  payload         JSONB NOT NULL DEFAULT '{}',
+  source          TEXT NOT NULL DEFAULT 'webhook',  -- 'webhook' | 'simulator'
+  status          TEXT NOT NULL DEFAULT 'pending',  -- pending|processing|done|dead
+  attempts        INT NOT NULL DEFAULT 0,
+  locked_until    TIMESTAMPTZ,               -- lease expiry while 'processing'
+  next_attempt_at TIMESTAMPTZ,               -- retry backoff gate
+  priority        SMALLINT NOT NULL DEFAULT 3,
+  last_error      TEXT,
+  worker_id       TEXT,                      -- which worker holds/held the lease
+  processed_at    TIMESTAMPTZ,               -- when the pipeline finished with it
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (product_id, event_id)
 );
 
@@ -922,6 +943,12 @@ CREATE TABLE IF NOT EXISTS retention_channel_config (
 );
 
 -- Unified delivery tracking across channels (lifecycle + retry state).
+-- Also the SEND QUEUE: a decision never sends, it enqueues a row here and the
+-- send worker claims it under the same lease discipline as retention_events
+-- (status 'sending' + locked_until). `payload` carries everything the channel
+-- adapter needs (text, media id, keyboard, silent flag), `scheduled_at`
+-- absorbs the humanizing send delay and Smart Send Time, and `priority`
+-- (inherited from the triggering event) is the lane a burst is drained in.
 CREATE TABLE IF NOT EXISTS retention_deliveries (
   id                BIGSERIAL PRIMARY KEY,
   product_id        INT NOT NULL REFERENCES products(id),
@@ -940,6 +967,12 @@ CREATE TABLE IF NOT EXISTS retention_deliveries (
   title             TEXT,
   body              TEXT,
   cta_url           TEXT,
+  priority          SMALLINT NOT NULL DEFAULT 3,
+  scheduled_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  locked_until      TIMESTAMPTZ,
+  worker_id         TEXT,
+  payload           JSONB NOT NULL DEFAULT '{}',
+  outcome_id        BIGINT,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (product_id, delivery_id)
@@ -949,6 +982,38 @@ CREATE INDEX IF NOT EXISTS idx_retention_deliveries_product
 CREATE INDEX IF NOT EXISTS idx_retention_deliveries_retry
   ON retention_deliveries(product_id, next_attempt_at)
   WHERE status = 'failed' AND NOT permanent_fail;
+
+-- BACKGROUND JOB PACING ------------------------------------------------
+-- The maintenance sweeps (idle ladder, attribution, scoring, activity
+-- profiles, journeys) used to pace themselves on an in-process dict, which
+-- neither survives a restart nor holds across instances. This table is the
+-- shared "is it my turn" clock: db.claim_worker_job flips next_run_at
+-- atomically, so exactly one worker runs a given (product, job) per interval.
+-- It doubles as the admin's background-jobs health view.
+CREATE TABLE IF NOT EXISTS retention_worker_jobs (
+  product_id   INT NOT NULL REFERENCES products(id),
+  job          TEXT NOT NULL,
+  last_run_at  TIMESTAMPTZ,
+  next_run_at  TIMESTAMPTZ,
+  last_status  TEXT,
+  last_error   TEXT,
+  duration_ms  INT,
+  PRIMARY KEY (product_id, job)
+);
+
+-- OUTBOUND RATE SHAPING ------------------------------------------------
+-- A token bucket per send scope ('tg:<product>', 'tg:chat:<chat>',
+-- 'email:<product>'), refilled lazily inside one atomic UPDATE. Telegram
+-- allows ~30 msg/s per bot and ~1/s per chat; a 10k broadcast without this
+-- collects 429s instead of delivering. Shared state on purpose — it must hold
+-- across worker instances, which an in-process limiter cannot.
+CREATE TABLE IF NOT EXISTS retention_rate_budget (
+  scope        TEXT PRIMARY KEY,
+  tokens       DOUBLE PRECISION NOT NULL,
+  rate_per_sec DOUBLE PRECISION NOT NULL,
+  burst        DOUBLE PRECISION NOT NULL,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- VIP-host task queue (a ROUTE, not a send: a human handles it).
 CREATE TABLE IF NOT EXISTS retention_host_tasks (
@@ -1054,8 +1119,9 @@ CREATE INDEX IF NOT EXISTS idx_retention_pings_user
   ON retention_pings(retention_user_id, rule_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_retention_nonces_expires
   ON retention_nonces(expires_at);
-CREATE INDEX IF NOT EXISTS idx_retention_events_queue
-  ON retention_events(product_id, id) WHERE processed_at IS NULL;
+-- NB: the queue indexes over the lifecycle columns live in _ensure_columns —
+-- they must run AFTER the ADD COLUMN guards, or a legacy database (whose
+-- retention_events has no `status` yet) fails at boot.
 CREATE INDEX IF NOT EXISTS idx_retention_events_player
   ON retention_events(product_id, player_id, ts);
 CREATE INDEX IF NOT EXISTS idx_retention_v2_decisions_product
@@ -1413,6 +1479,86 @@ async def _ensure_columns(conn: asyncpg.Connection) -> None:
         # Email channel (Customer.io App API) credential, encrypted at rest.
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS "
         "email_api_key_enc TEXT",
+        # --- EVENT QUEUE LIFECYCLE ------------------------------------------
+        # The claim used to stamp processed_at at SELECTION time, so an event
+        # whose pipeline then threw stayed marked processed — lost, silently,
+        # with no retry and no dead-letter. These columns turn the claim into a
+        # LEASE (see the retention_events comment in _SCHEMA).
+        "ALTER TABLE retention_events ADD COLUMN IF NOT EXISTS "
+        "status TEXT NOT NULL DEFAULT 'pending'",
+        "ALTER TABLE retention_events ADD COLUMN IF NOT EXISTS "
+        "attempts INT NOT NULL DEFAULT 0",
+        "ALTER TABLE retention_events ADD COLUMN IF NOT EXISTS "
+        "locked_until TIMESTAMPTZ",
+        "ALTER TABLE retention_events ADD COLUMN IF NOT EXISTS "
+        "next_attempt_at TIMESTAMPTZ",
+        "ALTER TABLE retention_events ADD COLUMN IF NOT EXISTS "
+        "priority SMALLINT NOT NULL DEFAULT 3",
+        "ALTER TABLE retention_events ADD COLUMN IF NOT EXISTS "
+        "last_error TEXT",
+        "ALTER TABLE retention_events ADD COLUMN IF NOT EXISTS "
+        "worker_id TEXT",
+        # --- SEND QUEUE -----------------------------------------------------
+        "ALTER TABLE retention_deliveries ADD COLUMN IF NOT EXISTS "
+        "priority SMALLINT NOT NULL DEFAULT 3",
+        "ALTER TABLE retention_deliveries ADD COLUMN IF NOT EXISTS "
+        "scheduled_at TIMESTAMPTZ NOT NULL DEFAULT now()",
+        "ALTER TABLE retention_deliveries ADD COLUMN IF NOT EXISTS "
+        "locked_until TIMESTAMPTZ",
+        "ALTER TABLE retention_deliveries ADD COLUMN IF NOT EXISTS "
+        "worker_id TEXT",
+        "ALTER TABLE retention_deliveries ADD COLUMN IF NOT EXISTS "
+        "payload JSONB NOT NULL DEFAULT '{}'",
+        "ALTER TABLE retention_deliveries ADD COLUMN IF NOT EXISTS "
+        "outcome_id BIGINT",
+        # The old queue index keyed on processed_at IS NULL, which no longer
+        # means "queued" — replaced by the status-partial indexes below.
+        "DROP INDEX IF EXISTS idx_retention_events_queue",
+        # The drain's index. It is also what keeps the boot backfill below
+        # cheap on every later start: after the first pass only the genuinely
+        # pending rows (the live queue depth) are scanned.
+        "CREATE INDEX IF NOT EXISTS idx_retention_events_ready "
+        "ON retention_events (product_id, priority, id) "
+        "WHERE status = 'pending'",
+        "CREATE INDEX IF NOT EXISTS idx_retention_events_lease "
+        "ON retention_events (locked_until) WHERE status = 'processing'",
+        "CREATE INDEX IF NOT EXISTS idx_retention_events_inflight "
+        "ON retention_events (product_id, player_id) "
+        "WHERE status = 'processing'",
+        "CREATE INDEX IF NOT EXISTS idx_retention_events_dead "
+        "ON retention_events (product_id, id DESC) WHERE status = 'dead'",
+        "CREATE INDEX IF NOT EXISTS idx_retention_deliveries_ready "
+        "ON retention_deliveries (product_id, priority, scheduled_at) "
+        "WHERE status IN ('queued', 'failed') AND NOT permanent_fail",
+        # The idle sweep's candidate query (eligible_ping_users) was a seq scan
+        # + sort over every player of the product, every pass.
+        "CREATE INDEX IF NOT EXISTS idx_retention_users_idle_candidates "
+        "ON retention_users (product_id, last_active_at ASC) "
+        "WHERE subscribed AND NOT pings_muted AND NOT unreachable",
+        # At-least-once delivery means an event CAN reach the pipeline twice
+        # (lease expiry, reclaim after a crash). This index is the hard
+        # guarantee that a retry cannot produce a second message: the decision
+        # insert is ON CONFLICT DO NOTHING and a NULL return means "already
+        # decided". Wrapped in a subtransaction because a pre-existing
+        # duplicate (none can exist by construction, but boot must not be
+        # bet on that) would otherwise abort the whole init transaction.
+        "DO $$ BEGIN "
+        "  BEGIN "
+        "    CREATE UNIQUE INDEX IF NOT EXISTS idx_retention_v2_decisions_event "
+        "      ON retention_v2_decisions (product_id, event_pk) "
+        "      WHERE event_pk IS NOT NULL AND action <> 'skipped'; "
+        "  EXCEPTION WHEN unique_violation THEN "
+        "    RAISE NOTICE 'retention_v2_decisions: duplicate event decisions "
+        "exist, unique index skipped'; "
+        "  END; "
+        "END $$",
+        # NB: the lifecycle BACKFILL of pre-existing rows is deliberately NOT
+        # here. init_db runs as one transaction on a POOL connection, so a
+        # command_timeout=30 applies to it; an UPDATE over millions of legacy
+        # retention_events rows would time out, roll the whole boot back, and
+        # do it again on every restart. It runs batched, after boot, from
+        # backfill_event_lifecycle() — and the claim does not depend on it
+        # having finished (it also tests processed_at IS NULL).
     ]
     for stmt in alters:
         await conn.execute(stmt)
@@ -4453,11 +4599,27 @@ async def record_retention_ping(product_id: int, rid: int,
                 )
 
 
+async def touch_last_ping(rid: int) -> None:
+    """Stamp `last_ping_at` alone — no ledger row, no daily counter.
+
+    For the QUEUED send path: the min-gap guard reads `last_ping_at`, and with
+    the send worker on it would otherwise not move until the touch actually
+    left, minutes later. In that window the next event for the same player
+    passes the gap check and a second touch is decided. Stamping at enqueue
+    closes it. The daily counter still only counts real sends, so it is
+    deliberately not touched here, and no `retention_pings` row is written —
+    the ledger records what happened, and nothing has happened yet.
+    """
+    await _execute(
+        "UPDATE retention_users SET last_ping_at = now(), updated_at = now() "
+        "WHERE id = $1", int(rid))
+
+
 # ---------------------------------------------------------------------------
 # Retention agent: canonical event log + the decision ledger
 # ---------------------------------------------------------------------------
 def _row_to_retention_event(row: asyncpg.Record) -> dict[str, Any]:
-    return {
+    d = {
         "id": int(row["id"]),
         "product_id": row["product_id"],
         "event_id": row["event_id"],
@@ -4470,74 +4632,437 @@ def _row_to_retention_event(row: asyncpg.Record) -> dict[str, Any]:
         "processed_at": _iso(row["processed_at"]),
         "created_at": _iso(row["created_at"]),
     }
+    # Lifecycle fields — tolerated as absent so a SELECT of an older column set
+    # (or a test's canned row) still round-trips.
+    for key in ("status", "last_error", "worker_id"):
+        if key in row:
+            d[key] = row[key]
+    for key in ("attempts", "priority"):
+        if key in row and row[key] is not None:
+            d[key] = int(row[key])
+    for key in ("locked_until", "next_attempt_at"):
+        if key in row:
+            d[key] = _iso(row[key])
+    return d
 
 
 async def ingest_retention_event(product_id: int, *, event_id: str,
                                  event_name: str, player_id: str,
                                  ts: Any, payload: dict[str, Any],
                                  event_version: str = "1.0",
-                                 source: str = "webhook") -> Optional[int]:
+                                 source: str = "webhook",
+                                 priority: int = 3,
+                                 queue: bool = True) -> Optional[int]:
     """Append one canonical event. Idempotent by (product_id, event_id):
-    a duplicate returns None and writes nothing (at-least-once delivery)."""
+    a duplicate returns None and writes nothing (at-least-once delivery).
+
+    `queue=False` stores the row already COMPLETE ('done'): the high-volume
+    "state food" events (spins, session pings) exist only to move the activity
+    counters and feed the state resolver, and letting them into the drain would
+    bury the events that actually deserve a reaction. The bridge and the
+    resolver read the row exactly the same either way — only the queue never
+    sees it. See player_sync.EVENT_PRIORITY / `queue_bypass_state_events`.
+    """
+    status = "pending" if queue else "done"
     row = await _fetchrow(
         "INSERT INTO retention_events (product_id, event_id, event_name, "
-        " event_version, player_id, ts, payload, source) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8) "
+        " event_version, player_id, ts, payload, source, priority, status, "
+        " processed_at) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, "
+        "        CASE WHEN $10 = 'done' THEN now() ELSE NULL END) "
         "ON CONFLICT (product_id, event_id) DO NOTHING RETURNING id",
         product_id, event_id, event_name, event_version, player_id,
-        _as_ts(ts), json.dumps(payload or {}), source,
+        _as_ts(ts), json.dumps(payload or {}), source, int(priority), status,
     )
     return int(row["id"]) if row else None
 
 
 async def claim_retention_events(product_id: int, limit: int = 50,
                                  delay_min_sec: int = 0,
-                                 delay_max_sec: int = 0
+                                 delay_max_sec: int = 0, *,
+                                 lease_sec: int = 300,
+                                 worker_id: Optional[str] = None,
+                                 max_priority: int = 5
                                  ) -> list[dict[str, Any]]:
-    """Atomically CLAIM a batch of unprocessed events (oldest first).
+    """Atomically LEASE a batch of pending events (highest lane, oldest first).
 
-    Claiming = stamping processed_at in the same statement that selects the
-    rows (FOR UPDATE SKIP LOCKED), so two concurrent drainers — the worker
-    sweep and the admin «Process queue now» button, or two service instances —
-    can never pick up the same event and each send a message for it (the bug
-    behind one deposit producing two thank-you notes). A claimed event that
-    later fails mid-pipeline stays processed — identical to the previous
-    mark-in-finally behaviour, just race-free.
+    Claiming = flipping status to 'processing' with an expiry in the same
+    statement that selects the rows (FOR UPDATE SKIP LOCKED), so two concurrent
+    drainers — the worker sweep and the admin «Process queue now» button, or
+    two service instances — can never pick up the same event and each send a
+    message for it (the bug behind one deposit producing two thank-you notes).
 
-    `delay_min_sec`/`delay_max_sec` implement the humanizing SEND DELAY: an
-    event is not claimable until a per-event pseudo-random min..max seconds
-    have passed since it arrived (id-keyed, so the delay is stable across
-    sweeps and instances). Both 0 = claim immediately (the admin «Process
-    queue now» path).
+    The lease is what makes the queue DURABLE. The previous version stamped
+    `processed_at` here, so an event whose pipeline then threw (or whose worker
+    was killed mid-batch by a deploy) counted as processed and was lost with no
+    trace. Now the caller MUST close every claimed row —
+    `complete_retention_event` on success, `fail_retention_event` on error —
+    and anything left behind is picked back up by
+    `reclaim_expired_event_leases` once `locked_until` passes.
+
+    The claim also enforces PLAYER EXCLUSION (see the SQL): a player with an
+    event already in flight is skipped entirely, so "one decision per player at
+    a time" holds ACROSS worker replicas and not merely inside one batch.
+    Grouping the batch by player would only serialize one worker's own events.
+
+    `max_priority` is the backpressure lane gate: under a growing backlog the
+    worker lowers it so transactional events (P1/P2) still move while state
+    food waits. `delay_min_sec`/`delay_max_sec` implement the humanizing SEND
+    DELAY: an event is not claimable until a per-event pseudo-random min..max
+    seconds have passed since it arrived (id-keyed, so the delay is stable
+    across sweeps and instances). Both 0 = claim immediately (the admin
+    «Process queue now» path).
     """
     lo = max(int(delay_min_sec), 0)
     span = max(int(delay_max_sec) - lo, 0) + 1  # modulo divisor, >= 1
     rows = await _fetch(
-        "UPDATE retention_events SET processed_at = now() "
-        "WHERE id IN (SELECT id FROM retention_events "
-        "             WHERE product_id = $1 AND processed_at IS NULL "
-        "               AND created_at <= now() "
-        "                   - make_interval(secs => $3 + (id % $4)) "
-        "             ORDER BY id ASC LIMIT $2 FOR UPDATE SKIP LOCKED) "
+        "UPDATE retention_events SET status = 'processing', "
+        "  attempts = attempts + 1, worker_id = $6, "
+        "  locked_until = now() + make_interval(secs => $5) "
+        "WHERE id IN ("
+        "  SELECT cand.id FROM ("
+        "    SELECT e.id, e.product_id, e.player_id FROM retention_events e "
+        "     WHERE e.product_id = $1 AND e.status = 'pending' "
+        # A row the pipeline already finished with always carries
+        # processed_at, and a genuinely pending one never does. Testing both
+        # makes the claim correct on a database whose legacy rows have not been
+        # backfilled to status='done' yet — otherwise the first boot after the
+        # upgrade would re-react to the entire event history.
+        "       AND e.processed_at IS NULL "
+        "       AND e.priority <= $7 "
+        "       AND (e.next_attempt_at IS NULL "
+        "            OR e.next_attempt_at <= now()) "
+        "       AND e.created_at <= now() "
+        "           - make_interval(secs => $3 + (e.id % $4)) "
+        # A player who already has an event in flight ANYWHERE is skipped
+        # whole: his next event must wait for the one being decided, or two
+        # workers read the same guard counters and he gets two messages for
+        # what should have been one.
+        "       AND NOT EXISTS (SELECT 1 FROM retention_events b "
+        "                        WHERE b.product_id = e.product_id "
+        "                          AND b.player_id = e.player_id "
+        "                          AND b.status = 'processing') "
+        "     ORDER BY e.priority ASC, e.id ASC "
+        "     LIMIT $2 FOR UPDATE SKIP LOCKED) AS cand "
+        # ...and the advisory lock closes the instant the check above cannot:
+        # two claims running at the same moment both see "no rows in flight"
+        # for a player, and only one may win. Transaction-scoped, so it is
+        # released the moment the claim commits — from then on the 'processing'
+        # rows keep the other worker out. Re-entrant, so every event of the
+        # winning player still comes back in this one batch, which is exactly
+        # what the per-player grouping wants. Applied AFTER the LIMIT so at
+        # most `limit` locks are ever taken.
+        "  WHERE pg_try_advisory_xact_lock("
+        "          hashtext('retention_player'), "
+        "          hashtext(cand.product_id::text || ':' || cand.player_id))) "
         "RETURNING *",
-        product_id, int(limit), float(lo), int(span),
+        product_id, int(limit), float(lo), int(span), float(max(lease_sec, 1)),
+        worker_id, int(max_priority),
     )
     rows = sorted(rows, key=lambda r: r["id"])  # UPDATE..RETURNING has no ORDER
     return [_row_to_retention_event(r) for r in rows]
 
 
+async def renew_retention_event_lease(event_pk: int, lease_sec: int) -> None:
+    """Push a held lease forward — the chain is alive, just not finished.
+
+    The lease is taken once for the whole claimed batch, but a player's events
+    are processed STRICTLY SERIALLY and each one can spend a 90-second model
+    call. Four bursty events from the same player therefore outlive a
+    300-second lease, the reclaimer hands them back as 'pending', and a second
+    worker starts a concurrent chain for exactly the player the exclusion in
+    the claim exists to protect. Renewing before each event in the chain keeps
+    the lease meaning "this work is still moving" rather than "this batch was
+    small enough".
+    """
+    await _execute(
+        "UPDATE retention_events "
+        "SET locked_until = now() + make_interval(secs => $2::float8) "
+        "WHERE id = $1 AND status = 'processing'",
+        int(event_pk), float(max(int(lease_sec), 1)))
+
+
+async def complete_retention_event(event_pk: int) -> None:
+    """Close a leased event: the pipeline is done with it, for good."""
+    await _execute(
+        "UPDATE retention_events SET status = 'done', processed_at = now(), "
+        "  locked_until = NULL, last_error = NULL WHERE id = $1",
+        int(event_pk),
+    )
+
+
+async def fail_retention_event(event_pk: int, error: str, *,
+                               max_attempts: int = 5,
+                               backoff_base_sec: int = 30) -> str:
+    """Close a leased event that FAILED: retry with backoff, or dead-letter.
+
+    Returns the resulting status ('pending' = will be retried, 'dead' = the
+    attempt ceiling was reached and a human has to look). The backoff is
+    exponential on the attempt count already stamped by the claim, capped at an
+    hour so a permanently broken event cannot spin.
+    """
+    row = await _fetchrow(
+        "UPDATE retention_events SET "
+        "  status = CASE WHEN attempts >= $2 THEN 'dead' ELSE 'pending' END, "
+        "  processed_at = CASE WHEN attempts >= $2 THEN now() "
+        "                      ELSE processed_at END, "
+        "  locked_until = NULL, "
+        "  next_attempt_at = CASE WHEN attempts >= $2 THEN NULL ELSE "
+        "    now() + make_interval(secs => LEAST($3 * power(2, "
+        "      GREATEST(attempts - 1, 0)), 3600)) END, "
+        "  last_error = $4 "
+        "WHERE id = $1 RETURNING status",
+        int(event_pk), int(max_attempts), float(max(backoff_base_sec, 1)),
+        (error or "")[:2000],
+    )
+    return str(row["status"]) if row else "pending"
+
+
+async def release_retention_events(event_pks: list[int]) -> int:
+    """Hand leased events straight back to the queue, no attempt penalty.
+
+    Two callers: the graceful shutdown (a batch the worker will not finish must
+    be retried IMMEDIATELY, not after its lease expires) and the player-shard
+    dispatcher (another worker holds that player's lock, so these events belong
+    to the next tick). `attempts` is decremented because the claim increments
+    optimistically and neither case is a failed attempt.
+    """
+    if not event_pks:
+        return 0
+    result = await _execute(
+        "UPDATE retention_events SET status = 'pending', locked_until = NULL, "
+        "  attempts = GREATEST(attempts - 1, 0), worker_id = NULL "
+        "WHERE id = ANY($1::bigint[]) AND status = 'processing'",
+        [int(x) for x in event_pks],
+    )
+    return _affected(result)
+
+
+async def reclaim_expired_event_leases(*, limit: int = 1000,
+                                       max_attempts: int = 5) -> int:
+    """Return events whose lease expired to the queue (or dead-letter them).
+
+    This is what turns "the worker was killed / the process OOMed / the model
+    call hung past the lease" into a retry instead of a lost touch. Runs from
+    the maintenance loop and once at worker startup.
+    """
+    result = await _execute(
+        "UPDATE retention_events SET "
+        "  status = CASE WHEN attempts >= $2 THEN 'dead' ELSE 'pending' END, "
+        "  locked_until = NULL, "
+        "  last_error = COALESCE(last_error, 'lease expired') "
+        "WHERE id IN (SELECT id FROM retention_events "
+        "             WHERE status = 'processing' AND locked_until < now() "
+        "             ORDER BY locked_until LIMIT $1 FOR UPDATE SKIP LOCKED)",
+        int(limit), int(max_attempts),
+    )
+    return _affected(result)
+
+
+async def backfill_event_lifecycle(*, batch: int = 20_000,
+                                   max_batches: int = 50) -> int:
+    """Bring pre-lifecycle rows onto the new contract. Batched, post-boot.
+
+    Rows written before the queue had a lifecycle default to
+    `status='pending'` even though `processed_at` says the worker finished with
+    them. Left alone they would keep the partial queue index (and the lag
+    metric) permanently polluted with the whole event history.
+
+    Deliberately NOT part of init_db: that runs as one transaction on a pool
+    connection with a 30s command timeout, and this UPDATE can cover millions
+    of rows — it would time out, roll the boot back, and repeat forever. Each
+    batch is its own short transaction, so partial progress always sticks and
+    a few maintenance passes finish the job. `max_batches` bounds one pass so
+    the caller's loop keeps its cadence.
+
+    The claim does not wait for this: it tests `processed_at IS NULL` too.
+    """
+    done = 0
+    for _ in range(max_batches):
+        result = await _execute(
+            "UPDATE retention_events SET status = 'done' "
+            "WHERE id IN (SELECT id FROM retention_events "
+            "             WHERE status = 'pending' AND processed_at IS NOT NULL "
+            "             LIMIT $1)",
+            int(batch))
+        n = _affected(result)
+        done += n
+        if n < int(batch):
+            break
+    # Lane backfill for whatever is genuinely still queued, so an upgrade does
+    # not leave transactional events sitting in the default lane. Bounded by
+    # the live queue depth, which is small by construction.
+    await _execute(
+        "UPDATE retention_events SET priority = CASE "
+        "  WHEN event_name IN ('deposit_confirmed', 'deposit_failed', "
+        "       'withdrawal_settled', 'kyc_approved', 'kyc_rejected') THEN 1 "
+        "  WHEN event_name IN ('bonus_granted', 'bonus_claimed', "
+        "       'bonus_completed', 'bonus_expired', 'level_up', 'class_up', "
+        "       'downgrade', 'mission_completed', "
+        "       'highlights_pack_completed') THEN 2 "
+        "  WHEN event_name IN ('bet_settled', 'session_started', "
+        "       'session_ended', 'xp_granted', 'check_in_done', "
+        "       'deposit_initiated', 'highlights_pack_opened') THEN 5 "
+        "  ELSE 3 END "
+        "WHERE status = 'pending' AND processed_at IS NULL AND priority = 3 "
+        "  AND event_name NOT IN ('kyc_started')")
+    return done
+
+
+async def list_dead_retention_events(product_id: int, page: int = 1,
+                                     page_size: int = 50) -> dict[str, Any]:
+    """The dead-letter queue for the admin (newest first)."""
+    offset = max(page - 1, 0) * page_size
+    total = await _fetchval(
+        "SELECT COUNT(*) FROM retention_events "
+        "WHERE product_id = $1 AND status = 'dead'", product_id)
+    rows = await _fetch(
+        "SELECT * FROM retention_events "
+        "WHERE product_id = $1 AND status = 'dead' "
+        "ORDER BY id DESC LIMIT $2 OFFSET $3",
+        product_id, int(page_size), int(offset))
+    return {"items": [_row_to_retention_event(r) for r in rows],
+            "total": int(total or 0)}
+
+
+async def requeue_retention_events(product_id: int,
+                                   event_pks: Optional[list[int]] = None
+                                   ) -> int:
+    """Put dead-lettered events back in the queue (admin retry).
+
+    `event_pks=None` requeues every dead row of the product. Attempts reset to
+    zero — the operator is asserting the cause is fixed.
+    """
+    if event_pks is not None and not event_pks:
+        return 0
+    sql = ("UPDATE retention_events SET status = 'pending', attempts = 0, "
+           "  locked_until = NULL, next_attempt_at = NULL, processed_at = NULL "
+           "WHERE product_id = $1 AND status = 'dead'")
+    args: list[Any] = [product_id]
+    if event_pks is not None:
+        args.append([int(x) for x in event_pks])
+        sql += " AND id = ANY($2::bigint[])"
+    result = await _execute(sql, *args)
+    return _affected(result)
+
+
 async def count_unprocessed_retention_events(product_id: int) -> int:
-    """Queue depth for the admin status header."""
+    """Queue depth for the admin status header (pending + in flight)."""
     val = await _fetchval(
         "SELECT COUNT(*) FROM retention_events "
-        "WHERE product_id = $1 AND processed_at IS NULL",
+        "WHERE product_id = $1 AND status IN ('pending', 'processing')",
         product_id,
     )
     return int(val or 0)
 
 
+async def retention_queue_lag(product_id: int) -> int:
+    """Age in seconds of the oldest event nobody has picked up yet.
+
+    The hot-path half of `retention_queue_stats`: the drain reads this on every
+    tick to decide which lanes it may still claim, so it is one indexed
+    MIN() rather than the admin view's full breakdown.
+    """
+    val = await _fetchval(
+        "SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0) "
+        "FROM retention_events "
+        "WHERE product_id = $1 AND status = 'pending' "
+        "  AND processed_at IS NULL",
+        product_id)
+    return int(float(val or 0))
+
+
+async def retention_queue_stats(product_id: int) -> dict[str, Any]:
+    """Everything the SLA is read from, in two queries.
+
+    `oldest_pending_sec` is the QUEUE LAG — the age of the oldest event nobody
+    has picked up yet. It is the number the degradation ladder keys on and the
+    one an alert should watch; a rising lag is the only early warning that the
+    drain is losing the race.
+    """
+    row = await _fetchrow(
+        "SELECT "
+        "  COUNT(*) FILTER (WHERE status = 'pending') AS pending, "
+        "  COUNT(*) FILTER (WHERE status = 'processing') AS processing, "
+        "  COUNT(*) FILTER (WHERE status = 'dead') AS dead, "
+        "  COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at) "
+        "    FILTER (WHERE status = 'pending')), 0) AS oldest_pending_sec, "
+        "  COUNT(*) FILTER (WHERE status = 'pending' AND priority <= 2) "
+        "    AS pending_p1_p2, "
+        "  COUNT(*) FILTER (WHERE status = 'pending' AND priority = 3) "
+        "    AS pending_p3, "
+        "  COUNT(*) FILTER (WHERE status = 'pending' AND priority >= 4) "
+        "    AS pending_p5 "
+        "FROM retention_events WHERE product_id = $1",
+        product_id)
+    dl = await _fetchrow(
+        "SELECT "
+        "  COUNT(*) FILTER (WHERE status IN ('queued', 'sending')) AS queued, "
+        "  COUNT(*) FILTER (WHERE status = 'failed' AND NOT permanent_fail) "
+        "    AS failed, "
+        "  COUNT(*) FILTER (WHERE permanent_fail) AS permanent_failed, "
+        "  COALESCE(EXTRACT(EPOCH FROM now() - MIN(scheduled_at) "
+        "    FILTER (WHERE status = 'queued')), 0) AS oldest_queued_sec "
+        "FROM retention_deliveries WHERE product_id = $1",
+        product_id)
+    out = {
+        "pending": int((row or {}).get("pending") or 0),
+        "processing": int((row or {}).get("processing") or 0),
+        "dead": int((row or {}).get("dead") or 0),
+        "oldest_pending_sec": int(float((row or {}).get("oldest_pending_sec")
+                                        or 0)),
+        "pending_by_priority": {
+            "p1_p2": int((row or {}).get("pending_p1_p2") or 0),
+            "p3": int((row or {}).get("pending_p3") or 0),
+            "p5": int((row or {}).get("pending_p5") or 0),
+        },
+        "deliveries_queued": int((dl or {}).get("queued") or 0),
+        "deliveries_failed": int((dl or {}).get("failed") or 0),
+        "deliveries_permanent_failed": int(
+            (dl or {}).get("permanent_failed") or 0),
+        "oldest_queued_delivery_sec": int(
+            float((dl or {}).get("oldest_queued_sec") or 0)),
+    }
+    return out
+
+
+async def retention_latency_percentiles(product_id: int, hours: int = 24
+                                        ) -> dict[str, Any]:
+    """p50/p95/p99 of event -> delivered touch, in seconds. THE SLA metric.
+
+    Measured end to end from when the event ARRIVED (not when it was claimed)
+    to when the touch actually left, so every queue wait, humanizing delay and
+    send-shaping pause is inside the number. Only event-triggered touches can
+    be measured — an idle ping has no originating event, so it is excluded
+    rather than silently counted as instantaneous.
+    """
+    row = await _fetchrow(
+        "SELECT COUNT(*) AS n, "
+        "  PERCENTILE_CONT(0.5) WITHIN GROUP "
+        "    (ORDER BY EXTRACT(EPOCH FROM o.sent_at - e.created_at)) AS p50, "
+        "  PERCENTILE_CONT(0.95) WITHIN GROUP "
+        "    (ORDER BY EXTRACT(EPOCH FROM o.sent_at - e.created_at)) AS p95, "
+        "  PERCENTILE_CONT(0.99) WITHIN GROUP "
+        "    (ORDER BY EXTRACT(EPOCH FROM o.sent_at - e.created_at)) AS p99 "
+        "FROM retention_outcomes o "
+        "JOIN retention_v2_decisions d ON d.id = o.decision_id "
+        "JOIN retention_events e ON e.id = d.event_pk "
+        "WHERE o.product_id = $1 AND o.kind <> 'holdout' "
+        "  AND o.sent_at > now() - make_interval(hours => $2) "
+        "  AND o.sent_at >= e.created_at",
+        product_id, int(hours))
+    def _sec(key: str) -> Optional[int]:
+        v = (row or {}).get(key)
+        return int(float(v)) if v is not None else None
+    return {"samples": int((row or {}).get("n") or 0),
+            "p50_sec": _sec("p50"), "p95_sec": _sec("p95"),
+            "p99_sec": _sec("p99")}
+
+
 async def prune_retention_events(keep_days: int = 90, *,
-                                 batch: int = 20_000) -> int:
+                                 batch: int = 20_000,
+                                 state_keep_days: Optional[int] = None,
+                                 state_priority_from: int = 5) -> int:
     """Delete canonical events older than keep_days (all products).
 
     The event log is append-only and can grow by millions of rows/month (partners
@@ -4564,9 +5089,19 @@ async def prune_retention_events(keep_days: int = 90, *,
     cannot finish inside the pool's command_timeout — it would time out, roll
     back whole, and retry identically on every pass forever. Each batch is its
     own short transaction, so partial progress always sticks and the hourly
-    cadence drains any backlog within a few passes."""
+    cadence drains any backlog within a few passes.
+
+    `state_keep_days` gives the high-volume lane (priority >= 5: spins, session
+    pings — the events that exist only to move counters) its own, much shorter
+    retention. They are 90%+ of the rows and worth nothing after the state
+    resolver's windows have passed, so keeping them as long as the decision
+    events is what makes the table grow without bound. None = one retention for
+    everything (the previous behaviour)."""
     cutoff = ("COALESCE(processed_at, created_at) "
-              "< now() - make_interval(days => $1)")
+              "< now() - make_interval(days => CASE WHEN priority >= $3::int "
+              "                                THEN $4::int ELSE $1::int END)")
+    state_days = (int(keep_days) if state_keep_days is None
+                  else min(int(state_keep_days), int(keep_days)))
     removed = 0
     while True:
         async with _acquire() as conn:
@@ -4574,7 +5109,8 @@ async def prune_retention_events(keep_days: int = 90, *,
                 rows = await conn.fetch(
                     f"SELECT id FROM retention_events WHERE {cutoff} "
                     "ORDER BY id LIMIT $2",
-                    int(keep_days), int(batch))
+                    int(keep_days), int(batch), int(state_priority_from),
+                    state_days)
                 ids = [r["id"] for r in rows]
                 if not ids:
                     return removed
@@ -4670,11 +5206,20 @@ async def last_loss_signal_at(product_id: int, player_id: str) -> Optional[str]:
 
 
 async def touch_retention_activity(product_id: int, player_id: str,
-                                   field: str, ts: Any) -> int:
+                                   field: str, ts: Any,
+                                   debounce_sec: int = 0) -> int:
     """Forward-only bump of one casino-activity timestamp (the legacy bridge:
     canonical events feed the same last_login/played/deposit_at fields the v1
     state resolver keys on). GREATEST guards out-of-order event delivery — an
-    older event never rewinds the timestamp. No linked player row = no-op."""
+    older event never rewinds the timestamp. No linked player row = no-op.
+
+    `debounce_sec` skips the write when the stored value is already within that
+    many seconds of the new one. This is a hot-row UPDATE on the player row and
+    it fires on EVERY high-volume event; at scale that is the single busiest
+    write in the system, and re-stamping "active" three seconds later buys
+    nothing (every reader works on scales of hours). Pass 0 — the default and
+    what `last_deposit_at` always uses — to keep the timestamp exact.
+    """
     if field not in _RETENTION_ACTIVITY_FIELDS:
         raise ValueError(f"not an activity field: {field!r}")
     parsed = _as_ts(ts)
@@ -4683,8 +5228,10 @@ async def touch_retention_activity(product_id: int, player_id: str,
     result = await _execute(
         f"UPDATE retention_users SET {field} = "
         f"GREATEST(COALESCE({field}, $3), $3), updated_at = now() "
-        "WHERE product_id = $1 AND player_id = $2",
-        product_id, player_id, parsed,
+        "WHERE product_id = $1 AND player_id = $2 "
+        f"  AND ({field} IS NULL OR $4 <= 0 "
+        f"       OR {field} < $3 - make_interval(secs => $4))",
+        product_id, player_id, parsed, float(max(int(debounce_sec), 0)),
     )
     return _affected(result)
 
@@ -4709,18 +5256,57 @@ async def insert_retention_v2_decision(
         intent: Optional[str] = None, tone: Optional[str] = None,
         reason: Optional[str] = None, dry_run: bool = False,
         delivered: bool = False, detail: Optional[str] = None,
-        cost_usd: Optional[float] = None) -> int:
+        cost_usd: Optional[float] = None) -> Optional[int]:
+    """Append one decision. Returns None when this event ALREADY has one.
+
+    The None return is the at-least-once safety net: an event can legitimately
+    reach the pipeline twice (an expired lease, a reclaim after a crash), and
+    the unique partial index on (product_id, event_pk) turns the second pass
+    into a no-op instead of a second message to the player. `action='skipped'`
+    rows are outside the index on purpose — they are diagnostics, several of
+    them per event are fine, and they never send anything.
+    """
     row = await _fetchrow(
         "INSERT INTO retention_v2_decisions (product_id, retention_user_id, "
         " player_id, trigger_kind, event_pk, event_name, state, guard, action, "
         " intent, tone, reason, dry_run, delivered, detail, cost_usd) "
         "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, "
-        "        $12, $13, $14, $15, $16) RETURNING id",
+        "        $12, $13, $14, $15, $16) "
+        "ON CONFLICT DO NOTHING RETURNING id",
         product_id, retention_user_id, player_id, trigger_kind, event_pk,
         event_name, json.dumps(state or {}), json.dumps(guard or {}), action,
         intent, tone, reason, dry_run, delivered, detail, cost_usd,
     )
-    return int(row["id"])
+    return int(row["id"]) if row else None
+
+
+async def update_retention_v2_decision(decision_id: int, *,
+                                       action: Optional[str] = None,
+                                       intent: Optional[str] = None,
+                                       reason: Optional[str] = None,
+                                       delivered: Optional[bool] = None,
+                                       detail: Optional[str] = None,
+                                       cost_usd: Optional[float] = None
+                                       ) -> None:
+    """Fill in a RESERVED decision row once the touch has been attempted.
+
+    The row is inserted before the irreversible steps (bonus grant, send) so
+    the unique index can reject a replay in front of them; what actually
+    happened is written back here.
+    """
+    sets: list[str] = []
+    args: list[Any] = [int(decision_id)]
+    for col, val in (("action", action), ("intent", intent),
+                     ("reason", reason), ("delivered", delivered),
+                     ("detail", detail), ("cost_usd", cost_usd)):
+        if val is not None:
+            args.append(val)
+            sets.append(f"{col} = ${len(args)}")
+    if not sets:
+        return
+    await _execute(
+        f"UPDATE retention_v2_decisions SET {', '.join(sets)} WHERE id = $1",
+        *args)
 
 
 async def list_retention_v2_decisions(product_id: int, page: int = 1,
@@ -5342,7 +5928,12 @@ def _row_to_delivery(row: asyncpg.Record) -> dict[str, Any]:
     d["id"] = int(d["id"])
     if d.get("retention_user_id") is not None:
         d["retention_user_id"] = int(d["retention_user_id"])
-    _iso_fields(d, "created_at", "updated_at", "next_attempt_at")
+    if "payload" in d:
+        d["payload"] = _json_value(d.get("payload")) or {}
+    if d.get("priority") is not None:
+        d["priority"] = int(d["priority"])
+    _iso_fields(d, "created_at", "updated_at", "next_attempt_at",
+                "scheduled_at", "locked_until")
     return d
 
 
@@ -5418,6 +6009,276 @@ async def due_delivery_retries(product_id: int, limit: int = 20
         "ORDER BY next_attempt_at LIMIT $2",
         product_id, int(limit))
     return [_row_to_delivery(r) for r in rows]
+
+
+async def enqueue_delivery(product_id: int, delivery_id: str, *,
+                           player_id: Optional[str],
+                           retention_user_id: Optional[int],
+                           channel: str,
+                           intended_channel: Optional[str] = None,
+                           decision_id: Optional[int] = None,
+                           priority: int = 3,
+                           scheduled_at: Any = None,
+                           payload: Optional[dict[str, Any]] = None,
+                           title: Optional[str] = None,
+                           body: Optional[str] = None,
+                           cta_url: Optional[str] = None
+                           ) -> Optional[int]:
+    """Queue a touch for the send worker. Returns None if it already exists.
+
+    The None return is the send-side half of at-least-once safety: the caller
+    derives `delivery_id` deterministically from the decision, so a replayed
+    decision lands on the UNIQUE (product_id, delivery_id) and enqueues
+    nothing instead of sending the same message twice.
+    """
+    row = await _fetchrow(
+        "INSERT INTO retention_deliveries (product_id, delivery_id, player_id, "
+        " retention_user_id, channel, intended_channel, decision_id, status, "
+        " priority, scheduled_at, payload, title, body, cta_url) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued', $8, "
+        "        COALESCE($9, now()), $10::jsonb, $11, $12, $13) "
+        "ON CONFLICT (product_id, delivery_id) DO NOTHING RETURNING id",
+        product_id, delivery_id, player_id, retention_user_id, channel,
+        intended_channel, decision_id, int(priority), _as_ts(scheduled_at),
+        json.dumps(payload or {}), title, body, cta_url,
+    )
+    return int(row["id"]) if row else None
+
+
+async def claim_deliveries(product_id: int, *, limit: int = 50,
+                           lease_sec: int = 120,
+                           worker_id: Optional[str] = None,
+                           max_priority: int = 5
+                           ) -> list[dict[str, Any]]:
+    """Lease a batch of due touches, best lane first, oldest schedule first.
+
+    Same discipline as the event queue: 'sending' + locked_until, closed by
+    mark_delivery_sent / mark_delivery_failed / reschedule_delivery, and
+    anything abandoned comes back via reclaim_expired_delivery_leases.
+    """
+    rows = await _fetch(
+        "UPDATE retention_deliveries SET status = 'sending', "
+        "  attempts = attempts + 1, worker_id = $4, updated_at = now(), "
+        "  locked_until = now() + make_interval(secs => $3) "
+        "WHERE id IN (SELECT id FROM retention_deliveries "
+        "             WHERE product_id = $1 "
+        "               AND status IN ('queued', 'failed') "
+        "               AND NOT permanent_fail "
+        "               AND priority <= $5 "
+        "               AND scheduled_at <= now() "
+        "               AND (next_attempt_at IS NULL "
+        "                    OR next_attempt_at <= now()) "
+        "             ORDER BY priority ASC, scheduled_at ASC "
+        "             LIMIT $2 FOR UPDATE SKIP LOCKED) "
+        "RETURNING *",
+        product_id, int(limit), float(max(lease_sec, 1)), worker_id,
+        int(max_priority),
+    )
+    out = [_row_to_delivery(r) for r in rows]
+    out.sort(key=lambda d: (d.get("priority") or 3, d["id"]))
+    return out
+
+
+async def mark_delivery_sent(delivery_pk: int, *,
+                             provider_ref: Optional[str] = None,
+                             outcome_id: Optional[int] = None) -> None:
+    await _execute(
+        "UPDATE retention_deliveries SET status = 'sent', locked_until = NULL, "
+        "  provider_ref = COALESCE($2, provider_ref), "
+        "  outcome_id = COALESCE($3, outcome_id), "
+        "  fail_reason = NULL, next_attempt_at = NULL, updated_at = now() "
+        "WHERE id = $1",
+        int(delivery_pk), provider_ref, outcome_id,
+    )
+
+
+async def mark_delivery_failed(delivery_pk: int, reason: str, *,
+                               permanent: bool = False,
+                               backoff_sec: Optional[int] = None) -> None:
+    """Close a leased delivery that failed. Permanent = never retried again."""
+    await _execute(
+        "UPDATE retention_deliveries SET status = 'failed', "
+        "  locked_until = NULL, permanent_fail = $3, fail_reason = $2, "
+        "  next_attempt_at = CASE WHEN $3 THEN NULL "
+        "    ELSE now() + make_interval(secs => $4) END, "
+        "  updated_at = now() WHERE id = $1",
+        int(delivery_pk), (reason or "")[:2000], bool(permanent),
+        float(max(int(backoff_sec or 60), 1)),
+    )
+
+
+async def reschedule_delivery(delivery_pk: int, *, delay_sec: float) -> None:
+    """Put a leased delivery back in the queue after `delay_sec`.
+
+    Not a failure: this is what the send worker does when the channel's token
+    bucket is empty. Sleeping on the claim instead would hold a lease (and a
+    worker slot) doing nothing while a 10k burst drains at 25/s.
+    """
+    await _execute(
+        "UPDATE retention_deliveries SET status = 'queued', "
+        "  locked_until = NULL, attempts = GREATEST(attempts - 1, 0), "
+        "  scheduled_at = now() + make_interval(secs => $2), "
+        "  updated_at = now() WHERE id = $1",
+        int(delivery_pk), float(max(delay_sec, 0.1)),
+    )
+
+
+async def release_deliveries(delivery_pks: list[int]) -> int:
+    """Hand leased deliveries back untouched (graceful shutdown)."""
+    if not delivery_pks:
+        return 0
+    result = await _execute(
+        "UPDATE retention_deliveries SET status = 'queued', "
+        "  locked_until = NULL, attempts = GREATEST(attempts - 1, 0), "
+        "  worker_id = NULL, updated_at = now() "
+        "WHERE id = ANY($1::bigint[]) AND status = 'sending'",
+        [int(x) for x in delivery_pks],
+    )
+    return _affected(result)
+
+
+async def reclaim_expired_delivery_leases(*, limit: int = 1000) -> int:
+    """Return 'sending' rows whose lease expired to the queue."""
+    result = await _execute(
+        "UPDATE retention_deliveries SET status = 'queued', "
+        "  locked_until = NULL, updated_at = now(), "
+        "  fail_reason = COALESCE(fail_reason, 'lease expired') "
+        "WHERE id IN (SELECT id FROM retention_deliveries "
+        "             WHERE status = 'sending' AND locked_until < now() "
+        "             ORDER BY locked_until LIMIT $1 FOR UPDATE SKIP LOCKED)",
+        int(limit),
+    )
+    return _affected(result)
+
+
+# ---------------------------------------------------------------------------
+# Background job pacing (retention_worker_jobs) + outbound token bucket
+# ---------------------------------------------------------------------------
+async def claim_worker_job(product_id: int, job: str, interval_sec: int, *,
+                           lease_sec: Optional[int] = None) -> bool:
+    """Atomic "is it my turn to run (product, job)?".
+
+    Replaces the in-process pacing dicts, which reset on every deploy and, with
+    more than one worker, let both run the same sweep at the same time. The
+    UPDATE moves next_run_at forward in the same statement that tests it, so
+    exactly one caller wins per interval.
+
+    It is also a LEASE: next_run_at jumps by `max(interval, lease)`, so a sweep
+    that runs longer than its own interval cannot be started again underneath
+    itself. `finish_worker_job` pulls the next run back to the real interval,
+    so the lease only costs something when a run actually overruns or dies.
+    """
+    interval = float(max(int(interval_sec), 1))
+    lease = float(max(int(lease_sec or 0), 0))
+    row = await _fetchrow(
+        "INSERT INTO retention_worker_jobs (product_id, job, last_run_at, "
+        " next_run_at, last_status) "
+        "VALUES ($1, $2, now(), "
+        "        now() + make_interval(secs => GREATEST($3::float8, "
+        "                                               $4::float8)), "
+        "        'running') "
+        "ON CONFLICT (product_id, job) DO UPDATE "
+        "  SET last_run_at = now(), "
+        "      next_run_at = now() + make_interval(secs => "
+        "        GREATEST($3::float8, $4::float8)), "
+        "      last_status = 'running' "
+        "  WHERE retention_worker_jobs.next_run_at IS NULL "
+        "     OR retention_worker_jobs.next_run_at <= now() "
+        "RETURNING product_id",
+        product_id, job, interval, lease,
+    )
+    return row is not None
+
+
+async def finish_worker_job(product_id: int, job: str, *, status: str,
+                            duration_ms: Optional[int] = None,
+                            error: Optional[str] = None,
+                            interval_sec: Optional[int] = None) -> None:
+    """Record how a paced job ended (the admin's background-jobs health view).
+
+    Passing `interval_sec` also releases the claim lease: the next run is
+    re-anchored to the real interval from the START of this run, so a job that
+    leased extra headroom does not skip its next slot.
+    """
+    sets = ["last_status = $3", "duration_ms = $4", "last_error = $5"]
+    args: list[Any] = [product_id, job, status[:64],
+                       int(duration_ms) if duration_ms is not None else None,
+                       (error or None) and str(error)[:1000]]
+    if interval_sec is not None:
+        args.append(float(max(int(interval_sec), 1)))
+        sets.append(f"next_run_at = last_run_at + make_interval(secs => ${len(args)})")
+    await _execute(
+        f"UPDATE retention_worker_jobs SET {', '.join(sets)} "
+        "WHERE product_id = $1 AND job = $2",
+        *args,
+    )
+
+
+async def list_worker_jobs(product_ids: Optional[list[int]] = None
+                           ) -> list[dict[str, Any]]:
+    """Background job health, newest run first. None = every product."""
+    sql = ("SELECT j.*, p.name AS product_name FROM retention_worker_jobs j "
+           "JOIN products p ON p.id = j.product_id")
+    args: list[Any] = []
+    if product_ids is not None:
+        if not product_ids:
+            return []
+        args.append([int(x) for x in product_ids])
+        sql += " WHERE j.product_id = ANY($1::int[])"
+    sql += " ORDER BY j.last_run_at DESC NULLS LAST"
+    rows = await _fetch(sql, *args)
+    out = []
+    for r in rows:
+        d = dict(r)
+        _iso_fields(d, "last_run_at", "next_run_at")
+        out.append(d)
+    return out
+
+
+async def take_rate_token(scope: str, *, rate_per_sec: float, burst: float,
+                          n: float = 1.0) -> bool:
+    """Token bucket: True if `n` tokens were available for `scope`, else False.
+
+    One atomic statement with a LAZY refill (tokens accrue from the elapsed
+    time since the last take), so there is no refill timer to run and no state
+    outside Postgres — which is the point: the limit has to hold across worker
+    instances, and an in-process limiter multiplies by the replica count
+    exactly when a broadcast is hammering the channel.
+
+    False is not an error — the caller reschedules the touch a moment later.
+    """
+    rate = max(float(rate_per_sec), 0.0)
+    cap = max(float(burst), float(n))
+    if rate <= 0:
+        return True  # unlimited scope: no bucket, no accounting
+    # Every numeric parameter is cast explicitly: inside an expression
+    # (`$2 - $4`) asyncpg has no function signature to infer from, prepares
+    # both as `unknown`, and Postgres refuses the ambiguous operator.
+    row = await _fetchrow(
+        "INSERT INTO retention_rate_budget (scope, tokens, rate_per_sec, burst) "
+        "VALUES ($1, $2::float8 - $4::float8, $3::float8, $2::float8) "
+        "ON CONFLICT (scope) DO UPDATE SET "
+        "  tokens = LEAST(EXCLUDED.burst, retention_rate_budget.tokens "
+        "    + EXTRACT(EPOCH FROM now() - retention_rate_budget.updated_at) "
+        "      * EXCLUDED.rate_per_sec) - $4::float8, "
+        "  rate_per_sec = EXCLUDED.rate_per_sec, burst = EXCLUDED.burst, "
+        "  updated_at = now() "
+        "WHERE retention_rate_budget.tokens "
+        "  + EXTRACT(EPOCH FROM now() - retention_rate_budget.updated_at) "
+        "    * EXCLUDED.rate_per_sec >= $4::float8 "
+        "RETURNING tokens",
+        scope, cap, rate, float(n),
+    )
+    return row is not None
+
+
+async def prune_rate_budget(idle_hours: int = 24) -> int:
+    """Drop buckets nobody has touched (per-chat scopes are unbounded)."""
+    result = await _execute(
+        "DELETE FROM retention_rate_budget "
+        "WHERE updated_at < now() - make_interval(hours => $1)",
+        int(idle_hours))
+    return _affected(result)
 
 
 async def list_deliveries(product_id: int, status: Optional[str] = None,

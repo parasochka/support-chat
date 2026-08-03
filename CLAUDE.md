@@ -33,19 +33,24 @@ app/
 │                  #   reviewer.py (LLM-as-judge quality pass)
 ├── i18n/          # language.py (resolution), translations.py (copy registry)
 ├── chat/          # support flow: chat_service.py, escalation.py, antispam.py
-└── retention/     # Telegram bot: retention.py, retention_v2.py,
-                   #   retention_idle.py, telegram_transport.py,
-                   #   telegram_format.py, delivery.py, media_normalizer.py,
-                   #   player_sync.py, outcomes.py (attribution ledger)
+├── retention/     # Telegram bot: retention.py, retention_v2.py,
+│                  #   retention_idle.py, telegram_transport.py,
+│                  #   telegram_format.py, delivery.py, send_worker.py
+│                  #   (the send stage), media_normalizer.py,
+│                  #   player_sync.py, outcomes.py (attribution ledger)
+└── worker.py      # background-only entrypoint (`python -m app.worker`)
 admin/             # React Admin SPA (its own Vite build)
 frontend/          # no-build widget + test page + integration docs (static)
 mcp_server/        # admin-API MCP facade (`python -m mcp_server`, .mcp.json)
-scripts/           # preflight.sh, check_invariants.py, docs_check.py
+scripts/           # preflight.sh, check_invariants.py, docs_check.py,
+                   #   check_queue_sql.py (needs a real Postgres)
 tests/             # pytest suite (conftest.py stubs openai/asyncpg)
 ```
 
-Imports use the package paths (`from app.core import db`); the deploy entry
-point is `uvicorn app.main:app` (Dockerfile CMD). Static assets (`frontend/`,
+Imports use the package paths (`from app.core import db`). There are **two** entry
+points over the same image: `uvicorn app.main:app` (Dockerfile CMD) serves HTTP and
+`python -m app.worker` runs the background pipeline; which one a process is comes
+from `SERVICE_ROLE` (see "Event pipeline → Process roles"). Static assets (`frontend/`,
 `admin/dist`) and the local `media/` default stay at the REPO root —
 `app/main.py` and `app/core/config.py` resolve them via a repo-root anchor
 (two/three levels up from `__file__`), so moving a module means re-checking
@@ -73,6 +78,9 @@ in mind for every change:
   a worker loop is ONE long-lived task, so a bare set leaves the last product of
   the pass bound for everything the task does afterwards (including
   `db.log_admin_event`, which falls back to this ContextVar for `product_id`).
+  The pipeline now fans products out CONCURRENTLY, which makes this stricter, not
+  looser: each product's drain/maintenance runs in its own task under its own
+  `scoped_product`, so a bare set would race the sibling products' scopes.
 - **Settings resolution** is now four layers, merged field-by-field:
   `product_settings` → `app_settings` → env → built-in default. Prompt variables,
   translations and the test profile are stored per product too (`product_settings`
@@ -238,6 +246,12 @@ when invoking modules outside pytest.
   rules by importing the real modules (reusing conftest's stubs): every
   translations key has shipped English copy, the Layer-1 prompt core is
   byte-stable, and every writable settings group surfaces in the admin schema.
+- **`scripts/check_queue_sql.py`** runs the event/send-queue statements against a
+  REAL Postgres. `conftest.py` stubs asyncpg, so the suite can assert which SQL a
+  helper issues but never that Postgres accepts it — and the queue shipped
+  statements that fail at PREPARE time (a bare `$n` inside an expression has
+  nothing to infer a type from). Deliberately outside `preflight.sh` (which has
+  no database): run it by hand, against a scratch DB, when you touch queue SQL.
 - **`ruff`** config in `pyproject.toml` is conservative on purpose (real-bug rules
   F/E9 only; line length and semicolons off) — don't broaden it into a restyle.
 - **`scripts/docs_check.py`** (skill `/docs-check`) is the manual replacement for
@@ -390,15 +404,29 @@ schema, edit the `_SCHEMA` string. **A new column on an existing table will NOT 
 to `_ensure_columns()`. Every table read/write goes through a `db.<name>(...)` async helper;
 nothing else touches tables directly.
 
+**A guarded ALTER may run at boot; a BACKFILL may not.** `init_db` is ONE transaction on a
+POOL connection, so `command_timeout` (30s) applies to the whole of it: an `UPDATE` over
+millions of legacy rows there times out, rolls the entire boot back, and does it again on
+every restart — an unbootable deployment, not a slow one. Adding the column is cheap and
+belongs in `_ensure_columns()`; moving the existing rows onto the new contract is a separate,
+**batched, post-boot** job (`db.backfill_event_lifecycle` is the pattern: each batch its own
+short transaction so partial progress sticks, `max_batches` bounding one pass, driven from
+`retention_v2.maintenance_loop`). Write the READER so it is correct before the backfill
+finishes — the event claim tests `processed_at IS NULL` alongside `status`, so it never
+re-reacts to unbackfilled history.
+
 **Every query goes through the bounded acquire.** Use the module helpers
 `_fetch/_fetchrow/_fetchval/_execute` (or `async with _acquire()` for a multi-statement
 transaction) — never asyncpg's `Pool.fetch/execute/...` convenience methods. Those wait for
 a free pool slot with **no ceiling** (`command_timeout` bounds how long a query may RUN, not
 how long it may WAIT), so a single call reaching for them opts that query out of
 `DB_ACQUIRE_TIMEOUT_SEC` and hangs forever under pool exhaustion. A lock or job that holds a
-connection for **minutes** (the retention sweeps' `pg_advisory_lock`, the media normalizer)
-must instead take a `db.dedicated_connection()`: it would otherwise eat one of the pool's 10
-slots, and the pool's `command_timeout` kills a *blocking* `pg_advisory_lock` wait outright.
+connection for **minutes** (the quality judge's sweep lock, the media normalizer) must instead
+take a `db.dedicated_connection()`: it would otherwise eat a pool slot, and the pool's
+`command_timeout` kills a *blocking* `pg_advisory_lock` wait outright. The pool's bounds are
+role-aware (`DB_POOL_MIN`/`DB_POOL_MAX`, 25 on the worker vs 10 on web) — the worker runs many
+concurrent player shards, the web process serves requests. The retention event drain holds no
+advisory lock at all any more; its mutual exclusion is the claim (see "Event pipeline").
 
 ### No seeds — empty DB starts empty
 There is **no seed step** for topics, KB content, or settings. On a fresh/empty database there
@@ -1010,6 +1038,164 @@ touching any of those modules, the bot's behaviour/copy, proactive or idle
 messaging, retention media, or the retention KB/prompt variables.** All
 invariants below hold for retention turns too.
 
+### EVENT PIPELINE — the durable leased queue (`retention_v2.py`, `send_worker.py`, `db.py`)
+The canonical event feed is a **queue with a lifecycle**, not a log the worker walks:
+`retention_events.status` moves `pending` → `processing` → `done`/`dead`, with `attempts`,
+`locked_until`, `next_attempt_at`, `priority`, `last_error` and `worker_id` alongside it.
+
+**A claim is a LEASE the caller MUST close.** `db.claim_retention_events` flips a batch to
+`processing` with an expiry in the same statement that selects it (`UPDATE … WHERE id IN
+(SELECT … FOR UPDATE SKIP LOCKED)`). The old claim stamped `processed_at` at SELECTION time,
+so an event whose pipeline then threw — or whose worker a deploy killed mid-batch — counted as
+processed and was gone: no retry, no dead-letter, no trace. Now every claimed row is closed by
+`db.complete_retention_event` (success) or `db.fail_retention_event` (error: `attempts` + 1,
+exponential backoff off `event_backoff_base_sec`, `dead` at `event_max_attempts`), and
+anything still owed when the batch unwinds — a stop signal, a cancelled task, an error outside
+the per-event guard — goes back with `db.release_retention_events`. `run_product_events`
+tracks that as an explicit `owed` set in a `try/finally`; losing that bookkeeping is precisely
+how the old pipeline dropped events on the floor. The backstop for a worker that never got to
+any of it is `db.reclaim_expired_event_leases`, run first thing in `maintenance_loop` and
+again at its start-up (a crash-restart's own leases come back immediately instead of waiting
+out `event_lease_sec`). `event_lease_sec` must exceed the agent model timeout with real margin
+— a lease expiring mid-decision means the event is processed twice. Dead rows are not silent:
+`db.list_dead_retention_events` / `requeue_retention_events` back `GET /admin/retention/v2/
+dead-letter` + `POST …/requeue`, and a dead-lettering pass writes an
+`admin_events('retention_events_dead_lettered')` row.
+
+**Delivery is AT-LEAST-ONCE, so the decision row is RESERVED before any side effect.** A lease
+can expire and a reclaim can replay: "the pipeline ran this event twice" is now a normal
+occurrence, and the thing that must never double is what the PLAYER sees. `_process_event`
+inserts the `retention_v2_decisions` row **before** the bonus grant and before the send, and
+the unique partial index on `(product_id, event_pk) WHERE event_pk IS NOT NULL AND action <>
+'skipped'` turns the replay's insert into a no-op: `db.insert_retention_v2_decision` returns
+**`None`**, and `None` means *stop, someone already decided this* — the pipeline returns
+`"duplicate"` without touching the player. What the touch actually became is written back
+afterwards by `db.update_retention_v2_decision` (the action can still change: a failed offer
+grant demotes it to `silence`). `action='skipped'` rows sit outside the index on purpose —
+they are diagnostics, several per event are fine, and they send nothing. The insert used to
+sit AFTER the send, which left nothing between a retry and a second message. **Any new
+player-visible side effect goes after the reservation, never before it.**
+
+**Priority lanes and the state-food bypass are decided at INGEST.** `player_sync.EVENT_PRIORITY`
+/ `event_priority()` stamp a lane on the row (1 = transactional — deposit / withdrawal / KYC …
+5 = state food — settled bets, session pings), so the claim can serve lanes without a join and
+a backlog can be shed by lane. `player_sync.should_queue()` goes further: a state-food event is
+stored **COMPLETE** and never enters the drain at all — it exists to move the activity counters
+and feed the deterministic state resolver, and both read the stored row directly. Otherwise
+queue depth is a function of casino traffic instead of decision work, and the events that
+deserve a reaction queue up behind spins. Two escapes: anything the product listed in
+`v2_decision_events` (a deliberate operator promotion) and `bet_settled` while a loss threshold
+is configured (it is the input to the 24h loss window). The **backpressure ladder**
+(`_max_priority_for_lag`) reads `db.retention_queue_lag` (age of the oldest pending row) and
+lowers the claim's `max_priority` as it grows: past `queue_degrade_p3_sec` state food stops
+being claimed, past `queue_degrade_p2_sec` only the transactional lanes move, and past
+`queue_degrade_idle_sec` the idle ladder pauses for that product — re-engaging quiet players
+must never compete with reacting to live ones. A degraded pass logs and writes a sampled
+`retention_queue_degraded` admin event. The activity-timestamp bridge, the busiest write in the
+system, is debounced (`activity_debounce_sec`); re-stamping "active" seconds later buys nothing.
+
+**Parallelism — and why per-player grouping is CORRECTNESS, not speed.** The one global
+advisory lock is gone. It made the tick duration the SUM over every product, put every
+maintenance sweep on the critical path of reacting to a deposit, and gave a second service
+instance no background work at all. `run_due_events` drains products **concurrently**
+(`worker_product_concurrency`); inside a product, `_group_by_player` splits the claimed batch
+into per-player chains that run concurrently (`worker_player_concurrency`) but **strictly
+serially within a player** — two decisions for the same player read the same guard counters
+before either writes, which is how one player collects two messages for two events that should
+have produced one. Do not flatten the groups for throughput. A failure inside a chain **stops
+that chain** (the player's later events assume the failed one landed) and leaves the rest to
+the retry.
+
+Grouping alone only serializes ONE worker's own batch, so the same rule is enforced **in the
+claim SQL**: a player who already has an event `processing` anywhere is skipped whole, and a
+transaction-scoped `pg_try_advisory_xact_lock` on `(product, player)` — taken AFTER the `LIMIT`,
+so a claim can never lock a whole backlog — closes the instant where two claims both see "none
+in flight". The lock dies with the claim's transaction; from then on the `processing` rows are
+what keep the other worker out, and because the lock is re-entrant every event of the winning
+player still arrives in the same batch, which is what the grouping wants. That pair is what
+makes the mutual exclusion the CLAIM rather than a worker-local convention — so several workers
+may drain one product safely, and so may the admin «Process queue now» button
+(`run_product_events_locked` keeps its name and its `WorkerBusy` escape hatch but no longer
+locks, and can no longer 409 just because the sweep is mid-pass). Background model calls are
+additionally bounded per process by `_model_slot()` (`agent_model_concurrency`) so a burst
+cannot open hundreds of completions.
+
+**The queue SQL cannot be validated by the test suite.** `tests/conftest.py` stubs asyncpg, so
+a test can assert which statement a helper issues but never that Postgres accepts it — and
+three statements in this pipeline shipped broken past a green suite (asyncpg infers a bare `$n`
+inside `make_interval(secs => $n)` from the function signature, but inside an EXPRESSION —
+`GREATEST($3,$4)`, `$2 - $4` — it has nothing to infer from, prepares `unknown`, and Postgres
+rejects the call at prepare time). `scripts/check_queue_sql.py` runs the lifecycle, the lane
+ceiling, the player exclusion, the pacing table, the token bucket, the send queue and the
+upgrade-from-a-legacy-database path against a real server. It is not in `preflight.sh` (no
+asyncpg, no database there) — run it by hand, against a scratch database, whenever you touch
+queue SQL.
+
+**Maintenance runs off the event path, paced in Postgres.** `maintenance_loop` owns lease
+reclaim, the idle ladder, attribution, scoring, activity profiles, journeys and — only while
+the send worker is off — delivery retries. Each sweep is paced PER PRODUCT through
+`retention_worker_jobs`: `db.claim_worker_job` flips `next_run_at` atomically, so exactly one
+worker runs a given (product, job) per interval, and `db.finish_worker_job` records
+status/duration (which is also the admin's background-jobs health view). The in-process dicts
+this replaces were wrong twice over — they reset on every deploy, and two instances each kept
+their own, so every sweep ran once per instance. Each sweep swallows its own errors: the whole
+point of taking them off the event path is that a slow or broken one stops mattering.
+
+**The SEND STAGE** (`send_worker.py`, behind `retention.send_worker_enabled`, **OFF** by
+default; with it off `_send_touch` sends inline exactly as before and the loop finds nothing).
+Deciding and sending used to be one loop, so a 10k broadcast was minutes during which no
+deposit got a reaction, and a send that failed was retried by nobody. With the flag on, a
+decision only ENQUEUES: `retention_deliveries` doubles as the send queue (`payload` = whatever
+the channel adapter needs, `priority` inherited from the triggering event, `scheduled_at`
+absorbing the humanizing delay and Smart Send Time, `locked_until`/`worker_id` under the same
+lease discipline, and a deterministic `delivery_id` so a replayed decision cannot enqueue
+twice). `send_loop` then claims a batch best-lane-first, takes a token from the **Postgres
+token bucket** (`db.take_rate_token` over `retention_rate_budget`, one row per scope —
+`tg:<product>`, `tg:chat:<chat>`, `email:<product>`) and **reschedules rather than sleeps**
+when the bucket is empty (a held lease is a worker slot doing nothing), then opens the
+attribution row and marks the decision delivered; a transient failure backs off [1m, 5m, 30m],
+a permanent one (the player blocked the bot) never retries. The bucket is in Postgres because
+the limit must hold across worker instances — Telegram allows ~30 msg/s per bot and ~1/s per
+chat, and an in-process limiter is per replica. Its per-chat scopes grow one row per player
+ever written to, so the maintenance loop prunes idle buckets (a bucket nobody touched is full
+by definition).
+
+**Process roles.** `config.SERVICE_ROLE` (`web` | `worker` | `all`, default `all`) splits the
+service into two Railway services built from the SAME image: `uvicorn app.main:app` serves
+HTTP; `python -m app.worker` runs the pipeline (drain, maintenance, send) plus the quality
+judge and nothing else. A request-serving process and a background pipeline want opposite
+things from a deploy — the web process must come up fast and never hold a connection for
+minutes, the worker holds leases and long model calls — and sharing one process meant a web
+redeploy killed the drain mid-batch. `main._background_plan` decides what a process owns:
+`web` never starts the pipeline whatever `RETENTION_SCHEDULER_ENABLED` says (that switch is
+the WORKER's master kill switch now), `all` is the pre-split single-process mode so an
+existing deployment upgrades without a worker service, and an unknown role falls back to
+`all` **with a warning** rather than silently running every sweep twice. **The media
+normalizer stays on WEB**: it owns the FILES on the local media dir (on Railway a Volume
+mounted to the service serving admin uploads), so it follows the volume, not the pipeline.
+The worker serves `/healthz` on `$PORT` from a plain thread — deliberately not on the event
+loop, since a wedged loop is exactly the failure the probe exists to report — and reports
+each loop's own heartbeat, because a background process with no traffic looks identical
+whether it is working or wedged. Shutdown is a **DRAIN, not a kill**: SIGTERM raises a stop
+flag, every loop wakes out of `retention_v2._sleep_or_stop`, finishes the batch it is in and
+closes its leases within `WORKER_DRAIN_TIMEOUT_SEC` (25s, under Railway's 30s SIGKILL);
+skipping it would leave a lease-length hole in the queue's reaction time after every deploy.
+A loop that returns or raises brings the whole process down (half-dead but healthy-looking is
+worse than restarting — the leases are reclaimed either way).
+
+**The knobs** are hot `retention`-group keys with env defaults in `config.py`
+(`RETENTION_EVENT_*`, `..._WORKER_*_CONCURRENCY`, `..._AGENT_MODEL_CONCURRENCY`,
+`..._QUEUE_DEGRADE_*`, `..._ACTIVITY_DEBOUNCE_SEC`, `..._SEND_*`, `..._TELEGRAM_RATE_*`, the
+`*_INTERVAL_SEC` cadences, `..._EVENT_KEEP_DAYS[_STATE]` — the event log is pruned on a split
+schedule because state food is 90%+ of the rows and worthless once the resolver's windows
+passed). The deploy-wide ones are listed in `settings.GLOBAL_ONLY_FIELDS["retention"]`: a
+product-layer value for a lease length or a fan-out width would be stored and never read.
+Worker-side readers use `settings.global_retention_int/_bool/_raw` — the int variant collapses
+a stored `0` into the default, which is why a knob whose point is being switchable OFF must go
+through the raw/bool pair. Queue health is `db.retention_queue_stats` / `retention_queue_lag` /
+`retention_latency_percentiles`, surfaced with the paced jobs on the Retention → Agent header.
+Tests: `tests/test_retention_v2.py`, `tests/test_service_roles.py`.
+
 ### OUTCOME ATTRIBUTION — the measured feedback loop (`app/retention/outcomes.py`)
 The stack could always say what it SPENT and what it SENT; this is what says
 whether the sending WORKED, and it is the data every "which X performs" surface
@@ -1190,9 +1376,12 @@ on/off knobs in Retention → Settings (schema section `orchestrator`).
   new inbound `POST /partner/{id}/delivery-status`; new OUTBOUND contracts
   the partner implements: the offer-grant endpoint and the delivery-order
   endpoint (idempotent by our `offer_grant_id`/`delivery_id`).
-- Worker-sweep tail order (each self-paced, each swallowing its own errors):
-  idle pings → attribution → scoring → activity profiles → journeys
-  (scheduled matching + step drain) → delivery retries.
+- These sweeps are no longer the event drain's tail: they ride
+  `retention_v2.maintenance_loop`, in this order (each paced per product
+  through `retention_worker_jobs`, each swallowing its own errors) — idle
+  pings → attribution → scoring → activity profiles → journeys (scheduled
+  matching + step drain) → delivery retries (skipped once the send worker is
+  on, which claims failed rows itself). See "Event pipeline".
 - Guard order (fixed): **RG → hard denies (sub/opt-out/blocked) → holdout →
   frequency (adaptive or legacy static) → budget → same-event cooldown →
   comfort.** Tests: `tests/test_retention_measurement.py`, `test_rg_guard.py`,
@@ -1250,9 +1439,12 @@ per session). Runs on the product's own keys/model group; every call lands in
 `ai_interaction_logs` with `session_id=NULL` (invariant §4) so the reviewed
 session's own per-turn costs stay clean — labelled `source='review'` with the
 `consumer` of the conversation it judged, so the spend surfaces in THAT facade's
-analytics (see "Spend attribution"). Worker started from `main.py` lifespan
-under `RETENTION_SCHEDULER_ENABLED` (the deploy switch for every background
-worker), advisory-locked. Tests: `tests/test_quality_review.py`.
+analytics (see "Spend attribution"). It runs on the BACKGROUND process
+(`app/worker.py` under `RETENTION_SCHEDULER_ENABLED`, or `main.py`'s lifespan in
+the single-process `all` role), advisory-locked — it takes no stop flag, so a
+drain cancels it rather than waiting: losing a half-finished review costs one
+cheap pass and the conversation is picked up next sweep. Tests:
+`tests/test_quality_review.py`.
 
 ## Invariants (these break silently — do not violate)
 
@@ -1274,12 +1466,28 @@ worker), advisory-locked. Tests: `tests/test_quality_review.py`.
 5. Two-key failover races the fallback after the switch timeout; log every failover.
    The keys are the PRODUCT's own (encrypted at rest) when set, else the deploy env keys.
 6. No ORM, no migrations: schema is `init_db()`; new columns via guarded `ALTER`; all DB
-   access through `db.*` helpers.
+   access through `db.*` helpers. A BACKFILL of existing rows never runs in `init_db` (one
+   transaction, 30s command timeout — it would roll the boot back forever): batch it
+   post-boot and make the reader correct before it finishes.
 7. Model-facing prompt is English (token-efficient); KB may be in any language; answers
    in the resolved language. User-facing copy + user-input detectors stay multilingual.
 8. Never request card numbers / CVV / passwords / 2FA codes / seed phrases; never invent
    player-facing facts — KB uses `{{PLACEHOLDER}}` tokens the owner replaces.
 9. `_PRICING` is "verify before trusting"; cost is derived, not ground truth.
+10. **Every claimed queue row is closed by its claimer** — an event lease with
+    `complete_retention_event` / `fail_retention_event` / `release_retention_events`, a
+    delivery lease likewise. A claim is a lease, not a completion; a row nobody closes is
+    invisible until its lease expires, and a code path that can return without closing one
+    is a dropped reaction. Bracket the batch in `try/finally`.
+11. **A decision row is RESERVED before anything the player can see.** Event delivery is
+    at-least-once, so the `retention_v2_decisions` insert (unique per `(product_id,
+    event_pk)`) comes BEFORE the offer grant and the send, and a `None` return means replay
+    — return, do not send. New player-visible side effects go after the reservation.
+12. **Queue lag is the SLA metric** (`db.retention_queue_lag` = age of the oldest pending
+    event, not queue depth): it is what the backpressure ladder keys on and what says the
+    pipeline is healthy. Work that must not fall behind belongs in a low-numbered priority
+    lane; work that would inflate the lag without deserving a reaction should not enter the
+    queue at all (`player_sync.should_queue`).
 
 ## Admin / management (lazily loaded)
 Admin auth + the roles/memberships model, user management, the settings groups,
@@ -1344,7 +1552,12 @@ settings/secrets/KB/copy, the header switcher. When extending, keep these rules:
   so a URL's underscores can't be re-chewed. Only assistant turns go through it
   (`setMsgBody`); **user input is always rendered literally** via `textContent`.
 - Deploy is Railway via the single `Dockerfile` (`python:3.11-slim`) + `railway.toml`; the
-  CMD reads `$PORT`, no `startCommand` override. Health check is `/healthz`.
+  CMD reads `$PORT`, no `startCommand` override. Health check is `/healthz`. `railway.toml`
+  configures the WEB service only — the worker is a SECOND Railway service off the same
+  image and repo, created in the dashboard with `python -m app.worker`, `SERVICE_ROLE=worker`
+  and `RETENTION_SCHEDULER_ENABLED=1` (the header comment in `railway.toml` is the checklist;
+  the media Volume stays mounted on web). Leaving `SERVICE_ROLE` unset is the pre-split
+  single-process mode, so an existing deployment upgrades without a worker service.
 - Env var reference lives in `README.md` (§ "Environment variables").
 - **Two docs, two audiences:** `README.md` is the human-facing overview; **`CLAUDE.md`
   (this file) is the LLM/agent guidance** — architecture, invariants, conventions. They are

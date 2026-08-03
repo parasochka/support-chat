@@ -39,6 +39,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from app.core import db
 from app.core import settings
+from app.core import tenancy
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +66,88 @@ _ACTIVITY_BRIDGE: dict[str, str] = {
     "bet_settled": "last_played_at",
     "deposit_confirmed": "last_deposit_at",
 }
+
+# ---------------------------------------------------------------------------
+# Queue lanes. Priority is stamped at INGEST so the drain can serve lanes with
+# no join and, under a backlog, keep transactional events moving while state
+# food waits (retention_v2 lowers its max_priority as the lag grows).
+#
+#   1  transactional — money and identity; the player is waiting on the outcome
+#   2  progression   — bonuses, levels, missions; timely but not urgent
+#   3  default       — anything else in the taxonomy
+#   5  state food    — high-volume signals that only move counters and feed the
+#                      state resolver; never worth a reaction of their own
+#
+# An event added to CANONICAL_EVENTS without an entry here lands in the default
+# lane, which is the safe direction (it gets processed, just not ahead of P1).
+# ---------------------------------------------------------------------------
+_DEFAULT_PRIORITY = 3
+EVENT_PRIORITY: dict[str, int] = {
+    "deposit_confirmed": 1,
+    "deposit_failed": 1,
+    "withdrawal_settled": 1,
+    "kyc_approved": 1,
+    "kyc_rejected": 1,
+    "bonus_granted": 2,
+    "bonus_claimed": 2,
+    "bonus_completed": 2,
+    "bonus_expired": 2,
+    "level_up": 2,
+    "class_up": 2,
+    "downgrade": 2,
+    "mission_completed": 2,
+    "highlights_pack_completed": 2,
+    "kyc_started": 3,
+    "bet_settled": 5,
+    "session_started": 5,
+    "session_ended": 5,
+    "xp_granted": 5,
+    "check_in_done": 5,
+    "deposit_initiated": 5,
+    "highlights_pack_opened": 5,
+}
+# The lane at or above which an event is "state food" — a candidate for the
+# queue bypass below.
+STATE_FOOD_PRIORITY = 5
+
+
+def event_priority(event_name: str) -> int:
+    """The queue lane of a canonical event."""
+    return EVENT_PRIORITY.get(event_name, _DEFAULT_PRIORITY)
+
+
+def should_queue(event_name: str, cfg: dict[str, Any]) -> bool:
+    """Does this event need to reach the DECISION drain at all?
+
+    High-volume events (a settled bet, a session ping) exist to move the
+    activity counters and feed the deterministic state resolver — both of which
+    read the stored row directly. Letting them into the queue buries the events
+    that actually deserve a reaction and makes the queue depth a function of
+    casino traffic instead of of decision work. So they are stored COMPLETE.
+
+    Two events escape the bypass:
+      - anything the product listed as decision-worthy (`v2_decision_events`),
+        so an operator can promote a lane deliberately;
+      - `bet_settled` while a loss threshold is configured — it is the input to
+        the 24h loss window, the one high-volume event that can turn into a
+        reaction (`retention_v2._is_decision_worthy`).
+    """
+    if event_priority(event_name) < STATE_FOOD_PRIORITY:
+        return True
+    if not cfg.get("queue_bypass_state_events", True):
+        return True
+    decision_events = cfg.get("v2_decision_events")
+    if decision_events is None:
+        from app.retention import retention_v2  # lazy: avoids an import cycle
+        decision_events = retention_v2.DECISION_EVENTS
+    if event_name in set(decision_events):
+        return True
+    if event_name == "bet_settled":
+        try:
+            return float(cfg.get("v2_loss_high_usd") or 0) > 0
+        except (TypeError, ValueError):
+            return False
+    return False
 
 # The whitelisted profile-snapshot fields (mirrors prompts._CONTEXT_FIELDS
 # minus `id`). ONE definition — the event payload router, the Player-API pull
@@ -144,27 +227,44 @@ def _validate_event(evt: dict[str, Any]) -> dict[str, Any]:
 
 
 async def ingest_event(product_id: int, evt: dict[str, Any],
-                       source: str = "webhook") -> dict[str, Any]:
+                       source: str = "webhook",
+                       cfg: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Validate + append one canonical event and run the legacy bridge.
 
-    Returns {"stored": bool, "duplicate": bool, "id": int|None}. Raises
-    EventError on a validation failure (the caller maps it to 422).
+    Returns {"stored", "duplicate", "id", "queued"}. Raises EventError on a
+    validation failure (the caller maps it to 422). `cfg` is the product's
+    resolved retention settings — passed in by the batch path so a 500-event
+    POST resolves them once instead of five hundred times.
     """
     v = _validate_event(evt)
+    if cfg is None:
+        with tenancy.scoped_product(product_id):
+            cfg = settings.retention()
+    priority = event_priority(v["event_name"])
+    queued = should_queue(v["event_name"], cfg)
     pk = await db.ingest_retention_event(
         product_id, event_id=v["event_id"], event_name=v["event_name"],
         player_id=v["player_id"], ts=v["ts"], payload=v["payload"],
-        event_version=v["event_version"], source=source)
+        event_version=v["event_version"], source=source,
+        priority=priority, queue=queued)
     if pk is None:
-        return {"stored": False, "duplicate": True, "id": None}
+        return {"stored": False, "duplicate": True, "id": None,
+                "queued": False}
 
     # Legacy bridge (best-effort — a bridge failure must never fail the
     # ingest; the event row is already durable).
     try:
         field = _ACTIVITY_BRIDGE.get(v["event_name"])
         if field:
+            # Debounced for the high-frequency activity marks: this is a
+            # hot-row UPDATE on the player and it fires on every spin. A
+            # deposit timestamp is never debounced — the loss/recency maths
+            # keys on it directly.
+            debounce = (0 if field == "last_deposit_at"
+                        else int(cfg.get("activity_debounce_sec") or 0))
             await db.touch_retention_activity(product_id, v["player_id"],
-                                              field, v["ts"])
+                                              field, v["ts"],
+                                              debounce_sec=debounce)
         profile = {k: v["payload"][k] for k in PROFILE_FIELDS
                    if v["payload"].get(k) is not None}
         if profile:
@@ -182,17 +282,25 @@ async def ingest_event(product_id: int, evt: dict[str, Any],
     except Exception:  # noqa: BLE001
         log.exception("player_sync_bridge_failed product=%s event=%s",
                       product_id, v["event_name"])
-    return {"stored": True, "duplicate": False, "id": pk}
+    return {"stored": True, "duplicate": False, "id": pk, "queued": queued}
 
 
 async def ingest_events(product_id: int, events: list[dict[str, Any]],
                         source: str = "webhook") -> dict[str, Any]:
-    """Batch ingest. Per-event outcomes; one bad event never kills the batch."""
-    stored = duplicates = 0
+    """Batch ingest. Per-event outcomes; one bad event never kills the batch.
+
+    `queued` reports how many of the stored events entered the DECISION queue —
+    the rest were state food, stored complete. Worth surfacing: a partner
+    watching "stored: 500, queued: 3" can see the bypass working instead of
+    wondering why the queue depth does not match their send volume.
+    """
+    stored = duplicates = queued = 0
     errors: list[dict[str, Any]] = []
+    with tenancy.scoped_product(product_id):
+        cfg = settings.retention()
     for i, evt in enumerate(events):
         try:
-            res = await ingest_event(product_id, evt, source=source)
+            res = await ingest_event(product_id, evt, source=source, cfg=cfg)
         except EventError as exc:
             errors.append({"index": i, "error": str(exc)})
             continue
@@ -200,7 +308,10 @@ async def ingest_events(product_id: int, events: list[dict[str, Any]],
             duplicates += 1
         else:
             stored += 1
-    return {"stored": stored, "duplicates": duplicates, "errors": errors}
+            if res.get("queued"):
+                queued += 1
+    return {"stored": stored, "duplicates": duplicates, "queued": queued,
+            "errors": errors}
 
 
 # ---------------------------------------------------------------------------

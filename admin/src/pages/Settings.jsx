@@ -52,6 +52,7 @@ const SECTION_LABELS = {
   guards: 'Send-frequency guards (per-player protection)',
   delivery: 'Delivery',
   orchestrator: 'Orchestrator (measurement · RG · offers · journeys · channels)',
+  pipeline: 'Event pipeline (queue · workers · send stage)',
 };
 
 // Per-module tab labels where the group name alone would mislead (the

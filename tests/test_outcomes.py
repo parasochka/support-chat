@@ -70,23 +70,30 @@ async def test_dialogue_turn_recorded_only_when_measurable(monkeypatch):
 
 
 async def test_sweep_is_paced(monkeypatch):
-    """A never-swept product runs immediately; a just-swept one waits.
+    """A due product runs; one whose slot is still held waits.
 
-    The "immediately" half is the regression guard: pacing used to default the
-    last-sweep stamp to 0.0, and time.monotonic() counts from boot — so on a
-    freshly started machine every product's FIRST sweep was skipped for the
-    whole interval (which is exactly how CI, on a fresh runner, caught it).
+    Pacing lives in Postgres now (`retention_worker_jobs`, claimed atomically
+    by db.claim_worker_job) rather than in an in-process dict. The dict reset
+    on every deploy — so a frequently-deployed service swept far more often
+    than the interval said — and with a second worker both instances swept the
+    same product at the same moment. The `force` path (the admin button) still
+    ignores pacing entirely, which is why it never consults the claim.
     """
     calls = {"n": 0}
+    due = {"v": True}
 
     async def _attribute(product_id, **kw):
         calls["n"] += 1
         return 3
 
+    async def _claim(product_id, job, interval_sec, **kw):
+        assert job == "attribution"
+        return due["v"]
+
     monkeypatch.setattr(db, "attribute_retention_outcomes", _attribute)
-    monkeypatch.setattr(outcomes.time, "monotonic", lambda: 12.0)  # just booted
-    outcomes._last_sweep.pop(42, None)
+    monkeypatch.setattr(db, "claim_worker_job", _claim)
     first = await outcomes.run_product_attribution(42)
+    due["v"] = False
     second = await outcomes.run_product_attribution(42)
     assert first == {"attributed": 3}
     assert second == {"skipped": "paced"}
@@ -94,10 +101,8 @@ async def test_sweep_is_paced(monkeypatch):
     # `force` (the admin path) ignores the pacing entirely.
     forced = await outcomes.run_product_attribution(42, force=True)
     assert forced == {"attributed": 3} and calls["n"] == 2
-    # …and once the interval has elapsed it is due again.
-    monkeypatch.setattr(
-        outcomes.time, "monotonic",
-        lambda: 12.0 + config.RETENTION_OUTCOME_SWEEP_INTERVAL_SEC + 1)
+    # …and once the slot frees up it is due again.
+    due["v"] = True
     assert await outcomes.run_product_attribution(42) == {"attributed": 3}
 
 
@@ -106,7 +111,6 @@ async def test_sweep_swallows_errors(monkeypatch):
         raise RuntimeError("nope")
 
     monkeypatch.setattr(db, "attribute_retention_outcomes", _boom)
-    outcomes._last_sweep.pop(43, None)
     assert await outcomes.run_product_attribution(43, force=True) == {
         "error": "sweep_failed"}
 
