@@ -19,7 +19,13 @@ sportsbook brands. It is API-isolated: other modules talk to it over HTTP/JSON b
 > step-by-step setup checklist lives in the admin panel — **Retention ·
 > Telegram → Setup guide**), and **`/integration-admin`** documents integrating
 > an external "master" admin panel with the `/admin` API (roles model, service
-> API keys, scoping, endpoint reference).
+> API keys, scoping, endpoint reference). Two of the pages are generated from the
+> code by `scripts/build_api_reference.py`: **`/integration-reference`** (one
+> filterable table of every integration unit that crosses a system boundary) and
+> **`/integration-variables`** (the text surface inside the product — KB and
+> prompt variables, the copy registry, the model's control sentinels and the
+> editable text blocks, with where each is edited and in what language). Both
+> download as the two sheets of the same Excel file.
 
 ## Multi-tenancy
 

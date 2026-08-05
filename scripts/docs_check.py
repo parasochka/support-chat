@@ -126,6 +126,18 @@ def main(argv: list[str]) -> int:
             "re-check the deeplink / ping / bot contract."
         )
 
+    # 3b. The generated reference pair: a registry edit changes what the pages
+    #     SAY, and they are built files — nothing regenerates them on deploy.
+    generated = {"app/ai/prompts.py", "app/core/db.py", "app/i18n/translations.py"}
+    if (generated & changed
+            and "frontend/integration-variables.html" not in changed):
+        reminders.append(
+            "frontend/integration-variables.html — a text registry changed "
+            "(prompt/KB variables, copy keys, sentinels). Re-run "
+            "`python scripts/build_api_reference.py`; it rebuilds the page and "
+            "the workbook's second sheet."
+        )
+
     # 4. The example/landing page served at `/` (frontend/test.html): the widget
     #    demo + feature summary + exactly one link to each integration page.
     if "frontend/test.html" not in changed:

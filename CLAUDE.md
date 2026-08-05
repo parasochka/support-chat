@@ -169,21 +169,35 @@ in mind for every change:
   page (`frontend/test.html`) carries exactly one link to each. Update the
   matching page when a public contract changes; keep the family in the same
   house style.
-  The one **GENERATED** member is `GET /integration-reference` — the API &
+  The two **GENERATED** members are `GET /integration-reference` and
+  `GET /integration-variables` — the same build, two halves of one map.
+  First, `GET /integration-reference` — the API &
   interop reference handed to OTHER teams' programmers to match this service
   against their systems. It is ONE flat, filterable table: a row is an
   integration UNIT (endpoint, wire field, header, canonical event) with its
   format, obligation, example, who calls whom, authorization, limits and error
   codes. Its scope is deliberately narrow — **only what crosses a system
-  boundary**. Product-internal surface (env vars, the hot settings groups,
-  prompt/KB variables, the translations registry, the DB schema) is OUT on
-  purpose: nobody outside edits it, and it dilutes the contract surface. It is
-  NOT hand-edited: `scripts/build_api_reference.py` renders BOTH
-  `frontend/integration-reference.html` and the downloadable
-  `frontend/api-reference.xlsx` (linked from the page, served by the `/static`
-  mount) from ONE `ROWS` list, so page and workbook can never drift apart. When
-  a public contract changes, edit `ROWS` and re-run
-  `python scripts/build_api_reference.py`; never hand-edit the two generated files.
+  boundary**. Product-internal surface (env vars, the hot settings groups, the
+  DB schema) stays OUT on purpose: nobody outside edits it, and it dilutes the
+  contract surface. Second, `GET /integration-variables` — the TEXT surface that
+  scope leaves out, for whoever fills a brand in: the KB `{placeholder}`
+  registry (+ the `{{TOKEN}}` values that MUST be replaced per brand), both
+  prompt-variable registries, the copy registry with the placeholders living
+  inside its strings, the model's control sentinels (`[[ESCALATE]]`,
+  `[[TOPIC:slug]]`, …) and the large editable text blocks (KB texts, site map,
+  escalation keywords) — each row saying where it is edited in the admin, its
+  scope, and whether its value must be English. Its rows are **derived from the
+  live registries** (`db._DEFAULT_KB_VARIABLES`, `prompts.PROMPT_VARIABLES` /
+  `RETENTION_PROMPT_VARIABLES`, `translations.KEYS`/`DEFAULTS`,
+  `prompts._CONTEXT_FIELDS`) rather than transcribed, and the sentinel list is
+  checked against the strip-regexes at build time, so the page cannot drift from
+  the code. Neither page is hand-edited: `scripts/build_api_reference.py`
+  (rows for the variables half in `scripts/text_variables.py`) renders BOTH
+  pages and the downloadable two-sheet `frontend/api-reference.xlsx` (linked
+  from each page, served by the `/static` mount) in ONE run, so pages and
+  workbook can never drift apart. When a public contract changes, edit `ROWS`
+  and re-run `python scripts/build_api_reference.py`; when a text registry
+  changes, just re-run it. Never hand-edit the three generated files.
 - **The prompt template stays the one shared, deploy-level artifact** — brands
   differ only via prompt variables + KB + translations + settings, never per-tenant
   prompt forks.

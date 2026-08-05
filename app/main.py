@@ -518,12 +518,15 @@ def _register_doc_page(path: str, filename: str) -> None:
     app.get(path, response_class=HTMLResponse, name=f"docs_{filename}")(_serve)
 
 
-# `integration-reference` is the machine-generated one: the full table of every
-# variable and API unit, built from the same source as the downloadable workbook
-# (frontend/service-variables-and-api-units.xlsx, served by the /static mount)
-# so the page and the spreadsheet can never drift apart — see
-# scripts/build_api_reference_xlsx.py.
+# `integration-reference` and `integration-variables` are the machine-generated
+# pair: the contract surface that crosses a system boundary (endpoints, wire
+# fields, events) and the product-internal text surface (KB/prompt variables,
+# the copy registry, control sentinels). Both are built from the same source as
+# the downloadable workbook (frontend/api-reference.xlsx, served by the /static
+# mount) so the pages and the spreadsheet can never drift apart — see
+# scripts/build_api_reference.py.
 for _doc_path in ("integration", "integration-widget", "integration-data",
                   "integration-chat-api", "integration-telegram",
-                  "integration-admin", "integration-reference"):
+                  "integration-admin", "integration-reference",
+                  "integration-variables"):
     _register_doc_page(f"/{_doc_path}", f"{_doc_path}.html")
