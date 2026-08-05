@@ -257,6 +257,28 @@ out of its sleep, finishes the batch in flight and closes its leases within
 `WORKER_DRAIN_TIMEOUT_SEC`. Zero-downtime deploys are not needed — an event whose lease is
 never closed is simply reclaimed and retried.
 
+### Memory footprint
+
+Both halves idle at roughly 70–90 MB. Three things keep them there, and all three are easy
+to undo by accident:
+
+- **`MALLOC_ARENA_MAX=2` and `MALLOC_MMAP_THRESHOLD_=131072` are set in the `Dockerfile`**,
+  not in Railway. Both processes hand multi-MB buffers to background threads (image
+  decodes, media file reads, the base64 data URLs the vision calls send). Left at glibc's
+  defaults, that memory is parked in up to `8 × ncores` per-thread arenas and never returned
+  to the OS, so the process climbs to several hundred MB and stays there. These two
+  variables are what make it fall back to idle instead. Keep them on the image.
+- **The worker does not import `app.main`.** It takes its shared loops from
+  `app/core/loops.py`; importing `app.main` would build the whole HTTP application — every
+  router and model — in a process that serves no HTTP, for ~23 MB it never uses.
+- **Uploaded images are decoded at reduced scale**, not at full resolution (see
+  `media_normalizer.normalize_file`). A 24 MP phone photo costs ~28 MB to process instead
+  of ~220 MB.
+
+If you see the web service climb into the hundreds of MB and plateau, check the first item
+first — it is the usual cause, and it is a build-time setting, so it will not show up in
+the Railway variables list.
+
 ## Environment variables
 
 | Variable | Required | Default | Purpose |

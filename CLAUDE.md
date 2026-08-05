@@ -1172,6 +1172,31 @@ settings/secrets/KB/copy, the header switcher. When extending, keep these rules:
   and `RETENTION_SCHEDULER_ENABLED=1` (the header comment in `railway.toml` is the checklist;
   the media Volume stays mounted on web). Leaving `SERVICE_ROLE` unset is the pre-split
   single-process mode, so an existing deployment upgrades without a worker service.
+- **The two entry points share their infra loops via `app/core/loops.py`, NOT via
+  `app.main`.** `install_logging()` (log format + logcapture) and the two loops both roles
+  run (settings/KB cache refresh, log flush) live there; `main.py` re-exports the loops
+  under their original `_settings_refresh_loop`/`_log_flush_loop` names. The worker used to
+  import them FROM `app.main`, which built the entire ASGI app as a side effect — every
+  router and pydantic model of a surface a background process never serves, ~23MB of RSS
+  for two coroutines. Keep new shared-by-both-roles machinery in `loops.py`: importing
+  `app.main` from the worker silently re-adds that cost.
+- **Memory: the allocator is configured in the `Dockerfile`, deliberately.**
+  `MALLOC_ARENA_MAX=2` + `MALLOC_MMAP_THRESHOLD_=131072` are what make freed multi-MB
+  buffers go back to the OS. Both roles hand such buffers to executor threads
+  (`asyncio.to_thread`: Pillow decodes, media reads, base64 data URLs for the vision
+  calls), and glibc's defaults — up to 8×ncores per-thread arenas, plus an mmap threshold
+  that ratchets to 32MB — retain them permanently, so the process climbs and plateaus far
+  above its idle footprint (measured 106MB retained vs 10MB with both pinned, with
+  `malloc_trim` reclaiming nothing in the default case). Anything that allocates multi-MB
+  buffers off the event loop depends on these being set; don't drop them from the image.
+- **Decode images at the scale you need** (`media_normalizer.normalize_file`):
+  `Image.open` is lazy, but `ImageOps.exif_transpose` forces a FULL-resolution decode and
+  copy, so a 24MP source cost ~220MB of peak RSS to make a 1280px thumbnail — the largest
+  single allocation the service makes. `im.draft(None, (max_side, max_side))` **before**
+  anything touches the pixels drops that to ~28MB with byte-identical output (it never
+  scales below the requested box, and is a no-op for PNG). `thumbnail()` drafts internally,
+  which is why the explicit call has to come first — before `exif_transpose` has paid for
+  the full raster.
 - Env var reference lives in `README.md` (§ "Environment variables").
 - **Two docs, two audiences:** `README.md` is the human-facing overview; **`CLAUDE.md`
   (this file) is the LLM/agent guidance** — architecture, invariants, conventions. They are

@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core import config
 from app.core import db
+from app.core import loops
 from app.core import settings
 from app.api import admin as admin_api
 from app.api import admin_auth as admin_auth_api
@@ -27,17 +28,18 @@ from app.api import orchestrator as orchestrator_api
 from app.api import quality as quality_api
 from app.api import retention as retention_api
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
+# Sets the log format and mirrors runtime logs into the in-process buffer for
+# the admin System-logs view (the flush loop drains it into the bounded app_logs
+# table). Shared with the worker entry point — see loops.py.
+loops.install_logging()
 log = logging.getLogger(config.SERVICE_NAME)
 
-# Mirror runtime logs into the in-process buffer for the admin System-logs view
-# (the flush loop below drains it into the bounded app_logs table) — see
-# logcapture.py for the root-logger/denylist rationale.
-from app.core import logcapture  # noqa: E402
-logcapture.install()
+# The two infra loops both roles run. Re-exported under their original private
+# names so the lifespan below (and anything importing them from here) is
+# unchanged; they live in loops.py so `python -m app.worker` can have them
+# without importing this module and building the whole ASGI app.
+_settings_refresh_loop = loops.settings_refresh_loop
+_log_flush_loop = loops.log_flush_loop
 
 # Static assets live at the REPO root (frontend/, admin/dist), one level above
 # the app/ package this module now lives in.
@@ -110,77 +112,6 @@ def _background_plan(role: str, scheduler_enabled: bool) -> tuple[bool, bool]:
     resolved = role if role in _KNOWN_ROLES else "all"
     runs_pipeline = resolved == "all" and scheduler_enabled
     return runs_pipeline, runs_pipeline or resolved == "web"
-
-
-_SETTINGS_REFRESH_SEC = 60
-
-
-async def _settings_refresh_loop() -> None:
-    """Re-pull the settings caches from the DB every minute (multi-instance)."""
-    while True:
-        await asyncio.sleep(_SETTINGS_REFRESH_SEC)
-        try:
-            await settings.reload()
-            # Drop the per-process KB caches on the same cadence: they are only
-            # invalidated by writes on THIS instance, so without this a KB/topic/
-            # variable edit on another instance stayed invisible here until
-            # restart. Cheap — the next request re-fetches the small KB rows.
-            db.clear_kb_caches()
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - a transient DB error must not kill the loop
-            log.exception("settings_refresh_failed")
-
-
-_LOG_FLUSH_SEC = 3
-_LOG_KEEP_ROWS = 5000
-_LOG_PRUNE_EVERY = 20  # prune once every N flushes (~1 min)
-# The append-only retention_events log has no size cap; reap old rows on a
-# coarse cadence (~hourly) from the same loop. The retention is SPLIT: the
-# high-volume "state food" lane (spins, session pings) is the overwhelming
-# majority of the rows and is worth nothing once the state resolver's windows
-# have passed, so keeping it as long as the decision events is what makes the
-# table grow without bound. Both spans are hot settings — an operator watching
-# the disk fill should not need a redeploy to act.
-_RETENTION_EVENTS_PRUNE_EVERY = 1200  # ~1h at _LOG_FLUSH_SEC
-
-
-async def _log_flush_loop() -> None:
-    """Drain captured log records into app_logs; periodically prune the table.
-
-    Keeps the admin System-logs view fed without the logging hot path ever
-    touching the DB (logcapture buffers in memory; this loop is the only writer).
-    """
-    ticks = 0
-    while True:
-        await asyncio.sleep(_LOG_FLUSH_SEC)
-        try:
-            items = logcapture.drain()
-            if items:
-                await db.insert_app_logs(items)
-            ticks += 1
-            if ticks % _LOG_PRUNE_EVERY == 0:
-                await db.prune_app_logs(_LOG_KEEP_ROWS)
-            if ticks % _RETENTION_EVENTS_PRUNE_EVERY == 0:
-                removed = await db.prune_retention_events(
-                    settings.global_retention_int(
-                        "event_keep_days", config.RETENTION_EVENT_KEEP_DAYS,
-                        1, 3650),
-                    state_keep_days=settings.global_retention_int(
-                        "event_keep_days_state",
-                        config.RETENTION_EVENT_KEEP_DAYS_STATE, 1, 3650))
-                if removed:
-                    log.info("retention_events_pruned rows=%s", removed)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - never let a DB hiccup kill the loop
-            # One line, not log.exception: this loop's own records are captured
-            # and re-flushed by itself, and a down DB would otherwise stack a
-            # full traceback into the buffer every few seconds. But NOT silent —
-            # a prune that times out and rolls back on every pass (the exact
-            # C2 failure mode) must be visible in the logs.
-            log.warning("log_flush_tick_failed error=%s: %s",
-                        exc.__class__.__name__, exc)
 
 
 @asynccontextmanager

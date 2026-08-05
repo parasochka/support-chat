@@ -156,6 +156,21 @@ def normalize_file(src_path: str, dst_path: str, *, max_side: int,
     """
     from PIL import Image, ImageOps
     with Image.open(src_path) as im:
+        # Decode a JPEG straight to the smallest DCT scale that still covers
+        # max_side, BEFORE anything touches the pixels. Image.open is lazy, but
+        # exif_transpose forces a full-resolution decode (and a full-resolution
+        # copy when there is an orientation tag), so a 24MP phone photo cost
+        # ~220MB of peak RSS to produce a 1280px thumbnail — the single largest
+        # allocation this service makes, and the source of the web process's
+        # memory spikes. thumbnail() calls draft() internally for exactly this
+        # reason, but by then exif_transpose has already paid for the full
+        # raster. Drafting first drops that peak to ~29MB.
+        # `None` keeps the source mode (the conversion below owns that); a
+        # square box is orientation-agnostic, so the later transpose is safe.
+        # No-op for PNG and anything else without DCT scaling, and draft never
+        # scales BELOW the requested box, so the LANCZOS resize below still
+        # produces byte-identical output.
+        im.draft(None, (max_side, max_side))
         im = ImageOps.exif_transpose(im)
         if im.mode not in ("RGB", "RGBA"):
             im = im.convert("RGBA" if "A" in im.getbands() else "RGB")
