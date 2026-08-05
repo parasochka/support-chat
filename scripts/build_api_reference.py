@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the API integration reference — ONE flat table, two renderings.
+"""Generate the integration references — flat tables, page + workbook.
 
 The audience is an INTEGRATOR: another team's programmer who has to make their
 system talk to this one. So the table carries only what crosses a system
@@ -17,8 +17,17 @@ call outward" without a second tab.
 Both artefacts are built from the SAME rows, so the live page and the
 downloadable workbook can never drift apart:
 
-  frontend/api-reference.xlsx              — downloadable workbook (single sheet)
+  frontend/api-reference.xlsx              — downloadable workbook
+      sheet "API"                          — the table below
+      sheet "Переменные текста"            — scripts/text_variables.py
   frontend/integration-reference.html      — live page (/integration-reference)
+  frontend/integration-variables.html      — live page (/integration-variables)
+
+The variables half is the deliberate INSIDE of this table: the KB placeholder
+registry, prompt variables, the copy registry, the control sentinels and the
+editable text blocks — everything product-internal that this sheet leaves out
+on purpose. It lives in scripts/text_variables.py (rows derived from the live
+registries) and is rendered here so ONE command keeps all four files in step.
 
 Run:  python scripts/build_api_reference.py
 
@@ -36,6 +45,9 @@ import sys
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import text_variables  # noqa: E402  (sibling module, not a package)
 
 # ---------------------------------------------------------------------------
 # Columns. Order matters: it is the column order in both renderings.
@@ -739,6 +751,17 @@ SUBTITLE = ("Один юнит интеграции — одна строка. �
             "форматы, авторизация, лимиты и коды ошибок.")
 
 
+# The style objects the variables sheet reuses, so both sheets of the workbook
+# look like one document (passed in rather than imported, so text_variables.py
+# never has to import this module back).
+def _sheet_style() -> dict:
+    return {
+        "title": TITLE_FONT, "note": NOTE_FONT, "head_font": HEAD_FONT,
+        "head_fill": HEAD_FILL, "body": BODY_FONT, "mono": MONO_FONT,
+        "border": BORDER, "group_fill": EP_FILL,
+    }
+
+
 def build_xlsx(path: str) -> None:
     wb = Workbook()
     ws = wb.active
@@ -784,6 +807,8 @@ def build_xlsx(path: str) -> None:
             value="Файл генерируется из кода: scripts/build_api_reference.py. "
                   "Живая версия — /integration-reference на самом сервисе."
             ).font = NOTE_FONT
+
+    text_variables.add_sheet(wb, _sheet_style())
     wb.save(path)
 
 
@@ -877,6 +902,9 @@ PAGE = """<!DOCTYPE html>
 
 <p class="muted" style="margin-top:32px">Страница и Excel-файл генерируются из кода одним
 скриптом (<code>scripts/build_api_reference.py</code>), поэтому не расходятся между собой.
+Здесь только то, что пересекает границу систем; внутренние переменные и тексты продукта
+(база знаний, промпт-переменные, копирайт, служебные теги) — на соседней странице
+<a href="/integration-variables">переменных и текстов</a> (второй лист того же файла).
 Смежные гайды: <a href="/integration">обзор и архитектура</a> ·
 <a href="/integration-widget">виджет</a> ·
 <a href="/integration-data">данные игрока</a> ·
@@ -969,6 +997,9 @@ if __name__ == "__main__":
         root, "frontend", xlsx_name)
     html_path = sys.argv[2] if len(sys.argv) > 2 else os.path.join(
         root, "frontend", "integration-reference.html")
+    vars_path = os.path.join(root, "frontend", "integration-variables.html")
     build_xlsx(xlsx_path)
     build_html(html_path, os.path.basename(xlsx_path))
-    print(f"rows: {len(ROWS)}\nwritten: {xlsx_path}\nwritten: {html_path}")
+    text_variables.build_html(vars_path, os.path.basename(xlsx_path))
+    print(f"rows: {len(ROWS)} api + {len(text_variables.ROWS)} variables\n"
+          f"written: {xlsx_path}\nwritten: {html_path}\nwritten: {vars_path}")
