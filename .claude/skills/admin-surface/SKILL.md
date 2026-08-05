@@ -416,3 +416,64 @@ Map of what lives where:
 §16 decisions: unresolved analysis = topic-grouped (no embeddings); contact form =
 host-site button only; admin auth = named `admin_users` accounts only (email + password,
 role-driven; no password-only owner login).
+
+---
+
+## Spend attribution and the quality review (moved verbatim from CLAUDE.md, 2026-08)
+
+### SPEND ATTRIBUTION — whose money is it (`ai_interaction_logs.consumer/.source`)
+Every OpenAI call is logged (invariant §4), but only a DIALOGUE turn carries a
+`session_id` — the quality judge, the proactive agent's decision call and the media
+cataloguer all log with `session_id NULL`. The dashboards used to infer the spender from
+that NULL ("session-less ⇒ photo metadata"), which charged the judge and the agent to the
+media bucket and put reviews of SUPPORT conversations on the Telegram dashboard. So each
+row now carries its own labels, denormalized for the same reason `product_id` is:
+**`consumer`** ('web' | 'telegram') = which FACADE the money belongs to — for a quality
+review it is the facade of the REVIEWED conversation, so a support review is support spend
+and a Telegram review retention spend — and **`source`** ('chat' | 'agent' | 'review' |
+'media') = what the call was. Writers: `db.persist_turn` (dialogue, `consumer` from the
+caller), `db.persist_ping_turn` (always telegram/agent), and `db.log_ai_interaction`, whose
+`consumer=`/`source=` arguments every new call site must pass. Readers go through
+`db._LOG_SOURCE` / `_LOG_IS_SUPPORT` / `_LOG_IS_RETENTION` (they need
+`LEFT JOIN chat_sessions s ON s.id = l.session_id`) — never re-derive the spender from
+`session_id IS NULL`. Rows written before the columns existed are classified **at read
+time** (session-bound ⇒ 'chat', session-less ⇒ 'legacy', counted where the old dashboards
+already counted them) so no backfill scan runs on boot and history keeps its totals. The
+support dashboard reports DIALOGUE spend as `cost_usd_total` (the number every per-session
+metric divides) with the judge's passes broken out as `cost_review_usd`; the retention
+dashboard splits its total into dialogue / agent / media / review (+ the legacy remainder,
+whose chart series hides itself once it is all zero). The PLATFORM-WIDE view is
+`db.ai_cost_timeseries` → `GET /admin/ai-costs`: daily spend of EVERY call in scope —
+facade-blind, both bots plus all background passes, so the buckets sum to the whole OpenAI
+bill — split by `source`; rendered as the "AI cost by call type" histogram under the
+AI-model group on System → Settings (`admin/src/components/AiCostsPanel.jsx`), whose scope
+filter (whole platform / partner / product, seeded from the header product) and call-type
+filter are independent of the header switcher. Tests: `tests/test_cost_attribution.py`.
+
+### QUALITY REVIEW — the LLM-as-judge over finished conversations (`app/ai/reviewer.py`)
+A cheap background pass that reads FINISHED conversations of **both** facades
+(support widget + Telegram) and stores one verdict each: a 1..5 score, tags from
+the CLOSED `prompts.REVIEW_TAGS` taxonomy (closed on purpose — free-form tags
+cannot be counted, and "which failure mode is most common this week" is the whole
+point), a one-line summary, quoted issues and the player questions the KB could
+not answer. The wording lives in `prompts.build_conversation_review_messages`
+(single source of truth, with a per-facade framing: routing support OUT is correct
+for retention Nika and wrong for the widget). **It changes nothing** — the
+verdicts feed the admin **Common → Quality** page (`/admin/quality/*`,
+`app/api/quality.py`), where a human decides what to fix; an automated judge that
+edited the KB or the settings would be a second, unreviewable author. Bounded by
+construction: "finished" = resolved/escalated or dormant `QUALITY_REVIEW_IDLE_MINUTES`,
+long enough to judge (`general.quality_review_min_messages`), at most
+`general.quality_review_daily_max` per product per UTC day, and a chat is
+re-reviewed only after it GREW since its last verdict (`reviewed_msg_count`, unique
+per session). Runs on the product's own keys/model group; every call lands in
+`ai_interaction_logs` with `session_id=NULL` (invariant §4) so the reviewed
+session's own per-turn costs stay clean — labelled `source='review'` with the
+`consumer` of the conversation it judged, so the spend surfaces in THAT facade's
+analytics (see "Spend attribution"). It runs on the BACKGROUND process
+(`app/worker.py` under `RETENTION_SCHEDULER_ENABLED`, or `main.py`'s lifespan in
+the single-process `all` role), advisory-locked — it takes no stop flag, so a
+drain cancels it rather than waiting: losing a half-finished review costs one
+cheap pass and the conversation is picked up next sweep. Tests:
+`tests/test_quality_review.py`.
+
