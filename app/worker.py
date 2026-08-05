@@ -38,13 +38,17 @@ from app.core import config
 from app.core import db
 from app.core import settings
 
-# The settings-refresh and log-flush loops are main.py's and are reused as-is: a
-# worker whose settings cache never refreshes silently freezes every hot knob,
-# and a worker whose logs never reach app_logs is a worker nobody can debug from
-# the admin panel. Importing main also builds its (unused) ASGI app, which is
-# cheap next to two divergent copies of the same loop drifting on prune cadence.
-# It is also what installs logcapture + the log format for this process.
-from app.main import _log_flush_loop, _settings_refresh_loop  # noqa: E402
+# The settings-refresh and log-flush loops are shared with the web half and
+# reused as-is: a worker whose settings cache never refreshes silently freezes
+# every hot knob, and a worker whose logs never reach app_logs is a worker
+# nobody can debug from the admin panel. They live in app.core.loops rather than
+# app.main because importing main would also BUILD the ASGI app — every router
+# and pydantic model of a surface this process never serves, ~23MB of RSS for
+# two coroutines. loops.install_logging() sets the log format and installs
+# logcapture for this process (main.py calls the same function).
+from app.core import loops  # noqa: E402
+
+loops.install_logging()
 
 log = logging.getLogger(f"{config.SERVICE_NAME}.worker")
 
@@ -274,9 +278,10 @@ def _start_loops() -> None:
     # the admin uploads — so it stays on the web process; running it here would
     # sweep a directory that does not hold the library.
 
-    # Infra loops, one per process (both are main.py's; see the import above).
-    _spawn("settings_refresh", _settings_refresh_loop, stoppable=False)
-    _spawn("log_flush", _log_flush_loop, stoppable=False)
+    # Infra loops, one per process (both shared with the web half; see the
+    # import above).
+    _spawn("settings_refresh", loops.settings_refresh_loop, stoppable=False)
+    _spawn("log_flush", loops.log_flush_loop, stoppable=False)
 
 
 async def _drain() -> None:

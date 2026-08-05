@@ -16,6 +16,24 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
+# --- glibc allocator: give freed memory BACK to the OS -----------------------
+# Both roles hand multi-MB buffers to worker threads (asyncio.to_thread: Pillow
+# decodes, media file reads, base64 data URLs for the vision calls). Two glibc
+# defaults conspire to keep that memory forever:
+#   1. up to 8 x ncores malloc ARENAS, one per allocating thread. Freed blocks
+#      stay on their own arena's free list, and malloc_trim() cannot reclaim a
+#      non-main arena that is not empty at the top.
+#   2. a DYNAMIC mmap threshold that ratchets up to 32MB as mmapped blocks are
+#      freed — so the first media buffers are mmapped (returned to the OS on
+#      free) but every later one is served from the heap and retained.
+# Together they make a process climb and plateau instead of falling back to its
+# idle footprint. Pinning both is a pure-config fix: on a 24-thread multi-MB
+# workload, RSS retained after freeing everything went from 106MB (with
+# malloc_trim reclaiming nothing) to 10MB. The cost is a few more mmap syscalls,
+# which is free for a service that idles under 1% CPU.
+ENV MALLOC_ARENA_MAX=2 \
+    MALLOC_MMAP_THRESHOLD_=131072
+
 WORKDIR /app
 
 # ffmpeg: the media normalizer re-encodes uploaded retention videos to

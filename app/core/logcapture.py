@@ -27,7 +27,15 @@ import threading
 from typing import Any
 
 # Backpressure cap: at most this many un-flushed records are held in memory.
-_MAX_PENDING = 20000
+# Sized against what the buffer is FOR — bridging a flush outage — not against
+# what the table keeps. Each record holds a message truncated to 8000 chars, so
+# the old 20000 bound the buffer at ~160MB of RSS in the one situation it
+# matters (the DB is down, every failing tick logs, nothing drains) — a memory
+# spike layered on top of a database outage. 2000 records is still ~100 minutes
+# of the ~30 records/min this service logs in normal operation, and the flusher
+# prunes app_logs to 5000 rows anyway, so a deeper backlog was mostly buffering
+# records that would be pruned moments after they landed.
+_MAX_PENDING = 2000
 
 _pending: "collections.deque[dict[str, Any]]" = collections.deque()
 _lock = threading.Lock()
