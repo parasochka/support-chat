@@ -411,7 +411,7 @@ how long it may WAIT), so a single call reaching for them opts that query out of
 connection for **minutes** (the quality judge's sweep lock, the media normalizer) must instead
 take a `db.dedicated_connection()`: it would otherwise eat a pool slot, and the pool's
 `command_timeout` kills a *blocking* `pg_advisory_lock` wait outright. The pool's bounds are
-role-aware (`DB_POOL_MIN`/`DB_POOL_MAX`, 25 on the worker vs 10 on web) — the worker runs many
+role-aware (`DB_POOL_MIN`/`DB_POOL_MAX`, 30 on the worker vs 10 on web) — the worker runs many
 concurrent player shards, the web process serves requests. The retention event drain holds no
 advisory lock at all any more; its mutual exclusion is the claim (see "Event pipeline").
 
