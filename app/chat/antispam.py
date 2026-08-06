@@ -13,9 +13,8 @@ import unicodedata
 from collections import defaultdict, deque
 from typing import Optional
 
-import httpx
-
 from app.core import config
+from app.core import http
 from app.core import settings
 
 # --- in-memory state --------------------------------------------------------
@@ -68,15 +67,18 @@ async def verify_turnstile(token: Optional[str], remote_ip: Optional[str] = None
         return {"ok": True, "skipped": True, "reason": "no_token_client_side"}
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(
-                "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-                data={
-                    "secret": effective_secret,
-                    "response": token,
-                    **({"remoteip": remote_ip} if remote_ip else {}),
-                },
-            )
+        # Shared pooled client (app/core/http.py) — Cloudflare's verifier is a
+        # fixed first-party host, and this runs on the session-create path where
+        # a per-call TLS handshake is latency the player waits through.
+        resp = await http.client().post(
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+            data={
+                "secret": effective_secret,
+                "response": token,
+                **({"remoteip": remote_ip} if remote_ip else {}),
+            },
+            timeout=10,
+        )
         data = resp.json()
     except Exception as exc:  # noqa: BLE001
         # Verifier outage/unreachable: fail-open (advisory check), but explain.

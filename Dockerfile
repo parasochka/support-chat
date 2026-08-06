@@ -42,6 +42,36 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
+# --- precompile the stdlib ---------------------------------------------------
+# python:3.11-slim ships the stdlib as .py ONLY: the official image runs
+# `find /usr/local … -name '*.pyc' -exec rm -rf` right after `make install` and
+# installs setuptools/wheel with --no-compile. Combined with
+# PYTHONDONTWRITEBYTECODE=1 above (which stops the container from ever CACHING
+# the result), every process start re-parses and re-compiles the ~180 stdlib
+# modules this service imports and throws the bytecode away. Measured on exactly
+# that import set: 588ms -> 125ms per start, for both roles.
+#
+# compileall writes .pyc even under PYTHONDONTWRITEBYTECODE=1 — neither
+# compileall nor py_compile consults sys.dont_write_bytecode; the flag gates
+# only the IMPORT system's write-back. The interpreter still READS those .pyc
+# under it, and a stale one is ignored in favour of the source (never wrong,
+# only slower), so the env var stays: it keeps the container's writable layer
+# clean.
+#
+# site-packages is excluded: pip byte-compiles everything it installs, so those
+# .pyc already exist, and compiling the base image's pip/setuptools/wheel would
+# add ~12MB of bytecode nothing imports at runtime. This layer depends only on
+# the base image, so it is cached on every subsequent build.
+#
+# `|| echo` on purpose: this layer is a pure optimization, so a single stdlib
+# file the base image ships that will not compile (a Python-2 fixture in some
+# future `tests/` directory the image stops stripping) must never block a
+# deploy. compileall compiles everything it can and names what it could not on
+# stderr, which stays visible in the build log.
+RUN python -m compileall -q -x '/site-packages/' \
+      "$(python -c 'import sysconfig; print(sysconfig.get_paths()["stdlib"])')" \
+      || echo "stdlib precompile incomplete (non-fatal; slower process start)"
+
 # Install dependencies first for better layer caching.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -51,6 +81,27 @@ COPY . .
 
 # The built admin SPA (main.py serves it at /admin when the dir exists).
 COPY --from=admin-build /build/dist ./admin/dist
+
+# --- precompile the application ----------------------------------------------
+# .dockerignore strips every host __pycache__/*.pyc on purpose (host bytecode
+# can carry a different magic number or stale content), so `COPY . .` brings
+# .py only, so each entry point parses every module it imports on every start
+# (the web half loads far more of the tree than the worker, which is why their
+# savings differ below).
+# Measured: `import app.main` 2086ms -> 1858ms, `import app.worker` 251ms ->
+# 149ms — the worker's share is larger because it deliberately avoids importing
+# app.main, so app parsing dominates its small footprint. ONE image layer serves
+# BOTH Railway services; nothing in the start commands changes.
+#
+# This MUST stay the last step that touches Python source: a later COPY over a
+# .py leaves its .pyc stale, which is harmless (the import falls back to the
+# source) but silently loses the speedup. mcp_server IS runtime code —
+# app/api/admin.py lazily imports mcp_server.catalog/.client. scripts/ is
+# omitted: nothing imports it at runtime.
+#
+# compileall exits non-zero on a syntax error, so this doubles as a free compile
+# check of everything that ships.
+RUN python -m compileall -q app mcp_server
 
 # Railway provides $PORT; default to 8080 for local runs.
 ENV PORT=8080

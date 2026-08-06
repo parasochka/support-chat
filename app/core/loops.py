@@ -20,6 +20,7 @@ import logging
 from app.core import config
 from app.core import db
 from app.core import logcapture
+from app.core import meminfo
 from app.core import settings
 
 log = logging.getLogger(config.SERVICE_NAME)
@@ -72,20 +73,54 @@ _LOG_PRUNE_EVERY = 20  # prune once every N flushes (~1 min)
 _RETENTION_EVENTS_PRUNE_EVERY = 1200  # ~1h at _LOG_FLUSH_SEC
 
 
+def _memory_sample_every() -> int:
+    """Ticks between `process_memory` samples; 0 = the sample is off.
+
+    Derived from MEMORY_LOG_INTERVAL_SEC rather than being its own tick
+    constant, so the env var means seconds to the operator no matter what
+    _LOG_FLUSH_SEC is. Floored at one tick: a cadence FASTER than the flush is
+    not expressible here, and would flood the very buffer it is measuring.
+    """
+    interval = max(int(config.MEMORY_LOG_INTERVAL_SEC), 0)
+    if not interval:
+        return 0
+    return max(round(interval / _LOG_FLUSH_SEC), 1)
+
+
 async def log_flush_loop() -> None:
     """Drain captured log records into app_logs; periodically prune the table.
 
     Keeps the admin System-logs view fed without the logging hot path ever
     touching the DB (logcapture buffers in memory; this loop is the only writer).
+    Also the home of the periodic `process_memory` sample: it is the one loop
+    BOTH roles run that already carries tick arithmetic, and a memory line that
+    lands in `app_logs` is the only way the worker's footprint is visible from
+    the admin panel at all.
     """
     ticks = 0
+    drained = 0
     while True:
         await asyncio.sleep(_LOG_FLUSH_SEC)
+        # BEFORE the DB work, and outside the try below: a memory sample that
+        # only happens after a successful INSERT goes silent during a database
+        # outage — precisely when a process is most likely to be climbing (the
+        # log buffer stops draining, every failing tick logs) and least likely
+        # to be observable any other way. It reaches stdout/Railway regardless;
+        # only its trip to app_logs depends on the DB.
+        ticks += 1
+        mem_every = _memory_sample_every()
+        if mem_every and ticks % mem_every == 0:
+            # Records drained since the last sample — NOT the buffer depth,
+            # which drain() zeroes by construction. It is the honest "how loud
+            # is this process" number, and a spike in it explains an app_logs
+            # history that suddenly got shorter.
+            meminfo.log_line({"logs_per_sample": drained})
+            drained = 0
         try:
             items = logcapture.drain()
             if items:
                 await db.insert_app_logs(items)
-            ticks += 1
+            drained += len(items)
             if ticks % _LOG_PRUNE_EVERY == 0:
                 await db.prune_app_logs(_LOG_KEEP_ROWS)
             if ticks % _RETENTION_EVENTS_PRUNE_EVERY == 0:

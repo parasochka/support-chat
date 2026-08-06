@@ -259,7 +259,7 @@ never closed is simply reclaimed and retried.
 
 ### Memory footprint
 
-Both halves idle at roughly 70–90 MB. Three things keep them there, and all three are easy
+Both halves idle at roughly 70–90 MB. Four things keep them there, and every one is easy
 to undo by accident:
 
 - **`MALLOC_ARENA_MAX=2` and `MALLOC_MMAP_THRESHOLD_=131072` are set in the `Dockerfile`**,
@@ -274,10 +274,52 @@ to undo by accident:
 - **Uploaded images are decoded at reduced scale**, not at full resolution (see
   `media_normalizer.normalize_file`). A 24 MP phone photo costs ~28 MB to process instead
   of ~220 MB.
+- **Outbound HTTP goes through one shared client per process** (`app/core/http.py`), so a
+  Telegram send no longer builds an SSL context and a TLS connection per message. The two
+  DNS-pinned calls (Player API pull, partner webhook) deliberately keep a client per call —
+  see the module docstring; pooling them would reuse a TLS session across tenants.
+
+### Watching memory
+
+You do not have to read Railway's graph to see the trend:
+
+- Both processes log a `process_memory` line once a minute
+  (`MEMORY_LOG_INTERVAL_SEC`, `0` disables it) into `app_logs`, so **System → Logs** shows
+  the curve for both halves — they are told apart by `role=`. The line carries current and
+  peak RSS, the resident anonymous (heap) share, CPython's live block count, gc counters,
+  task and thread counts, DB-pool occupancy and the entry count of six bounded in-process
+  caches (log buffer, the two anti-spam maps, the subscription cache, the per-product
+  OpenAI clients, the per-product settings cache). `rss_mb` rising while `blocks` stays
+  flat is allocator/buffer retention (the first bullet above); both rising together means
+  Python objects are accumulating; `anon_mb` says how much of the climb is heap rather
+  than mapped files. Read them together — one number alone cannot tell those apart.
+- `GET /admin/diagnostics/memory` returns the same snapshot on demand for the **web**
+  process (global-scope admins only). The worker serves its own copy inside the `memory`
+  block of its `/healthz`.
+- For a real investigation, redeploy with `MEMORY_TRACEMALLOC=1` and the endpoint also
+  returns the top allocation sites. It must be armed at boot to see anything, it roughly
+  doubles allocation cost, and it is deliberately env-only — never an admin setting. Turn
+  it off again afterwards. It covers **runtime** allocation; to see what the *imports*
+  allocate, use CPython's own `PYTHONTRACEMALLOC=3` instead, which arms tracing before the
+  first import. Either way the report itself takes seconds on a real heap, so the endpoint
+  runs it on a worker thread rather than stalling the event loop.
 
 If you see the web service climb into the hundreds of MB and plateau, check the first item
 first — it is the usual cause, and it is a build-time setting, so it will not show up in
 the Railway variables list.
+
+### Process start
+
+The image precompiles the stdlib and the application to `.pyc`
+(`python -m compileall`, two `Dockerfile` layers). `python:3.11-slim` ships the stdlib as
+source only, and `PYTHONDONTWRITEBYTECODE=1` means a container never caches the compile it
+does at every start. Measured on the import set this service actually loads, precompiling
+saves ~460 ms of stdlib parsing (588 ms → 125 ms) plus ~230 ms (web) / ~100 ms (worker) of
+application parsing on every boot. Keep the application `compileall` as
+the **last** step that touches `.py` files: a later `COPY` over a source file leaves its
+`.pyc` stale, which is harmless (the import silently falls back to the source) but loses
+the speedup. Never add `-O`/`PYTHONOPTIMIZE` to a start command without also compiling with
+`-o 1` — the loader would look for `*.opt-1.pyc`, find nothing, and recompile everything.
 
 ## Environment variables
 
@@ -326,6 +368,11 @@ the Railway variables list.
 | `SERVICE_ROLE` | no | `all` | Which half this process is: `web` (HTTP only — the background pipeline belongs to the worker service), `worker` (`python -m app.worker`: the background loops only), or `all` (single process, the pre-split behaviour). See § "Two-service topology". |
 | `WORKER_DRAIN_TIMEOUT_SEC` | no | `25` | Seconds a shutting-down worker may spend finishing the batch in flight and closing its event leases. Railway `SIGKILL`s 30s after `SIGTERM`, so stay under that. |
 | `DB_POOL_MIN` / `DB_POOL_MAX` | no | `1` / `25` on the worker, `10` elsewhere | Postgres pool bounds. The worker runs many player shards concurrently; the web process serves requests. |
+| `HTTP_MAX_CONNECTIONS` / `HTTP_MAX_KEEPALIVE` | no | `100` / `20` | Bounds on the shared outbound HTTP pool (`app/core/http.py`) used by the Telegram Bot API, Turnstile and Customer.io calls. |
+| `HTTP_KEEPALIVE_EXPIRY_SEC` | no | `30` | How long an idle outbound connection is kept for reuse. `0` turns reuse off entirely (the escape hatch if a provider proves hostile to pooled connections) — the SSL context stays shared either way. |
+| `HTTP_DEFAULT_TIMEOUT_SEC` | no | `15` | Fallback deadline for the shared client. Every call site passes its own per-request timeout; this only applies if one ever forgets. |
+| `MEMORY_LOG_INTERVAL_SEC` | no | `60` | Cadence of the `process_memory` line both roles log into `app_logs` (visible in System → Logs, `role=` tells the halves apart). `0` disables it. |
+| `MEMORY_TRACEMALLOC` / `MEMORY_TRACEMALLOC_FRAMES` | no | `false` / `3` | Arm `tracemalloc` at boot so `GET /admin/diagnostics/memory` can report top allocation sites. Deploy-level switch, **not** an admin setting; it roughly doubles allocation cost, so turn it on for an investigation and off again. |
 | `OPENAI_BREAKER_FAIL_THRESHOLD` | no | `5` | Consecutive fully-failed completions before the OpenAI circuit breaker opens and further calls fail fast (returning the localized nudge in ms) instead of each paying the full failover cost during an outage. `0` disables the breaker. Keyed per key source, so one product's bad key can't trip it for everyone. |
 | `OPENAI_BREAKER_COOLDOWN_SEC` | no | `30` | How long the breaker stays open before allowing one half-open trial request to probe recovery. |
 | `PUBLIC_BASE_URL` | no | — | Retention bot: public base URL of this service (e.g. `https://chat.example.com`), used to build the webhook URL when registering it with Telegram. Required to auto-register the webhook from the admin. |

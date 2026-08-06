@@ -54,6 +54,14 @@ async def post_json(product: dict[str, Any], url: str,
     extensions = ({"sni_hostname": pinned["sni"]}
                   if pinned["scheme"] == "https" else {})
     try:
+        # A CLIENT PER CALL, on purpose — see the same note in
+        # player_sync.maybe_pull_profile: this is a DNS-pinned request (literal
+        # IP in the URL, real hostname in `Host` + the `sni_hostname`
+        # extension), and httpcore's pool key is the IP while `sni_hostname`
+        # applies only at connect time. Sharing the pooled client here would let
+        # two partners behind one front-end IP reuse a connection whose TLS
+        # identity belongs to the other partner. Not worth it for a call that
+        # fires once per offer grant.
         async with httpx.AsyncClient(timeout=timeout_sec) as client:
             resp = await client.post(pinned["url"], json=payload,
                                      headers=headers, extensions=extensions)

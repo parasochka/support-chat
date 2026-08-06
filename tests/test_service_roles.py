@@ -274,3 +274,63 @@ async def test_the_idle_sweep_closes_its_own_job_row(monkeypatch):
     monkeypatch.setattr(retention_idle, "run_product_idle_pings", _skip)
     await retention_v2.run_product_maintenance({"id": 1})
     assert not [f for f in finished if f[0] == "idle"], finished
+
+
+def test_health_snapshot_carries_memory_without_judging_it():
+    """The worker has no /admin surface, so its footprint has exactly two ways
+    out: this snapshot and the `process_memory` log line. It must stay ADVISORY
+    — an RSS threshold here would 503 a merely busy worker and hand it to the
+    platform's restart loop (Railway already OOM-kills on its own)."""
+    async def _go():
+        started = asyncio.Event()
+
+        async def _ticks(stop):
+            started.set()
+            await stop.wait()
+
+        worker._LOOPS.clear()
+        worker.STOP.clear()
+        try:
+            worker._spawn("agent", _ticks, interval=lambda: 5)
+            await started.wait()
+            payload, healthy = worker.health_snapshot()
+            assert healthy
+            assert payload["memory"]["blocks"] > 0
+            # Off the event loop on purpose (a plain thread serves this), where
+            # asyncio.all_tasks() would raise.
+            assert "tasks" not in payload["memory"]
+        finally:
+            worker.request_stop("test")
+            await asyncio.gather(*(lp.task for lp in worker._LOOPS),
+                                 return_exceptions=True)
+            worker._LOOPS.clear()
+            worker.STOP.clear()
+
+    asyncio.run(_go())
+
+
+def test_health_snapshot_survives_a_broken_memory_probe(monkeypatch):
+    """A probe that 500s the healthcheck would turn a diagnostic into an
+    outage."""
+    from app.core import meminfo
+
+    def _boom(**_kw):
+        raise RuntimeError("no /proc, no nothing")
+
+    monkeypatch.setattr(meminfo, "snapshot", _boom)
+    worker._LOOPS.clear()
+    worker.STOP.clear()
+    payload, _healthy = worker.health_snapshot()
+    assert payload["memory"] == {}
+
+
+@pytest.mark.parametrize("interval,expected", [
+    (60, 20),     # the default: one sample a minute at a 3s flush tick
+    (0, 0),       # off
+    (1, 1),       # floored at one tick — never faster than the flush itself
+    (300, 100),
+])
+def test_memory_sample_cadence(monkeypatch, interval, expected):
+    from app.core import loops as loops_mod
+    monkeypatch.setattr(config, "MEMORY_LOG_INTERVAL_SEC", interval)
+    assert loops_mod._memory_sample_every() == expected

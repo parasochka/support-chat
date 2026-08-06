@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from app.chat import antispam
 from app.core import config
+from app.core import http
 
 
 class _FakeResp:
@@ -21,27 +22,32 @@ class _FakeResp:
 
 
 class _FakeAsyncClient:
-    """Stands in for httpx.AsyncClient; returns a scripted verify response or raises."""
+    """Stands in for the shared pooled client; scripts one verify response.
+
+    `post` takes **kwargs because the deadline now rides on the REQUEST (the
+    client is shared, so it cannot carry this call's timeout) — a fake with a
+    narrower signature would raise a TypeError that verify_turnstile's broad
+    `except` would silently turn into a fail-open skip.
+    """
 
     def __init__(self, data=None, exc=None):
         self._data = data
         self._exc = exc
 
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return False
-
-    async def post(self, url, data=None):
+    async def post(self, url, **kwargs):
         if self._exc:
             raise self._exc
         return _FakeResp(self._data)
 
 
 def _patch_httpx(monkeypatch, *, data=None, exc=None):
-    monkeypatch.setattr(antispam.httpx, "AsyncClient",
-                        lambda *a, **k: _FakeAsyncClient(data=data, exc=exc))
+    """Replace the shared-client ACCESSOR, not httpx.AsyncClient.
+
+    app/core/http.py caches one client per process, so patching the httpx class
+    would only be honoured until something built the real one — and would then
+    leak that test's fake into every later test through the cache."""
+    fake = _FakeAsyncClient(data=data, exc=exc)
+    monkeypatch.setattr(http, "client", lambda: fake)
 
 
 async def test_dev_mode_skips_when_no_secret(monkeypatch):
@@ -131,14 +137,18 @@ async def test_product_secret_wins_over_env(monkeypatch):
     seen = {}
 
     class _CapturingClient(_FakeAsyncClient):
-        async def post(self, url, data=None):
-            seen.update(data or {})
+        async def post(self, url, **kwargs):
+            seen.update(kwargs.get("data") or {})
             seen["url"] = url
+            seen["timeout"] = kwargs.get("timeout")
             return _FakeResp({"success": True})
 
-    monkeypatch.setattr(antispam.httpx, "AsyncClient",
-                        lambda *a, **k: _CapturingClient())
+    capturing = _CapturingClient()
+    monkeypatch.setattr(http, "client", lambda: capturing)
     out = await antispam.verify_turnstile(token="tok", secret="product-secret")
     assert out["ok"] is True
     assert seen["secret"] == "product-secret"
     assert seen["url"] == "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+    # The shared client carries no deadline of its own: this call's timeout must
+    # ride on the request, or every caller silently inherits the fallback.
+    assert seen["timeout"] == 10

@@ -194,6 +194,36 @@ DB_CONNECT_TIMEOUT_SEC: int = _env_int("DB_CONNECT_TIMEOUT_SEC", 10)
 DB_ACQUIRE_TIMEOUT_SEC: int = _env_int("DB_ACQUIRE_TIMEOUT_SEC", 10)
 DB_HEALTHCHECK_TIMEOUT_SEC: int = _env_int("DB_HEALTHCHECK_TIMEOUT_SEC", 5)
 
+# --- Outbound HTTP pool (app/core/http.py) ----------------------------------
+# Bounds on the ONE shared httpx client the fixed-host outbound calls (Telegram
+# Bot API, Turnstile, Customer.io) share, so a burst of retention sends cannot
+# open unbounded sockets. HTTP_DEFAULT_TIMEOUT_SEC is only the fallback — every
+# call site passes its own per-request deadline (two of them are live admin
+# knobs). HTTP_KEEPALIVE_EXPIRY_SEC=0 is the escape hatch: it turns connection
+# REUSE off (keeping only the shared SSL context) if a provider ever proves
+# hostile to pooled connections.
+HTTP_MAX_CONNECTIONS: int = _env_int("HTTP_MAX_CONNECTIONS", 100)
+HTTP_MAX_KEEPALIVE: int = _env_int("HTTP_MAX_KEEPALIVE", 20)
+HTTP_KEEPALIVE_EXPIRY_SEC: int = _env_int("HTTP_KEEPALIVE_EXPIRY_SEC", 30)
+HTTP_DEFAULT_TIMEOUT_SEC: int = _env_int("HTTP_DEFAULT_TIMEOUT_SEC", 15)
+
+# --- Memory diagnostics ------------------------------------------------------
+# MEMORY_LOG_INTERVAL_SEC: cadence of the `process_memory` line both roles log
+# from the flush loop (0 disables it). It is the only per-process memory trend
+# that reaches the admin System-logs view — Railway's own graph cannot be read
+# from the panel, and the worker has no admin surface at all.
+# MEMORY_TRACEMALLOC: deploy-level ONLY, never an admin setting (same reasoning
+# as EXPOSE_API_DOCS / TRUSTED_PROXY_IPS — a compromised admin must not be able
+# to arm it). tracemalloc roughly doubles allocation cost and holds a traceback
+# per allocation, and it must be started at BOOT to see anything, which a
+# hot-reloaded knob could never do. Turn it on for an investigation, then off.
+MEMORY_LOG_INTERVAL_SEC: int = _env_int("MEMORY_LOG_INTERVAL_SEC", 60)
+MEMORY_TRACEMALLOC: bool = _env_bool("MEMORY_TRACEMALLOC", False)
+# Frames kept per allocation when tracing. 1 names the allocating line, which is
+# usually a library internal; a few frames name the caller that asked for it.
+# Each frame is retained memory, so this is the cost dial of the diagnostic.
+MEMORY_TRACEMALLOC_FRAMES: int = _env_int("MEMORY_TRACEMALLOC_FRAMES", 3)
+
 # --- Low-content / junk guard -----------------------------------------------
 # Stops messages with no answerable content (a lone character, symbol/emoji-only
 # spam, or one character mashed over and over) BEFORE the model call so a bot or

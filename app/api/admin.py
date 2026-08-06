@@ -5,6 +5,7 @@ destructive action writes an `admin_events` audit row (invariant §15.5).
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import re
@@ -21,6 +22,7 @@ from app.core import config
 from app.core import db
 from app.ai import kb
 from app.i18n import language
+from app.core import meminfo
 from app.core import metrics
 from app.ai import openai_client
 from app.ai import prompts
@@ -778,6 +780,38 @@ async def system_logs_read(admin=Depends(require_admin)) -> JSONResponse:
     _require_global_viewer(admin)
     last = await db.mark_app_logs_read(admin.get("email") or "")
     return JSONResponse(content={"ok": True, "last_read_id": last})
+
+
+@router.get("/diagnostics/memory")
+async def memory_diagnostics(top: int = Query(default=10, le=50),
+                             admin=Depends(require_admin)) -> JSONResponse:
+    """Live memory/runtime snapshot of THIS process (the web one).
+
+    Global-scope-only for the same reason as the system logs: a process-wide
+    footprint has no `product_id` to scope by, and allocation sites are
+    deploy-wide internals.
+
+    It reports the WEB process — `app/worker.py` imports no FastAPI and never
+    imports `app.main` (that is worth ~23MB there), so it cannot serve this
+    route. The worker's own numbers reach an operator two ways: its
+    `/healthz` snapshot on its private $PORT, and the `process_memory` log line
+    both roles emit into the shared `app_logs` (System → Logs, told apart by
+    `role=`).
+
+    `tracemalloc` is only populated when the process was BOOTED with
+    MEMORY_TRACEMALLOC=1; otherwise the block says so instead of returning an
+    empty top-N that would read as "nothing is allocating".
+    """
+    _require_global_viewer(admin)
+    payload = meminfo.snapshot()  # two /proc reads; cheap enough to stay inline
+    # take_snapshot() + statistics('lineno') is a pure-Python walk over EVERY
+    # traced allocation — measured ~2.4s against this app's ~270k live blocks.
+    # Inline, that froze the single uvicorn event loop completely (a 10ms
+    # heartbeat fired once in 2.1s), stalling every chat turn in flight. On a
+    # thread the loop stays responsive (p50 lateness 6ms).
+    payload["tracemalloc"] = await asyncio.to_thread(meminfo.tracemalloc_top,
+                                                     top)
+    return JSONResponse(content=payload)
 
 
 @router.get("/audit")
