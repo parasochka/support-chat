@@ -570,8 +570,8 @@ const RU = {
   'Running…': 'Выполняется…',
   'Process queue now': 'Обработать очередь',
   'worker: running every': 'воркер: запускается каждые',
-  'worker: OFF (RETENTION_SCHEDULER_ENABLED=0 in deploy env — only «Process queue now» works)':
-    'воркер: ВЫКЛ (RETENTION_SCHEDULER_ENABLED=0 в env деплоя — работает только «Обработать очередь»)',
+  'worker: not running (no live heartbeat — check the worker service and RETENTION_SCHEDULER_ENABLED=1 on it; only «Process queue now» works)':
+    'воркер: не работает (нет живого heartbeat — проверьте сервис воркера и RETENTION_SCHEDULER_ENABLED=1 на нём; работает только «Обработать очередь»)',
   'last event': 'последнее событие',
   'Event': 'Событие',
   'Telegram recipient': 'Получатель в Telegram',
@@ -1014,8 +1014,8 @@ const RU = {
     '**Dry-run** — агент принимает решения и пишет их в журнал, но не отправляет: безопасный режим проверки.',
   '**Worker interval** (same Settings section) is how often the background worker drains the event queue — it applies live on the next tick, and 5 seconds gives near-realtime reactions.':
     '**Интервал воркера** (тот же раздел Настроек) — как часто фоновый воркер разбирает очередь событий; применяется сразу со следующего тика, 5 секунд дают реакции почти в реальном времени.',
-  '**Deploy-level master switch**: `RETENTION_SCHEDULER_ENABLED` (Railway env) starts the background worker at all; with it off only «Process queue now» moves the queue. The worker chip in the header shows this.':
-    '**Главный переключатель уровня деплоя**: `RETENTION_SCHEDULER_ENABLED` (env Railway) вообще запускает фоновый воркер; когда он выключен, очередь двигает только «Обработать очередь». Чип воркера в шапке это показывает.',
+  '**Deploy-level master switch**: `RETENTION_SCHEDULER_ENABLED` (Railway env) starts the background worker at all; with it off only «Process queue now» moves the queue. The worker chip in the header shows a live heartbeat from the actual worker process — on a split web+worker deployment the web service keeps this switch at 0 on purpose.':
+    '**Главный переключатель уровня деплоя**: `RETENTION_SCHEDULER_ENABLED` (env Railway) вообще запускает фоновый воркер; когда он выключен, очередь двигает только «Обработать очередь». Чип воркера в шапке показывает живой heartbeat от реального процесса воркера — при раздельном деплое web+worker веб-сервис намеренно держит этот переключатель в 0.',
 
   // ----- proactive agent page: guide, section 3 -----
   '**Persona & tone of voice** — Retention → Prompt variables (persona name, role, brand, products, `retention_tone_of_voice`). The agent only writes a short brief; the persona prompt writes the actual words. The full assembled prompt is visible in Retention → Prompt preview.':

@@ -229,10 +229,12 @@ async def scheduler_loop(stop: Optional[asyncio.Event] = None) -> None:
     """Drain the event queues on the hot-reloaded worker cadence."""
     log.info("retention_agent_scheduler_started interval_sec=%s",
              worker_interval_sec())
+    await _beat_heartbeat()  # first beat now: the admin chip goes green on boot
     while True:
         if await _sleep_or_stop(worker_interval_sec(), stop):
             log.info("retention_agent_scheduler_stopping")
             return
+        await _beat_heartbeat()
         try:
             stats = await run_due_events(stop=stop)
             if stats.get("decided") or stats.get("sent") or stats.get("failed"):
@@ -241,6 +243,45 @@ async def scheduler_loop(stop: Optional[asyncio.Event] = None) -> None:
             raise
         except Exception:  # noqa: BLE001 - the loop must survive any sweep error
             log.exception("retention_v2_sweep_failed")
+
+
+# The heartbeat rides the scheduler loop (it runs exactly when the pipeline
+# does — worker role, or the single-process 'all' role), throttled so a 5s
+# sweep cadence doesn't turn into 17k row writes a day.
+_HEARTBEAT_MIN_SEC = 30
+_HEARTBEAT_STALE_MULTIPLE = 3
+_HEARTBEAT_STALE_MARGIN_SEC = 30
+_last_beat_monotonic: float = 0.0
+
+
+def heartbeat_interval_sec() -> int:
+    """The effective beat cadence: the loop's own tick, floored at 30s."""
+    return max(worker_interval_sec(), _HEARTBEAT_MIN_SEC)
+
+
+async def _beat_heartbeat() -> None:
+    global _last_beat_monotonic
+    interval = heartbeat_interval_sec()
+    now = _time.monotonic()
+    if _last_beat_monotonic and now - _last_beat_monotonic < interval:
+        return
+    try:
+        await db.beat_worker_heartbeat(worker_id(), config.SERVICE_ROLE or "all",
+                                       interval)
+        _last_beat_monotonic = now
+    except Exception:  # noqa: BLE001 - liveness reporting must never kill the loop
+        log.exception("worker_heartbeat_failed")
+
+
+def heartbeat_alive(hb: Optional[dict[str, Any]]) -> bool:
+    """Is a `db.latest_worker_heartbeat` row fresh enough to call the
+    pipeline alive? Staleness keys on the WRITER's own stored cadence, so an
+    hourly-tick worker isn't declared dead between its legitimate beats."""
+    if not hb:
+        return False
+    stale_after = (hb["interval_sec"] * _HEARTBEAT_STALE_MULTIPLE
+                   + _HEARTBEAT_STALE_MARGIN_SEC)
+    return hb["age_sec"] <= stale_after
 
 
 def worker_id() -> str:

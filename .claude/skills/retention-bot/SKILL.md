@@ -807,11 +807,16 @@ the EVENT PIPELINE section below, which supersedes older wording here.
 - **Admin**: the sidebar **Proactive agent** page
   (`admin/src/pages/RetentionAgent.jsx`, route `/retention-agent` with a
   legacy `/retention-v2` alias, RequireProduct-gated) — status header
-  (enabled/dry-run/budget/queue **plus the worker-liveness row**: the deploy
-  scheduler switch + sweep interval and a DB-derived activity snapshot — last
+  (enabled/dry-run/budget/queue **plus the worker-liveness row**: the worker
+  chip keys on the DURABLE heartbeat (`worker_heartbeats`, stamped by
+  `retention_v2.scheduler_loop` throttled to ≥30s, read via
+  `db.latest_worker_heartbeat` + `retention_v2.heartbeat_alive` in
+  `/v2/status`'s `worker` block) — NOT this process's
+  `RETENTION_SCHEDULER_ENABLED`, which is legitimately 0 on the split web
+  service — plus the sweep interval and a DB-derived activity snapshot — last
   event / last processed / last decision / today's decision mix — via
   `db.retention_v2_activity`, correct across instances because it reads the
-  durable tables, not an in-process heartbeat), the **event simulator**
+  durable tables), the **event simulator**
   (inject any canonical event as `source='simulator'` — exercise the whole
   pipeline before the partner integration exists; **per-event sample
   payloads**, several variants each (`PAYLOAD_SAMPLES` in the page),
