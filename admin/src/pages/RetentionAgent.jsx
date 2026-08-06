@@ -221,11 +221,11 @@ const StatusHeader = ({ status, onRefresh, onRun, canWrite, running }) => {
           <Chip
             size="small"
             variant="outlined"
-            color={status.scheduler_enabled ? 'success' : 'error'}
+            color={(status.worker ? status.worker.alive : status.scheduler_enabled) ? 'success' : 'error'}
             label={
-              status.scheduler_enabled
+              (status.worker ? status.worker.alive : status.scheduler_enabled)
                 ? `${t('worker: running every')} ${status.sweep_interval_sec}s`
-                : t('worker: OFF (RETENTION_SCHEDULER_ENABLED=0 in deploy env — only «Process queue now» works)')
+                : t('worker: not running (no live heartbeat — check the worker service and RETENTION_SCHEDULER_ENABLED=1 on it; only «Process queue now» works)')
             }
           />
           <Chip size="small" variant="outlined" label={`${t('last event')}: ${fmtDT(act.last_event_at)}`} />
@@ -1045,7 +1045,7 @@ const GuideTab = ({ status }) => {
               {rich(t('**Worker interval** (same Settings section) is how often the background worker drains the event queue — it applies live on the next tick, and 5 seconds gives near-realtime reactions.'))}
             </LI>
             <LI>
-              {rich(t('**Deploy-level master switch**: `RETENTION_SCHEDULER_ENABLED` (Railway env) starts the background worker at all; with it off only «Process queue now» moves the queue. The worker chip in the header shows this.'))}
+              {rich(t('**Deploy-level master switch**: `RETENTION_SCHEDULER_ENABLED` (Railway env) starts the background worker at all; with it off only «Process queue now» moves the queue. The worker chip in the header shows a live heartbeat from the actual worker process — on a split web+worker deployment the web service keeps this switch at 0 on purpose.'))}
             </LI>
           </Box>
         </Section>

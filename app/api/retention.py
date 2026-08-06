@@ -1408,7 +1408,8 @@ async def run_idle_pings_now(product_id: int,
 async def v2_status(product_id: int,
                     admin=Depends(require_admin)) -> JSONResponse:
     """The agent tab header: switches + today's spend vs budget + queue depth,
-    the worker wiring (deploy scheduler switch + the hot sweep cadence), a
+    the worker wiring (heartbeat-derived worker liveness + this process's
+    deploy scheduler switch + the hot sweep cadence), a
     DB-derived liveness snapshot (last event / last processed / last decision
     + today's decision mix), the event taxonomy split (decision-worthy /
     photo-eligible / state-food) and the EFFECTIVE guard knob values — so the
@@ -1436,6 +1437,12 @@ async def v2_status(product_id: int,
     jobs = await db.list_worker_jobs([product_id])
     cost_today = await db.retention_v2_cost_today(product_id)
     activity = await db.retention_v2_activity(product_id)
+    # Worker liveness comes from the durable heartbeat, NOT this process's env:
+    # after the web/worker split the web service serving /admin runs with
+    # RETENTION_SCHEDULER_ENABLED=0 by design (the pipeline belongs to the
+    # worker service), so the local switch said "OFF" for a pipeline that was
+    # running fine next door.
+    heartbeat = await db.latest_worker_heartbeat()
     return JSONResponse(content={
         "v2_enabled": bool(cfg.get("v2_enabled")),
         "v2_dry_run": bool(cfg.get("v2_dry_run")),
@@ -1455,10 +1462,21 @@ async def v2_status(product_id: int,
             "idle_sec": int(cfg.get("queue_degrade_idle_sec") or 0),
         },
         "send_worker_enabled": bool(cfg.get("send_worker_enabled")),
-        # Worker wiring: the deploy-level scheduler switch + the hot cadence
-        # setting (retention.worker_interval_sec — Settings → Retention bot).
+        # Worker wiring: THIS process's deploy switch (kept for API compat —
+        # on the split web service it is legitimately 0), the hot cadence
+        # setting (retention.worker_interval_sec — Settings → Retention bot),
+        # and the derived liveness the SPA chip actually keys on.
         "scheduler_enabled": bool(config.RETENTION_SCHEDULER_ENABLED),
         "sweep_interval_sec": retention_v2.worker_interval_sec(),
+        "worker": {
+            "alive": retention_v2.heartbeat_alive(heartbeat),
+            "last_beat_age_sec": (round(heartbeat["age_sec"], 1)
+                                  if heartbeat else None),
+            "worker_id": heartbeat["worker_id"] if heartbeat else None,
+            "role": heartbeat["role"] if heartbeat else None,
+            "beat_interval_sec": (heartbeat["interval_sec"]
+                                  if heartbeat else None),
+        },
         "activity": activity,
         "canonical_events": sorted(player_sync.CANONICAL_EVENTS),
         # The EFFECTIVE decision set (retention.v2_decision_events, API-tunable;

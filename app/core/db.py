@@ -1008,6 +1008,20 @@ CREATE TABLE IF NOT EXISTS retention_worker_jobs (
   PRIMARY KEY (product_id, job)
 );
 
+-- WORKER LIVENESS -------------------------------------------------------
+-- One row per process that runs the retention pipeline (deploy-global, no
+-- product_id: the pipeline drains every product). After the web/worker split
+-- the process serving /admin has RETENTION_SCHEDULER_ENABLED=0 by design, so
+-- its own env can no longer answer "is the pipeline running?" — the admin's
+-- worker chip reads this durable heartbeat instead. interval_sec is the
+-- writer's own beat cadence, so the reader computes staleness per row.
+CREATE TABLE IF NOT EXISTS worker_heartbeats (
+  worker_id    TEXT PRIMARY KEY,
+  role         TEXT NOT NULL,
+  interval_sec INT NOT NULL,
+  last_beat_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- OUTBOUND RATE SHAPING ------------------------------------------------
 -- A token bucket per send scope ('tg:<product>', 'tg:chat:<chat>',
 -- 'email:<product>'), refilled lazily inside one atomic UPDATE. Telegram
@@ -6430,6 +6444,43 @@ async def list_worker_jobs(product_ids: Optional[list[int]] = None
         _iso_fields(d, "last_run_at", "next_run_at")
         out.append(d)
     return out
+
+
+async def beat_worker_heartbeat(worker_id: str, role: str,
+                                interval_sec: int) -> None:
+    """Stamp a pipeline process's liveness row (see worker_heartbeats DDL).
+
+    Also prunes rows of processes gone for days — every deploy mints a new
+    worker_id (hostname + pid), so without the prune the table grows one dead
+    row per restart forever. The prune rides here (not a maintenance sweep) so
+    the table stays clean even on a deployment whose maintenance loop is off.
+    """
+    await _execute(
+        "INSERT INTO worker_heartbeats (worker_id, role, interval_sec, "
+        " last_beat_at) VALUES ($1, $2, $3, now()) "
+        "ON CONFLICT (worker_id) DO UPDATE "
+        "  SET role = EXCLUDED.role, interval_sec = EXCLUDED.interval_sec, "
+        "      last_beat_at = now()",
+        worker_id[:64], role[:32], int(interval_sec))
+    await _execute(
+        "DELETE FROM worker_heartbeats "
+        "WHERE last_beat_at < now() - INTERVAL '2 days'")
+
+
+async def latest_worker_heartbeat() -> Optional[dict[str, Any]]:
+    """The freshest pipeline heartbeat, age computed server-side (one clock).
+
+    None ⇒ no pipeline process has ever beaten (or every row was pruned) —
+    the admin chip reads that as "worker not running"."""
+    row = await _fetchrow(
+        "SELECT worker_id, role, interval_sec, "
+        "       EXTRACT(EPOCH FROM (now() - last_beat_at)) AS age_sec "
+        "FROM worker_heartbeats ORDER BY last_beat_at DESC LIMIT 1")
+    if row is None:
+        return None
+    return {"worker_id": row["worker_id"], "role": row["role"],
+            "interval_sec": int(row["interval_sec"]),
+            "age_sec": float(row["age_sec"])}
 
 
 async def take_rate_token(scope: str, *, rate_per_sec: float, burst: float,
