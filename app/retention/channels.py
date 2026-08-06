@@ -163,7 +163,7 @@ async def _send_email_customerio(product: dict[str, Any],
                                                      bool, Optional[str]]:
     """Customer.io App API transactional send.
     Returns (sent, fail_reason, permanent, provider_ref)."""
-    import httpx
+    from app.core import http
     pid = int(product["id"])
     key = await db.get_product_email_api_key(pid)
     if not key:
@@ -189,10 +189,12 @@ async def _send_email_customerio(product: dict[str, Any],
         payload["transactional_message_id"] = ch_cfg[
             "transactional_message_id"]
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"https://{host}/v1/send/email", json=payload,
-                headers={"Authorization": f"Bearer {key}"})
+        # Shared pooled client; the bearer is the PRODUCT's own decrypted key,
+        # so it rides on the request and is never a client default (a shared
+        # default header would send one tenant's key to another tenant's send).
+        resp = await http.client().post(
+            f"https://{host}/v1/send/email", json=payload,
+            headers={"Authorization": f"Bearer {key}"}, timeout=15.0)
     except Exception as exc:  # noqa: BLE001 - transient
         return False, f"email_send_failed: {exc.__class__.__name__}", False, \
             None

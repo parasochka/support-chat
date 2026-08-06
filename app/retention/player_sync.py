@@ -463,6 +463,17 @@ async def maybe_pull_profile(product: dict[str, Any], ru: dict[str, Any],
     extensions = ({"sni_hostname": pinned["sni"]}
                   if pinned["scheme"] == "https" else {})
     try:
+        # A CLIENT PER CALL, on purpose — do NOT move this onto the shared
+        # pooled client in app/core/http.py. The URL below carries the vetted
+        # literal IP, and the real hostname lives in the `Host` header + the
+        # per-request `sni_hostname` extension. httpcore keys its pool on
+        # (scheme, host, port) — here, the IP — and applies `sni_hostname` only
+        # when it ESTABLISHES a connection, never when it reuses one. Two
+        # products whose Player APIs sit behind one front-end IP (Cloudflare)
+        # would then share a connection whose certificate was verified for the
+        # OTHER product's hostname, carrying this product's bearer token. A
+        # profile pull is TTL-gated per player, so pooling would buy almost
+        # nothing for that.
         async with httpx.AsyncClient(timeout=8.0) as client:
             resp = await client.get(pinned["url"],
                                     params={"player_id": player_id},

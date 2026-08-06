@@ -18,7 +18,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core import config
 from app.core import db
+from app.core import http
 from app.core import loops
+from app.core import meminfo
 from app.core import settings
 from app.api import admin as admin_api
 from app.api import admin_auth as admin_auth_api
@@ -117,6 +119,9 @@ def _background_plan(role: str, scheduler_enabled: bool) -> tuple[bool, bool]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Starting %s: init_db", config.SERVICE_NAME)
+    # Before anything else allocates — a tracemalloc snapshot only sees what was
+    # allocated after tracing started. No-op unless MEMORY_TRACEMALLOC=1.
+    meminfo.start_tracemalloc()
     _warn_insecure_config()
     await db.init_db()
     await settings.reload()       # populate the hot settings cache from app_settings
@@ -181,6 +186,11 @@ async def lifespan(app: FastAPI):
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        # After the tasks that use it, before the DB: the loops send over the
+        # shared HTTP client, so tearing its transport out from under a live
+        # request would be the one ordering that matters. `aclose()` never
+        # raises, so it cannot mask db.close() below.
+        await http.aclose()
         await db.close()
         log.info("Shutdown complete")
 

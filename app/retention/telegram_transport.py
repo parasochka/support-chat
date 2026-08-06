@@ -20,7 +20,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
-import httpx
+from app.core import http
 
 log = logging.getLogger(__name__)
 
@@ -139,9 +139,15 @@ class TelegramClient:
         normal failure handling — never an unbounded retry loop."""
         for attempt in (0, 1):
             try:
-                async with httpx.AsyncClient(timeout=self._timeout) as client:
-                    resp = await client.post(self._url(method), json=json_body,
-                                             data=form_data, files=files)
+                # The process-wide pooled client (app/core/http.py), NOT a
+                # per-call one: this method is the choke point for every Bot API
+                # call the retention bot makes, and building a client here paid
+                # a TLS handshake plus a fresh SSL context per message. The
+                # deadline stays per REQUEST — the client is shared, the timeout
+                # is this TelegramClient's own.
+                resp = await http.client().post(
+                    self._url(method), json=json_body, data=form_data,
+                    files=files, timeout=self._timeout)
                 data = resp.json()
             except Exception as exc:  # noqa: BLE001 - a send must never break the webhook
                 log.warning("telegram_api_call_failed method=%s error=%s",

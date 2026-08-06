@@ -7,6 +7,7 @@ silently on the first 429, and never loops unboundedly.
 """
 from __future__ import annotations
 
+from app.core import http
 from app.retention import telegram_transport
 from app.retention.telegram_transport import TelegramClient
 
@@ -20,29 +21,29 @@ class _FakeResp:
 
 
 class _FakeAsyncClient:
-    """Stands in for httpx.AsyncClient; serves a scripted list of responses."""
+    """Stands in for the shared pooled client; serves a scripted response list."""
     scripted: list = []
     calls: int = 0
+    timeouts: list = []
 
     def __init__(self, *a, **k):
         pass
 
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return False
-
     async def post(self, url, **kwargs):
         payload = type(self).scripted[type(self).calls]
         type(self).calls += 1
+        type(self).timeouts.append(kwargs.get("timeout"))
         return _FakeResp(payload)
 
 
 def _install(monkeypatch, scripted):
     _FakeAsyncClient.scripted = scripted
     _FakeAsyncClient.calls = 0
-    monkeypatch.setattr(telegram_transport.httpx, "AsyncClient", _FakeAsyncClient)
+    _FakeAsyncClient.timeouts = []
+    # The transport now posts through the process-wide client
+    # (app/core/http.py), so the seam is the accessor, not httpx.AsyncClient.
+    fake = _FakeAsyncClient()
+    monkeypatch.setattr(http, "client", lambda: fake)
 
     slept = []
 

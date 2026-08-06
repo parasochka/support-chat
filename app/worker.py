@@ -36,6 +36,8 @@ from typing import Any, Callable, Optional
 
 from app.core import config
 from app.core import db
+from app.core import http
+from app.core import meminfo
 from app.core import settings
 
 # The settings-refresh and log-flush loops are shared with the web half and
@@ -148,6 +150,15 @@ def health_snapshot() -> tuple[dict[str, Any], bool]:
             if running and age > stale_after:
                 healthy = False
         loops[loop.name] = entry
+    # ADVISORY, never an input to `healthy`: an RSS threshold here would 503 a
+    # merely busy worker and hand it to the platform's restart loop (Railway
+    # OOM-kills on its own). It rides here because this endpoint is the worker's
+    # ONLY HTTP surface — there is no /admin on this process — and because it is
+    # served off the event loop, so it still answers when the loops are wedged.
+    try:
+        memory = meminfo.snapshot(in_event_loop=False)
+    except Exception:  # noqa: BLE001 - a probe must never 500 the healthcheck
+        memory = {}
     return ({
         "status": "ok" if healthy else "unhealthy",
         "service": config.SERVICE_NAME,
@@ -156,6 +167,7 @@ def health_snapshot() -> tuple[dict[str, Any], bool]:
         "draining": STOP.is_set(),
         "pipeline_enabled": config.RETENTION_SCHEDULER_ENABLED,
         "loops": loops,
+        "memory": memory,
     }, healthy)
 
 
@@ -332,6 +344,8 @@ async def run() -> None:
     log.info("worker booting role=%s pipeline=%s drain_timeout_sec=%s",
              config.SERVICE_ROLE, config.RETENTION_SCHEDULER_ENABLED,
              config.WORKER_DRAIN_TIMEOUT_SEC)
+    # Must precede the allocations it is meant to explain; no-op when off.
+    meminfo.start_tracemalloc()
     if config.SERVICE_ROLE == "web":
         # Not fatal — the loops work fine — but the web process is then also
         # running them, so every sweep happens twice.
@@ -350,6 +364,11 @@ async def run() -> None:
         await _drain()
         if server is not None:
             server.shutdown()
+        # After the drain: a draining loop is still finishing its batch, and
+        # that batch sends Telegram messages over the shared client. Not inside
+        # _drain() — that helper is called directly by a unit test, where no
+        # client was ever built.
+        await http.aclose()
         await db.close()
         log.info("worker_stopped worker_id=%s", _WORKER_ID)
 

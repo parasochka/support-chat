@@ -1197,6 +1197,55 @@ settings/secrets/KB/copy, the header switcher. When extending, keep these rules:
   scales below the requested box, and is a no-op for PNG). `thumbnail()` drafts internally,
   which is why the explicit call has to come first — before `exif_transpose` has paid for
   the full raster.
+- **ONE outbound HTTP client per process (`app/core/http.py`), obtained through
+  `http.client()` — never `async with httpx.AsyncClient(...)` in a new call site.** A
+  per-call client pays a TLS handshake AND a fresh `ssl.SSLContext` (the whole certifi
+  bundle, parsed) for every request; on `telegram_transport._post`, the choke point for
+  every Bot API call the retention bot makes, that was per message. Three rules the shared
+  client lives by, each one a leak if broken: the deadline rides on the **request**
+  (`client().post(..., timeout=...)`) because the sites carry different ones (Turnstile 10s,
+  Customer.io 15s, and Telegram's is per-`TelegramClient`, the seam a future per-product
+  knob lands on) and a shared client has exactly one default; **no `base_url`, no default
+  headers, no `follow_redirects`** (the
+  Customer.io host is per-product, the Telegram path embeds the per-product bot token, every
+  bearer is a per-product decrypted secret, and a redirect would leave the vetted host); and
+  it is built **lazily at call time**, never as an import-time constant — that is also what
+  keeps it patchable, and tests replace `http.client`, not `httpx.AsyncClient`. Closed from
+  the shutdown `finally` of BOTH entry points (`main.lifespan`, `worker.run`), after the
+  loops that use it and next to `db.close()`; `aclose()` never raises so it cannot mask
+  that. **The two DNS-pinned calls (`player_sync.maybe_pull_profile`,
+  `partner_out.post_json`) deliberately keep a client per call and must NOT be migrated**:
+  they request a literal vetted IP with the hostname in a `Host` header and an
+  `extensions={"sni_hostname": …}`, but httpcore keys its pool on `(scheme, host, port)` —
+  the IP — and applies `sni_hostname` only when it ESTABLISHES a connection, so pooling
+  would let two partners behind one front-end IP (Cloudflare) reuse a TLS session
+  authenticated to the other partner's hostname, carrying this product's bearer.
+- **The process knows its own memory (`app/core/meminfo.py`).** `snapshot()` is a cheap,
+  never-raising reading of RSS/peak/heap, `sys.getallocatedblocks()`, gc counters, task and
+  thread counts, DB-pool occupancy and every bounded in-process cache; `log_flush_loop`
+  logs it once a minute (`MEMORY_LOG_INTERVAL_SEC`) and `GET /admin/diagnostics/memory`
+  serves it on demand (global scope only — a process footprint has no `product_id`, same
+  rule as the system logs). Three things it must never become: **expensive** (no
+  `len(gc.get_objects())` — it allocates a list of the whole heap to measure the heap; no
+  `sys.getsizeof` walks), **an importer** (cache sizes come from `sys.modules.get`, never an
+  `import` — pulling `openai_client` or `retention` into a worker that never used them
+  inflates the number being reported, the same trap as importing `app.main`), or **silent**
+  (every value is `%s`; a `%.1f` against a `None` RSS raises inside `logging`, which
+  swallows the record and emits nothing at all — the worst failure mode for a probe).
+  `role=` on the line is load-bearing: both roles log under the same logger name into the
+  one `app_logs` table. `tracemalloc` is env-only (`MEMORY_TRACEMALLOC`), armed at boot
+  before anything allocates, never an admin knob — same reasoning as `EXPOSE_API_DOCS`.
+- **The image precompiles bytecode; keep the app `compileall` LAST.** `python:3.11-slim`
+  ships the stdlib as source only and `PYTHONDONTWRITEBYTECODE=1` stops the container from
+  ever caching its own compile, so both roles re-parsed the stdlib (~590ms) and the whole
+  app (~230ms web / ~100ms worker) on every start. Two `Dockerfile` layers fix it:
+  `compileall` over the stdlib (excluding `/site-packages/`, which pip already compiled) and
+  over `app mcp_server` after the last `COPY`. `compileall` writes `.pyc` even under
+  `PYTHONDONTWRITEBYTECODE=1` (only the import system's write-back honours that flag) and
+  the interpreter reads them; a stale one is ignored in favour of the source, so the failure
+  mode is lost speed, never wrong code. Any COPY/RUN added after the app layer silently
+  strands its `.pyc`, and `-O`/`PYTHONOPTIMIZE` in a start command invalidates every one of
+  them (the loader then wants `*.opt-1.pyc`).
 - Env var reference lives in `README.md` (§ "Environment variables").
 - **Two docs, two audiences:** `README.md` is the human-facing overview; **`CLAUDE.md`
   (this file) is the LLM/agent guidance** — architecture, invariants, conventions. They are
