@@ -1800,6 +1800,100 @@ _INTEGRATION_CHECKLIST_SEED: tuple[dict[str, str], ...] = (
                     "deliveries) — direct read access or periodic export.",
      "owner": "BI / platform",
      "blocking": "Nothing on our side (uplift works locally)"},
+    # Second wave — debts that exist in the code but were missing from the
+    # seed, surfaced by the cross-team integration audit (docs/EPIC-integration.md).
+    {"item_key": "event_payload_schema",
+     "title": "Per-event payload schema for all 22 canonical events",
+     "description": "The event taxonomy is a closed contract, but the payload "
+                    "shape is agreed for only two of the 22 names. Needed "
+                    "field-by-field per event name, and specifically that "
+                    "money fields are plain decimal literals ('12.50'): our "
+                    "SQL reads them through a regex that silently yields 0 "
+                    "for a formatted string, which disables the loss window, "
+                    "loss offer triggers, RFM, value tier and lifetime "
+                    "deposits with no error.",
+     "owner": "casino platform (Anton)",
+     "blocking": "The whole retention pipeline (decisions run on these numbers)"},
+    {"item_key": "player_api_contract",
+     "title": "Player API profile-read contract",
+     "description": "We already call the pull on a TTL, but the only agreed "
+                    "contract is 'HTTP 200 + a JSON object'. Needed: response "
+                    "schema, error codes, behaviour for an unknown player, "
+                    "versioning and an SLA. Two infra constraints their side "
+                    "has not been told: the host must resolve to PUBLIC "
+                    "addresses only, and it must accept a request carrying a "
+                    "literal IP with the hostname in a Host header and SNI.",
+     "owner": "casino platform (Anton)",
+     "blocking": "Profile freshness; a real failure signal instead of stale data"},
+    {"item_key": "vip_class_vocabulary",
+     "title": "Exact vip_level class vocabulary",
+     "description": "We map the casino's loyalty class onto mass/vip/vip_plus "
+                    "and, by design, anything unrecognised falls to 'mass' "
+                    "silently. A brand sending 'Diamond' or a numeric tier "
+                    "gets every VIP treated as mass with no error. Needed: "
+                    "the full string list and the rule for changing it.",
+     "owner": "casino platform (Anton)",
+     "blocking": "VIP segmentation, frequency caps, host routing, media ceiling"},
+    {"item_key": "bonus_state_read",
+     "title": "Per-player active-bonus read contract",
+     "description": "Distinct from the grant endpoint: a read returning each "
+                    "active bonus with free-spin count and game, amount and "
+                    "currency, wager requirement, wagering progress/remaining, "
+                    "expiry, status and promo code. We have no representation "
+                    "of a bonus the CASINO granted itself, which is what an "
+                    "expiry reminder is actually about.",
+     "owner": "bonus CMS",
+     "blocking": "Bonus merge variables for email/push; expiry + wagering messages"},
+    {"item_key": "stimulus_budget_api",
+     "title": "External stimulus budget authority (reserve/commit/release)",
+     "description": "The partner runs the bonus budget on their side; our "
+                    "offer_daily_budget_usd is a test stub (a bare read with "
+                    "no lock or reservation, while the pipeline fans products "
+                    "out concurrently). Needed: reserve/commit/release, "
+                    "idempotent on our offer_grant_id, amount as a decimal "
+                    "string plus ISO currency, a TTL, and an explicit policy "
+                    "for the authority being unavailable.",
+     "owner": "budget system owner",
+     "blocking": "Real-budget offer granting (built-in cap stays a last-resort ceiling)"},
+    {"item_key": "esp_webhook_bridge",
+     "title": "Customer.io webhook -> delivery-status bridge",
+     "description": "We consume no ESP webhook directly, so open/click/bounce "
+                    "can only reach us through POST /partner/{id}/delivery-"
+                    "status keyed by our delivery_id. Nobody is named to "
+                    "build that translator. Note our callback currently "
+                    "rejects a terminal 'failed' with 422 and accepts only "
+                    "'bounced'.",
+     "owner": "email/devops",
+     "blocking": "Email lifecycle reporting (it otherwise stops at 'sent')"},
+    {"item_key": "promo_loyalty_read_api",
+     "title": "Live promotions + loyalty reward map read API",
+     "description": "Two of our shipped KB defaults name these systems "
+                    "instead of carrying their data ('dynamic list from "
+                    "Bonuses Module', 'defined in the Loyalty Engine reward "
+                    "map'). Today an operator retypes them, so the bot cannot "
+                    "answer which promotions are live or what a given level "
+                    "rewards, and every figure it does state can go stale.",
+     "owner": "Bonuses Module / Loyalty Engine",
+     "blocking": "Correct promo/loyalty answers; the largest stale-copy risk"},
+    {"item_key": "game_catalog",
+     "title": "Game catalogue (game_id, title, provider, url)",
+     "description": "There is no game entity at all. Needed for the "
+                    "featured-game content slot; title and provider must be "
+                    "separate fields (the marketing sheet files the provider "
+                    "'3 Oaks' under 'slot name'). Game URLs join the same "
+                    "allowlist discipline as the site map, since the model "
+                    "may never compose a link itself.",
+     "owner": "casino platform / game aggregator",
+     "blocking": "Featured-game slots in copy; game links the bot may send"},
+    {"item_key": "tournament_source",
+     "title": "Tournament / leaderboard data source",
+     "description": "No tournament entity exists in the service. Needed for "
+                    "the leaderboard top-N content slot and prize tiers. "
+                    "Until a contract exists, tournaments stay retention-KB "
+                    "prose and the starter journeys correctly hedge with "
+                    "'only if it genuinely exists in the knowledge base'.",
+     "owner": "casino platform",
+     "blocking": "Tournament content slots (KB prose is the interim path)"},
 )
 
 

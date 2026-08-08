@@ -1738,6 +1738,66 @@ const RU = {
     'Если платформа строит сквозную атрибуцию: согласовать экспорт наших фактовых строк (касания, конверсии, доставки) — прямой доступ на чтение или периодический экспорт.',
   'Nothing on our side (uplift works locally)':
     'Ничего на нашей стороне (uplift считается локально)',
+  // seeded items — second wave (see docs/EPIC-integration.md)
+  'bonus CMS': 'бонусная CMS',
+  'budget system owner': 'владелец системы бюджета',
+  'Bonuses Module / Loyalty Engine': 'Bonuses Module / Loyalty Engine',
+  'casino platform / game aggregator': 'платформа казино / агрегатор игр',
+  'casino platform': 'платформа казино',
+  'Per-event payload schema for all 22 canonical events':
+    'Схема payload для каждого из 22 канонических событий',
+  "The event taxonomy is a closed contract, but the payload shape is agreed for only two of the 22 names. Needed field-by-field per event name, and specifically that money fields are plain decimal literals ('12.50'): our SQL reads them through a regex that silently yields 0 for a formatted string, which disables the loss window, loss offer triggers, RFM, value tier and lifetime deposits with no error.":
+    'Таксономия событий — закрытый контракт, но форма payload согласована лишь для двух имён из 22. Нужно поле-за-полем по каждому событию, и отдельно — что денежные поля являются простыми десятичными литералами («12.50»): наш SQL читает их регекспом, который для форматированной строки молча даёт 0, отключая окно потерь, loss-триггеры офферов, RFM, value tier и сумму депозитов за всю жизнь — без ошибки.',
+  'The whole retention pipeline (decisions run on these numbers)':
+    'Весь пайплайн retention (решения считаются по этим числам)',
+  'Player API profile-read contract':
+    'Контракт чтения профиля Player API',
+  "We already call the pull on a TTL, but the only agreed contract is 'HTTP 200 + a JSON object'. Needed: response schema, error codes, behaviour for an unknown player, versioning and an SLA. Two infra constraints their side has not been told: the host must resolve to PUBLIC addresses only, and it must accept a request carrying a literal IP with the hostname in a Host header and SNI.":
+    'Мы уже вызываем pull по TTL, но единственная договорённость — «HTTP 200 + JSON-объект». Нужны: схема ответа, коды ошибок, поведение для неизвестного игрока, версионирование и SLA. Плюс два инфраструктурных требования, о которых их стороне не сообщали: хост должен резолвиться только в публичные адреса и должен принимать запрос с литеральным IP при имени хоста в заголовке Host и в SNI.',
+  'Profile freshness; a real failure signal instead of stale data':
+    'Свежесть профиля; настоящий сигнал об ошибке вместо устаревших данных',
+  'Exact vip_level class vocabulary':
+    'Точный словарь классов vip_level',
+  "We map the casino's loyalty class onto mass/vip/vip_plus and, by design, anything unrecognised falls to 'mass' silently. A brand sending 'Diamond' or a numeric tier gets every VIP treated as mass with no error. Needed: the full string list and the rule for changing it.":
+    'Мы отображаем класс лояльности казино на mass/vip/vip_plus, и по дизайну всё нераспознанное молча падает в «mass». Бренд, присылающий «Diamond» или числовой уровень, получает всех VIP как mass — без ошибки. Нужны: полный список строк и правило его изменения.',
+  'VIP segmentation, frequency caps, host routing, media ceiling':
+    'VIP-сегментация, капы частоты, роутинг хоста, потолок медиа',
+  'Per-player active-bonus read contract':
+    'Контракт чтения активных бонусов игрока',
+  'Distinct from the grant endpoint: a read returning each active bonus with free-spin count and game, amount and currency, wager requirement, wagering progress/remaining, expiry, status and promo code. We have no representation of a bonus the CASINO granted itself, which is what an expiry reminder is actually about.':
+    'Отличается от эндпоинта начисления: чтение, возвращающее по каждому активному бонусу число фриспинов и игру, сумму и валюту, требование вейджера, прогресс/остаток отыгрыша, срок, статус и промокод. У нас нет никакого представления о бонусе, который казино выдало само, — а напоминание о сгорании именно про это.',
+  'Bonus merge variables for email/push; expiry + wagering messages':
+    'Бонусные merge-переменные для email/push; сообщения о сроках и отыгрыше',
+  'External stimulus budget authority (reserve/commit/release)':
+    'Внешний авторитет бюджета стимулов (reserve/commit/release)',
+  'The partner runs the bonus budget on their side; our offer_daily_budget_usd is a test stub (a bare read with no lock or reservation, while the pipeline fans products out concurrently). Needed: reserve/commit/release, idempotent on our offer_grant_id, amount as a decimal string plus ISO currency, a TTL, and an explicit policy for the authority being unavailable.':
+    'Партнёр ведёт бюджет бонусов на своей стороне; наш offer_daily_budget_usd — тестовая заглушка (голое чтение без блокировки и резервирования, при том что пайплайн раскладывает продукты параллельно). Нужны: reserve/commit/release, идемпотентность по нашему offer_grant_id, сумма десятичной строкой плюс ISO-валюта, TTL и явная политика на случай недоступности авторитета.',
+  'Real-budget offer granting (built-in cap stays a last-resort ceiling)':
+    'Начисление офферов по реальному бюджету (встроенный лимит остаётся последним предохранителем)',
+  'Customer.io webhook -> delivery-status bridge':
+    'Мост вебхуков Customer.io -> delivery-status',
+  "We consume no ESP webhook directly, so open/click/bounce can only reach us through POST /partner/{id}/delivery-status keyed by our delivery_id. Nobody is named to build that translator. Note our callback currently rejects a terminal 'failed' with 422 and accepts only 'bounced'.":
+    'Мы не потребляем вебхуки ESP напрямую, поэтому open/click/bounce могут дойти до нас только через POST /partner/{id}/delivery-status по нашему delivery_id. Владелец этого транслятора не назначен. Учтите: наш колбэк сейчас отвергает терминальный «failed» с 422 и принимает только «bounced».",
+  "Email lifecycle reporting (it otherwise stops at 'sent')":
+    'Отчётность по жизненному циклу письма (иначе он замирает на «sent»)',
+  'Live promotions + loyalty reward map read API':
+    'Read API живых промо + карты наград лояльности',
+  "Two of our shipped KB defaults name these systems instead of carrying their data ('dynamic list from Bonuses Module', 'defined in the Loyalty Engine reward map'). Today an operator retypes them, so the bot cannot answer which promotions are live or what a given level rewards, and every figure it does state can go stale.":
+    'Два наших дефолтных значения KB называют эти системы вместо того, чтобы содержать их данные («dynamic list from Bonuses Module», «defined in the Loyalty Engine reward map»). Сегодня оператор перепечатывает их руками, поэтому бот не может ответить, какие промо активны и что даёт конкретный уровень, а любое названное им число может устареть.',
+  'Correct promo/loyalty answers; the largest stale-copy risk':
+    'Корректные ответы про промо и лояльность; крупнейший риск устаревшего текста',
+  'Game catalogue (game_id, title, provider, url)':
+    'Каталог игр (game_id, title, provider, url)',
+  "There is no game entity at all. Needed for the featured-game content slot; title and provider must be separate fields (the marketing sheet files the provider '3 Oaks' under 'slot name'). Game URLs join the same allowlist discipline as the site map, since the model may never compose a link itself.":
+    'Сущности игры не существует вовсе. Нужна для контент-слота «избранная игра»; title и provider обязаны быть разными полями (в маркетинговой таблице провайдер «3 Oaks» записан в строку «название слота»). URL игр попадают под ту же дисциплину белого списка, что и карта сайта, поскольку модели нельзя самой составлять ссылку.',
+  'Featured-game slots in copy; game links the bot may send':
+    'Слоты избранных игр в копирайте; ссылки на игры, которые бот вправе отправить',
+  'Tournament / leaderboard data source':
+    'Источник данных турниров / лидербордов',
+  "No tournament entity exists in the service. Needed for the leaderboard top-N content slot and prize tiers. Until a contract exists, tournaments stay retention-KB prose and the starter journeys correctly hedge with 'only if it genuinely exists in the knowledge base'.":
+    'Сущности турнира в сервисе нет. Нужна для контент-слота «топ-N лидерборда» и призовых уровней. До появления контракта турниры остаются прозой в retention-KB, а стартовые сценарии справедливо оговаривают «только если это действительно есть в базе знаний».',
+  'Tournament content slots (KB prose is the interim path)':
+    'Контент-слоты турниров (промежуточный путь — проза в KB)',
   // ----- retention orchestrator page + algorithm-map orchestrator flow -----
   "Saved":
     "Сохранено",
