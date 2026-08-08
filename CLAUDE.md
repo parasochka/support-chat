@@ -1257,3 +1257,17 @@ settings/secrets/KB/copy, the header switcher. When extending, keep these rules:
   invariants, and `README.md` when the human-facing overview or env table changes. The root
   test page (`main.py` `/`) serves a static `frontend/test.html` (a short feature summary), not
   this file.
+- **The cross-team integration plan is `docs/EPIC-integration.md`** — the audit of every seam
+  where this service depends on an external team (casino platform, bonus CMS, CMS/site backend,
+  frontend, email/marketing, BI, devops), written for a product manager and the partner teams,
+  in Russian. It is a PLANNING doc, not a contract: the contracts stay the generated
+  `/integration-*` pages. Two things in it are load-bearing for code work. (1) The three-tier
+  variable model: brand constants (`kb_variables`) vs per-player attributes (the platform's
+  feed) vs **per-campaign parameters** — the third tier has no typed home today
+  (`retention_offer_catalog.params` is an untyped JSONB no module reads, so an offer's concrete
+  numbers never reach the writer, the email or the push), and its proposed schema is spelled out
+  there. (2) `_INTEGRATION_CHECKLIST_SEED` (`db.py`) is the in-product register of external
+  debts and now carries **16** items; it is seeded insert-only so operator status edits survive
+  every boot. Adding an item means adding its `title`/`description`/`owner`/`blocking` to
+  `admin/src/i18n.js` too — the admin page renders them through `t()`, so an untranslated row
+  shows in English (nothing enforces this; the epic's audit is how the gap was found).

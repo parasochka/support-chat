@@ -124,7 +124,9 @@ panel.
   per product via the header switcher. The **Retention → Orchestrator** page manages the
   orchestrator mechanics (tabs: Measurement, RG guard, Segmentation, Frequency, Offers,
   Journeys, Templates, Channels), and **System → Integration checklist** tracks the
-  deploy-level list of what external teams still owe (statuses edited as agreements land). **Retention analytics** live in the Retention
+  deploy-level list of what external teams still owe (16 items, statuses edited as
+  agreements land — the plan behind them is `docs/EPIC-integration.md`, which audits every
+  seam with an external team and the order in which they have to land). **Retention analytics** live in the Retention
   section (`GET /admin/retention/overview` / `funnel` / `timeseries`): lifetime +
   in-range KPIs (engagement, photos, proactive sends + reply rate, cost, stage
   distribution),
