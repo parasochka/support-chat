@@ -809,7 +809,10 @@ the EVENT PIPELINE section below, which supersedes older wording here.
   legacy `/retention-v2` alias, RequireProduct-gated) — status header
   (enabled/dry-run/budget/queue **plus the worker-liveness row**: the worker
   chip keys on the DURABLE heartbeat (`worker_heartbeats`, stamped by
-  `retention_v2.scheduler_loop` throttled to ≥30s, read via
+  `retention_v2.scheduler_loop` throttled to ≥30s — including DURING a long
+  sweep via the `_heartbeat_ticker` task, and re-stamped immediately when the
+  hot `worker_interval_sec` changes, since the reader judges staleness by the
+  cadence STORED in the row; read via
   `db.latest_worker_heartbeat` + `retention_v2.heartbeat_alive` in
   `/v2/status`'s `worker` block) — NOT this process's
   `RETENTION_SCHEDULER_ENABLED`, which is legitimately 0 on the split web
