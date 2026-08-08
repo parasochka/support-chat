@@ -1777,7 +1777,7 @@ const RU = {
   'Customer.io webhook -> delivery-status bridge':
     'Мост вебхуков Customer.io -> delivery-status',
   "We consume no ESP webhook directly, so open/click/bounce can only reach us through POST /partner/{id}/delivery-status keyed by our delivery_id. Nobody is named to build that translator. Note our callback currently rejects a terminal 'failed' with 422 and accepts only 'bounced'.":
-    'Мы не потребляем вебхуки ESP напрямую, поэтому open/click/bounce могут дойти до нас только через POST /partner/{id}/delivery-status по нашему delivery_id. Владелец этого транслятора не назначен. Учтите: наш колбэк сейчас отвергает терминальный «failed» с 422 и принимает только «bounced».",
+    'Мы не потребляем вебхуки ESP напрямую, поэтому open/click/bounce могут дойти до нас только через POST /partner/{id}/delivery-status по нашему delivery_id. Владелец этого транслятора не назначен. Учтите: наш колбэк сейчас отвергает терминальный «failed» с 422 и принимает только «bounced».',
   "Email lifecycle reporting (it otherwise stops at 'sent')":
     'Отчётность по жизненному циклу письма (иначе он замирает на «sent»)',
   'Live promotions + loyalty reward map read API':
