@@ -49,20 +49,43 @@ run_tests() {
   python -m pytest -q || return 1
 }
 
+run_admin_syntax() {
+  # The admin SPA has its own Vite build that nothing here runs (it deploys as
+  # its own static site), so a syntax error in it ships green: preflight and CI
+  # are Python-only. `admin/src/i18n.js` is the likeliest casualty — it is a
+  # plain-JS dict of thousands of quoted Russian strings, hand-edited whenever
+  # an admin-visible string is added, and one mismatched quote breaks the whole
+  # build. `node --check` costs milliseconds and needs no node_modules, so it
+  # catches that class without pulling an npm install into this script.
+  # Skipped (not failed) where node is absent — this is a guard, not a gate.
+  if ! command -v node >/dev/null 2>&1; then
+    echo ">> admin JS syntax… skipped (no node)"
+    return 0
+  fi
+  echo ">> admin JS syntax (node --check)…"
+  local bad=0 f
+  while IFS= read -r f; do
+    node --check "$f" || { echo "  BROKEN: $f"; bad=1; }
+  done < <(find admin/src -name '*.js' -not -path '*/node_modules/*' | sort)
+  [ "$bad" -eq 0 ] || return 1
+}
+
 case "$MODE" in
   --install)
     install_deps || rc=1
     ;;
   --checks)
-    run_ruff       || rc=1
-    run_invariants || rc=1
-    run_tests      || rc=1
+    run_ruff         || rc=1
+    run_invariants   || rc=1
+    run_admin_syntax || rc=1
+    run_tests        || rc=1
     ;;
   all|"")
-    install_deps   || { echo "!! dependency install failed"; exit 1; }
-    run_ruff       || rc=1
-    run_invariants || rc=1
-    run_tests      || rc=1
+    install_deps     || { echo "!! dependency install failed"; exit 1; }
+    run_ruff         || rc=1
+    run_invariants   || rc=1
+    run_admin_syntax || rc=1
+    run_tests        || rc=1
     ;;
   *)
     echo "usage: $0 [--install|--checks]" >&2
