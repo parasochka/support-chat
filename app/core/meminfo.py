@@ -96,7 +96,7 @@ def peak_rss_bytes() -> Optional[int]:
     `ru_maxrss` is a PEAK that never decreases, so it can never show a leak
     being fixed — it is here to catch a spike that has already come back down
     (an hourly media sweep), which the current number would miss between
-    samples. Its unit is kilobytes on Linux but BYTES on macOS/BSD.
+    samples. Its unit is kilobytes on Linux and the BSDs but BYTES on macOS.
     """
     try:
         import resource

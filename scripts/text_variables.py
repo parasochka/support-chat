@@ -19,7 +19,8 @@ the page cannot drift from the code: db._DEFAULT_KB_VARIABLES,
 prompts.PROMPT_VARIABLES, prompts.RETENTION_PROMPT_VARIABLES,
 translations.KEYS/DEFAULTS and prompts._CONTEXT_FIELDS. Only the hand-written
 part (the sentinels, the text blocks, the per-group notes) is prose, and the
-sentinel list is checked against the strip-regexes in prompts.py at build time.
+sentinel list is checked BOTH WAYS against the `*_TAG_RE` strip-regexes in
+prompts.py at build time (a new, renamed or removed sentinel fails the build).
 
 Not a script: it is rendered by scripts/build_api_reference.py (one command
 builds the page and the second sheet of the same workbook, so page and workbook
@@ -89,7 +90,7 @@ E_SITE = "Common → Site map"
 E_ESC = "Common → Escalation keywords"
 E_PROFILE = "Common → Test profile"
 E_RKB = "Retention → Knowledge base"
-E_SCEN = "Retention → Scenarios"
+E_SCEN = "Retention → Orchestrator → Templates"
 E_CODE = "код prompts.py (редеплой)"
 E_CRM = "приходит из CRM казино"
 
@@ -141,8 +142,9 @@ def _shorten(text: str, limit: int = 320) -> str:
 
 # ---------------------------------------------------------------------------
 # Hand-written rows: the control sentinels the model emits inside its answer.
-# `attr` is the strip-regex in prompts.py — checked at build time so a renamed
-# or removed sentinel breaks the build instead of silently outliving the code.
+# `attr` is the strip-regex in prompts.py — checked at build time (both ways:
+# see _build_rows) so a new, renamed or removed sentinel breaks the build
+# instead of silently outliving — or never reaching — the page.
 # ---------------------------------------------------------------------------
 _SENTINELS: list[tuple[str, str, str, str, str]] = [
     ("_ESCALATE_TAG_RE", "[[ESCALATE]]", "[[ESCALATE]]", U_OUT,
@@ -301,6 +303,19 @@ def _build_rows() -> list[list[str]]:
             "потеряется."))
 
     # --- control sentinels --------------------------------------------------
+    # BIDIRECTIONAL check against prompts.py: a renamed/removed strip-regex
+    # breaks the build (the hasattr below), and a NEW `*_TAG_RE` the registry
+    # does not know breaks it too — otherwise a freshly added sentinel would
+    # silently stay off the partner-facing page forever. The guarantee rides on
+    # the `*_TAG_RE` naming convention every strip-regex in prompts.py follows;
+    # keep following it.
+    live_tags = {a for a in dir(prompts) if a.endswith("_TAG_RE")}
+    registered_tags = {entry[0] for entry in _SENTINELS}
+    if live_tags - registered_tags:
+        raise SystemExit(
+            "text_variables: prompts.py has sentinel strip-regexes not in the "
+            f"registry: {sorted(live_tags - registered_tags)} — add rows to "
+            "_SENTINELS in scripts/text_variables.py")
     for attr, syntax, example, used, desc in _SENTINELS:
         if not hasattr(prompts, attr):
             raise SystemExit(

@@ -198,8 +198,11 @@ DB_HEALTHCHECK_TIMEOUT_SEC: int = _env_int("DB_HEALTHCHECK_TIMEOUT_SEC", 5)
 # Bounds on the ONE shared httpx client the fixed-host outbound calls (Telegram
 # Bot API, Turnstile, Customer.io) share, so a burst of retention sends cannot
 # open unbounded sockets. HTTP_DEFAULT_TIMEOUT_SEC is only the fallback — every
-# call site passes its own per-request deadline (two of them are live admin
-# knobs). HTTP_KEEPALIVE_EXPIRY_SEC=0 is the escape hatch: it turns connection
+# call site passes its own per-request deadline (Turnstile 10s, Customer.io
+# 15s, Telegram per-TelegramClient; the admin-knob timeouts
+# offer_grant_timeout_sec / push_delivery_timeout_sec belong to the DNS-pinned
+# partner_out path, which never uses this client).
+# HTTP_KEEPALIVE_EXPIRY_SEC=0 is the escape hatch: it turns connection
 # REUSE off (keeping only the shared SSL context) if a provider ever proves
 # hostile to pooled connections.
 HTTP_MAX_CONNECTIONS: int = _env_int("HTTP_MAX_CONNECTIONS", 100)

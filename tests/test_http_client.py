@@ -2,7 +2,8 @@
 
 What these pin down is easy to break by accident and silent when broken: a
 client built at import time (the fakes stop intercepting), a construction-time
-timeout (two live admin knobs quietly freeze), a close that leaves the global
+timeout (the three sites' distinct deadlines quietly flatten to one), a close
+that leaves the global
 set (the process can never open another one), and the keep-alive escape hatch.
 """
 from __future__ import annotations

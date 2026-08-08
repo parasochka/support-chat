@@ -235,6 +235,13 @@ async def scheduler_loop(stop: Optional[asyncio.Event] = None) -> None:
             log.info("retention_agent_scheduler_stopping")
             return
         await _beat_heartbeat()
+        # The beat above covers the SLEEP; the ticker covers the SWEEP. A
+        # backed-up pass is unbounded (per-event agent model calls, serial per
+        # player), so beating only at tick boundaries outlives the reader's
+        # stale window and flips the chip to "not running" precisely while the
+        # worker drains hardest. _beat_heartbeat's own throttle still caps the
+        # write volume at the effective cadence.
+        ticker = asyncio.create_task(_heartbeat_ticker(stop))
         try:
             stats = await run_due_events(stop=stop)
             if stats.get("decided") or stats.get("sent") or stats.get("failed"):
@@ -243,6 +250,12 @@ async def scheduler_loop(stop: Optional[asyncio.Event] = None) -> None:
             raise
         except Exception:  # noqa: BLE001 - the loop must survive any sweep error
             log.exception("retention_v2_sweep_failed")
+        finally:
+            ticker.cancel()
+            try:
+                await ticker
+            except asyncio.CancelledError:
+                pass
 
 
 # The heartbeat rides the scheduler loop (it runs exactly when the pipeline
@@ -252,6 +265,7 @@ _HEARTBEAT_MIN_SEC = 30
 _HEARTBEAT_STALE_MULTIPLE = 3
 _HEARTBEAT_STALE_MARGIN_SEC = 30
 _last_beat_monotonic: float = 0.0
+_last_beat_interval: int = 0
 
 
 def heartbeat_interval_sec() -> int:
@@ -260,17 +274,37 @@ def heartbeat_interval_sec() -> int:
 
 
 async def _beat_heartbeat() -> None:
-    global _last_beat_monotonic
+    global _last_beat_monotonic, _last_beat_interval
     interval = heartbeat_interval_sec()
     now = _time.monotonic()
-    if _last_beat_monotonic and now - _last_beat_monotonic < interval:
+    # The throttle is bypassed when the effective cadence CHANGED: the reader
+    # judges staleness by the cadence STORED in the row, so after an admin
+    # raises worker_interval_sec a beat throttled to the NEW interval would
+    # leave the old small stored cadence declaring this live worker dead until
+    # the next write lands (5s -> 3600s = ~58 minutes of a false-red chip).
+    if (_last_beat_monotonic and interval == _last_beat_interval
+            and now - _last_beat_monotonic < interval):
         return
     try:
         await db.beat_worker_heartbeat(worker_id(), config.SERVICE_ROLE or "all",
                                        interval)
         _last_beat_monotonic = now
+        _last_beat_interval = interval
     except Exception:  # noqa: BLE001 - liveness reporting must never kill the loop
         log.exception("worker_heartbeat_failed")
+
+
+async def _heartbeat_ticker(stop: Optional[asyncio.Event]) -> None:
+    """Keep the heartbeat fresh WHILE a sweep runs (see scheduler_loop).
+
+    Only ever started by scheduler_loop, so the beat stays strictly on the
+    scheduler path: the admin "Process queue now" button (which may run in the
+    web process) can never paint the chip green while the worker service is
+    actually down."""
+    while True:
+        if await _sleep_or_stop(_HEARTBEAT_MIN_SEC, stop):
+            return
+        await _beat_heartbeat()
 
 
 def heartbeat_alive(hb: Optional[dict[str, Any]]) -> bool:

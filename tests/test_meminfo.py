@@ -118,8 +118,9 @@ def test_log_line_survives_a_none_rss(monkeypatch, caplog):
 
 
 def test_log_line_never_raises(monkeypatch):
-    """It runs inside log_flush_loop's shared try; an escape would become a
-    `log_flush_tick_failed` line every 3 seconds, into the buffer it measures."""
+    """log_flush_loop calls this OUTSIDE its try (the sample must fire even
+    when the DB work fails), so an escape would kill the flush loop outright —
+    silently on web, a full process restart on the worker."""
     monkeypatch.setattr(meminfo, "snapshot",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     meminfo.log_line()  # must not raise

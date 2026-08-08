@@ -163,8 +163,9 @@ in mind for every change:
   live registries** (`db._DEFAULT_KB_VARIABLES`, `prompts.PROMPT_VARIABLES` /
   `RETENTION_PROMPT_VARIABLES`, `translations.KEYS`/`DEFAULTS`,
   `prompts._CONTEXT_FIELDS`) rather than transcribed, and the sentinel list is
-  checked against the strip-regexes at build time, so the page cannot drift from
-  the code. Neither page is hand-edited: `scripts/build_api_reference.py`
+  checked both ways against the `*_TAG_RE` strip-regexes at build time (a new,
+  renamed or removed sentinel fails the build — keep that naming convention), so
+  the page cannot drift from the code. Neither page is hand-edited: `scripts/build_api_reference.py`
   (rows for the variables half in `scripts/text_variables.py`) renders BOTH
   pages and the downloadable two-sheet `frontend/api-reference.xlsx` (linked
   from each page, served by the `/static` mount) in ONE run, so pages and
@@ -1193,8 +1194,10 @@ settings/secrets/KB/copy, the header switcher. When extending, keep these rules:
   `Image.open` is lazy, but `ImageOps.exif_transpose` forces a FULL-resolution decode and
   copy, so a 24MP source cost ~220MB of peak RSS to make a 1280px thumbnail — the largest
   single allocation the service makes. `im.draft(None, (max_side, max_side))` **before**
-  anything touches the pixels drops that to ~28MB with byte-identical output (it never
-  scales below the requested box, and is a no-op for PNG). `thumbnail()` drafts internally,
+  anything touches the pixels drops that to ~28MB with identical dimensions/orientation
+  (it never scales below the requested box, and is a no-op for PNG; pixels differ
+  imperceptibly where draft engages, so don't assume byte-stable output). `thumbnail()`
+  drafts internally,
   which is why the explicit call has to come first — before `exif_transpose` has paid for
   the full raster.
 - **ONE outbound HTTP client per process (`app/core/http.py`), obtained through

@@ -169,7 +169,10 @@ def normalize_file(src_path: str, dst_path: str, *, max_side: int,
         # square box is orientation-agnostic, so the later transpose is safe.
         # No-op for PNG and anything else without DCT scaling, and draft never
         # scales BELOW the requested box, so the LANCZOS resize below still
-        # produces byte-identical output.
+        # produces the same dimensions and orientation. Pixels differ
+        # imperceptibly for JPEGs large enough for draft to engage (the resize
+        # starts from the DCT-scaled raster instead of the full one) — do not
+        # assume normalized output is byte-stable across this boundary.
         im.draft(None, (max_side, max_side))
         im = ImageOps.exif_transpose(im)
         if im.mode not in ("RGB", "RGBA"):

@@ -118,9 +118,13 @@ async def log_flush_loop() -> None:
             drained = 0
         try:
             items = logcapture.drain()
+            # Counted at drain time, BEFORE the insert: drain() has already
+            # consumed the records, so a failing insert (DB outage — the one
+            # scenario the sample above is hoisted to survive) must not zero
+            # the very "how loud is this process" number it reports.
+            drained += len(items)
             if items:
                 await db.insert_app_logs(items)
-            drained += len(items)
             if ticks % _LOG_PRUNE_EVERY == 0:
                 await db.prune_app_logs(_LOG_KEEP_ROWS)
             if ticks % _RETENTION_EVENTS_PRUNE_EVERY == 0:
